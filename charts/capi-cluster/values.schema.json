@@ -5,7 +5,7 @@
   "required": [
     "name",
     "class",
-    "classVersion",
+    "classRevision",
     "classNamespace",
     "kubernetesVersion",
     "apiVIP",
@@ -26,10 +26,6 @@
         "proxmox",
         "metal3"
       ]
-    },
-    "classVersion": {
-      "type": "string",
-      "pattern": "^v[0-9]+$"
     },
     "classNamespace": {
       "type": "string",
@@ -251,6 +247,11 @@
           }
         }
       }
+    },
+    "classRevision": {
+      "type": "string",
+      "pattern": "^r[0-9]+$",
+      "description": "ClusterClass revision, such as r1 (not a Kubernetes API version)"
     }
   },
   "allOf": [

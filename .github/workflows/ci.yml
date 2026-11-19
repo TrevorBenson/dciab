@@ -142,27 +142,14 @@ jobs:
       - run: hack/e2e/run.sh
 
   frozen-classes:
-    # SHA256SUMS can be edited along with a class, so also compare against the base branch:
-    # a released class file may never be modified or deleted.
+    # A class revision freezes when a DCiaB release tag first contains it; drafts may change (docs/VERSIONING.md).
     name: released ClusterClasses are unchanged
-    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: Compare class files with the base branch
-        run: |
-          set -euo pipefail
-          base="origin/${{ github.base_ref }}"
-          changed="$(git diff --name-only --diff-filter=MDR "$base"...HEAD -- 'charts/capi-clusterclasses/classes/v*/*.yaml')"
-          if [ -n "$changed" ]; then
-            echo "Released ClusterClass files were changed or removed:"
-            echo "$changed"
-            echo "Copy the version to a new folder instead (charts/capi-clusterclasses/README.md)."
-            exit 1
-          fi
-          echo "No released class file changed."
+      - run: hack/check_frozen_classes.sh
 
   image-digests:
     name: bundle.lock image digests match the registry
@@ -179,7 +166,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: shellcheck dciab hack/e2e/run.sh
+      - run: shellcheck dciab hack/e2e/run.sh hack/check_frozen_classes.sh
 
   rocky10:
     # The validator must run on the bootstrap host with distro packages only.

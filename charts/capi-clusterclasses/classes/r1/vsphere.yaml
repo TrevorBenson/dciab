@@ -1,30 +1,30 @@
-# ClusterClass dciab-proxmox-v2: FROZEN once released.
-# Clusters reference this class by name, and editing it rolls every one of them.
-# To change anything here, copy this version's folder to the next version, edit the
-# copy, and move clusters over one at a time. Do not edit a released version.
+# ClusterClass dciab-vsphere-r1. The -rN suffix is a DCiaB revision, not a Kubernetes API version.
+# A draft until a DCiaB release tag contains it; frozen from then on, because editing a
+# class rolls every cluster that uses it. After a release, changes go into the next
+# revision. See docs/VERSIONING.md.
 ---
 apiVersion: cluster.x-k8s.io/v1beta2
 kind: ClusterClass
 metadata:
-  name: dciab-proxmox-v2
+  name: dciab-vsphere-r1
   annotations:
-    dciab.io/description: "Proxmox VE (CAPMOX) machines for control plane and workers"
+    dciab.io/description: "vSphere (CAPV) machines for control plane and workers"
 spec:
   controlPlane:
     templateRef:
       apiVersion: controlplane.cluster.x-k8s.io/v1beta2
       kind: KubeadmControlPlaneTemplate
-      name: dciab-proxmox-v2-controlplane
+      name: dciab-vsphere-r1-controlplane
     machineInfrastructure:
       templateRef:
-        apiVersion: infrastructure.cluster.x-k8s.io/v1alpha2
-        kind: ProxmoxMachineTemplate
-        name: dciab-proxmox-v2-controlplane
+        apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
+        kind: VSphereMachineTemplate
+        name: dciab-vsphere-r1-controlplane
   infrastructure:
     templateRef:
-      apiVersion: infrastructure.cluster.x-k8s.io/v1alpha2
-      kind: ProxmoxClusterTemplate
-      name: dciab-proxmox-v2
+      apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
+      kind: VSphereClusterTemplate
+      name: dciab-vsphere-r1
   workers:
     machineDeployments:
       - class: default
@@ -32,12 +32,12 @@ spec:
           templateRef:
             apiVersion: bootstrap.cluster.x-k8s.io/v1beta2
             kind: KubeadmConfigTemplate
-            name: dciab-proxmox-v2-worker
+            name: dciab-vsphere-r1-worker
         infrastructure:
           templateRef:
-            apiVersion: infrastructure.cluster.x-k8s.io/v1alpha2
-            kind: ProxmoxMachineTemplate
-            name: dciab-proxmox-v2-worker
+            apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
+            kind: VSphereMachineTemplate
+            name: dciab-vsphere-r1-worker
   variables:
     - name: apiVIP
       required: true
@@ -131,49 +131,25 @@ spec:
           items:
             type: string
           description: DNS resolvers for the nodes (the PowerDNS recursor service IPs).
-    - name: proxmox
+    - name: vsphere
       required: true
       schema:
         openAPIV3Schema:
           type: object
-          required: [allowedNodes, templateNode, templateID, storage, bridge]
+          required: [server, thumbprint, datacenter, datastore, folder, resourcePool, network, template]
           properties:
-            allowedNodes:
-              type: array
-              minItems: 1
-              items: {type: string}
-            templateNode:
+            server: {type: string}
+            thumbprint: {type: string}
+            datacenter: {type: string}
+            datastore: {type: string}
+            folder: {type: string}
+            resourcePool: {type: string}
+            network:
               type: string
-              minLength: 1
-              description: The node holding the VM template.
-            templateID:
-              type: integer
-            storage:
+              description: Port group for the nodes.
+            template:
               type: string
-            bridge:
-              type: string
-            vlanTag:
-              type: integer
-              minimum: 1
-              maximum: 4094
-    - name: nodeNetwork
-      required: true
-      schema:
-        openAPIV3Schema:
-          type: object
-          required: [addresses, prefix, gateway]
-          properties:
-            addresses:
-              type: array
-              minItems: 1
-              items: {type: string}
-              description: Node address ranges, such as 10.30.110.20-10.30.110.29.
-            prefix:
-              type: integer
-              minimum: 1
-              maximum: 32
-            gateway:
-              type: string
+              description: VM template; its Kubernetes version must match the topology version.
 
   patches:
     - name: nodeBase
@@ -423,28 +399,21 @@ spec:
                 template: |
                   name: oidc-groups-claim
                   value: {{ .oidc.groupsClaim | quote }}
-    - name: proxmoxCluster
-      description: Allowed nodes, node addressing, DNS, credentials Secret and control plane endpoint.
+    - name: vsphereCluster
+      description: vCenter connection, credentials Secret and control plane endpoint.
       definitions:
         - selector:
-            apiVersion: infrastructure.cluster.x-k8s.io/v1alpha2
-            kind: ProxmoxClusterTemplate
+            apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
+            kind: VSphereClusterTemplate
             matchResources:
               infrastructureCluster: true
           jsonPatches:
             - op: add
-              path: /spec/template/spec/allowedNodes
-              valueFrom: {variable: proxmox.allowedNodes}
-            - op: replace
-              path: /spec/template/spec/dnsServers
-              valueFrom: {variable: dnsServers}
+              path: /spec/template/spec/server
+              valueFrom: {variable: vsphere.server}
             - op: add
-              path: /spec/template/spec/ipv4Config
-              valueFrom:
-                template: |
-                  addresses: {{ .nodeNetwork.addresses | toJson }}
-                  prefix: {{ .nodeNetwork.prefix }}
-                  gateway: {{ .nodeNetwork.gateway | quote }}
+              path: /spec/template/spec/thumbprint
+              valueFrom: {variable: vsphere.thumbprint}
             - op: add
               path: /spec/template/spec/controlPlaneEndpoint
               valueFrom:
@@ -452,164 +421,174 @@ spec:
                   host: {{ .apiVIP | quote }}
                   port: 6443
             - op: add
-              path: /spec/template/spec/credentialsRef
+              path: /spec/template/spec/identityRef
               valueFrom:
                 template: |
-                  name: {{ .builtin.cluster.name }}-proxmox-credentials
-    - name: proxmoxMachines
-      description: Template, storage, size and network device for every machine.
+                  kind: Secret
+                  name: {{ .builtin.cluster.name }}-vsphere-credentials
+    - name: vsphereMachines
+      description: Placement, template, size and node addressing for every machine.
       definitions:
         - selector:
-            apiVersion: infrastructure.cluster.x-k8s.io/v1alpha2
-            kind: ProxmoxMachineTemplate
+            apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
+            kind: VSphereMachineTemplate
             matchResources:
               controlPlane: true
           jsonPatches:
             - op: add
-              path: /spec/template/spec/sourceNode
-              valueFrom: {variable: proxmox.templateNode}
+              path: /spec/template/spec/server
+              valueFrom: {variable: vsphere.server}
             - op: add
-              path: /spec/template/spec/templateID
-              valueFrom: {variable: proxmox.templateID}
+              path: /spec/template/spec/thumbprint
+              valueFrom: {variable: vsphere.thumbprint}
             - op: add
-              path: /spec/template/spec/storage
-              valueFrom: {variable: proxmox.storage}
+              path: /spec/template/spec/datacenter
+              valueFrom: {variable: vsphere.datacenter}
             - op: add
-              path: /spec/template/spec/numCores
+              path: /spec/template/spec/datastore
+              valueFrom: {variable: vsphere.datastore}
+            - op: add
+              path: /spec/template/spec/folder
+              valueFrom: {variable: vsphere.folder}
+            - op: add
+              path: /spec/template/spec/resourcePool
+              valueFrom: {variable: vsphere.resourcePool}
+            - op: add
+              path: /spec/template/spec/template
+              valueFrom: {variable: vsphere.template}
+            - op: add
+              path: /spec/template/spec/numCPUs
               valueFrom: {variable: machine.cpu}
             - op: add
               path: /spec/template/spec/memoryMiB
               valueFrom:
                 template: '{{ mul .machine.memoryGiB 1024 }}'
             - op: add
-              path: /spec/template/spec/disks
-              valueFrom:
-                template: |
-                  bootVolume:
-                    disk: scsi0
-                    sizeGb: {{ .machine.diskGiB }}
-            - op: replace
+              path: /spec/template/spec/diskGiB
+              valueFrom: {variable: machine.diskGiB}
+            - op: add
               path: /spec/template/spec/network
               valueFrom:
                 template: |
-                  networkDevices:
-                    - name: net0
-                      bridge: {{ .proxmox.bridge | quote }}
-                      model: virtio
-                      defaultIPv4: true
-                      {{- if .proxmox.vlanTag }}
-                      vlan: {{ .proxmox.vlanTag }}
-                      {{- end }}
+                  devices:
+                    - networkName: {{ .vsphere.network | quote }}
+                      addressesFromPools:
+                        - apiGroup: ipam.cluster.x-k8s.io
+                          kind: InClusterIPPool
+                          name: {{ .builtin.cluster.name }}-nodes
+                      nameservers: {{ .dnsServers | toJson }}
         - selector:
-            apiVersion: infrastructure.cluster.x-k8s.io/v1alpha2
-            kind: ProxmoxMachineTemplate
+            apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
+            kind: VSphereMachineTemplate
             matchResources:
               machineDeploymentClass:
                 names: [default]
           jsonPatches:
             - op: add
-              path: /spec/template/spec/sourceNode
-              valueFrom: {variable: proxmox.templateNode}
+              path: /spec/template/spec/server
+              valueFrom: {variable: vsphere.server}
             - op: add
-              path: /spec/template/spec/templateID
-              valueFrom: {variable: proxmox.templateID}
+              path: /spec/template/spec/thumbprint
+              valueFrom: {variable: vsphere.thumbprint}
             - op: add
-              path: /spec/template/spec/storage
-              valueFrom: {variable: proxmox.storage}
+              path: /spec/template/spec/datacenter
+              valueFrom: {variable: vsphere.datacenter}
             - op: add
-              path: /spec/template/spec/numCores
+              path: /spec/template/spec/datastore
+              valueFrom: {variable: vsphere.datastore}
+            - op: add
+              path: /spec/template/spec/folder
+              valueFrom: {variable: vsphere.folder}
+            - op: add
+              path: /spec/template/spec/resourcePool
+              valueFrom: {variable: vsphere.resourcePool}
+            - op: add
+              path: /spec/template/spec/template
+              valueFrom: {variable: vsphere.template}
+            - op: add
+              path: /spec/template/spec/numCPUs
               valueFrom: {variable: machine.cpu}
             - op: add
               path: /spec/template/spec/memoryMiB
               valueFrom:
                 template: '{{ mul .machine.memoryGiB 1024 }}'
             - op: add
-              path: /spec/template/spec/disks
-              valueFrom:
-                template: |
-                  bootVolume:
-                    disk: scsi0
-                    sizeGb: {{ .machine.diskGiB }}
-            - op: replace
+              path: /spec/template/spec/diskGiB
+              valueFrom: {variable: machine.diskGiB}
+            - op: add
               path: /spec/template/spec/network
               valueFrom:
                 template: |
-                  networkDevices:
-                    - name: net0
-                      bridge: {{ .proxmox.bridge | quote }}
-                      model: virtio
-                      defaultIPv4: true
-                      {{- if .proxmox.vlanTag }}
-                      vlan: {{ .proxmox.vlanTag }}
-                      {{- end }}
+                  devices:
+                    - networkName: {{ .vsphere.network | quote }}
+                      addressesFromPools:
+                        - apiGroup: ipam.cluster.x-k8s.io
+                          kind: InClusterIPPool
+                          name: {{ .builtin.cluster.name }}-nodes
+                      nameservers: {{ .dnsServers | toJson }}
 
 ---
-apiVersion: infrastructure.cluster.x-k8s.io/v1alpha2
-kind: ProxmoxClusterTemplate
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
+kind: VSphereClusterTemplate
 metadata:
-  name: dciab-proxmox-v2
+  name: dciab-vsphere-r1
 spec:
   template:
     spec:
-      dnsServers: [set-by-patch]
-      # Placeholders (TEST-NET-1): CAPMOX's webhook rejects a template without an
-      # endpoint and an IP pool. The proxmoxCluster patch replaces both.
-      controlPlaneEndpoint:
-        host: 192.0.2.5
-        port: 6443
-      ipv4Config:
-        addresses: [192.0.2.10-192.0.2.20]
-        prefix: 24
-        gateway: 192.0.2.1
+      server: set-by-patch.invalid
 ---
-apiVersion: infrastructure.cluster.x-k8s.io/v1alpha2
-kind: ProxmoxMachineTemplate
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
+kind: VSphereMachineTemplate
 metadata:
-  name: dciab-proxmox-v2-controlplane
+  name: dciab-vsphere-r1-controlplane
 spec:
   template:
     spec:
-      # Placeholders: CAPMOX's CRD requires a clone source on the template itself.
-      sourceNode: set-by-patch
-      templateID: 100
-      full: true
-      format: qcow2
-      numSockets: 1
-      metadataSettings:
-        providerIDInjection: true
+      server: set-by-patch.invalid
+      template: set-by-patch
+      cloneMode: fullClone
+      numCPUs: 2
+      memoryMiB: 4096
+      diskGiB: 40
+      os: Linux
+      powerOffMode: trySoft
       network:
-        networkDevices:
-          - name: net0
-            bridge: set-by-patch
-            model: virtio
-            defaultIPv4: true
+        devices:
+          - networkName: set-by-patch
+            # Placeholder: replaced with the cluster's <cluster>-nodes pool by the vsphereMachines patch.
+            addressesFromPools:
+              - apiGroup: ipam.cluster.x-k8s.io
+                kind: InClusterIPPool
+                name: set-by-patch
 ---
-apiVersion: infrastructure.cluster.x-k8s.io/v1alpha2
-kind: ProxmoxMachineTemplate
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
+kind: VSphereMachineTemplate
 metadata:
-  name: dciab-proxmox-v2-worker
+  name: dciab-vsphere-r1-worker
 spec:
   template:
     spec:
-      # Placeholders: CAPMOX's CRD requires a clone source on the template itself.
-      sourceNode: set-by-patch
-      templateID: 100
-      full: true
-      format: qcow2
-      numSockets: 1
-      metadataSettings:
-        providerIDInjection: true
+      server: set-by-patch.invalid
+      template: set-by-patch
+      cloneMode: fullClone
+      numCPUs: 2
+      memoryMiB: 4096
+      diskGiB: 40
+      os: Linux
+      powerOffMode: trySoft
       network:
-        networkDevices:
-          - name: net0
-            bridge: set-by-patch
-            model: virtio
-            defaultIPv4: true
+        devices:
+          - networkName: set-by-patch
+            # Placeholder: replaced with the cluster's <cluster>-nodes pool by the vsphereMachines patch.
+            addressesFromPools:
+              - apiGroup: ipam.cluster.x-k8s.io
+                kind: InClusterIPPool
+                name: set-by-patch
 ---
 apiVersion: controlplane.cluster.x-k8s.io/v1beta2
 kind: KubeadmControlPlaneTemplate
 metadata:
-  name: dciab-proxmox-v2-controlplane
+  name: dciab-vsphere-r1-controlplane
 spec:
   template:
     spec:
@@ -627,11 +606,13 @@ spec:
         initConfiguration:
           nodeRegistration:
             name: '{{ local_hostname }}'
-            # no kubelet extra args
+            kubeletExtraArgs:
+                            - {name: cloud-provider, value: "external"}
         joinConfiguration:
           nodeRegistration:
             name: '{{ local_hostname }}'
-            # no kubelet extra args
+            kubeletExtraArgs:
+                            - {name: cloud-provider, value: "external"}
         preKubeadmCommands:
           - update-ca-trust extract
           # kube-vip needs super-admin.conf while kubeadm init runs (Kubernetes 1.29+).
@@ -642,12 +623,14 @@ spec:
 apiVersion: bootstrap.cluster.x-k8s.io/v1beta2
 kind: KubeadmConfigTemplate
 metadata:
-  name: dciab-proxmox-v2-worker
+  name: dciab-vsphere-r1-worker
 spec:
   template:
     spec:
       joinConfiguration:
         nodeRegistration:
           name: '{{ local_hostname }}'
+          kubeletExtraArgs:
+            - {name: cloud-provider, value: "external"}
       preKubeadmCommands:
         - update-ca-trust extract
