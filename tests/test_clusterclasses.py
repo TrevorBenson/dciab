@@ -1,5 +1,4 @@
 import copy
-import hashlib
 import importlib.util
 import re
 from pathlib import Path
@@ -30,12 +29,12 @@ def versions():
 
 
 def installed_versions():
-    """Versions the chart installs. Retired ones stay frozen on disk but are not checked."""
+    """Versions the chart installs. Versions no cluster uses any more stay on disk, unchecked."""
     values = yaml.safe_load((ROOT / "charts" / "capi-clusterclasses" / "values.yaml").read_text())
     return values["versions"]
 
 
-def class_docs(version="v2", provider="vsphere"):
+def class_docs(version="v1", provider="vsphere"):
     text = (CLASSES / version / f"{provider}.yaml").read_text()
     return [(f"{provider}.yaml", NS, d) for d in yaml.safe_load_all(text) if d]
 
@@ -54,19 +53,6 @@ def clusterclass(docs):
 
 
 # --- the shipped classes ---------------------------------------------------------------
-
-def test_frozen_classes_match_their_checksums():
-    sums = {}
-    for line in (CLASSES / "SHA256SUMS").read_text().splitlines():
-        digest, name = line.split()
-        sums[name] = digest
-    files = sorted(str(p.relative_to(CLASSES)) for p in CLASSES.glob("v*/*.yaml"))
-    assert sorted(sums) == files, "every class file needs a line in SHA256SUMS, and nothing else"
-    for name, digest in sums.items():
-        actual = hashlib.sha256((CLASSES / name).read_bytes()).hexdigest()
-        assert actual == digest, (f"{name} changed. Released class versions are frozen: copy it to a "
-                                  "new version folder instead (see charts/capi-clusterclasses/README.md)")
-
 
 def test_every_version_has_all_three_providers():
     for v in versions():
@@ -186,7 +172,7 @@ def test_checker_catches_a_variable_type_mismatch(schemas):
 def test_checker_reports_missing_required_cluster_variables(schemas):
     cluster = {
         "apiVersion": "cluster.x-k8s.io/v1beta2", "kind": "Cluster", "metadata": {"name": "c1"},
-        "spec": {"topology": {"classRef": {"name": "dciab-vsphere-v2", "namespace": NS}, "version": "v1.36.6",
+        "spec": {"topology": {"classRef": {"name": "dciab-vsphere-v1", "namespace": NS}, "version": "v1.36.6",
                               "variables": [{"name": "apiVIP", "value": "10.0.0.10"}]}},
     }
     found = problems(schemas, class_docs() + [("cluster.yaml", "cluster-c1", cluster)])
@@ -197,11 +183,11 @@ def test_checker_reports_missing_required_cluster_variables(schemas):
 def test_checker_resolves_classes_by_namespace(schemas):
     cluster = {
         "apiVersion": "cluster.x-k8s.io/v1beta2", "kind": "Cluster", "metadata": {"name": "c1"},
-        "spec": {"topology": {"classRef": {"name": "dciab-vsphere-v2", "namespace": "elsewhere"},
+        "spec": {"topology": {"classRef": {"name": "dciab-vsphere-v1", "namespace": "elsewhere"},
                               "version": "v1.36.6"}},
     }
     found = problems(schemas, class_docs() + [("cluster.yaml", "cluster-c1", cluster)])
-    assert any("ClusterClass elsewhere/dciab-vsphere-v2 is not in the input" in p for p in found)
+    assert any("ClusterClass elsewhere/dciab-vsphere-v1 is not in the input" in p for p in found)
 
 
 @needs_crds

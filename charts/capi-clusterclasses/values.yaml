@@ -1,9 +1,7 @@
 # Class versions to install. Keep every version a cluster still uses: removing one
 # deletes its ClusterClass, and clusters that reference it stop reconciling.
-# v1 is not listed: it was never installable (CAPM3's webhook rejects its Metal3
-# cluster template), so no cluster can use it. Its files stay, frozen, as released.
 versions:
-  - v2
+  - v1
 
 # Providers whose classes are installed. DCiaB installs every provider on MGMT, so all
 # three are on; turn one off only if its CRDs are absent from the cluster.

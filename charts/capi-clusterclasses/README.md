@@ -4,27 +4,27 @@ One ClusterClass per provider, installed once on the management cluster (KinD du
 
 | Class | Provider | Infrastructure |
 | --- | --- | --- |
-| `dciab-vsphere-v2` | CAPV | VMs cloned from a vSphere template; node IPs from an `InClusterIPPool` named `<cluster>-nodes` |
-| `dciab-proxmox-v2` | CAPMOX | VMs cloned from a Proxmox template; node IPs from the cluster's `ipv4Config` |
-| `dciab-metal3-v2` | CAPM3 | BareMetalHosts picked by `hostSelector`; addresses from the `Metal3DataTemplate` named `<cluster>-<pool>` |
+| `dciab-vsphere-v1` | CAPV | VMs cloned from a vSphere template; node IPs from an `InClusterIPPool` named `<cluster>-nodes` |
+| `dciab-proxmox-v1` | CAPMOX | VMs cloned from a Proxmox template; node IPs from the cluster's `ipv4Config` |
+| `dciab-metal3-v1` | CAPM3 | BareMetalHosts picked by `hostSelector`; addresses from the `Metal3DataTemplate` named `<cluster>-<pool>` |
 
-## Classes are frozen
+## Released classes are frozen; drafts are not
 
-Editing a ClusterClass rolls every cluster that uses it. So each version lives in its own folder, `classes/vN/`, and never changes once released; `classes/SHA256SUMS` makes CI fail if it does.
+Editing a ClusterClass rolls every cluster that uses it, and most changes replace nodes. So once clusters can depend on a class version, it never changes; changes go into the next version, and clusters move over one at a time.
 
-To change a class:
+Clusters can only depend on what has shipped, so a version freezes when a **DCiaB release** (a `vX.Y.Z` tag matching `VERSION`) first contains it. Until then it is a **draft**: fix it in place, as often as needed. CI enforces this with `hack/check_frozen_classes.sh`, which fails if a class file from the latest release tag was changed, renamed or deleted.
 
-1. Copy `classes/vN/` to `classes/vN+1/` and rename the objects (`-vN` to `-vN+1`).
-2. Edit the copy, add its sums to `SHA256SUMS`, and add the version to `values.yaml`.
-3. Move clusters over one PR at a time by changing `classVersion` in their `capi-cluster` values: workload clusters first, then INFRA, then MGMT.
-4. Drop the old version from `values.yaml` once no cluster uses it.
+The lifecycle:
 
-## Version history
+1. **Draft.** `classes/vN/` changes freely until a release tag includes it.
+2. **Released.** The tag freezes it.
+3. **Next change.** The first change to a class after a release starts the next draft: copy `classes/vN/` to `classes/vN+1/`, rename the objects (`-vN` to `-vN+1`), edit the copy, and add the version to `values.yaml`. Further changes before the next release go into that same draft.
+4. **Move clusters** one PR at a time by changing `classVersion` in their `capi-cluster` values: workload clusters first, then INFRA, then MGMT.
+5. **Drop** an old version from `values.yaml` once no cluster uses it. Its files stay.
 
-| Version | Status | Change |
-| --- | --- | --- |
-| v2 | Current | Metal3 cluster template carries a placeholder `controlPlaneEndpoint`, which CAPM3's webhook requires. Found by the end-to-end test. |
-| v1 | Retired, never installable | CAPM3's webhook rejected its Metal3 cluster template, so the chart could not install it. Kept frozen as released. |
+So between two releases there is at most one new version, however many commits it takes.
+
+There has been no release yet, so `v1` is a draft.
 
 ## What every class sets up
 
@@ -39,7 +39,7 @@ Provider ID: vSphere nodes run with `cloud-provider: external`, so the vSphere C
 
 kube-vip mounts `admin.conf` read-only. It still holds cluster-admin credentials, as in the upstream CAPI provider templates: a static pod has no ServiceAccount when the control plane is first built. A narrower kubeconfig is a candidate for a later class version. Set `vipInterface` when nodes have several NICs; otherwise kube-vip uses the interface that holds the default route.
 
-## Not in v2 yet
+## Not in v1 yet
 
 - Separate data disks for Longhorn (Longhorn uses the root disk).
 - MachineHealthChecks.
@@ -48,7 +48,7 @@ kube-vip mounts `admin.conf` read-only. It still holds cluster-admin credentials
 
 ```console
 $ crds="$(python3 hack/fetch_crds.py)"
-$ python3 hack/check_manifests.py --crds "$crds" charts/capi-clusterclasses/classes/v2/*.yaml
+$ python3 hack/check_manifests.py --crds "$crds" charts/capi-clusterclasses/classes/v1/*.yaml
 ```
 
 The checker applies each class's patches in order to its templates and evaluates the CRDs' simple CEL rules, so it catches patches that JSON Patch or the API server would reject.

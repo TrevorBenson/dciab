@@ -71,4 +71,4 @@ $ python -m pytest
 
 CI also runs an end-to-end test: it installs Cluster API and every provider pinned in `bundle.lock` on a kind cluster, applies the ClusterClasses and one Cluster per class, and checks the objects CAPI's topology controller generates. No VM or server is built. To run it locally, create a throwaway kind cluster and run `hack/e2e/run.sh`.
 
-CI also renders both charts with Helm and checks the output against those CRDs: unknown fields, simple CEL rules, ClusterClass patch paths and the patches applied in order, template references, and topology variables. It checks that `bundle.lock` image digests still match their registries, and that released ClusterClass files are unchanged against the base branch.
+CI also renders both charts with Helm and checks the output against those CRDs: unknown fields, simple CEL rules, ClusterClass patch paths and the patches applied in order, template references, and topology variables. It checks that `bundle.lock` image digests still match their registries, and that ClusterClass files released in a DCiaB release tag are unchanged.

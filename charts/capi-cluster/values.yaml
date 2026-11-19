@@ -4,7 +4,7 @@
 
 # name: apps01                      # cluster name
 # class: vsphere                    # vsphere | proxmox | metal3
-classVersion: v2                    # ClusterClass version (dciab-<class>-<classVersion>)
+classVersion: v1                    # ClusterClass version (dciab-<class>-<classVersion>)
 classNamespace: dciab-clusterclasses  # where capi-clusterclasses is installed
 # kubernetesVersion: v1.36.6        # must match the node template or image
 # apiVIP: 10.20.110.12
