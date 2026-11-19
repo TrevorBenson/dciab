@@ -11,7 +11,7 @@ permissions:
 jobs:
   test:
     name: tests (Python ${{ matrix.python }})
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04  # still offers Python 3.9; newer images dropped it
     strategy:
       fail-fast: false
       matrix:
