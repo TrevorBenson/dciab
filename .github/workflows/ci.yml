@@ -22,9 +22,124 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
       - run: pip install -r requirements-dev.txt
+      - uses: actions/cache@v4
+        with:
+          path: .cache/crds
+          key: crds-${{ hashFiles('bundle.lock') }}
+      - name: Fetch the CRDs pinned in bundle.lock
+        run: python hack/fetch_crds.py
       - run: python -m pytest -v
       - name: Schema is valid JSON Schema 2020-12
         run: python -c "import json; from jsonschema import Draft202012Validator as V; V.check_schema(json.load(open('schema/dciab.schema.json')))"
+
+  charts:
+    name: charts (helm render + CRD checks)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements-dev.txt
+      - name: Read the Helm version from bundle.lock
+        id: lock
+        run: echo "helm=$(python -c "import yaml; print(yaml.safe_load(open('bundle.lock'))['tools']['helm'])")" >> "$GITHUB_OUTPUT"
+      - uses: azure/setup-helm@v4
+        with:
+          version: ${{ steps.lock.outputs.helm }}
+      - uses: actions/cache@v4
+        with:
+          path: .cache/crds
+          key: crds-${{ hashFiles('bundle.lock') }}
+      - name: Fetch the CRDs pinned in bundle.lock
+        run: echo "CRDS=$(python hack/fetch_crds.py)" >> "$GITHUB_ENV"
+      - name: Lint
+        run: |
+          set -euo pipefail
+          helm lint charts/capi-clusterclasses
+          for values in charts/capi-cluster/ci/*-values.yaml; do
+            helm lint charts/capi-cluster --values "$values"
+          done
+      - name: Render and check every CI cluster against the classes
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          helm template classes charts/capi-clusterclasses --namespace dciab-clusterclasses > out/classes.yaml
+          for values in charts/capi-cluster/ci/*-values.yaml; do
+            name="$(basename "$values" -values.yaml)"
+            helm template "$name" charts/capi-cluster --namespace "cluster-$name" --values "$values" > "out/$name.yaml"
+            echo "== $name"
+            python hack/check_manifests.py --crds "$CRDS" --expect Cluster=1 --expect ClusterClass=3 \
+              out/classes.yaml:dciab-clusterclasses "out/$name.yaml:cluster-$name"
+          done
+      - name: Bad values fail the render, with the expected message
+        run: |
+          set -uo pipefail
+          # expect_fail <what> <message the error must contain> <command...>
+          expect_fail() {
+            local what="$1" want="$2"; shift 2
+            if "$@" > /dev/null 2> out/err.txt; then
+              echo "FAIL: $what should have been rejected"; exit 1
+            fi
+            if ! grep -qF -- "$want" out/err.txt; then
+              echo "FAIL: $what was rejected, but not with \"$want\":"; cat out/err.txt; exit 1
+            fi
+            echo "ok: $what -> $want"
+          }
+          cat > out/dup-pools.yaml <<'YAML'
+          workerPools:
+            - {name: general, replicas: 1, machine: {cpu: 4, memoryGiB: 8, diskGiB: 40}}
+            - {name: general, replicas: 2, machine: {cpu: 4, memoryGiB: 8, diskGiB: 40}}
+          YAML
+          expect_fail "no values" "values don't meet the specifications of the schema" \
+            helm template bad charts/capi-cluster
+          expect_fail "duplicate pool names" 'the name "general" is used more than once' \
+            helm template bad charts/capi-cluster -f charts/capi-cluster/ci/vsphere-values.yaml -f out/dup-pools.yaml
+          expect_fail "templateNode outside allowedNodes" 'proxmox.templateNode "pve09" must be one of' \
+            helm template bad charts/capi-cluster -f charts/capi-cluster/ci/proxmox-values.yaml --set proxmox.templateNode=pve09
+          expect_fail "IPv4 octet over 255" "apiVIP" \
+            helm template bad charts/capi-cluster -f charts/capi-cluster/ci/vsphere-values.yaml --set apiVIP=10.20.110.300
+          expect_fail "a label the chart sets" '"dciab.io/class" is set by the chart' \
+            helm template bad charts/capi-cluster -f charts/capi-cluster/ci/vsphere-values.yaml --set 'labels.dciab\.io/class=other'
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: rendered-manifests
+          path: out/
+
+  frozen-classes:
+    # SHA256SUMS can be edited along with a class, so also compare against the base branch:
+    # a released class file may never be modified or deleted.
+    name: released ClusterClasses are unchanged
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Compare class files with the base branch
+        run: |
+          set -euo pipefail
+          base="origin/${{ github.base_ref }}"
+          changed="$(git diff --name-only --diff-filter=MDR "$base"...HEAD -- 'charts/capi-clusterclasses/classes/v*/*.yaml')"
+          if [ -n "$changed" ]; then
+            echo "Released ClusterClass files were changed or removed:"
+            echo "$changed"
+            echo "Copy the version to a new folder instead (charts/capi-clusterclasses/README.md)."
+            exit 1
+          fi
+          echo "No released class file changed."
+
+  image-digests:
+    name: bundle.lock image digests match the registry
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install pyyaml
+      - run: python hack/check_image_digests.py
 
   shellcheck:
     runs-on: ubuntu-latest

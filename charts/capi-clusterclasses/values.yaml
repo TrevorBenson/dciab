@@ -1,0 +1,11 @@
+# Class versions to install. Keep every version a cluster still uses: removing one
+# deletes its ClusterClass, and clusters that reference it stop reconciling.
+versions:
+  - v1
+
+# Providers whose classes are installed. DCiaB installs every provider on MGMT, so all
+# three are on; turn one off only if its CRDs are absent from the cluster.
+providers:
+  vsphere: true
+  proxmox: true
+  metal3: true

@@ -1,0 +1,48 @@
+#!/usr/bin/env python3
+"""Check that every image in bundle.lock is pinned by digest, and that the digest
+is still what the registry serves for that tag.
+
+    python3 hack/check_image_digests.py
+
+A mismatch means the tag was moved upstream. Needs skopeo and registry access, so it
+runs in CI. For an entry without a digest it prints the pinned reference to use.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import subprocess
+import sys
+from pathlib import Path
+
+import yaml
+
+ROOT = Path(__file__).resolve().parent.parent
+
+
+def registry_digest(ref: str) -> str:
+    raw = subprocess.run(["skopeo", "inspect", "--raw", f"docker://{ref}"],
+                         check=True, capture_output=True).stdout
+    return "sha256:" + hashlib.sha256(raw).hexdigest()
+
+
+def main() -> int:
+    lock = yaml.safe_load((ROOT / "bundle.lock").read_text())
+    failed = False
+    for name, ref in lock["images"].items():
+        tagged, _, pinned = ref.partition("@")
+        actual = registry_digest(tagged)
+        if not pinned:
+            print(f"{name}: {tagged} is not pinned; use {tagged}@{actual}")
+            failed = True
+        elif pinned != actual:
+            print(f"{name}: {tagged} is pinned to {pinned}, but the registry now serves {actual}. "
+                  "The tag moved upstream: find out why before re-pinning.")
+            failed = True
+        else:
+            print(f"{name}: {ref} ok")
+    return 1 if failed else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

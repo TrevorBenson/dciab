@@ -64,6 +64,7 @@ class Checker:
 
     def run(self) -> Tuple[List[Finding], List[str]]:
         self.check_bundle_version()
+        self.check_bundle_lock()
         self.check_secrets(self.spec, ("spec",))
         self.check_platform_and_classes()
         self.check_names()
@@ -88,6 +89,27 @@ class Checker:
         if want != have:
             self.error(("spec", "bundleVersion"), want,
                        f"set it to {have}, the version of this archive (or use the archive for {want})")
+
+    def check_bundle_lock(self) -> None:
+        """The config's Kubernetes version must be the one this archive ships."""
+        lock_file = self.root / "bundle.lock"
+        path = ("spec", "kubernetes", "version")
+        want = self.spec["kubernetes"]["version"]
+        if not lock_file.is_file():
+            self.error(path, want, f"run validate from an unpacked archive; {lock_file} is missing")
+            return
+        import yaml  # imported here so the module loads even where only the CLI checks run
+
+        lock = yaml.safe_load(lock_file.read_text(encoding="utf-8"))
+        have = lock["kubernetes"]["version"]
+        if want != have:
+            self.error(path, want, f"use {have}: this archive's node images and ClusterClasses are built for it")
+        plat = self.spec["platform"]
+        if plat["type"] == "proxmox":
+            px = plat["proxmox"]
+            if px["templateNode"] not in px["nodes"]:
+                self.error(("spec", "platform", "proxmox", "templateNode"), px["templateNode"],
+                           "use one of spec.platform.proxmox.nodes: " + ", ".join(px["nodes"]))
 
     def check_secrets(self, node, path: Path) -> None:
         if isinstance(node, dict):

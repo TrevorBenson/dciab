@@ -1,0 +1,16 @@
+{{- /*
+Class files are served as they are, never rendered: their patches hold CAPI's own Go
+templates, and a frozen class must reach the cluster byte for byte.
+*/ -}}
+{{- range $version := .Values.versions }}
+{{- range $provider, $enabled := $.Values.providers }}
+{{- if $enabled }}
+{{- $path := printf "classes/%s/%s.yaml" $version $provider }}
+{{- $content := $.Files.Get $path }}
+{{- if not $content }}
+{{- fail (printf "class version %s has no %s class (%s is missing)" $version $provider $path) }}
+{{- end }}
+{{ $content }}
+{{- end }}
+{{- end }}
+{{- end }}

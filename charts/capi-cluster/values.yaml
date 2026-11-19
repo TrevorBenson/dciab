@@ -1,0 +1,45 @@
+# One cluster per release, installed into the cluster's own namespace on the management
+# cluster. Every site-specific value is required (values.schema.json) and has no default.
+# See ci/*.yaml for complete examples of each class.
+
+# name: apps01                      # cluster name
+# class: vsphere                    # vsphere | proxmox | metal3
+classVersion: v1                    # ClusterClass version (dciab-<class>-<classVersion>)
+classNamespace: dciab-clusterclasses  # where capi-clusterclasses is installed
+# kubernetesVersion: v1.36.6        # must match the node template or image
+# apiVIP: 10.20.110.12
+# podCIDR: 10.244.0.0/16
+# serviceCIDR: 10.245.0.0/16
+labels: {}                          # extra labels on the Cluster object
+
+# nodes:                            # settings shared by every node
+#   registryMirror: registry.dc1.example.com
+#   trustBundle: |                  # platform CA, PEM
+#     -----BEGIN CERTIFICATE-----
+#   ntpServers: [10.0.0.123]
+#   sshAuthorizedKeys: ["ssh-ed25519 AAAA..."]
+#   dnsServers: [10.20.110.53, 10.20.110.54]
+#   oidc:                           # optional
+#     issuerURL: https://auth.dc1.example.com/application/o/kubernetes/
+#     clientID: kubernetes
+
+# VM classes (vsphere, proxmox): one node network and range per cluster.
+# network: {nodeIPRange: 10.20.110.60-10.20.110.89, prefix: 24, gateway: 10.20.110.1}
+# controlPlane: {replicas: 3, machine: {cpu: 4, memoryGiB: 16, diskGiB: 100}}
+# workerPools:
+#   - {name: general, replicas: 3, machine: {cpu: 8, memoryGiB: 32, diskGiB: 150}}
+# vsphere: {server, thumbprint, datacenter, datastore, folder, resourcePool, network, template}
+# proxmox: {allowedNodes, templateNode, templateID, storage, bridge, vlanTag}
+
+# metal3 class: a network and host selector per role.
+# metal3:
+#   image: {url, checksum, checksumType: sha256, diskFormat: raw}
+# controlPlane:
+#   replicas: 3
+#   hostSelector: {pool: metal01-cp}
+#   network: {nodeIPRange: 10.20.120.11-10.20.120.19, prefix: 24, gateway: 10.20.120.1}
+# workerPools:
+#   - name: gpu
+#     replicas: 2
+#     hostSelector: {pool: metal01-gpu}
+#     network: {nodeIPRange: 10.20.120.21-10.20.120.40, prefix: 24, gateway: 10.20.120.1}

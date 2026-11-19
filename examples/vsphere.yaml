@@ -19,13 +19,13 @@ spec:
       folder: /DC1/vm/dciab
       resourcePool: /DC1/host/Compute-A/Resources/dciab
       network: dvpg-mgmt-110             # port group for MGMT + INFRA nodes
-      template: rocky10-kube-v1.34.2     # must exist; k8s version must match bundle.lock
+      template: rocky10-kube-v1.36.6     # must exist; k8s version must match bundle.lock
       credentials:
         username: svc-dciab@vsphere.local
         password: {file: ./secrets/vsphere.pw}
 
   kubernetes:
-    version: v1.34.2
+    version: v1.36.6
 
   bootstrap:
     interface: ens192                    # bootstrap host NIC on the node network
