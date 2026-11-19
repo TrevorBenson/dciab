@@ -72,26 +72,35 @@ jobs:
             python hack/check_manifests.py --crds "$CRDS" --expect Cluster=1 --expect ClusterClass=3 \
               out/classes.yaml:dciab-clusterclasses "out/$name.yaml:cluster-$name"
           done
-      - name: Bad values fail the render
+      - name: Bad values fail the render, with the expected message
         run: |
           set -uo pipefail
+          # expect_fail <what> <message the error must contain> <command...>
           expect_fail() {
-            local what="$1"; shift
+            local what="$1" want="$2"; shift 2
             if "$@" > /dev/null 2> out/err.txt; then
               echo "FAIL: $what should have been rejected"; exit 1
             fi
-            echo "ok: $what -> $(tail -n 1 out/err.txt)"
+            if ! grep -qF -- "$want" out/err.txt; then
+              echo "FAIL: $what was rejected, but not with \"$want\":"; cat out/err.txt; exit 1
+            fi
+            echo "ok: $what -> $want"
           }
-          expect_fail "no values" helm template bad charts/capi-cluster
-          expect_fail "duplicate pool names" helm template bad charts/capi-cluster \
-            -f charts/capi-cluster/ci/vsphere-values.yaml \
-            --set 'workerPools[1].name=general,workerPools[1].replicas=1,workerPools[1].machine.cpu=4,workerPools[1].machine.memoryGiB=8,workerPools[1].machine.diskGiB=40'
-          expect_fail "templateNode outside allowedNodes" helm template bad charts/capi-cluster \
-            -f charts/capi-cluster/ci/proxmox-values.yaml --set proxmox.templateNode=pve09
-          expect_fail "IPv4 octet over 255" helm template bad charts/capi-cluster \
-            -f charts/capi-cluster/ci/vsphere-values.yaml --set apiVIP=10.20.110.300
-          expect_fail "a label the chart sets" helm template bad charts/capi-cluster \
-            -f charts/capi-cluster/ci/vsphere-values.yaml --set 'labels.dciab\.io/class=other'
+          cat > out/dup-pools.yaml <<'YAML'
+          workerPools:
+            - {name: general, replicas: 1, machine: {cpu: 4, memoryGiB: 8, diskGiB: 40}}
+            - {name: general, replicas: 2, machine: {cpu: 4, memoryGiB: 8, diskGiB: 40}}
+          YAML
+          expect_fail "no values" "values don't meet the specifications of the schema" \
+            helm template bad charts/capi-cluster
+          expect_fail "duplicate pool names" 'the name "general" is used more than once' \
+            helm template bad charts/capi-cluster -f charts/capi-cluster/ci/vsphere-values.yaml -f out/dup-pools.yaml
+          expect_fail "templateNode outside allowedNodes" 'proxmox.templateNode "pve09" must be one of' \
+            helm template bad charts/capi-cluster -f charts/capi-cluster/ci/proxmox-values.yaml --set proxmox.templateNode=pve09
+          expect_fail "IPv4 octet over 255" "apiVIP" \
+            helm template bad charts/capi-cluster -f charts/capi-cluster/ci/vsphere-values.yaml --set apiVIP=10.20.110.300
+          expect_fail "a label the chart sets" '"dciab.io/class" is set by the chart' \
+            helm template bad charts/capi-cluster -f charts/capi-cluster/ci/vsphere-values.yaml --set 'labels.dciab\.io/class=other'
       - uses: actions/upload-artifact@v4
         if: always()
         with:
