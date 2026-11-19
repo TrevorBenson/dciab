@@ -17,9 +17,9 @@ Each phase ends in a gate that must pass on both a vSphere lab and a Proxmox lab
 - [x] `dciab validate`: schema and offline semantic checks
 - [ ] `dciab validate`: live checks (hypervisor, BMC Redfish, NTP, upstream DNS, ARP probes for unused addresses)
 - [x] `bundle.lock` with pinned versions (digests come with the build pipeline)
-- [x] `capi-clusterclasses` chart: v1 classes for vSphere, Proxmox and Metal3
+- [x] `capi-clusterclasses` chart: classes for vSphere, Proxmox and Metal3 (v2 current; v1 retired)
 - [x] `capi-cluster` chart
-- [ ] ClusterClass end-to-end test (classes and a Cluster applied to a kind cluster with CAPI installed)
+- [x] ClusterClass end-to-end test: CAPI and all providers on kind, one Cluster per class, generated objects verified (no infrastructure)
 - [ ] Archive build pipeline
 - [ ] `dciab seed`
 - [ ] `dciab mgmt`

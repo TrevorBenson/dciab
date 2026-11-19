@@ -7,8 +7,9 @@ FILE may be '-' for stdin. NAMESPACE applies to objects in that file that set no
 (Helm output omits it); without one they are in 'default'.
 
 For every object it checks the schema of its CRD more strictly than the API server
-(unknown fields are errors here; the server drops them silently), and evaluates the
-CRD's simple CEL rules (has(), &&, ||, !, comparisons, size()). Rules using other CEL
+(unknown fields are errors here; the server drops them silently), including the
+formats the server enforces (uri, ipv4, ipv6, cidr), and evaluates the CRD's simple
+CEL rules (has(), &&, ||, !, comparisons, size()). Rules using other CEL
 features are skipped and counted.
 
 For a ClusterClass it also checks, in the class's namespace, that:
@@ -37,8 +38,9 @@ from collections import Counter
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+import ipaddress
 import yaml
-from jsonschema import Draft7Validator
+from jsonschema import Draft7Validator, FormatChecker
 
 Key = Tuple[str, str]               # (apiVersion, kind)
 ObjKey = Tuple[str, str, str, str]  # (apiVersion, kind, namespace, name)
@@ -65,13 +67,79 @@ def load_crds(dirs: List[Path]) -> Dict[Key, dict]:
     return schemas
 
 
+# Formats the Kubernetes API server enforces on CRD fields (kube-openapi), checked the same way.
+FORMATS = FormatChecker(formats=())
+
+
+_URI = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*:[^\s<>\"{}|\\^`]+$")
+
+
+@FORMATS.checks("uri")
+def _uri(value: object) -> bool:
+    """Close to Go's url.ParseRequestURI: an absolute URI or an absolute path, no spaces,
+    well-formed %-escapes, and a host when the URI has an authority (//)."""
+    if not isinstance(value, str):
+        return True
+    if re.search(r"%(?![0-9A-Fa-f]{2})", value):
+        return False
+    if value.startswith("/"):
+        return not re.search(r"\s", value)
+    if not _URI.match(value):
+        return False
+    rest = value.split(":", 1)[1]
+    if rest.startswith("//"):
+        authority = rest[2:].split("/", 1)[0].split("?", 1)[0].split("#", 1)[0]
+        if authority == "":
+            return rest[2:].startswith("/")  # file:///path: an empty host is fine
+        host = authority.rsplit("@", 1)[-1]
+        return bool(host) and not host.startswith(":")
+    return True
+
+
+@FORMATS.checks("ipv4")
+def _ipv4(value: object) -> bool:
+    if not isinstance(value, str):
+        return True
+    try:
+        ipaddress.IPv4Address(value)
+        return True
+    except ValueError:
+        return False
+
+
+@FORMATS.checks("ipv6")
+def _ipv6(value: object) -> bool:
+    if not isinstance(value, str):
+        return True
+    try:
+        ipaddress.IPv6Address(value)
+        return True
+    except ValueError:
+        return False
+
+
+@FORMATS.checks("cidr")
+def _cidr(value: object) -> bool:
+    if not isinstance(value, str):
+        return True
+    try:
+        ipaddress.ip_network(value, strict=False)
+        return "/" in value
+    except ValueError:
+        return False
+
+
+def validator(schema: dict) -> Draft7Validator:
+    return Draft7Validator(strict(schema), format_checker=FORMATS)
+
+
 def strict(schema: Any) -> Any:
     """OpenAPI v3 (Kubernetes flavour) -> JSON Schema draft 7, rejecting unknown fields."""
     if not isinstance(schema, dict):
         return schema
     out: Dict[str, Any] = {}
     for k, v in schema.items():
-        if k.startswith("x-kubernetes-") or k in ("nullable", "format", "x-metadata"):
+        if k.startswith("x-kubernetes-") or k in ("nullable", "x-metadata"):
             continue
         if k in ("properties", "patternProperties"):
             out[k] = {pk: strict(pv) for pk, pv in v.items()}
@@ -113,7 +181,7 @@ def schema_at(raw: dict, pointer: str) -> Optional[dict]:
 
 def fits(value: Any, raw_schema: dict) -> List[str]:
     return [f"{'/'.join(str(p) for p in e.absolute_path) or '(value)'}: {e.message}"
-            for e in Draft7Validator(strict(raw_schema)).iter_errors(value)]
+            for e in validator(raw_schema).iter_errors(value)]
 
 
 # --- a small CEL subset ----------------------------------------------------------------------
@@ -271,7 +339,7 @@ class Checker:
                 self.problem(where, f"no CRD found for {doc['apiVersion']} {doc['kind']}")
             return doc["apiVersion"] in CORE_GROUPS
         before = len(self.problems)
-        for e in Draft7Validator(strict(self.schemas[key])).iter_errors(doc):
+        for e in validator(self.schemas[key]).iter_errors(doc):
             path = "/".join(str(p) for p in e.absolute_path)
             self.problem(where, f"{path}: {e.message}")
         violations, skipped = cel_violations(doc, self.schemas[key])

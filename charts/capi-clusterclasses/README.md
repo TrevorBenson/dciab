@@ -4,9 +4,9 @@ One ClusterClass per provider, installed once on the management cluster (KinD du
 
 | Class | Provider | Infrastructure |
 | --- | --- | --- |
-| `dciab-vsphere-v1` | CAPV | VMs cloned from a vSphere template; node IPs from an `InClusterIPPool` named `<cluster>-nodes` |
-| `dciab-proxmox-v1` | CAPMOX | VMs cloned from a Proxmox template; node IPs from the cluster's `ipv4Config` |
-| `dciab-metal3-v1` | CAPM3 | BareMetalHosts picked by `hostSelector`; addresses from the `Metal3DataTemplate` named `<cluster>-<pool>` |
+| `dciab-vsphere-v2` | CAPV | VMs cloned from a vSphere template; node IPs from an `InClusterIPPool` named `<cluster>-nodes` |
+| `dciab-proxmox-v2` | CAPMOX | VMs cloned from a Proxmox template; node IPs from the cluster's `ipv4Config` |
+| `dciab-metal3-v2` | CAPM3 | BareMetalHosts picked by `hostSelector`; addresses from the `Metal3DataTemplate` named `<cluster>-<pool>` |
 
 ## Classes are frozen
 
@@ -18,6 +18,13 @@ To change a class:
 2. Edit the copy, add its sums to `SHA256SUMS`, and add the version to `values.yaml`.
 3. Move clusters over one PR at a time by changing `classVersion` in their `capi-cluster` values: workload clusters first, then INFRA, then MGMT.
 4. Drop the old version from `values.yaml` once no cluster uses it.
+
+## Version history
+
+| Version | Status | Change |
+| --- | --- | --- |
+| v2 | Current | Metal3 cluster template carries a placeholder `controlPlaneEndpoint`, which CAPM3's webhook requires. Found by the end-to-end test. |
+| v1 | Retired, never installable | CAPM3's webhook rejected its Metal3 cluster template, so the chart could not install it. Kept frozen as released. |
 
 ## What every class sets up
 
@@ -32,7 +39,7 @@ Provider ID: vSphere nodes run with `cloud-provider: external`, so the vSphere C
 
 kube-vip mounts `admin.conf` read-only. It still holds cluster-admin credentials, as in the upstream CAPI provider templates: a static pod has no ServiceAccount when the control plane is first built. A narrower kubeconfig is a candidate for a later class version. Set `vipInterface` when nodes have several NICs; otherwise kube-vip uses the interface that holds the default route.
 
-## Not in v1
+## Not in v2 yet
 
 - Separate data disks for Longhorn (Longhorn uses the root disk).
 - MachineHealthChecks.
@@ -41,7 +48,7 @@ kube-vip mounts `admin.conf` read-only. It still holds cluster-admin credentials
 
 ```console
 $ crds="$(python3 hack/fetch_crds.py)"
-$ python3 hack/check_manifests.py --crds "$crds" charts/capi-clusterclasses/classes/v1/*.yaml
+$ python3 hack/check_manifests.py --crds "$crds" charts/capi-clusterclasses/classes/v2/*.yaml
 ```
 
 The checker applies each class's patches in order to its templates and evaluates the CRDs' simple CEL rules, so it catches patches that JSON Patch or the API server would reject.

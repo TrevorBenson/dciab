@@ -29,7 +29,13 @@ def versions():
     return sorted((p.name for p in CLASSES.iterdir() if p.is_dir()), key=lambda v: int(v[1:]))
 
 
-def class_docs(version="v1", provider="vsphere"):
+def installed_versions():
+    """Versions the chart installs. Retired ones stay frozen on disk but are not checked."""
+    values = yaml.safe_load((ROOT / "charts" / "capi-clusterclasses" / "values.yaml").read_text())
+    return values["versions"]
+
+
+def class_docs(version="v2", provider="vsphere"):
     text = (CLASSES / version / f"{provider}.yaml").read_text()
     return [(f"{provider}.yaml", NS, d) for d in yaml.safe_load_all(text) if d]
 
@@ -67,6 +73,10 @@ def test_every_version_has_all_three_providers():
         assert sorted(p.stem for p in (CLASSES / v).glob("*.yaml")) == ["metal3", "proxmox", "vsphere"]
 
 
+def test_chart_installs_the_newest_version():
+    assert versions()[-1] in installed_versions()
+
+
 def test_newest_classes_use_bundle_kube_vip():
     lock = yaml.safe_load((ROOT / "bundle.lock").read_text())
     newest = versions()[-1]
@@ -92,7 +102,7 @@ def test_class_names_carry_their_version():
 @needs_crds
 @pytest.mark.parametrize("provider", ["vsphere", "proxmox", "metal3"])
 def test_classes_pass_the_checker(schemas, provider):
-    for v in versions():
+    for v in installed_versions():
         assert problems(schemas, class_docs(v, provider)) == []
 
 
@@ -176,7 +186,7 @@ def test_checker_catches_a_variable_type_mismatch(schemas):
 def test_checker_reports_missing_required_cluster_variables(schemas):
     cluster = {
         "apiVersion": "cluster.x-k8s.io/v1beta2", "kind": "Cluster", "metadata": {"name": "c1"},
-        "spec": {"topology": {"classRef": {"name": "dciab-vsphere-v1", "namespace": NS}, "version": "v1.36.6",
+        "spec": {"topology": {"classRef": {"name": "dciab-vsphere-v2", "namespace": NS}, "version": "v1.36.6",
                               "variables": [{"name": "apiVIP", "value": "10.0.0.10"}]}},
     }
     found = problems(schemas, class_docs() + [("cluster.yaml", "cluster-c1", cluster)])
@@ -187,11 +197,11 @@ def test_checker_reports_missing_required_cluster_variables(schemas):
 def test_checker_resolves_classes_by_namespace(schemas):
     cluster = {
         "apiVersion": "cluster.x-k8s.io/v1beta2", "kind": "Cluster", "metadata": {"name": "c1"},
-        "spec": {"topology": {"classRef": {"name": "dciab-vsphere-v1", "namespace": "elsewhere"},
+        "spec": {"topology": {"classRef": {"name": "dciab-vsphere-v2", "namespace": "elsewhere"},
                               "version": "v1.36.6"}},
     }
     found = problems(schemas, class_docs() + [("cluster.yaml", "cluster-c1", cluster)])
-    assert any("ClusterClass elsewhere/dciab-vsphere-v1 is not in the input" in p for p in found)
+    assert any("ClusterClass elsewhere/dciab-vsphere-v2 is not in the input" in p for p in found)
 
 
 @needs_crds
@@ -218,3 +228,21 @@ def test_md_class_wildcards_match_like_capi():
     assert cm.md_name_matches("def*", "default")
     assert cm.md_name_matches("*ault", "default")
     assert not cm.md_name_matches("gpu*", "default")
+
+
+@needs_crds
+def test_checker_enforces_api_server_formats(schemas):
+    docs = class_docs(provider="metal3")
+    for _, _, d in docs:
+        if d["kind"] == "Metal3MachineTemplate":
+            d["spec"]["template"]["spec"]["image"]["url"] = "set-by-patch"
+    assert any("is not a 'uri'" in p for p in problems(schemas, docs))
+
+
+@pytest.mark.parametrize("value,valid", [
+    ("https://ironic.example.com/images/x.raw", True), ("file:///var/lib/images/x.raw", True),
+    ("/var/lib/x", True), ("urn:isbn:123", True),
+    ("set-by-patch", False), ("https://", False), ("https://bad%zz/x", False), ("https://a b/x", False),
+])
+def test_uri_format_matches_the_api_server(value, valid):
+    assert cm._uri(value) is valid
