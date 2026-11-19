@@ -144,7 +144,9 @@ class Verifier:
             net = self.v["network"]
             self.expect("Proxmox allowedNodes", spec.get("allowedNodes"), px["allowedNodes"])
             self.expect("Proxmox dnsServers", spec.get("dnsServers"), self.v["nodes"]["dnsServers"])
-            self.expect("Proxmox ipv4Config", spec.get("ipv4Config"),
+            ipv4 = spec.get("ipv4Config", {})
+            # CAPMOX defaults fields such as metric; compare the ones the class sets.
+            self.expect("Proxmox ipv4Config", {k: ipv4.get(k) for k in ("addresses", "prefix", "gateway")},
                         {"addresses": [net["nodeIPRange"]], "prefix": net["prefix"], "gateway": net["gateway"]})
             self.expect("Proxmox credentialsRef name", spec.get("credentialsRef", {}).get("name"),
                         f"{self.name}-proxmox-credentials")
