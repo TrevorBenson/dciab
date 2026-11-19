@@ -1,0 +1,63 @@
+# DCiaB: DataCenter in a Box
+
+One archive and one YAML file build a data center platform from bare power and network. An ephemeral KinD cluster on the bootstrap host builds a self-managing **MGMT** cluster; MGMT builds **INFRA**; INFRA's Argo CD configures everything else from Git. vSphere (CAPV), Proxmox VE (CAPMOX) and bare metal (Metal3) are all supported, one provider per cluster.
+
+**Status:** Phase 1, in progress. The config schema and `dciab validate` (offline checks) work; the bootstrap steps don't exist yet. See [docs/ROADMAP.md](docs/ROADMAP.md).
+
+## Steps
+
+| Step | Command | Result |
+| --- | --- | --- |
+| 0 | `./dciab validate dciab.yaml` | The config passes schema and semantic checks |
+| 1 | `./dciab seed` | Local registry, seed DNS and KinD with all CAPI providers |
+| 2 | `./dciab mgmt` | MGMT built, CAPI pivoted into it, DNS moved onto it |
+| 3 | `./dciab infra` | INFRA built with Argo CD, Forgejo, OpenBao, CloudNativePG |
+| 4 | `./dciab platform` | Repos pushed; Argo CD and OpenTofu bring up the rest |
+| 5 | `./dciab finalize` | Images moved to Artifact Keeper; seed torn down |
+
+## Validating a config
+
+Needs Python 3.9+ with `jsonschema` and `PyYAML` (on Rocky Linux: `dnf install python3-jsonschema python3-pyyaml`).
+
+```console
+$ cp examples/vsphere.yaml dciab.yaml   # edit every value for your site
+$ ./dciab validate dciab.yaml
+dciab validate: dciab.yaml
+
+ERROR   spec.clusters.infra.nodeIPRange  (line 65)
+        found: 10.20.110.30-10.20.110.59, which overlaps spec.network.dnsServiceIPs[0] (10.20.110.53)
+        fix:   choose addresses in 10.20.110.0/24 that no other field uses
+
+1 error, 0 warnings. The config is not valid.
+```
+
+Exit codes: `0` valid (warnings allowed), `1` not valid, `2` could not run. Add `--output json` for a machine-readable report.
+
+The checks:
+
+- **Schema** (`schema/dciab.schema.json`): every required field, types, formats, and which blocks go together (for example `bgp` only with `mode: bgp`). Secrets must be `{file: <path>}` or `{env: <VAR>}`; an inline secret is rejected without being printed.
+- **YAML traps**: duplicate keys are rejected, and values YAML silently turns into numbers or booleans (unquoted MACs, fingerprints) get a "put the value in quotes" hint.
+- **Address plan**: every address and range sits inside its network, and no two overlap; node ranges fit every node plus one spare; pod, service, node, bare-metal and BMC networks don't overlap.
+- **References**: workload cluster classes match the platform, bare-metal pools name real networks and images, host selectors match enough hosts, and boot MACs and BMCs are unique.
+- **Secrets**: referenced files exist, aren't empty, and aren't readable by others; referenced environment variables are set.
+
+Live checks (hypervisor credentials and templates, BMC Redfish, NTP, upstream DNS, unused-address probes) come next and need the site network.
+
+## Layout
+
+```text
+dciab                    entrypoint
+VERSION                  archive version; configs must match it (spec.bundleVersion)
+schema/                  JSON Schema for dciab.yaml
+lib/dciab_validate/      the validator
+examples/                vsphere.yaml, proxmox.yaml, metal3-cluster.yaml
+tests/                   pytest suite
+docs/                    roadmap and design notes
+```
+
+## Development
+
+```console
+$ pip install -r requirements-dev.txt
+$ python -m pytest
+```

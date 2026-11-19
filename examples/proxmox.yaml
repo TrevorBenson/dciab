@@ -1,0 +1,85 @@
+# DCiaB site config: Proxmox VE.
+# Same shape as vsphere.yaml; only spec.platform differs.
+apiVersion: dciab.io/v1alpha1
+kind: Site
+metadata:
+  name: lab1
+spec:
+  bundleVersion: 0.1.0
+
+  platform:
+    type: proxmox
+    proxmox:
+      url: https://pve01.lab1.example.net:8006
+      tlsFingerprint: "A5:A5:0B:7F:93:E9:EA:23:8D:79:7B:83:BB:72:AE:F7:AD:98:1B:66:D4:BC:FA:2A:FD:40:63:91:59:C2:8A:5A"
+      nodes: [pve01, pve02, pve03]       # PVE nodes CAPMOX may place VMs on
+      templateID: 9010                   # template on every listed node, or on shared storage
+      storage: ceph-vm
+      bridge: vmbr0
+      vlanTag: 110                       # [opt] only when the bridge is VLAN-aware
+      credentials:
+        tokenID: dciab@pve!capmox
+        tokenSecret: {env: DCIAB_PVE_TOKEN}
+
+  kubernetes:
+    version: v1.34.2
+
+  bootstrap:
+    interface: eth0
+    address: 10.30.110.5
+    recipients:
+      - age1j5xfcwdps86qjrrxvv8uresmxqessnxskgml6p7x7xw8az4th6mpns0acs
+      - age1skgjkfxj3tkldtdnkd9cwuhennz9uuvg4q058rte5yhwk2vypq0g0u2207
+
+  network:
+    domain: lab1.example.com
+    upstreamResolvers: []                # isolated site: the recursor forwards nothing
+    ntpServers: [10.30.0.123]
+    nodes:
+      cidr: 10.30.110.0/24
+      gateway: 10.30.110.1
+      vlan: 110
+    dnsServiceIPs: [10.30.110.53, 10.30.110.54]
+    loadBalancer:
+      mode: l2
+
+  clusters:
+    mgmt:
+      apiVIP: 10.30.110.10
+      nodeIPRange: 10.30.110.20-10.30.110.29
+      lbPool: 10.30.110.200-10.30.110.209
+      podCIDR: 10.240.0.0/16
+      serviceCIDR: 10.241.0.0/16
+      controlPlane: {replicas: 3, cpu: 4, memoryGiB: 16, diskGiB: 100}
+      workerPools: []
+    infra:
+      apiVIP: 10.30.110.11
+      nodeIPRange: 10.30.110.30-10.30.110.49
+      lbPool: 10.30.110.210-10.30.110.239
+      podCIDR: 10.242.0.0/16
+      serviceCIDR: 10.243.0.0/16
+      controlPlane: {replicas: 3, cpu: 4, memoryGiB: 16, diskGiB: 100}
+      workerPools:
+        - {name: general, replicas: 3, cpu: 8, memoryGiB: 32, diskGiB: 150, dataDiskGiB: 300}
+
+  storage:
+    longhorn:
+      replicaCount: 2                    # the Ceph datastore already replicates
+      backupTarget: nfs://nas01.lab1.example.net:/exports/longhorn
+
+  pki:
+    mode: import-intermediate
+    commonName: Lab1 Platform Intermediate CA
+    certificate: {file: ./secrets/pki/intermediate.crt}
+    key: {file: ./secrets/pki/intermediate.key}
+    chain: {file: ./secrets/pki/chain.pem}
+
+  identity:
+    adminGroup: lab1-platform-admins
+    initialAdmins:
+      - username: tparker
+        email: tparker@example.com
+        sshPublicKey: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExampleKeyDoNotUseExampleKeyDoNotUse00 tparker"
+
+  baremetal:
+    enabled: false

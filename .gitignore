@@ -1,0 +1,13 @@
+# Site secrets are referenced from the config, never committed.
+secrets/
+*.pw
+*.key
+*.env
+
+# Step state and logs written by ./dciab
+.dciab/
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/

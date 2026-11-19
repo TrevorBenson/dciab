@@ -1,0 +1,58 @@
+#!/usr/bin/env bash
+# DCiaB entrypoint. Each step is idempotent and runs in order:
+#   validate -> seed -> mgmt -> infra -> platform -> finalize
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+
+usage() {
+  cat <<'EOF'
+Usage: dciab <command> [options]
+
+Commands:
+  validate <config> [--output text|json]   Check a site config; changes nothing
+  seed | mgmt | infra | platform | finalize
+                                           Bootstrap steps (not implemented yet)
+  status | verify                          Site state (not implemented yet)
+  help                                     Show this help
+
+Every site-specific value comes from the config. Nothing has a default.
+EOF
+}
+
+require_python() {
+  if ! command -v python3 >/dev/null 2>&1; then
+    echo "dciab: python3 is required (Rocky Linux ships it as the python3 package)" >&2
+    exit 2
+  fi
+  if ! python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 9) else 1)'; then
+    echo "dciab: python3 3.9 or newer is required" >&2
+    exit 2
+  fi
+}
+
+cmd="${1:-help}"
+[[ $# -gt 0 ]] && shift
+
+case "$cmd" in
+  validate)
+    if [[ $# -lt 1 ]]; then
+      echo "dciab validate: give the config file, for example: ./dciab validate ./dciab.yaml" >&2
+      exit 2
+    fi
+    require_python
+    PYTHONPATH="$ROOT/lib${PYTHONPATH:+:$PYTHONPATH}" exec python3 -m dciab_validate --root "$ROOT" "$@"
+    ;;
+  seed|mgmt|infra|platform|finalize|status|verify)
+    echo "dciab $cmd: not implemented yet (see docs/ROADMAP.md)" >&2
+    exit 2
+    ;;
+  help|-h|--help)
+    usage
+    ;;
+  *)
+    echo "dciab: unknown command '$cmd'" >&2
+    usage >&2
+    exit 2
+    ;;
+esac
