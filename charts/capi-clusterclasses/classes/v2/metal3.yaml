@@ -464,8 +464,9 @@ spec:
     spec:
       automatedCleaningMode: metadata
       image:
-        url: set-by-patch
-        checksum: set-by-patch
+        # Placeholders: the CRD requires a URI here. The metal3Machines patch replaces them.
+        url: https://set-by-patch.invalid/image.raw
+        checksum: https://set-by-patch.invalid/image.raw.sha256sum
         checksumType: sha256
         diskFormat: raw
 ---
@@ -478,8 +479,9 @@ spec:
     spec:
       automatedCleaningMode: metadata
       image:
-        url: set-by-patch
-        checksum: set-by-patch
+        # Placeholders: the CRD requires a URI here. The metal3Machines patch replaces them.
+        url: https://set-by-patch.invalid/image.raw
+        checksum: https://set-by-patch.invalid/image.raw.sha256sum
         checksumType: sha256
         diskFormat: raw
 ---

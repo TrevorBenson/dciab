@@ -29,7 +29,7 @@ def versions():
     return sorted((p.name for p in CLASSES.iterdir() if p.is_dir()), key=lambda v: int(v[1:]))
 
 
-def class_docs(version="v1", provider="vsphere"):
+def class_docs(version="v2", provider="vsphere"):
     text = (CLASSES / version / f"{provider}.yaml").read_text()
     return [(f"{provider}.yaml", NS, d) for d in yaml.safe_load_all(text) if d]
 
@@ -176,7 +176,7 @@ def test_checker_catches_a_variable_type_mismatch(schemas):
 def test_checker_reports_missing_required_cluster_variables(schemas):
     cluster = {
         "apiVersion": "cluster.x-k8s.io/v1beta2", "kind": "Cluster", "metadata": {"name": "c1"},
-        "spec": {"topology": {"classRef": {"name": "dciab-vsphere-v1", "namespace": NS}, "version": "v1.36.6",
+        "spec": {"topology": {"classRef": {"name": "dciab-vsphere-v2", "namespace": NS}, "version": "v1.36.6",
                               "variables": [{"name": "apiVIP", "value": "10.0.0.10"}]}},
     }
     found = problems(schemas, class_docs() + [("cluster.yaml", "cluster-c1", cluster)])
@@ -187,11 +187,11 @@ def test_checker_reports_missing_required_cluster_variables(schemas):
 def test_checker_resolves_classes_by_namespace(schemas):
     cluster = {
         "apiVersion": "cluster.x-k8s.io/v1beta2", "kind": "Cluster", "metadata": {"name": "c1"},
-        "spec": {"topology": {"classRef": {"name": "dciab-vsphere-v1", "namespace": "elsewhere"},
+        "spec": {"topology": {"classRef": {"name": "dciab-vsphere-v2", "namespace": "elsewhere"},
                               "version": "v1.36.6"}},
     }
     found = problems(schemas, class_docs() + [("cluster.yaml", "cluster-c1", cluster)])
-    assert any("ClusterClass elsewhere/dciab-vsphere-v1 is not in the input" in p for p in found)
+    assert any("ClusterClass elsewhere/dciab-vsphere-v2 is not in the input" in p for p in found)
 
 
 @needs_crds
@@ -218,3 +218,12 @@ def test_md_class_wildcards_match_like_capi():
     assert cm.md_name_matches("def*", "default")
     assert cm.md_name_matches("*ault", "default")
     assert not cm.md_name_matches("gpu*", "default")
+
+
+@needs_crds
+def test_checker_enforces_api_server_formats(schemas):
+    docs = class_docs(provider="metal3")
+    for _, _, d in docs:
+        if d["kind"] == "Metal3MachineTemplate":
+            d["spec"]["template"]["spec"]["image"]["url"] = "set-by-patch"
+    assert any("is not a 'uri'" in p for p in problems(schemas, docs))
