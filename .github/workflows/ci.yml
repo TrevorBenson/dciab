@@ -107,6 +107,40 @@ jobs:
           name: rendered-manifests
           path: out/
 
+  clusterclass-e2e:
+    # CAPI's own topology controller applies the class patches to every CI cluster on a
+    # kind cluster. No VM or server is built: the example infrastructure doesn't exist.
+    name: ClusterClass e2e (kind + CAPI, no infrastructure)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install pyyaml
+      - name: Read tool versions from bundle.lock
+        id: lock
+        run: |
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import yaml
+          tools = yaml.safe_load(open("bundle.lock"))["tools"]
+          print(f"helm={tools['helm']}")
+          print(f"kind={tools['kind']}")
+          PY
+      - uses: azure/setup-helm@v4
+        with:
+          version: ${{ steps.lock.outputs.helm }}
+      - uses: helm/kind-action@v1
+        with:
+          version: ${{ steps.lock.outputs.kind }}
+          cluster_name: dciab-e2e
+      - uses: actions/cache@v4
+        with:
+          path: .cache/crds
+          key: crds-${{ hashFiles('bundle.lock') }}
+      - run: hack/e2e/run.sh
+
   frozen-classes:
     # SHA256SUMS can be edited along with a class, so also compare against the base branch:
     # a released class file may never be modified or deleted.
@@ -145,7 +179,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: shellcheck dciab
+      - run: shellcheck dciab hack/e2e/run.sh
 
   rocky10:
     # The validator must run on the bootstrap host with distro packages only.

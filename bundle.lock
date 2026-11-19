@@ -14,6 +14,18 @@ kubernetes:
 
 clusterAPI:
   contract: v1beta2
+  # Values for the ${VARIABLES} in the provider component manifests. DCiaB installs
+  # providers with exactly these, in the e2e test and on site. Anything a manifest needs
+  # that is missing here (and has no default) stops the install.
+  variables:
+    # ClusterClass needs the ClusterTopology feature gate, still off by default in v1.14,
+    # in core CAPI and KCP (CLUSTER_TOPOLOGY) and in CAPMOX (ClusterTopology).
+    CLUSTER_TOPOLOGY: "true"
+    ClusterTopology: "true"
+    # CAPV's global fallback credentials. DCiaB clusters always set identityRef to a
+    # per-cluster Secret, so these stay empty.
+    VSPHERE_USERNAME: ""
+    VSPHERE_PASSWORD: ""
   core:
     repo: kubernetes-sigs/cluster-api
     version: v1.14.4
@@ -47,6 +59,13 @@ metal3:
   baremetalOperator:
     repo: metal3-io/baremetal-operator
     version: v0.14.3
+    # BMO publishes no CRD bundle; fetch_crds.py reads this kustomization's resources.
+    crds: config/base/crds/kustomization.yaml
+
+certManager:
+  repo: cert-manager/cert-manager
+  version: v1.21.3
+  components: [cert-manager.yaml]
 
 # Images referenced directly by DCiaB's own manifests (charts bring their own lists).
 # Pinned by digest; CI checks the tag still resolves to it (hack/check_image_digests.py).
@@ -60,3 +79,4 @@ charts:
 
 tools:
   helm: v4.3.2
+  kind: v0.33.0   # default node image: Kubernetes v1.37.0 (CAPI v1.14 supports it as a management cluster)
