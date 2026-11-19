@@ -237,3 +237,12 @@ def test_checker_enforces_api_server_formats(schemas):
         if d["kind"] == "Metal3MachineTemplate":
             d["spec"]["template"]["spec"]["image"]["url"] = "set-by-patch"
     assert any("is not a 'uri'" in p for p in problems(schemas, docs))
+
+
+@pytest.mark.parametrize("value,valid", [
+    ("https://ironic.example.com/images/x.raw", True), ("file:///var/lib/images/x.raw", True),
+    ("/var/lib/x", True), ("urn:isbn:123", True),
+    ("set-by-patch", False), ("https://", False), ("https://bad%zz/x", False), ("https://a b/x", False),
+])
+def test_uri_format_matches_the_api_server(value, valid):
+    assert cm._uri(value) is valid

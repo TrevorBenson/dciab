@@ -10,11 +10,20 @@
 # No VM or server is built: the example vCenter, Proxmox and BMCs don't exist, so the
 # providers stop after the topology step. That step is what this test covers.
 #
-# Needs: kubectl, helm, python3 with PyYAML, and a disposable cluster as the current context.
+# Needs: kubectl, helm, python3 with PyYAML, and a disposable kind cluster as the current
+# context. It refuses any context not named kind-*; set DCIAB_E2E_CONTEXT to the exact
+# context name to use another disposable cluster.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 CLASS_NS=dciab-clusterclasses
+
+context="$(kubectl config current-context)"
+if [[ "$context" != kind-* && "$context" != "${DCIAB_E2E_CONTEXT:-}" ]]; then
+  echo "run.sh: refusing to install into context '$context'. This test installs Cluster API" >&2
+  echo "cluster-wide; point kubectl at a disposable kind cluster, or set DCIAB_E2E_CONTEXT=$context." >&2
+  exit 2
+fi
 
 group() { echo "::group::$*"; }
 endgroup() { echo "::endgroup::"; }
@@ -45,6 +54,12 @@ diagnostics() {
 }
 trap 'diagnostics' ERR
 
+# Rendered components may hold credentials passed through the environment: keep them in
+# a private file and remove it on exit.
+components="$(mktemp)"
+chmod 600 "$components"
+trap 'rm -f "$components"' EXIT
+
 crds="$(python3 "$ROOT/hack/fetch_crds.py")"
 
 group "cert-manager"
@@ -58,8 +73,8 @@ endgroup
 
 group "Cluster API and providers"
 python3 "$ROOT/hack/render_components.py" \
-  "$crds"/cluster-api-*/*.yaml "$crds"/infrastructure-*/*.yaml "$crds"/ipam-*/*.yaml > /tmp/dciab-components.yaml
-retry 5 15 kubectl apply --server-side --force-conflicts -f /tmp/dciab-components.yaml
+  "$crds"/cluster-api-*/*.yaml "$crds"/infrastructure-*/*.yaml "$crds"/ipam-*/*.yaml > "$components"
+retry 5 15 kubectl apply --server-side --force-conflicts -f "$components"
 kubectl wait --for=condition=Available deployment --all -A --timeout=10m
 kubectl get deployments -A
 endgroup

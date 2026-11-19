@@ -71,14 +71,29 @@ def load_crds(dirs: List[Path]) -> Dict[Key, dict]:
 FORMATS = FormatChecker(formats=())
 
 
+_URI = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*:[^\s<>\"{}|\\^`]+$")
+
+
 @FORMATS.checks("uri")
 def _uri(value: object) -> bool:
-    """Go's url.ParseRequestURI: an absolute URI with a scheme, or an absolute path."""
+    """Close to Go's url.ParseRequestURI: an absolute URI or an absolute path, no spaces,
+    well-formed %-escapes, and a host when the URI has an authority (//)."""
     if not isinstance(value, str):
         return True
+    if re.search(r"%(?![0-9A-Fa-f]{2})", value):
+        return False
     if value.startswith("/"):
-        return True
-    return bool(re.match(r"^[A-Za-z][A-Za-z0-9+.-]*:\S+$", value))
+        return not re.search(r"\s", value)
+    if not _URI.match(value):
+        return False
+    rest = value.split(":", 1)[1]
+    if rest.startswith("//"):
+        authority = rest[2:].split("/", 1)[0].split("?", 1)[0].split("#", 1)[0]
+        if authority == "":
+            return rest[2:].startswith("/")  # file:///path: an empty host is fine
+        host = authority.rsplit("@", 1)[-1]
+        return bool(host) and not host.startswith(":")
+    return True
 
 
 @FORMATS.checks("ipv4")

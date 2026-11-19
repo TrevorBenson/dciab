@@ -68,7 +68,11 @@ class Verifier:
         while time.time() < deadline:
             cluster = kubectl("-n", self.ns, "get", "cluster", self.name)
             last = condition(cluster, "TopologyReconciled")
-            if last and last["status"] == "True":
+            generation = cluster["metadata"].get("generation", 0)
+            # Only a condition observed for the current generation counts, so a re-run
+            # never verifies objects generated from an older spec.
+            current = last and last.get("observedGeneration", 0) >= generation
+            if last and last["status"] == "True" and current:
                 return cluster
             time.sleep(10)
         self.failures.append(f"{self.name}: TopologyReconciled never became True; last: {last}")
@@ -124,6 +128,8 @@ class Verifier:
         if oidc:
             self.expect("API server oidc-issuer-url", args.get("oidc-issuer-url"), oidc["issuerURL"])
             self.expect("API server oidc-client-id", args.get("oidc-client-id"), oidc["clientID"])
+            self.expect("API server oidc-username-claim", args.get("oidc-username-claim"),
+                        oidc.get("usernameClaim", "preferred_username"))
             self.expect("API server oidc-groups-claim", args.get("oidc-groups-claim"), oidc.get("groupsClaim", "groups"))
         else:
             self.expect_true("no OIDC flags without oidc values", "oidc-issuer-url" not in args)
@@ -189,10 +195,28 @@ class Verifier:
             data_template = spec.get("dataTemplate", {}).get("name")
             self.expect(f"{where}: dataTemplate", data_template, f"{self.name}-{role_name}")
             if data_template:
-                try:
-                    kubectl("-n", self.ns, "get", "metal3datatemplate", data_template)
-                except subprocess.CalledProcessError:
-                    self.failures.append(f"{self.name}: {where}: Metal3DataTemplate {data_template} does not exist")
+                self.check_metal3_addressing(where, data_template, role["network"])
+
+    def check_metal3_addressing(self, where: str, name: str, network: dict) -> None:
+        """The data template's IPPool hands out the role's range, prefix, gateway and DNS."""
+        try:
+            dt = kubectl("-n", self.ns, "get", "metal3datatemplate", name)
+            pool = kubectl("-n", self.ns, "get", "ippools.ipam.metal3.io", name)
+        except subprocess.CalledProcessError as exc:
+            self.failures.append(f"{self.name}: {where}: {exc.stderr.strip() or exc}")
+            return
+        nd = dt["spec"].get("networkData", {})
+        ipv4 = (nd.get("networks", {}).get("ipv4") or [{}])[0]
+        self.expect(f"{where}: data template address pool", ipv4.get("fromPoolRef", {}).get("name"), name)
+        route = (ipv4.get("routes") or [{}])[0]
+        self.expect(f"{where}: default route gateway pool", route.get("gateway", {}).get("fromPoolRef", {}).get("name"), name)
+        self.expect(f"{where}: data template DNS", nd.get("services", {}).get("dns"), self.v["nodes"]["dnsServers"])
+        first, last = network["nodeIPRange"].split("-")
+        spec = pool["spec"]
+        self.expect(f"{where}: IPPool range", [(p.get("start"), p.get("end")) for p in spec.get("pools", [])], [(first, last)])
+        self.expect(f"{where}: IPPool prefix", spec.get("prefix"), network["prefix"])
+        self.expect(f"{where}: IPPool gateway", spec.get("gateway"), network["gateway"])
+        self.expect(f"{where}: IPPool DNS", spec.get("dnsServers"), self.v["nodes"]["dnsServers"])
 
     def check_workers(self) -> None:
         mds = kubectl("-n", self.ns, "get", "machinedeployments",
