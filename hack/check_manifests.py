@@ -171,6 +171,14 @@ class Checker:
             except Exception as exc:  # noqa: BLE001 - report any schema error
                 self.problem(where, f"variable {name}: invalid schema: {exc}")
 
+        # A working copy of every referenced template, patched in order as CAPI would.
+        working: Dict[Tuple[str, str, str], dict] = {}
+        for refs in groups.values():
+            for ref, _ in refs:
+                key = (ref["apiVersion"], ref["kind"], ref["name"])
+                if key in self.by_name:
+                    working[key] = copy.deepcopy(self.by_name[key])
+
         for patch in spec.get("patches", []):
             pwhere = f"{where}: patch {patch['name']}"
             if "enabledIf" in patch:
@@ -186,8 +194,11 @@ class Checker:
                     raw = self.schemas.get((ref["apiVersion"], ref["kind"]))
                     if raw is None:
                         continue
+                    obj = working.get((ref["apiVersion"], ref["kind"], ref["name"]))
                     for op in d["jsonPatches"]:
                         self._check_op(pwhere, ref, raw, op, variables)
+                        if obj is not None:
+                            self._apply(pwhere, ref, obj, op, variables)
 
     def _select(self, sel: dict, groups) -> List[dict]:
         mr = sel["matchResources"]
@@ -222,6 +233,79 @@ class Checker:
         if "template" in vf:
             self._check_template_vars(f"{where}: {target}", vf["template"], variables)
             self._check_template_shape(f"{where}: {target}", vf["template"], sub)
+
+    def _apply(self, where: str, ref: dict, obj: dict, op: dict, variables: dict) -> None:
+        """Apply one JSON patch op to the working template, as RFC 6902 requires.
+
+        'replace' and 'remove' need the target to exist; 'add' needs its parent to exist.
+        Values from variables or templates become placeholders of the right shape, so
+        later ops (such as appending to a list an earlier op created) can be checked too.
+        """
+        target = f"{ref['kind']}/{ref['name']} {op['op']} {op['path']}"
+        parts = [p.replace("~1", "/").replace("~0", "~") for p in op["path"].split("/")[1:]]
+        parent: Any = obj
+        for i, seg in enumerate(parts[:-1]):
+            if isinstance(parent, dict) and seg in parent:
+                parent = parent[seg]
+            elif isinstance(parent, list) and seg.isdigit() and int(seg) < len(parent):
+                parent = parent[int(seg)]
+            else:
+                missing = "/" + "/".join(parts[:i + 1])
+                self.problem(where, f"{target}: {missing} does not exist in the template at this point "
+                                    "(after the base template and earlier patches)")
+                return
+        last = parts[-1]
+        value = self._placeholder(op, variables)
+        if isinstance(parent, list):
+            if last == "-":
+                if op["op"] != "add":
+                    self.problem(where, f"{target}: '-' only works with add")
+                else:
+                    parent.append(value)
+                return
+            if not last.isdigit():
+                self.problem(where, f"{target}: '{last}' is not a list index")
+                return
+            idx = int(last)
+            if op["op"] == "add" and idx <= len(parent):
+                parent.insert(idx, value)
+            elif op["op"] in ("replace", "remove") and idx < len(parent):
+                if op["op"] == "replace":
+                    parent[idx] = value
+                else:
+                    del parent[idx]
+            else:
+                self.problem(where, f"{target}: index {idx} is out of range")
+            return
+        if not isinstance(parent, dict):
+            self.problem(where, f"{target}: the parent is not an object or a list")
+            return
+        if op["op"] in ("replace", "remove") and last not in parent:
+            self.problem(where, f"{target}: the field does not exist in the template at this point, "
+                                "so JSON Patch cannot replace or remove it (use add)")
+            return
+        if op["op"] == "remove":
+            del parent[last]
+        else:
+            parent[last] = value
+
+    def _placeholder(self, op: dict, variables: dict) -> Any:
+        if "value" in op:
+            return copy.deepcopy(op["value"])
+        vf = op.get("valueFrom", {})
+        if "template" in vf:
+            text = TEMPLATE_ACTION.sub("PLACEHOLDER", vf["template"])
+            text = re.sub(r"^\s*PLACEHOLDER\s*$", "", text, flags=re.M)
+            try:
+                parsed = yaml.safe_load(text)
+            except yaml.YAMLError:
+                return "PLACEHOLDER"
+            return parsed if parsed is not None else "PLACEHOLDER"
+        name, _, rest = vf.get("variable", "").partition(".")
+        schema = variables.get(name, {}).get("schema", {}).get("openAPIV3Schema", {})
+        if rest:
+            return "PLACEHOLDER"
+        return {"object": {}, "array": [], "integer": 1, "boolean": True}.get(schema.get("type"), "PLACEHOLDER")
 
     def _check_template_vars(self, where: str, template: str, variables: dict) -> None:
         for action in TEMPLATE_ACTION.findall(template):

@@ -45,6 +45,15 @@ spec:
         openAPIV3Schema:
           type: string
           description: Control plane endpoint address, held by kube-vip on the control plane nodes.
+    - name: vipInterface
+      required: false
+      schema:
+        openAPIV3Schema:
+          type: string
+          minLength: 1
+          description: >-
+            Interface kube-vip announces the API VIP on. Leave unset to use the interface
+            that holds the default route.
     - name: registryMirror
       required: true
       schema:
@@ -339,11 +348,14 @@ spec:
                             - {name: vip_renewdeadline, value: "10"}
                             - {name: vip_retryperiod, value: "2"}
                             - {name: address, value: "{{ .apiVIP }}"}
+                            {{- if .vipInterface }}
+                            - {name: vip_interface, value: "{{ .vipInterface }}"}
+                            {{- end }}
                           securityContext:
                             capabilities:
                               add: [NET_ADMIN, NET_RAW]
                           volumeMounts:
-                            - {mountPath: /etc/kubernetes/admin.conf, name: kubeconfig}
+                            - {mountPath: /etc/kubernetes/admin.conf, name: kubeconfig, readOnly: true}
                       hostAliases:
                         - {hostnames: [kubernetes], ip: 127.0.0.1}
                       hostNetwork: true
@@ -396,10 +408,10 @@ spec:
             matchResources:
               infrastructureCluster: true
           jsonPatches:
-            - op: replace
+            - op: add
               path: /spec/template/spec/server
               valueFrom: {variable: vsphere.server}
-            - op: replace
+            - op: add
               path: /spec/template/spec/thumbprint
               valueFrom: {variable: vsphere.thumbprint}
             - op: add
@@ -423,38 +435,38 @@ spec:
             matchResources:
               controlPlane: true
           jsonPatches:
-            - op: replace
+            - op: add
               path: /spec/template/spec/server
               valueFrom: {variable: vsphere.server}
-            - op: replace
+            - op: add
               path: /spec/template/spec/thumbprint
               valueFrom: {variable: vsphere.thumbprint}
-            - op: replace
+            - op: add
               path: /spec/template/spec/datacenter
               valueFrom: {variable: vsphere.datacenter}
-            - op: replace
+            - op: add
               path: /spec/template/spec/datastore
               valueFrom: {variable: vsphere.datastore}
-            - op: replace
+            - op: add
               path: /spec/template/spec/folder
               valueFrom: {variable: vsphere.folder}
-            - op: replace
+            - op: add
               path: /spec/template/spec/resourcePool
               valueFrom: {variable: vsphere.resourcePool}
-            - op: replace
+            - op: add
               path: /spec/template/spec/template
               valueFrom: {variable: vsphere.template}
-            - op: replace
+            - op: add
               path: /spec/template/spec/numCPUs
               valueFrom: {variable: machine.cpu}
-            - op: replace
+            - op: add
               path: /spec/template/spec/memoryMiB
               valueFrom:
                 template: '{{ mul .machine.memoryGiB 1024 }}'
-            - op: replace
+            - op: add
               path: /spec/template/spec/diskGiB
               valueFrom: {variable: machine.diskGiB}
-            - op: replace
+            - op: add
               path: /spec/template/spec/network
               valueFrom:
                 template: |
@@ -472,38 +484,38 @@ spec:
               machineDeploymentClass:
                 names: [default]
           jsonPatches:
-            - op: replace
+            - op: add
               path: /spec/template/spec/server
               valueFrom: {variable: vsphere.server}
-            - op: replace
+            - op: add
               path: /spec/template/spec/thumbprint
               valueFrom: {variable: vsphere.thumbprint}
-            - op: replace
+            - op: add
               path: /spec/template/spec/datacenter
               valueFrom: {variable: vsphere.datacenter}
-            - op: replace
+            - op: add
               path: /spec/template/spec/datastore
               valueFrom: {variable: vsphere.datastore}
-            - op: replace
+            - op: add
               path: /spec/template/spec/folder
               valueFrom: {variable: vsphere.folder}
-            - op: replace
+            - op: add
               path: /spec/template/spec/resourcePool
               valueFrom: {variable: vsphere.resourcePool}
-            - op: replace
+            - op: add
               path: /spec/template/spec/template
               valueFrom: {variable: vsphere.template}
-            - op: replace
+            - op: add
               path: /spec/template/spec/numCPUs
               valueFrom: {variable: machine.cpu}
-            - op: replace
+            - op: add
               path: /spec/template/spec/memoryMiB
               valueFrom:
                 template: '{{ mul .machine.memoryGiB 1024 }}'
-            - op: replace
+            - op: add
               path: /spec/template/spec/diskGiB
               valueFrom: {variable: machine.diskGiB}
-            - op: replace
+            - op: add
               path: /spec/template/spec/network
               valueFrom:
                 template: |

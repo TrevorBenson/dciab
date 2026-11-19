@@ -37,8 +37,12 @@ def main() -> int:
                 continue
             url = f"https://github.com/{entry['repo']}/releases/download/{entry['version']}/{component}"
             print(f"fetching {url}", file=sys.stderr)
+            # Write to a temporary name and rename, so an interrupted download never
+            # leaves a truncated file that later runs would take as complete.
+            partial = dest.with_suffix(dest.suffix + ".partial")
             with urllib.request.urlopen(url, timeout=120) as resp:
-                dest.write_bytes(resp.read())
+                partial.write_bytes(resp.read())
+            partial.replace(dest)
     print(CACHE)
     return 0
 

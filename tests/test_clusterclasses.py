@@ -94,6 +94,25 @@ def test_checker_catches_a_bad_patch_path(schemas):
 
 
 @needs_crds
+def test_checker_catches_replace_of_a_missing_field(schemas):
+    docs = class_docs()
+    cc = clusterclass(docs)
+    op = cc["spec"]["patches"][3]["definitions"][0]["jsonPatches"][1]
+    assert op["path"] == "/spec/template/spec/thumbprint"
+    op["op"] = "replace"
+    assert any("cannot replace or remove it (use add)" in p for p in problems(schemas, docs))
+
+
+@needs_crds
+def test_checker_catches_append_to_a_missing_list(schemas):
+    docs = class_docs()
+    cc = clusterclass(docs)
+    node_base = cc["spec"]["patches"][0]["definitions"][0]["jsonPatches"]
+    node_base[0]["path"] += "/-"  # the op that creates files now appends to a list that isn't there
+    assert any("does not exist in the template at this point" in p for p in problems(schemas, docs))
+
+
+@needs_crds
 def test_checker_catches_an_undeclared_variable(schemas):
     docs = class_docs()
     cc = clusterclass(docs)

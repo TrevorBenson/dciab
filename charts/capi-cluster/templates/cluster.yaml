@@ -1,3 +1,4 @@
+{{- include "capi-cluster.validate" . }}
 {{- $v := .Values }}
 {{- $vm := ne $v.class "metal3" }}
 apiVersion: cluster.x-k8s.io/v1beta2
@@ -52,6 +53,10 @@ spec:
         value: {{ toJson $v.nodes.ntpServers }}
       - name: sshAuthorizedKeys
         value: {{ toJson $v.nodes.sshAuthorizedKeys }}
+      {{- with $v.nodes.vipInterface }}
+      - name: vipInterface
+        value: {{ . | quote }}
+      {{- end }}
       {{- with $v.nodes.oidc }}
       - name: oidc
         value: {{ toJson . }}

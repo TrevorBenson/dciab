@@ -281,10 +281,20 @@ def test_entrypoint_unimplemented_step():
 # --- bundle.lock ---------------------------------------------------------------------
 
 def test_kubernetes_version_must_match_bundle_lock(site):
+    import yaml
+    pinned = yaml.safe_load((ROOT / "bundle.lock").read_text())["kubernetes"]["version"]
+    major, minor, patch = pinned.lstrip("v").split(".")
     doc = load_example("vsphere")
-    doc["spec"]["kubernetes"]["version"] = "v1.35.0"
+    doc["spec"]["kubernetes"]["version"] = f"v{major}.{int(minor) - 1}.{patch}"
     _, report = site.validate(doc)
-    assert "use v1.36.6" in errors(report, "spec.kubernetes.version")[0]["fix"]
+    assert f"use {pinned}" in errors(report, "spec.kubernetes.version")[0]["fix"]
+
+
+def test_examples_use_the_bundle_kubernetes_version():
+    import yaml
+    pinned = yaml.safe_load((ROOT / "bundle.lock").read_text())["kubernetes"]["version"]
+    for name in ("vsphere", "proxmox", "metal3-cluster"):
+        assert load_example(name)["spec"]["kubernetes"]["version"] == pinned, name
 
 
 def test_proxmox_template_node_must_be_listed(site):

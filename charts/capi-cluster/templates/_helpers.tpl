@@ -1,3 +1,19 @@
+{{- /* Checks the values schema can't express. Fails the render with a clear message. */ -}}
+{{- define "capi-cluster.validate" -}}
+{{- $seen := dict }}
+{{- range .Values.workerPools }}
+{{- if hasKey $seen .name }}
+{{- fail (printf "workerPools: the name %q is used more than once; each pool needs its own name" .name) }}
+{{- end }}
+{{- $_ := set $seen .name true }}
+{{- end }}
+{{- if eq .Values.class "proxmox" }}
+{{- if not (has .Values.proxmox.templateNode .Values.proxmox.allowedNodes) }}
+{{- fail (printf "proxmox.templateNode %q must be one of proxmox.allowedNodes %v" .Values.proxmox.templateNode .Values.proxmox.allowedNodes) }}
+{{- end }}
+{{- end }}
+{{- end }}
+
 {{- define "capi-cluster.labels" -}}
 cluster.x-k8s.io/cluster-name: {{ .Values.name }}
 app.kubernetes.io/managed-by: {{ .Release.Service }}

@@ -71,17 +71,63 @@ jobs:
             echo "== $name"
             python hack/check_manifests.py --crds .cache/crds out/classes.yaml "out/$name.yaml"
           done
-      - name: Missing values fail the render
+      - name: Bad values fail the render
         run: |
-          if helm template bad charts/capi-cluster > /dev/null 2> out/err.txt; then
-            echo "rendering with no values should have failed"; exit 1
-          fi
-          cat out/err.txt
+          set -uo pipefail
+          expect_fail() {
+            local what="$1"; shift
+            if "$@" > /dev/null 2> out/err.txt; then
+              echo "FAIL: $what should have been rejected"; exit 1
+            fi
+            echo "ok: $what -> $(tail -n 1 out/err.txt)"
+          }
+          expect_fail "no values" helm template bad charts/capi-cluster
+          expect_fail "duplicate pool names" helm template bad charts/capi-cluster \
+            -f charts/capi-cluster/ci/vsphere-values.yaml \
+            --set 'workerPools[1].name=general,workerPools[1].replicas=1,workerPools[1].machine.cpu=4,workerPools[1].machine.memoryGiB=8,workerPools[1].machine.diskGiB=40'
+          expect_fail "templateNode outside allowedNodes" helm template bad charts/capi-cluster \
+            -f charts/capi-cluster/ci/proxmox-values.yaml --set proxmox.templateNode=pve09
+          expect_fail "IPv4 octet over 255" helm template bad charts/capi-cluster \
+            -f charts/capi-cluster/ci/vsphere-values.yaml --set apiVIP=10.20.110.300
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: rendered-manifests
           path: out/
+
+  frozen-classes:
+    # SHA256SUMS can be edited along with a class, so also compare against the base branch:
+    # a released class file may never be modified or deleted.
+    name: released ClusterClasses are unchanged
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Compare class files with the base branch
+        run: |
+          set -euo pipefail
+          base="origin/${{ github.base_ref }}"
+          changed="$(git diff --name-only --diff-filter=MDR "$base"...HEAD -- 'charts/capi-clusterclasses/classes/v*/*.yaml')"
+          if [ -n "$changed" ]; then
+            echo "Released ClusterClass files were changed or removed:"
+            echo "$changed"
+            echo "Copy the version to a new folder instead (charts/capi-clusterclasses/README.md)."
+            exit 1
+          fi
+          echo "No released class file changed."
+
+  image-digests:
+    name: bundle.lock image digests match the registry
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install pyyaml
+      - run: python hack/check_image_digests.py
 
   shellcheck:
     runs-on: ubuntu-latest
