@@ -9,11 +9,18 @@ import yaml
 
 ROOT = Path(__file__).resolve().parent.parent
 CLASSES = ROOT / "charts" / "capi-clusterclasses" / "classes"
-CRDS = ROOT / ".cache" / "crds"
 
-_spec = importlib.util.spec_from_file_location("check_manifests", ROOT / "hack" / "check_manifests.py")
-cm = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(cm)
+
+def _load(name):
+    spec = importlib.util.spec_from_file_location(name, ROOT / "hack" / f"{name}.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+cm = _load("check_manifests")
+CRDS = _load("fetch_crds").cache_dir(yaml.safe_load((ROOT / "bundle.lock").read_text()))
+NS = "dciab-clusterclasses"
 
 needs_crds = pytest.mark.skipif(not CRDS.is_dir(), reason="run hack/fetch_crds.py first")
 
@@ -24,7 +31,7 @@ def versions():
 
 def class_docs(version="v1", provider="vsphere"):
     text = (CLASSES / version / f"{provider}.yaml").read_text()
-    return [(f"{provider}.yaml", d) for d in yaml.safe_load_all(text) if d]
+    return [(f"{provider}.yaml", NS, d) for d in yaml.safe_load_all(text) if d]
 
 
 @pytest.fixture(scope="module")
@@ -37,7 +44,7 @@ def problems(schemas, docs):
 
 
 def clusterclass(docs):
-    return next(d for _, d in docs if d["kind"] == "ClusterClass")
+    return next(d for _, _, d in docs if d["kind"] == "ClusterClass")
 
 
 # --- the shipped classes ---------------------------------------------------------------
@@ -72,8 +79,14 @@ def test_class_names_carry_their_version():
     for v in versions():
         for f in (CLASSES / v).glob("*.yaml"):
             for d in yaml.safe_load_all(f.read_text()):
-                if d:
-                    assert d["metadata"]["name"].startswith(f"dciab-{f.stem}-{v}"), d["metadata"]["name"]
+                if not d:
+                    continue
+                name = d["metadata"]["name"]
+                if d["kind"] == "ClusterClass":
+                    # capi-cluster renders classRef.name as exactly dciab-<class>-<version>
+                    assert name == f"dciab-{f.stem}-{v}", name
+                else:
+                    assert name.startswith(f"dciab-{f.stem}-{v}"), name
 
 
 @needs_crds
@@ -118,12 +131,12 @@ def test_checker_catches_an_undeclared_variable(schemas):
     cc = clusterclass(docs)
     op = cc["spec"]["patches"][3]["definitions"][0]["jsonPatches"][2]
     op["valueFrom"]["template"] = op["valueFrom"]["template"].replace(".apiVIP", ".apiVip")
-    assert any("'.apiVip', which is not a declared variable" in p for p in problems(schemas, docs))
+    assert any("'.apiVip': variable 'apiVip' is not declared" in p for p in problems(schemas, docs))
 
 
 @needs_crds
 def test_checker_catches_a_missing_template(schemas):
-    docs = [(s, d) for s, d in class_docs() if d["kind"] != "VSphereClusterTemplate"]
+    docs = [(s, n, d) for s, n, d in class_docs() if d["kind"] != "VSphereClusterTemplate"]
     assert any("is not in the input" in p for p in problems(schemas, docs))
 
 
@@ -139,7 +152,7 @@ def test_checker_catches_unknown_fields_from_templates(schemas):
 @needs_crds
 def test_checker_catches_unknown_fields_in_objects(schemas):
     docs = class_docs()
-    tmpl = next(d for _, d in docs if d["kind"] == "VSphereClusterTemplate")
+    tmpl = next(d for _, _, d in docs if d["kind"] == "VSphereClusterTemplate")
     tmpl["spec"]["template"]["spec"]["sever"] = "x"
     assert any("'sever' was unexpected" in p for p in problems(schemas, docs))
 
@@ -156,15 +169,52 @@ def test_checker_catches_a_variable_type_mismatch(schemas):
     for v in pcc["spec"]["variables"]:
         if v["name"] == "dnsServers":
             v["schema"]["openAPIV3Schema"] = {"type": "string"}
-    assert any("variable 'dnsServers' is string but the field is array" in p for p in problems(schemas, px))
+    assert any("'dnsServers' is string but the field is array" in p for p in problems(schemas, px))
 
 
 @needs_crds
 def test_checker_reports_missing_required_cluster_variables(schemas):
     cluster = {
         "apiVersion": "cluster.x-k8s.io/v1beta2", "kind": "Cluster", "metadata": {"name": "c1"},
-        "spec": {"topology": {"classRef": {"name": "dciab-vsphere-v1"}, "version": "v1.36.6",
+        "spec": {"topology": {"classRef": {"name": "dciab-vsphere-v1", "namespace": NS}, "version": "v1.36.6",
                               "variables": [{"name": "apiVIP", "value": "10.0.0.10"}]}},
     }
-    found = problems(schemas, class_docs() + [("cluster.yaml", cluster)])
+    found = problems(schemas, class_docs() + [("cluster.yaml", "cluster-c1", cluster)])
     assert any("required variable 'vsphere'" in p for p in found)
+
+
+@needs_crds
+def test_checker_resolves_classes_by_namespace(schemas):
+    cluster = {
+        "apiVersion": "cluster.x-k8s.io/v1beta2", "kind": "Cluster", "metadata": {"name": "c1"},
+        "spec": {"topology": {"classRef": {"name": "dciab-vsphere-v1", "namespace": "elsewhere"},
+                              "version": "v1.36.6"}},
+    }
+    found = problems(schemas, class_docs() + [("cluster.yaml", "cluster-c1", cluster)])
+    assert any("ClusterClass elsewhere/dciab-vsphere-v1 is not in the input" in p for p in found)
+
+
+@needs_crds
+def test_checker_catches_an_unknown_nested_variable_field(schemas):
+    docs = class_docs()
+    cc = clusterclass(docs)
+    op = cc["spec"]["patches"][3]["definitions"][0]["jsonPatches"][0]
+    assert op["valueFrom"]["variable"] == "vsphere.server"
+    op["valueFrom"]["variable"] = "vsphere.servr"
+    assert any("variable 'vsphere' has no field 'servr'" in p for p in problems(schemas, docs))
+
+
+@needs_crds
+def test_checker_evaluates_cel_rules(schemas):
+    docs = class_docs(provider="proxmox")
+    for _, _, d in docs:
+        if d["kind"] == "ProxmoxMachineTemplate":
+            del d["spec"]["template"]["spec"]["templateID"]
+    assert any("CEL rule" in p and "templateID" in p for p in problems(schemas, docs))
+
+
+def test_md_class_wildcards_match_like_capi():
+    assert cm.md_name_matches("*", "default")
+    assert cm.md_name_matches("def*", "default")
+    assert cm.md_name_matches("*ault", "default")
+    assert not cm.md_name_matches("gpu*", "default")

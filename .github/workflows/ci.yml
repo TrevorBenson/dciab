@@ -52,7 +52,7 @@ jobs:
           path: .cache/crds
           key: crds-${{ hashFiles('bundle.lock') }}
       - name: Fetch the CRDs pinned in bundle.lock
-        run: python hack/fetch_crds.py
+        run: echo "CRDS=$(python hack/fetch_crds.py)" >> "$GITHUB_ENV"
       - name: Lint
         run: |
           set -euo pipefail
@@ -69,7 +69,8 @@ jobs:
             name="$(basename "$values" -values.yaml)"
             helm template "$name" charts/capi-cluster --namespace "cluster-$name" --values "$values" > "out/$name.yaml"
             echo "== $name"
-            python hack/check_manifests.py --crds .cache/crds out/classes.yaml "out/$name.yaml"
+            python hack/check_manifests.py --crds "$CRDS" --expect Cluster=1 --expect ClusterClass=3 \
+              out/classes.yaml:dciab-clusterclasses "out/$name.yaml:cluster-$name"
           done
       - name: Bad values fail the render
         run: |
@@ -89,6 +90,8 @@ jobs:
             -f charts/capi-cluster/ci/proxmox-values.yaml --set proxmox.templateNode=pve09
           expect_fail "IPv4 octet over 255" helm template bad charts/capi-cluster \
             -f charts/capi-cluster/ci/vsphere-values.yaml --set apiVIP=10.20.110.300
+          expect_fail "a label the chart sets" helm template bad charts/capi-cluster \
+            -f charts/capi-cluster/ci/vsphere-values.yaml --set 'labels.dciab\.io/class=other'
       - uses: actions/upload-artifact@v4
         if: always()
         with:

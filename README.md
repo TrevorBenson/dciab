@@ -64,8 +64,8 @@ docs/                    roadmap and design notes
 
 ```console
 $ pip install -r requirements-dev.txt
-$ python hack/fetch_crds.py      # CAPI and provider CRDs pinned in bundle.lock
+$ python hack/fetch_crds.py      # CAPI and provider CRDs pinned in bundle.lock; prints their folder
 $ python -m pytest
 ```
 
-CI also renders both charts with Helm and checks the output against those CRDs: unknown fields, ClusterClass patch paths, template references, and topology variables.
+CI also renders both charts with Helm and checks the output against those CRDs: unknown fields, simple CEL rules, ClusterClass patch paths and the patches applied in order, template references, and topology variables. It checks that `bundle.lock` image digests still match their registries, and that released ClusterClass files are unchanged against the base branch.

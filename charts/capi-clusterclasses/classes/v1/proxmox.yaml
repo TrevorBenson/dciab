@@ -144,6 +144,7 @@ spec:
               items: {type: string}
             templateNode:
               type: string
+              minLength: 1
               description: The node holding the VM template.
             templateID:
               type: integer
@@ -559,6 +560,9 @@ metadata:
 spec:
   template:
     spec:
+      # Placeholders: CAPMOX's CRD requires a clone source on the template itself.
+      sourceNode: set-by-patch
+      templateID: 100
       full: true
       format: qcow2
       numSockets: 1
@@ -577,6 +581,9 @@ metadata:
 spec:
   template:
     spec:
+      # Placeholders: CAPMOX's CRD requires a clone source on the template itself.
+      sourceNode: set-by-patch
+      templateID: 100
       full: true
       format: qcow2
       numSockets: 1

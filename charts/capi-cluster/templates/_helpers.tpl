@@ -7,6 +7,11 @@
 {{- end }}
 {{- $_ := set $seen .name true }}
 {{- end }}
+{{- range $key, $_ := .Values.labels }}
+{{- if or (eq $key "dciab.io/class") (hasPrefix "cluster.x-k8s.io/" $key) (hasPrefix "app.kubernetes.io/" $key) }}
+{{- fail (printf "labels: %q is set by the chart; remove it from labels" $key) }}
+{{- end }}
+{{- end }}
 {{- if eq .Values.class "proxmox" }}
 {{- if not (has .Values.proxmox.templateNode .Values.proxmox.allowedNodes) }}
 {{- fail (printf "proxmox.templateNode %q must be one of proxmox.allowedNodes %v" .Values.proxmox.templateNode .Values.proxmox.allowedNodes) }}
@@ -15,7 +20,7 @@
 {{- end }}
 
 {{- define "capi-cluster.labels" -}}
-cluster.x-k8s.io/cluster-name: {{ .Values.name }}
+cluster.x-k8s.io/cluster-name: {{ .Values.name | quote }}
 app.kubernetes.io/managed-by: {{ .Release.Service }}
 app.kubernetes.io/part-of: dciab
 {{- end }}
@@ -31,12 +36,12 @@ app.kubernetes.io/part-of: dciab
 apiVersion: ipam.metal3.io/v1alpha1
 kind: IPPool
 metadata:
-  name: {{ $name }}
+  name: {{ $name | quote }}
   labels:
     {{- include "capi-cluster.labels" .root | nindent 4 }}
 spec:
-  clusterName: {{ .root.Values.name }}
-  namePrefix: {{ $name }}
+  clusterName: {{ .root.Values.name | quote }}
+  namePrefix: {{ $name | quote }}
   pools:
     - start: {{ include "capi-cluster.rangeStart" .network.nodeIPRange }}
       end: {{ include "capi-cluster.rangeEnd" .network.nodeIPRange }}
@@ -47,11 +52,11 @@ spec:
 apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
 kind: Metal3DataTemplate
 metadata:
-  name: {{ $name }}
+  name: {{ $name | quote }}
   labels:
     {{- include "capi-cluster.labels" .root | nindent 4 }}
 spec:
-  clusterName: {{ .root.Values.name }}
+  clusterName: {{ .root.Values.name | quote }}
   networkData:
     links:
       ethernets:
@@ -69,7 +74,7 @@ spec:
           fromPoolRef:
             apiGroup: ipam.metal3.io
             kind: IPPool
-            name: {{ $name }}
+            name: {{ $name | quote }}
           routes:
             - network: 0.0.0.0
               prefix: 0
@@ -77,7 +82,7 @@ spec:
                 fromPoolRef:
                   apiGroup: ipam.metal3.io
                   kind: IPPool
-                  name: {{ $name }}
+                  name: {{ $name | quote }}
     services:
       dns: {{ toJson .root.Values.nodes.dnsServers }}
 {{- end }}

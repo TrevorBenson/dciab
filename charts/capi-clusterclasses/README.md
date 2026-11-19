@@ -28,7 +28,9 @@ To change a class:
 - **Break-glass user**: `dciab` with the given SSH keys (`sshAuthorizedKeys`).
 - **OIDC** (optional): API server flags for Authentik when `oidc` is set.
 
-Provider ID: vSphere nodes run with `cloud-provider: external`, so the vSphere CPI must be deployed (baseline add-ons). Proxmox uses CAPMOX's provider-ID injection; Metal3 sets `metal3://` IDs from metadata. Neither needs a cloud controller.
+Provider ID: vSphere nodes run with `cloud-provider: external`, so the vSphere CPI must be deployed (baseline add-ons). Proxmox uses CAPMOX's provider-ID injection. On Metal3, CAPM3 sets the provider ID on each Node itself (`cloudProviderEnabled: false`), so kubelet gets no `provider-id`. Neither Proxmox nor Metal3 needs a cloud controller.
+
+kube-vip mounts `admin.conf` read-only. It still holds cluster-admin credentials, as in the upstream CAPI provider templates: a static pod has no ServiceAccount when the control plane is first built. A narrower kubeconfig is a candidate for a later class version. Set `vipInterface` when nodes have several NICs; otherwise kube-vip uses the interface that holds the default route.
 
 ## Not in v1
 
@@ -38,6 +40,8 @@ Provider ID: vSphere nodes run with `cloud-provider: external`, so the vSphere C
 ## Checking
 
 ```console
-$ python3 hack/fetch_crds.py
-$ python3 hack/check_manifests.py --crds .cache/crds charts/capi-clusterclasses/classes/v1/*.yaml
+$ crds="$(python3 hack/fetch_crds.py)"
+$ python3 hack/check_manifests.py --crds "$crds" charts/capi-clusterclasses/classes/v1/*.yaml
 ```
+
+The checker applies each class's patches in order to its templates and evaluates the CRDs' simple CEL rules, so it catches patches that JSON Patch or the API server would reject.

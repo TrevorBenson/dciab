@@ -1,14 +1,17 @@
 #!/usr/bin/env python3
 """Download the CAPI and provider component manifests pinned in bundle.lock.
 
-The files land in .cache/crds/<provider>-<version>/ and are only read for their
-CustomResourceDefinitions, which hack/check_manifests.py validates against.
+The files land in .cache/crds/<lock>/<provider>-<version>/, where <lock> is a hash of
+the pinned versions, so a branch with other pins never reads another branch's CRDs.
+They are only read for their CustomResourceDefinitions.
 
-    python3 hack/fetch_crds.py            # prints the cache directory
+    python3 hack/fetch_crds.py            # downloads, then prints the folder to check against
 """
 
 from __future__ import annotations
 
+import hashlib
+import json
 import sys
 import urllib.request
 from pathlib import Path
@@ -17,6 +20,11 @@ import yaml
 
 ROOT = Path(__file__).resolve().parent.parent
 CACHE = ROOT / ".cache" / "crds"
+
+
+def cache_dir(lock: dict) -> Path:
+    pins = json.dumps(lock["clusterAPI"], sort_keys=True).encode()
+    return CACHE / hashlib.sha256(pins).hexdigest()[:12]
 
 
 def entries(lock: dict):
@@ -28,8 +36,9 @@ def entries(lock: dict):
 
 def main() -> int:
     lock = yaml.safe_load((ROOT / "bundle.lock").read_text())
+    root = cache_dir(lock)
     for name, entry in entries(lock):
-        target = CACHE / f"{name}-{entry['version']}"
+        target = root / f"{name}-{entry['version']}"
         target.mkdir(parents=True, exist_ok=True)
         for component in entry["components"]:
             dest = target / component
@@ -43,7 +52,7 @@ def main() -> int:
             with urllib.request.urlopen(url, timeout=120) as resp:
                 partial.write_bytes(resp.read())
             partial.replace(dest)
-    print(CACHE)
+    print(root)
     return 0
 
 

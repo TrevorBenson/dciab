@@ -4,7 +4,7 @@
 apiVersion: ipam.cluster.x-k8s.io/v1alpha2
 kind: InClusterIPPool
 metadata:
-  name: {{ $v.name }}-nodes
+  name: {{ printf "%s-nodes" $v.name | quote }}
   labels:
     {{- include "capi-cluster.labels" . | nindent 4 }}
 spec:

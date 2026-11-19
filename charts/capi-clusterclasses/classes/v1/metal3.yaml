@@ -499,13 +499,11 @@ spec:
         initConfiguration:
           nodeRegistration:
             name: '{{ ds.meta_data.name }}'
-            kubeletExtraArgs:
-                            - {name: provider-id, value: "metal3://{{ ds.meta_data.providerid }}"}
+            # no kubelet extra args
         joinConfiguration:
           nodeRegistration:
             name: '{{ ds.meta_data.name }}'
-            kubeletExtraArgs:
-                            - {name: provider-id, value: "metal3://{{ ds.meta_data.providerid }}"}
+            # no kubelet extra args
         preKubeadmCommands:
           - update-ca-trust extract
           # kube-vip needs super-admin.conf while kubeadm init runs (Kubernetes 1.29+).
@@ -523,7 +521,5 @@ spec:
       joinConfiguration:
         nodeRegistration:
           name: '{{ ds.meta_data.name }}'
-          kubeletExtraArgs:
-            - {name: provider-id, value: "metal3://{{ ds.meta_data.providerid }}"}
       preKubeadmCommands:
         - update-ca-trust extract
