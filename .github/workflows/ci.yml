@@ -22,9 +22,66 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
       - run: pip install -r requirements-dev.txt
+      - uses: actions/cache@v4
+        with:
+          path: .cache/crds
+          key: crds-${{ hashFiles('bundle.lock') }}
+      - name: Fetch the CRDs pinned in bundle.lock
+        run: python hack/fetch_crds.py
       - run: python -m pytest -v
       - name: Schema is valid JSON Schema 2020-12
         run: python -c "import json; from jsonschema import Draft202012Validator as V; V.check_schema(json.load(open('schema/dciab.schema.json')))"
+
+  charts:
+    name: charts (helm render + CRD checks)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements-dev.txt
+      - name: Read the Helm version from bundle.lock
+        id: lock
+        run: echo "helm=$(python -c "import yaml; print(yaml.safe_load(open('bundle.lock'))['tools']['helm'])")" >> "$GITHUB_OUTPUT"
+      - uses: azure/setup-helm@v4
+        with:
+          version: ${{ steps.lock.outputs.helm }}
+      - uses: actions/cache@v4
+        with:
+          path: .cache/crds
+          key: crds-${{ hashFiles('bundle.lock') }}
+      - name: Fetch the CRDs pinned in bundle.lock
+        run: python hack/fetch_crds.py
+      - name: Lint
+        run: |
+          set -euo pipefail
+          helm lint charts/capi-clusterclasses
+          for values in charts/capi-cluster/ci/*-values.yaml; do
+            helm lint charts/capi-cluster --values "$values"
+          done
+      - name: Render and check every CI cluster against the classes
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          helm template classes charts/capi-clusterclasses --namespace dciab-clusterclasses > out/classes.yaml
+          for values in charts/capi-cluster/ci/*-values.yaml; do
+            name="$(basename "$values" -values.yaml)"
+            helm template "$name" charts/capi-cluster --namespace "cluster-$name" --values "$values" > "out/$name.yaml"
+            echo "== $name"
+            python hack/check_manifests.py --crds .cache/crds out/classes.yaml "out/$name.yaml"
+          done
+      - name: Missing values fail the render
+        run: |
+          if helm template bad charts/capi-cluster > /dev/null 2> out/err.txt; then
+            echo "rendering with no values should have failed"; exit 1
+          fi
+          cat out/err.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: rendered-manifests
+          path: out/
 
   shellcheck:
     runs-on: ubuntu-latest

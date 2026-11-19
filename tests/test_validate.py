@@ -276,3 +276,19 @@ def test_entrypoint_unimplemented_step():
     r = _run("seed")
     assert r.returncode == 2
     assert "not implemented yet" in r.stderr
+
+
+# --- bundle.lock ---------------------------------------------------------------------
+
+def test_kubernetes_version_must_match_bundle_lock(site):
+    doc = load_example("vsphere")
+    doc["spec"]["kubernetes"]["version"] = "v1.35.0"
+    _, report = site.validate(doc)
+    assert "use v1.36.6" in errors(report, "spec.kubernetes.version")[0]["fix"]
+
+
+def test_proxmox_template_node_must_be_listed(site):
+    doc = load_example("proxmox")
+    doc["spec"]["platform"]["proxmox"]["templateNode"] = "pve09"
+    _, report = site.validate(doc)
+    assert errors(report, "spec.platform.proxmox.templateNode")

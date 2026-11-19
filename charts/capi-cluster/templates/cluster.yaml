@@ -1,0 +1,85 @@
+{{- $v := .Values }}
+{{- $vm := ne $v.class "metal3" }}
+apiVersion: cluster.x-k8s.io/v1beta2
+kind: Cluster
+metadata:
+  name: {{ $v.name }}
+  labels:
+    {{- include "capi-cluster.labels" . | nindent 4 }}
+    dciab.io/class: {{ $v.class }}
+    {{- with $v.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  clusterNetwork:
+    pods:
+      cidrBlocks: [{{ $v.podCIDR | quote }}]
+    services:
+      cidrBlocks: [{{ $v.serviceCIDR | quote }}]
+  topology:
+    classRef:
+      name: dciab-{{ $v.class }}-{{ $v.classVersion }}
+      namespace: {{ $v.classNamespace }}
+    version: {{ $v.kubernetesVersion }}
+    controlPlane:
+      replicas: {{ $v.controlPlane.replicas }}
+    {{- with $v.workerPools }}
+    workers:
+      machineDeployments:
+        {{- range . }}
+        - class: default
+          name: {{ .name }}
+          replicas: {{ .replicas }}
+          variables:
+            overrides:
+              {{- if $vm }}
+              - name: machine
+                value: {{ toJson .machine }}
+              {{- else }}
+              - name: hostSelector
+                value: {{ toJson .hostSelector }}
+              {{- end }}
+        {{- end }}
+    {{- end }}
+    variables:
+      - name: apiVIP
+        value: {{ $v.apiVIP | quote }}
+      - name: registryMirror
+        value: {{ $v.nodes.registryMirror | quote }}
+      - name: trustBundle
+        value: {{ $v.nodes.trustBundle | toJson }}
+      - name: ntpServers
+        value: {{ toJson $v.nodes.ntpServers }}
+      - name: sshAuthorizedKeys
+        value: {{ toJson $v.nodes.sshAuthorizedKeys }}
+      {{- with $v.nodes.oidc }}
+      - name: oidc
+        value: {{ toJson . }}
+      {{- end }}
+      {{- if $vm }}
+      # Cluster-level machine size: the control plane's. Worker pools override it.
+      - name: machine
+        value: {{ toJson $v.controlPlane.machine }}
+      - name: dnsServers
+        value: {{ toJson $v.nodes.dnsServers }}
+      {{- end }}
+      {{- if eq $v.class "vsphere" }}
+      - name: vsphere
+        value: {{ toJson $v.vsphere }}
+      {{- end }}
+      {{- if eq $v.class "proxmox" }}
+      - name: proxmox
+        value: {{ toJson $v.proxmox }}
+      - name: nodeNetwork
+        value:
+          addresses: [{{ $v.network.nodeIPRange | quote }}]
+          prefix: {{ $v.network.prefix }}
+          gateway: {{ $v.network.gateway | quote }}
+      {{- end }}
+      {{- if eq $v.class "metal3" }}
+      - name: image
+        value: {{ toJson $v.metal3.image }}
+      # Cluster-level host selector: the control plane's. Worker pools override it.
+      - name: hostSelector
+        value: {{ toJson $v.controlPlane.hostSelector }}
+      {{- end }}

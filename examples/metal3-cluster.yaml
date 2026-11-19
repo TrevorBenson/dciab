@@ -18,13 +18,13 @@ spec:
       folder: /DC2/vm/dciab
       resourcePool: /DC2/host/Compute-A/Resources/dciab
       network: dvpg-mgmt-110
-      template: rocky10-kube-v1.34.2
+      template: rocky10-kube-v1.36.6
       credentials:
         username: svc-dciab@vsphere.local
         password: {file: ./secrets/vsphere.pw}
 
   kubernetes:
-    version: v1.34.2
+    version: v1.36.6
 
   bootstrap:
     interface: ens192
@@ -91,8 +91,8 @@ spec:
     ironicIP: 10.20.110.205              # inside clusters.mgmt.lbPool; BMCs must reach it over HTTPS
     bmcNetworks: [10.30.0.0/24]
     images:
-      - name: rocky10-kube-v1.34.2
-        file: os-images/rocky10-kube-v1.34.2.raw
+      - name: rocky10-kube-v1.36.6
+        file: os-images/rocky10-kube-v1.36.6.raw
     networks:
       - name: metal-120
         cidr: 10.20.120.0/24
@@ -168,12 +168,12 @@ spec:
         replicas: 3
         network: metal-120
         nodeIPRange: 10.20.120.11-10.20.120.19
-        image: rocky10-kube-v1.34.2
+        image: rocky10-kube-v1.36.6
         hostSelector: {pool: metal01-cp}
       workerPools:
         - name: gpu
           replicas: 2
           network: metal-120
           nodeIPRange: 10.20.120.21-10.20.120.40
-          image: rocky10-kube-v1.34.2
+          image: rocky10-kube-v1.36.6
           hostSelector: {pool: metal01-gpu}

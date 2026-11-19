@@ -150,11 +150,12 @@
     "proxmox": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["url", "tlsFingerprint", "nodes", "templateID", "storage", "bridge", "credentials"],
+      "required": ["url", "tlsFingerprint", "nodes", "templateNode", "templateID", "storage", "bridge", "credentials"],
       "properties": {
         "url": {"type": "string", "pattern": "^https://[^/]+(:\\d+)?/?$", "description": "the Proxmox API URL, such as https://pve01.example.net:8006"},
         "tlsFingerprint": {"$ref": "#/$defs/fingerprint"},
         "nodes": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+        "templateNode": {"type": "string", "minLength": 1, "description": "the node that holds the VM template; CAPMOX clones from it (one of nodes)"},
         "templateID": {"type": "integer", "minimum": 100, "description": "the VM template ID"},
         "storage": {"type": "string", "minLength": 1},
         "bridge": {"type": "string", "minLength": 1},

@@ -1,0 +1,5 @@
+apiVersion: v2
+name: capi-cluster
+description: One DCiaB cluster as a CAPI Cluster topology, with its node IP pools.
+type: application
+version: 0.1.0

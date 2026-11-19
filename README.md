@@ -2,7 +2,7 @@
 
 One archive and one YAML file build a data center platform from bare power and network. An ephemeral KinD cluster on the bootstrap host builds a self-managing **MGMT** cluster; MGMT builds **INFRA**; INFRA's Argo CD configures everything else from Git. vSphere (CAPV), Proxmox VE (CAPMOX) and bare metal (Metal3) are all supported, one provider per cluster.
 
-**Status:** Phase 1, in progress. The config schema and `dciab validate` (offline checks) work; the bootstrap steps don't exist yet. See [docs/ROADMAP.md](docs/ROADMAP.md).
+**Status:** Phase 1, in progress. The config schema, `dciab validate` (offline checks), the pinned `bundle.lock`, and the ClusterClass and cluster charts exist; the bootstrap steps don't yet. See [docs/ROADMAP.md](docs/ROADMAP.md).
 
 ## Steps
 
@@ -48,8 +48,13 @@ Live checks (hypervisor credentials and templates, BMC Redfish, NTP, upstream DN
 ```text
 dciab                    entrypoint
 VERSION                  archive version; configs must match it (spec.bundleVersion)
+bundle.lock              every pinned version: Kubernetes, CAPI and providers, images, charts, tools
 schema/                  JSON Schema for dciab.yaml
 lib/dciab_validate/      the validator
+charts/
+  capi-clusterclasses/   frozen, versioned ClusterClasses for vSphere, Proxmox and Metal3
+  capi-cluster/          one cluster: a Cluster topology plus its node IP pools
+hack/                    fetch_crds.py and check_manifests.py (CRD-based manifest checks)
 examples/                vsphere.yaml, proxmox.yaml, metal3-cluster.yaml
 tests/                   pytest suite
 docs/                    roadmap and design notes
@@ -59,5 +64,8 @@ docs/                    roadmap and design notes
 
 ```console
 $ pip install -r requirements-dev.txt
+$ python hack/fetch_crds.py      # CAPI and provider CRDs pinned in bundle.lock
 $ python -m pytest
 ```
+
+CI also renders both charts with Helm and checks the output against those CRDs: unknown fields, ClusterClass patch paths, template references, and topology variables.

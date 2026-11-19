@@ -13,7 +13,8 @@ spec:
       url: https://pve01.lab1.example.net:8006
       tlsFingerprint: "A5:A5:0B:7F:93:E9:EA:23:8D:79:7B:83:BB:72:AE:F7:AD:98:1B:66:D4:BC:FA:2A:FD:40:63:91:59:C2:8A:5A"
       nodes: [pve01, pve02, pve03]       # PVE nodes CAPMOX may place VMs on
-      templateID: 9010                   # template on every listed node, or on shared storage
+      templateNode: pve01                # the node holding the template; must be in nodes
+      templateID: 9010
       storage: ceph-vm
       bridge: vmbr0
       vlanTag: 110                       # [opt] only when the bridge is VLAN-aware
@@ -22,7 +23,7 @@ spec:
         tokenSecret: {env: DCIAB_PVE_TOKEN}
 
   kubernetes:
-    version: v1.34.2
+    version: v1.36.6
 
   bootstrap:
     interface: eth0

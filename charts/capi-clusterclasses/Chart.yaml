@@ -1,0 +1,7 @@
+apiVersion: v2
+name: capi-clusterclasses
+description: DCiaB ClusterClasses for vSphere (CAPV), Proxmox VE (CAPMOX) and bare metal (Metal3).
+type: application
+version: 0.1.0
+# The newest class version this chart ships.
+appVersion: v1
