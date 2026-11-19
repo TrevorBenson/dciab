@@ -1,0 +1,4 @@
+# Runtime needs only jsonschema and PyYAML (python3-jsonschema, python3-pyyaml on Rocky Linux).
+jsonschema>=4.18
+PyYAML>=5.4
+pytest>=7

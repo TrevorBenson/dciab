@@ -1,0 +1,542 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/TrevorBenson/dciab/schema/dciab.schema.json",
+  "title": "DCiaB site configuration",
+  "description": "The single input to DCiaB. Every site-specific field is required; nothing has a default.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["apiVersion", "kind", "metadata", "spec"],
+  "properties": {
+    "apiVersion": {"const": "dciab.io/v1alpha1", "description": "use dciab.io/v1alpha1"},
+    "kind": {"const": "Site", "description": "use Site"},
+    "metadata": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9-]{0,10}[a-z0-9]$",
+          "description": "short site id: 2-12 characters, lowercase letters, digits and hyphens, not starting or ending with a hyphen"
+        }
+      }
+    },
+    "spec": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["bundleVersion", "platform", "kubernetes", "bootstrap", "network", "clusters", "storage", "pki", "identity", "baremetal"],
+      "properties": {
+        "bundleVersion": {"type": "string", "pattern": "^\\d+\\.\\d+\\.\\d+$", "description": "the archive version, as in its VERSION file"},
+        "platform": {"$ref": "#/$defs/platform"},
+        "kubernetes": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["version"],
+          "properties": {
+            "version": {"type": "string", "pattern": "^v1\\.\\d+\\.\\d+$", "description": "a Kubernetes version such as v1.34.2"}
+          }
+        },
+        "bootstrap": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["interface", "address", "recipients"],
+          "properties": {
+            "interface": {"type": "string", "minLength": 1, "description": "the bootstrap host NIC on the node network"},
+            "address": {"$ref": "#/$defs/ipv4"},
+            "recipients": {
+              "type": "array",
+              "minItems": 2,
+              "uniqueItems": true,
+              "items": {"type": "string", "pattern": "^age1[0-9a-z]{58}$", "description": "an age public key (age1...)"},
+              "description": "at least two age public keys, so break-glass access never depends on one person"
+            }
+          }
+        },
+        "network": {"$ref": "#/$defs/network"},
+        "clusters": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["mgmt", "infra"],
+          "properties": {
+            "mgmt": {"$ref": "#/$defs/vmCluster"},
+            "infra": {"$ref": "#/$defs/vmCluster"}
+          }
+        },
+        "storage": {"$ref": "#/$defs/storage"},
+        "pki": {"$ref": "#/$defs/pki"},
+        "identity": {"$ref": "#/$defs/identity"},
+        "baremetal": {"$ref": "#/$defs/baremetal"},
+        "workloadClusters": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/workloadCluster"},
+          "description": "optional; clusters created during the platform step. Later clusters are added through Git"
+        }
+      }
+    }
+  },
+  "$defs": {
+    "ipv4": {
+      "type": "string",
+      "pattern": "^\\d{1,3}(\\.\\d{1,3}){3}$",
+      "description": "an IPv4 address such as 10.20.110.10"
+    },
+    "cidr": {
+      "type": "string",
+      "pattern": "^\\d{1,3}(\\.\\d{1,3}){3}/\\d{1,2}$",
+      "description": "an IPv4 network such as 10.20.110.0/24"
+    },
+    "ipRange": {
+      "type": "string",
+      "pattern": "^\\d{1,3}(\\.\\d{1,3}){3}-\\d{1,3}(\\.\\d{1,3}){3}$",
+      "description": "an inclusive IPv4 range such as 10.20.110.20-10.20.110.29"
+    },
+    "fingerprint": {
+      "type": "string",
+      "pattern": "^([0-9A-Fa-f]{2}:){19}[0-9A-Fa-f]{2}$|^([0-9A-Fa-f]{2}:){31}[0-9A-Fa-f]{2}$",
+      "description": "a SHA-1 or SHA-256 certificate fingerprint as colon-separated hex pairs, quoted"
+    },
+    "hostname": {
+      "type": "string",
+      "pattern": "^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)(\\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*$",
+      "description": "a lowercase DNS name"
+    },
+    "secretRef": {
+      "x-secret": true,
+      "description": "a secret reference: {file: <path>} or {env: <VARIABLE>}; secrets are never written inline",
+      "type": "object",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "required": ["file"],
+          "properties": {"file": {"type": "string", "minLength": 1}}
+        },
+        {
+          "additionalProperties": false,
+          "required": ["env"],
+          "properties": {"env": {"type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"}}
+        }
+      ]
+    },
+    "clusterName": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]{1,18}[a-z0-9]$",
+      "description": "3-20 characters, lowercase letters, digits and hyphens, starting with a letter"
+    },
+    "vsphere": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["server", "thumbprint", "datacenter", "cluster", "datastore", "folder", "resourcePool", "network", "template", "credentials"],
+      "properties": {
+        "server": {"$ref": "#/$defs/hostname"},
+        "thumbprint": {"$ref": "#/$defs/fingerprint"},
+        "datacenter": {"type": "string", "minLength": 1},
+        "cluster": {"type": "string", "minLength": 1},
+        "datastore": {"type": "string", "minLength": 1},
+        "folder": {"type": "string", "pattern": "^/", "description": "an absolute inventory path such as /DC1/vm/dciab"},
+        "resourcePool": {"type": "string", "pattern": "^/", "description": "an absolute inventory path"},
+        "network": {"type": "string", "minLength": 1, "description": "the port group for MGMT and INFRA nodes"},
+        "template": {"type": "string", "minLength": 1, "description": "the VM template name"},
+        "credentials": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["username", "password"],
+          "properties": {
+            "username": {"type": "string", "minLength": 1},
+            "password": {"$ref": "#/$defs/secretRef"}
+          }
+        }
+      }
+    },
+    "proxmox": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["url", "tlsFingerprint", "nodes", "templateID", "storage", "bridge", "credentials"],
+      "properties": {
+        "url": {"type": "string", "pattern": "^https://[^/]+(:\\d+)?/?$", "description": "the Proxmox API URL, such as https://pve01.example.net:8006"},
+        "tlsFingerprint": {"$ref": "#/$defs/fingerprint"},
+        "nodes": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+        "templateID": {"type": "integer", "minimum": 100, "description": "the VM template ID"},
+        "storage": {"type": "string", "minLength": 1},
+        "bridge": {"type": "string", "minLength": 1},
+        "vlanTag": {"type": "integer", "minimum": 1, "maximum": 4094},
+        "credentials": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["tokenID", "tokenSecret"],
+          "properties": {
+            "tokenID": {"type": "string", "pattern": "^[^@\\s]+@[^!\\s]+![^\\s]+$", "description": "an API token ID such as dciab@pve!capmox"},
+            "tokenSecret": {"$ref": "#/$defs/secretRef"}
+          }
+        }
+      }
+    },
+    "platform": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type"],
+      "properties": {
+        "type": {"enum": ["vsphere", "proxmox"], "description": "vsphere or proxmox"},
+        "vsphere": {"$ref": "#/$defs/vsphere"},
+        "proxmox": {"$ref": "#/$defs/proxmox"}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"type": {"const": "vsphere"}}, "required": ["type"]},
+          "then": {"required": ["vsphere"], "not": {"required": ["proxmox"]}}
+        },
+        {
+          "if": {"properties": {"type": {"const": "proxmox"}}, "required": ["type"]},
+          "then": {"required": ["proxmox"], "not": {"required": ["vsphere"]}}
+        }
+      ]
+    },
+    "network": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["domain", "upstreamResolvers", "ntpServers", "nodes", "dnsServiceIPs", "loadBalancer"],
+      "properties": {
+        "domain": {"$ref": "#/$defs/hostname"},
+        "upstreamResolvers": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/ipv4"},
+          "description": "upstream DNS servers; an explicit empty list means an isolated site"
+        },
+        "ntpServers": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"type": "string", "minLength": 1}
+        },
+        "nodes": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["cidr", "gateway", "vlan"],
+          "properties": {
+            "cidr": {"$ref": "#/$defs/cidr"},
+            "gateway": {"$ref": "#/$defs/ipv4"},
+            "vlan": {"type": "integer", "minimum": 1, "maximum": 4094}
+          }
+        },
+        "dnsServiceIPs": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "uniqueItems": true,
+          "items": {"$ref": "#/$defs/ipv4"},
+          "description": "exactly two addresses in the node network for the DNS service"
+        },
+        "loadBalancer": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["mode"],
+          "properties": {
+            "mode": {"enum": ["bgp", "l2"], "description": "bgp or l2"},
+            "bgp": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["localASN", "peers"],
+              "properties": {
+                "localASN": {"type": "integer", "minimum": 1, "maximum": 4294967295},
+                "peers": {
+                  "type": "array",
+                  "minItems": 1,
+                  "items": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": ["address", "asn"],
+                    "properties": {
+                      "address": {"$ref": "#/$defs/ipv4"},
+                      "asn": {"type": "integer", "minimum": 1, "maximum": 4294967295}
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "allOf": [
+            {
+              "if": {"properties": {"mode": {"const": "bgp"}}, "required": ["mode"]},
+              "then": {"required": ["bgp"]}
+            },
+            {
+              "if": {"properties": {"mode": {"const": "l2"}}, "required": ["mode"]},
+              "then": {"not": {"required": ["bgp"]}}
+            }
+          ]
+        }
+      }
+    },
+    "vmControlPlane": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["replicas", "cpu", "memoryGiB", "diskGiB"],
+      "properties": {
+        "replicas": {"enum": [1, 3, 5], "description": "1, 3 or 5 (an odd number for etcd quorum)"},
+        "cpu": {"type": "integer", "minimum": 2},
+        "memoryGiB": {"type": "integer", "minimum": 4},
+        "diskGiB": {"type": "integer", "minimum": 40}
+      }
+    },
+    "vmWorkerPool": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "replicas", "cpu", "memoryGiB", "diskGiB"],
+      "properties": {
+        "name": {"type": "string", "pattern": "^[a-z][a-z0-9-]{0,18}[a-z0-9]$", "description": "2-20 characters, lowercase letters, digits and hyphens"},
+        "replicas": {"type": "integer", "minimum": 0},
+        "cpu": {"type": "integer", "minimum": 2},
+        "memoryGiB": {"type": "integer", "minimum": 4},
+        "diskGiB": {"type": "integer", "minimum": 40},
+        "dataDiskGiB": {"type": "integer", "minimum": 10, "description": "optional second disk for Longhorn"}
+      }
+    },
+    "vmCluster": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["apiVIP", "nodeIPRange", "lbPool", "podCIDR", "serviceCIDR", "controlPlane", "workerPools"],
+      "properties": {
+        "apiVIP": {"$ref": "#/$defs/ipv4"},
+        "nodeIPRange": {"$ref": "#/$defs/ipRange"},
+        "lbPool": {"$ref": "#/$defs/ipRange"},
+        "podCIDR": {"$ref": "#/$defs/cidr"},
+        "serviceCIDR": {"$ref": "#/$defs/cidr"},
+        "controlPlane": {"$ref": "#/$defs/vmControlPlane"},
+        "workerPools": {"type": "array", "items": {"$ref": "#/$defs/vmWorkerPool"}, "description": "a list, which may be empty: then control plane nodes run workloads"}
+      }
+    },
+    "storage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["longhorn"],
+      "properties": {
+        "longhorn": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["replicaCount", "backupTarget"],
+          "properties": {
+            "replicaCount": {"type": "integer", "minimum": 1, "maximum": 3},
+            "backupTarget": {"type": "string", "pattern": "^(s3|nfs)://.+", "description": "a site-provided target: s3://bucket@endpoint/path or nfs://server:/export"},
+            "backupCredentials": {"$ref": "#/$defs/secretRef"}
+          }
+        }
+      }
+    },
+    "pki": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode", "commonName"],
+      "properties": {
+        "mode": {"enum": ["generate-root", "import-intermediate"], "description": "generate-root or import-intermediate"},
+        "commonName": {"type": "string", "minLength": 1},
+        "certificate": {"$ref": "#/$defs/secretRef"},
+        "key": {"$ref": "#/$defs/secretRef"},
+        "chain": {"$ref": "#/$defs/secretRef"}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"mode": {"const": "import-intermediate"}}, "required": ["mode"]},
+          "then": {"required": ["certificate", "key", "chain"]}
+        },
+        {
+          "if": {"properties": {"mode": {"const": "generate-root"}}, "required": ["mode"]},
+          "then": {
+            "not": {
+              "anyOf": [{"required": ["certificate"]}, {"required": ["key"]}, {"required": ["chain"]}]
+            }
+          }
+        }
+      ]
+    },
+    "identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["adminGroup", "initialAdmins"],
+      "properties": {
+        "adminGroup": {"type": "string", "minLength": 1},
+        "initialAdmins": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["username", "email", "sshPublicKey"],
+            "properties": {
+              "username": {"type": "string", "pattern": "^[a-z_][a-z0-9_.-]{0,31}$", "description": "a POSIX-style user name"},
+              "email": {"type": "string", "pattern": "^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$"},
+              "sshPublicKey": {"type": "string", "pattern": "^(ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp(256|384|521)|sk-ssh-ed25519@openssh\\.com) [A-Za-z0-9+/=]+( .*)?$", "description": "one OpenSSH public key line"}
+            }
+          }
+        }
+      }
+    },
+    "bmcHost": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "bmc", "bootMACAddress", "rootDeviceHints", "labels"],
+      "properties": {
+        "name": {"type": "string", "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$"},
+        "bmc": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["address", "credentials"],
+          "properties": {
+            "address": {"type": "string", "pattern": "^redfish-virtualmedia\\+https://\\S+$", "description": "a Redfish virtual-media address: redfish-virtualmedia+https://<bmc>/redfish/v1/Systems/<id>"},
+            "tlsFingerprint": {"$ref": "#/$defs/fingerprint"},
+            "caBundle": {"$ref": "#/$defs/secretRef"},
+            "credentials": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["username", "password"],
+              "properties": {
+                "username": {"type": "string", "minLength": 1},
+                "password": {"$ref": "#/$defs/secretRef"}
+              }
+            }
+          },
+          "oneOf": [
+            {"required": ["tlsFingerprint"], "not": {"required": ["caBundle"]}},
+            {"required": ["caBundle"], "not": {"required": ["tlsFingerprint"]}}
+          ],
+          "description": "give exactly one of tlsFingerprint or caBundle to trust the BMC certificate"
+        },
+        "bootMACAddress": {"type": "string", "pattern": "^([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}$", "description": "a MAC address, quoted"},
+        "rootDeviceHints": {
+          "type": "object",
+          "additionalProperties": false,
+          "minProperties": 1,
+          "properties": {
+            "deviceName": {"type": "string", "pattern": "^/dev/"},
+            "serialNumber": {"type": "string", "minLength": 1},
+            "wwn": {"type": "string", "minLength": 1},
+            "model": {"type": "string", "minLength": 1},
+            "vendor": {"type": "string", "minLength": 1},
+            "hctl": {"type": "string", "minLength": 1},
+            "minSizeGigabytes": {"type": "integer", "minimum": 1},
+            "rotational": {"type": "boolean"}
+          }
+        },
+        "labels": {
+          "type": "object",
+          "minProperties": 1,
+          "additionalProperties": {"type": "string", "minLength": 1}
+        }
+      }
+    },
+    "baremetal": {
+      "type": "object",
+      "required": ["enabled"],
+      "properties": {
+        "enabled": {"type": "boolean", "description": "true or false"},
+        "bootMode": {"enum": ["UEFI", "UEFISecureBoot"]},
+        "ironicIP": {"$ref": "#/$defs/ipv4"},
+        "bmcNetworks": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/cidr"}},
+        "images": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name", "file"],
+            "properties": {
+              "name": {"type": "string", "pattern": "^[a-z0-9][a-z0-9.-]*$"},
+              "file": {"type": "string", "pattern": "^os-images/[^/]+$", "description": "a path under os-images/ in the archive"}
+            }
+          }
+        },
+        "networks": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name", "cidr", "gateway", "vlan"],
+            "properties": {
+              "name": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$"},
+              "cidr": {"$ref": "#/$defs/cidr"},
+              "gateway": {"$ref": "#/$defs/ipv4"},
+              "vlan": {"type": "integer", "minimum": 1, "maximum": 4094}
+            }
+          }
+        },
+        "hosts": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/bmcHost"}}
+      },
+      "if": {"properties": {"enabled": {"const": true}}, "required": ["enabled"]},
+      "then": {
+        "additionalProperties": false,
+        "required": ["bootMode", "ironicIP", "bmcNetworks", "images", "networks", "hosts"],
+        "properties": {
+          "enabled": true, "bootMode": true, "ironicIP": true, "bmcNetworks": true, "images": true, "networks": true, "hosts": true
+        }
+      },
+      "else": {
+        "additionalProperties": false,
+        "properties": {"enabled": true},
+        "description": "with enabled: false, remove every other baremetal field"
+      }
+    },
+    "metal3ControlPlane": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["replicas", "network", "nodeIPRange", "image", "hostSelector"],
+      "properties": {
+        "replicas": {"enum": [1, 3, 5], "description": "1, 3 or 5 (an odd number for etcd quorum)"},
+        "network": {"type": "string", "minLength": 1, "description": "the name of a spec.baremetal.networks entry"},
+        "nodeIPRange": {"$ref": "#/$defs/ipRange"},
+        "image": {"type": "string", "minLength": 1, "description": "the name of a spec.baremetal.images entry"},
+        "hostSelector": {"type": "object", "minProperties": 1, "additionalProperties": {"type": "string"}}
+      }
+    },
+    "metal3WorkerPool": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "replicas", "network", "nodeIPRange", "image", "hostSelector"],
+      "properties": {
+        "name": {"type": "string", "pattern": "^[a-z][a-z0-9-]{0,18}[a-z0-9]$"},
+        "replicas": {"type": "integer", "minimum": 0},
+        "network": {"type": "string", "minLength": 1, "description": "the name of a spec.baremetal.networks entry"},
+        "nodeIPRange": {"$ref": "#/$defs/ipRange"},
+        "image": {"type": "string", "minLength": 1, "description": "the name of a spec.baremetal.images entry"},
+        "hostSelector": {"type": "object", "minProperties": 1, "additionalProperties": {"type": "string"}}
+      }
+    },
+    "workloadCluster": {
+      "type": "object",
+      "required": ["name", "class"],
+      "properties": {
+        "name": {"$ref": "#/$defs/clusterName"},
+        "class": {"enum": ["vsphere", "proxmox", "metal3"], "description": "vsphere, proxmox or metal3: the ClusterClass, one provider per cluster"}
+      },
+      "if": {"properties": {"class": {"const": "metal3"}}, "required": ["class"]},
+      "then": {
+        "additionalProperties": false,
+        "required": ["apiVIP", "lbPool", "podCIDR", "serviceCIDR", "controlPlane", "workerPools"],
+        "properties": {
+          "name": true,
+          "class": true,
+          "apiVIP": {"$ref": "#/$defs/ipv4"},
+          "lbPool": {"$ref": "#/$defs/ipRange"},
+          "podCIDR": {"$ref": "#/$defs/cidr"},
+          "serviceCIDR": {"$ref": "#/$defs/cidr"},
+          "controlPlane": {"$ref": "#/$defs/metal3ControlPlane"},
+          "workerPools": {"type": "array", "items": {"$ref": "#/$defs/metal3WorkerPool"}}
+        }
+      },
+      "else": {
+        "additionalProperties": false,
+        "required": ["apiVIP", "nodeIPRange", "lbPool", "podCIDR", "serviceCIDR", "controlPlane", "workerPools"],
+        "properties": {
+          "name": true,
+          "class": true,
+          "apiVIP": {"$ref": "#/$defs/ipv4"},
+          "nodeIPRange": {"$ref": "#/$defs/ipRange"},
+          "lbPool": {"$ref": "#/$defs/ipRange"},
+          "podCIDR": {"$ref": "#/$defs/cidr"},
+          "serviceCIDR": {"$ref": "#/$defs/cidr"},
+          "controlPlane": {"$ref": "#/$defs/vmControlPlane"},
+          "workerPools": {"type": "array", "items": {"$ref": "#/$defs/vmWorkerPool"}}
+        }
+      }
+    }
+  }
+}

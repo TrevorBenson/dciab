@@ -1,0 +1,58 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: tests (Python ${{ matrix.python }})
+    runs-on: ubuntu-24.04  # still offers Python 3.9; newer images dropped it
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.9", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - run: pip install -r requirements-dev.txt
+      - run: python -m pytest -v
+      - name: Schema is valid JSON Schema 2020-12
+        run: python -c "import json; from jsonschema import Draft202012Validator as V; V.check_schema(json.load(open('schema/dciab.schema.json')))"
+
+  shellcheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: shellcheck dciab
+
+  rocky10:
+    # The validator must run on the bootstrap host with distro packages only.
+    name: examples on Rocky Linux 10 (distro packages)
+    runs-on: ubuntu-latest
+    container: rockylinux/rockylinux:10
+    steps:
+      - uses: actions/checkout@v4
+      - run: dnf -y install python3 python3-jsonschema python3-pyyaml
+      - name: Validate every example with placeholder secrets
+        env:
+          DCIAB_PVE_TOKEN: placeholder
+        run: |
+          set -euo pipefail
+          for example in examples/*.yaml; do
+            work="$(mktemp -d)"
+            cp "$example" "$work/"
+            for s in vsphere.pw longhorn-s3.env pki/intermediate.crt pki/intermediate.key pki/chain.pem \
+                     bmc/ca.pem bmc/r760-01 bmc/r760-02 bmc/r760-03 bmc/r760-04 bmc/r760-05 bmc/r760-06 bmc/r760-07; do
+              mkdir -p "$(dirname "$work/secrets/$s")"
+              echo placeholder > "$work/secrets/$s"
+              chmod 600 "$work/secrets/$s"
+            done
+            ./dciab validate "$work/$(basename "$example")"
+          done

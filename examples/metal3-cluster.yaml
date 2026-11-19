@@ -1,0 +1,179 @@
+# DCiaB site config: vSphere for MGMT and INFRA, plus a bare-metal (Metal3) workload cluster.
+# Each cluster uses exactly one provider, chosen by its class.
+apiVersion: dciab.io/v1alpha1
+kind: Site
+metadata:
+  name: dc2
+spec:
+  bundleVersion: 0.1.0
+
+  platform:
+    type: vsphere
+    vsphere:
+      server: vcsa.dc2.example.net
+      thumbprint: "9A:CB:C7:F6:4E:C2:94:5B:25:36:62:E7:54:18:3B:FB:B0:71:94:03:1A:60:88:B2:65:40:7F:58:AE:BE:3A:07"
+      datacenter: DC2
+      cluster: Compute-A
+      datastore: vsanDatastore
+      folder: /DC2/vm/dciab
+      resourcePool: /DC2/host/Compute-A/Resources/dciab
+      network: dvpg-mgmt-110
+      template: rocky10-kube-v1.34.2
+      credentials:
+        username: svc-dciab@vsphere.local
+        password: {file: ./secrets/vsphere.pw}
+
+  kubernetes:
+    version: v1.34.2
+
+  bootstrap:
+    interface: ens192
+    address: 10.20.110.5
+    recipients:
+      - age1ffyw9h8rvfdsshhfl4jvfgvh5mdl3xv98a9sq5p6lyg5d7z62t2r2q9j6f
+      - age1skgjkfxj3tkldtdnkd9cwuhennz9uuvg4q058rte5yhwk2vypq0g0u2207
+
+  network:
+    domain: dc2.example.com
+    upstreamResolvers: [10.0.0.53]
+    ntpServers: [10.0.0.123]
+    nodes:
+      cidr: 10.20.110.0/24
+      gateway: 10.20.110.1
+      vlan: 110
+    dnsServiceIPs: [10.20.110.53, 10.20.110.54]
+    loadBalancer:
+      mode: bgp
+      bgp:
+        localASN: 65110
+        peers:
+          - {address: 10.20.110.1, asn: 65000}
+
+  clusters:
+    mgmt:
+      apiVIP: 10.20.110.10
+      nodeIPRange: 10.20.110.20-10.20.110.29
+      lbPool: 10.20.110.200-10.20.110.209
+      podCIDR: 10.240.0.0/16
+      serviceCIDR: 10.241.0.0/16
+      controlPlane: {replicas: 3, cpu: 4, memoryGiB: 16, diskGiB: 100}
+      workerPools: []
+    infra:
+      apiVIP: 10.20.110.11
+      nodeIPRange: 10.20.110.30-10.20.110.49
+      lbPool: 10.20.110.210-10.20.110.239
+      podCIDR: 10.242.0.0/16
+      serviceCIDR: 10.243.0.0/16
+      controlPlane: {replicas: 3, cpu: 4, memoryGiB: 16, diskGiB: 100}
+      workerPools:
+        - {name: general, replicas: 4, cpu: 16, memoryGiB: 64, diskGiB: 150, dataDiskGiB: 500}
+
+  storage:
+    longhorn:
+      replicaCount: 3
+      backupTarget: s3://longhorn@minio.dc2.example.net/dc2
+      backupCredentials: {file: ./secrets/longhorn-s3.env}
+
+  pki:
+    mode: generate-root
+    commonName: DC2 Platform Root CA
+
+  identity:
+    adminGroup: dc2-platform-admins
+    initialAdmins:
+      - username: tparker
+        email: tparker@example.com
+        sshPublicKey: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExampleKeyDoNotUseExampleKeyDoNotUse00 tparker"
+
+  baremetal:
+    enabled: true
+    bootMode: UEFI                       # UEFI | UEFISecureBoot
+    ironicIP: 10.20.110.205              # inside clusters.mgmt.lbPool; BMCs must reach it over HTTPS
+    bmcNetworks: [10.30.0.0/24]
+    images:
+      - name: rocky10-kube-v1.34.2
+        file: os-images/rocky10-kube-v1.34.2.raw
+    networks:
+      - name: metal-120
+        cidr: 10.20.120.0/24
+        gateway: 10.20.120.1
+        vlan: 120
+    hosts:
+      - name: r760-01
+        bmc:
+          address: redfish-virtualmedia+https://10.30.0.11/redfish/v1/Systems/System.Embedded.1
+          tlsFingerprint: "BE:DA:A7:A2:6C:92:F7:B5:12:5E:F2:B5:93:B6:D2:9C:E4:99:57:A9:43:17:47:1F:7B:6D:97:EA:AE:AA:BC:0D"
+          credentials: {username: dciab, password: {file: ./secrets/bmc/r760-01}}
+        bootMACAddress: "b8:ca:3a:01:02:01"
+        rootDeviceHints: {serialNumber: S6EUNE0T100001}
+        labels: {pool: metal01-cp}
+      - name: r760-02
+        bmc:
+          address: redfish-virtualmedia+https://10.30.0.12/redfish/v1/Systems/System.Embedded.1
+          caBundle: {file: ./secrets/bmc/ca.pem}
+          credentials: {username: dciab, password: {file: ./secrets/bmc/r760-02}}
+        bootMACAddress: "b8:ca:3a:01:02:02"
+        rootDeviceHints: {serialNumber: S6EUNE0T100002}
+        labels: {pool: metal01-cp}
+      - name: r760-03
+        bmc:
+          address: redfish-virtualmedia+https://10.30.0.13/redfish/v1/Systems/System.Embedded.1
+          caBundle: {file: ./secrets/bmc/ca.pem}
+          credentials: {username: dciab, password: {file: ./secrets/bmc/r760-03}}
+        bootMACAddress: "b8:ca:3a:01:02:03"
+        rootDeviceHints: {serialNumber: S6EUNE0T100003}
+        labels: {pool: metal01-cp}
+      - name: r760-04
+        bmc:
+          address: redfish-virtualmedia+https://10.30.0.14/redfish/v1/Systems/System.Embedded.1
+          caBundle: {file: ./secrets/bmc/ca.pem}
+          credentials: {username: dciab, password: {file: ./secrets/bmc/r760-04}}
+        bootMACAddress: "b8:ca:3a:01:02:04"
+        rootDeviceHints: {serialNumber: S6EUNE0T100004}
+        labels: {pool: metal01-gpu}
+      - name: r760-05
+        bmc:
+          address: redfish-virtualmedia+https://10.30.0.15/redfish/v1/Systems/System.Embedded.1
+          caBundle: {file: ./secrets/bmc/ca.pem}
+          credentials: {username: dciab, password: {file: ./secrets/bmc/r760-05}}
+        bootMACAddress: "b8:ca:3a:01:02:05"
+        rootDeviceHints: {serialNumber: S6EUNE0T100005}
+        labels: {pool: metal01-gpu}
+      # One spare per pool, so a rolling upgrade can add a node before removing one.
+      - name: r760-06
+        bmc:
+          address: redfish-virtualmedia+https://10.30.0.16/redfish/v1/Systems/System.Embedded.1
+          caBundle: {file: ./secrets/bmc/ca.pem}
+          credentials: {username: dciab, password: {file: ./secrets/bmc/r760-06}}
+        bootMACAddress: "b8:ca:3a:01:02:06"
+        rootDeviceHints: {serialNumber: S6EUNE0T100006}
+        labels: {pool: metal01-cp}
+      - name: r760-07
+        bmc:
+          address: redfish-virtualmedia+https://10.30.0.17/redfish/v1/Systems/System.Embedded.1
+          caBundle: {file: ./secrets/bmc/ca.pem}
+          credentials: {username: dciab, password: {file: ./secrets/bmc/r760-07}}
+        bootMACAddress: "b8:ca:3a:01:02:07"
+        rootDeviceHints: {serialNumber: S6EUNE0T100007}
+        labels: {pool: metal01-gpu}
+
+  workloadClusters:
+    - name: metal01
+      class: metal3                      # vsphere | proxmox | metal3
+      apiVIP: 10.20.120.10
+      lbPool: 10.20.120.200-10.20.120.239
+      podCIDR: 10.250.0.0/16
+      serviceCIDR: 10.251.0.0/16
+      controlPlane:
+        replicas: 3
+        network: metal-120
+        nodeIPRange: 10.20.120.11-10.20.120.19
+        image: rocky10-kube-v1.34.2
+        hostSelector: {pool: metal01-cp}
+      workerPools:
+        - name: gpu
+          replicas: 2
+          network: metal-120
+          nodeIPRange: 10.20.120.21-10.20.120.40
+          image: rocky10-kube-v1.34.2
+          hostSelector: {pool: metal01-gpu}
