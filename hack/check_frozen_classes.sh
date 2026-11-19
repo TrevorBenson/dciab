@@ -27,10 +27,11 @@ mapfile -t files <<< "$released"
 changed="$(git diff --name-only --diff-filter=MDR "$release" HEAD -- "${files[@]}")"
 if [ -n "$changed" ]; then
   echo "These ClusterClass files were released in $release and must not change:"
-  echo "$changed" | sed 's/^/  /'
+  mapfile -t changed_files <<< "$changed"
+  printf '  %s\n' "${changed_files[@]}"
   echo "Put the change in a new version folder instead (charts/capi-clusterclasses/README.md)."
   exit 1
 fi
 
 echo "Released in $release and unchanged:"
-echo "$released" | sed 's/^/  /'
+printf '  %s\n' "${files[@]}"
