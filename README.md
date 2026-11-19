@@ -52,13 +52,13 @@ bundle.lock              every pinned version: Kubernetes, CAPI and providers, i
 schema/                  JSON Schema for dciab.yaml
 lib/dciab_validate/      the validator
 charts/
-  capi-clusterclasses/   frozen, versioned ClusterClasses for vSphere, Proxmox and Metal3
+  capi-clusterclasses/   ClusterClasses for vSphere, Proxmox and Metal3, in frozen revisions
   capi-cluster/          one cluster: a Cluster topology plus its node IP pools
 hack/                    fetch_crds.py, check_manifests.py (CRD-based checks), render_components.py
   e2e/                   ClusterClass end-to-end test on kind (run.sh, verify.py)
 examples/                vsphere.yaml, proxmox.yaml, metal3-cluster.yaml
 tests/                   pytest suite
-docs/                    roadmap and design notes
+docs/                    roadmap, versioning (VERSIONING.md) and design notes
 ```
 
 ## Development
@@ -71,4 +71,4 @@ $ python -m pytest
 
 CI also runs an end-to-end test: it installs Cluster API and every provider pinned in `bundle.lock` on a kind cluster, applies the ClusterClasses and one Cluster per class, and checks the objects CAPI's topology controller generates. No VM or server is built. To run it locally, create a throwaway kind cluster and run `hack/e2e/run.sh`.
 
-CI also renders both charts with Helm and checks the output against those CRDs: unknown fields, simple CEL rules, ClusterClass patch paths and the patches applied in order, template references, and topology variables. It checks that `bundle.lock` image digests still match their registries, and that ClusterClass files released in a DCiaB release tag are unchanged.
+CI also renders both charts with Helm and checks the output against those CRDs: unknown fields, simple CEL rules, ClusterClass patch paths and the patches applied in order, template references, and topology variables. It checks that `bundle.lock` image digests still match their registries, and that ClusterClass revisions released in a DCiaB release tag are unchanged. [docs/VERSIONING.md](docs/VERSIONING.md) explains the version numbers: releases, the config schema, class revisions, charts and pins.

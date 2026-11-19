@@ -2,7 +2,7 @@
 
 One cluster per release, installed into the cluster's namespace on the management cluster. It renders:
 
-- a `Cluster` whose topology uses `dciab-<class>-<classVersion>` from [capi-clusterclasses](../capi-clusterclasses),
+- a `Cluster` whose topology uses `dciab-<class>-<classRevision>` from [capi-clusterclasses](../capi-clusterclasses),
 - for `vsphere`: an `InClusterIPPool` named `<cluster>-nodes`,
 - for `metal3`: an `IPPool` and a `Metal3DataTemplate` per role (`<cluster>-controlplane`, `<cluster>-<pool>`).
 

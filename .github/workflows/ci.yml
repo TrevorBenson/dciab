@@ -142,7 +142,7 @@ jobs:
       - run: hack/e2e/run.sh
 
   frozen-classes:
-    # A class version freezes when a DCiaB release tag first contains it; drafts may change.
+    # A class revision freezes when a DCiaB release tag first contains it; drafts may change (docs/VERSIONING.md).
     name: released ClusterClasses are unchanged
     runs-on: ubuntu-latest
     steps:

@@ -24,18 +24,18 @@ NS = "dciab-clusterclasses"
 needs_crds = pytest.mark.skipif(not CRDS.is_dir(), reason="run hack/fetch_crds.py first")
 
 
-def versions():
-    return sorted((p.name for p in CLASSES.iterdir() if p.is_dir()), key=lambda v: int(v[1:]))
+def revisions():
+    return sorted((p.name for p in CLASSES.iterdir() if p.is_dir()), key=lambda r: int(r[1:]))
 
 
-def installed_versions():
-    """Versions the chart installs. Versions no cluster uses any more stay on disk, unchecked."""
+def installed_revisions():
+    """Revisions the chart installs. Revisions no cluster uses any more stay on disk, unchecked."""
     values = yaml.safe_load((ROOT / "charts" / "capi-clusterclasses" / "values.yaml").read_text())
-    return values["versions"]
+    return values["revisions"]
 
 
-def class_docs(version="v1", provider="vsphere"):
-    text = (CLASSES / version / f"{provider}.yaml").read_text()
+def class_docs(revision="r1", provider="vsphere"):
+    text = (CLASSES / revision / f"{provider}.yaml").read_text()
     return [(f"{provider}.yaml", NS, d) for d in yaml.safe_load_all(text) if d]
 
 
@@ -54,32 +54,36 @@ def clusterclass(docs):
 
 # --- the shipped classes ---------------------------------------------------------------
 
-def test_every_version_has_all_three_providers():
-    for v in versions():
+def test_revision_folders_are_named_rN():
+    assert revisions() and all(re.fullmatch(r"r[0-9]+", r) for r in revisions())
+
+
+def test_every_revision_has_all_three_providers():
+    for v in revisions():
         assert sorted(p.stem for p in (CLASSES / v).glob("*.yaml")) == ["metal3", "proxmox", "vsphere"]
 
 
-def test_chart_installs_the_newest_version():
-    assert versions()[-1] in installed_versions()
+def test_chart_installs_the_newest_revision():
+    assert revisions()[-1] in installed_revisions()
 
 
 def test_newest_classes_use_bundle_kube_vip():
     lock = yaml.safe_load((ROOT / "bundle.lock").read_text())
-    newest = versions()[-1]
+    newest = revisions()[-1]
     for f in (CLASSES / newest).glob("*.yaml"):
         images = set(re.findall(r"image: (\S+)", f.read_text()))
         assert images == {lock["images"]["kubeVip"]}, f"{f.name} uses {images}"
 
 
-def test_class_names_carry_their_version():
-    for v in versions():
+def test_class_names_carry_their_revision():
+    for v in revisions():
         for f in (CLASSES / v).glob("*.yaml"):
             for d in yaml.safe_load_all(f.read_text()):
                 if not d:
                     continue
                 name = d["metadata"]["name"]
                 if d["kind"] == "ClusterClass":
-                    # capi-cluster renders classRef.name as exactly dciab-<class>-<version>
+                    # capi-cluster renders classRef.name as exactly dciab-<class>-<classRevision>
                     assert name == f"dciab-{f.stem}-{v}", name
                 else:
                     assert name.startswith(f"dciab-{f.stem}-{v}"), name
@@ -88,7 +92,7 @@ def test_class_names_carry_their_version():
 @needs_crds
 @pytest.mark.parametrize("provider", ["vsphere", "proxmox", "metal3"])
 def test_classes_pass_the_checker(schemas, provider):
-    for v in installed_versions():
+    for v in installed_revisions():
         assert problems(schemas, class_docs(v, provider)) == []
 
 
@@ -172,7 +176,7 @@ def test_checker_catches_a_variable_type_mismatch(schemas):
 def test_checker_reports_missing_required_cluster_variables(schemas):
     cluster = {
         "apiVersion": "cluster.x-k8s.io/v1beta2", "kind": "Cluster", "metadata": {"name": "c1"},
-        "spec": {"topology": {"classRef": {"name": "dciab-vsphere-v1", "namespace": NS}, "version": "v1.36.6",
+        "spec": {"topology": {"classRef": {"name": "dciab-vsphere-r1", "namespace": NS}, "version": "v1.36.6",
                               "variables": [{"name": "apiVIP", "value": "10.0.0.10"}]}},
     }
     found = problems(schemas, class_docs() + [("cluster.yaml", "cluster-c1", cluster)])
@@ -183,11 +187,11 @@ def test_checker_reports_missing_required_cluster_variables(schemas):
 def test_checker_resolves_classes_by_namespace(schemas):
     cluster = {
         "apiVersion": "cluster.x-k8s.io/v1beta2", "kind": "Cluster", "metadata": {"name": "c1"},
-        "spec": {"topology": {"classRef": {"name": "dciab-vsphere-v1", "namespace": "elsewhere"},
+        "spec": {"topology": {"classRef": {"name": "dciab-vsphere-r1", "namespace": "elsewhere"},
                               "version": "v1.36.6"}},
     }
     found = problems(schemas, class_docs() + [("cluster.yaml", "cluster-c1", cluster)])
-    assert any("ClusterClass elsewhere/dciab-vsphere-v1 is not in the input" in p for p in found)
+    assert any("ClusterClass elsewhere/dciab-vsphere-r1 is not in the input" in p for p in found)
 
 
 @needs_crds

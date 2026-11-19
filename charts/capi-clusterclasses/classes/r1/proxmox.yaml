@@ -1,12 +1,12 @@
-# ClusterClass dciab-proxmox-v1: FROZEN once released.
-# Clusters reference this class by name, and editing it rolls every one of them.
-# To change anything here, copy this version's folder to the next version, edit the
-# copy, and move clusters over one at a time. Do not edit a released version.
+# ClusterClass dciab-proxmox-r1. The -rN suffix is a DCiaB revision, not a Kubernetes API version.
+# A draft until a DCiaB release tag contains it; frozen from then on, because editing a
+# class rolls every cluster that uses it. After a release, changes go into the next
+# revision. See docs/VERSIONING.md.
 ---
 apiVersion: cluster.x-k8s.io/v1beta2
 kind: ClusterClass
 metadata:
-  name: dciab-proxmox-v1
+  name: dciab-proxmox-r1
   annotations:
     dciab.io/description: "Proxmox VE (CAPMOX) machines for control plane and workers"
 spec:
@@ -14,17 +14,17 @@ spec:
     templateRef:
       apiVersion: controlplane.cluster.x-k8s.io/v1beta2
       kind: KubeadmControlPlaneTemplate
-      name: dciab-proxmox-v1-controlplane
+      name: dciab-proxmox-r1-controlplane
     machineInfrastructure:
       templateRef:
         apiVersion: infrastructure.cluster.x-k8s.io/v1alpha2
         kind: ProxmoxMachineTemplate
-        name: dciab-proxmox-v1-controlplane
+        name: dciab-proxmox-r1-controlplane
   infrastructure:
     templateRef:
       apiVersion: infrastructure.cluster.x-k8s.io/v1alpha2
       kind: ProxmoxClusterTemplate
-      name: dciab-proxmox-v1
+      name: dciab-proxmox-r1
   workers:
     machineDeployments:
       - class: default
@@ -32,12 +32,12 @@ spec:
           templateRef:
             apiVersion: bootstrap.cluster.x-k8s.io/v1beta2
             kind: KubeadmConfigTemplate
-            name: dciab-proxmox-v1-worker
+            name: dciab-proxmox-r1-worker
         infrastructure:
           templateRef:
             apiVersion: infrastructure.cluster.x-k8s.io/v1alpha2
             kind: ProxmoxMachineTemplate
-            name: dciab-proxmox-v1-worker
+            name: dciab-proxmox-r1-worker
   variables:
     - name: apiVIP
       required: true
@@ -547,7 +547,7 @@ spec:
 apiVersion: infrastructure.cluster.x-k8s.io/v1alpha2
 kind: ProxmoxClusterTemplate
 metadata:
-  name: dciab-proxmox-v1
+  name: dciab-proxmox-r1
 spec:
   template:
     spec:
@@ -565,7 +565,7 @@ spec:
 apiVersion: infrastructure.cluster.x-k8s.io/v1alpha2
 kind: ProxmoxMachineTemplate
 metadata:
-  name: dciab-proxmox-v1-controlplane
+  name: dciab-proxmox-r1-controlplane
 spec:
   template:
     spec:
@@ -587,7 +587,7 @@ spec:
 apiVersion: infrastructure.cluster.x-k8s.io/v1alpha2
 kind: ProxmoxMachineTemplate
 metadata:
-  name: dciab-proxmox-v1-worker
+  name: dciab-proxmox-r1-worker
 spec:
   template:
     spec:
@@ -609,7 +609,7 @@ spec:
 apiVersion: controlplane.cluster.x-k8s.io/v1beta2
 kind: KubeadmControlPlaneTemplate
 metadata:
-  name: dciab-proxmox-v1-controlplane
+  name: dciab-proxmox-r1-controlplane
 spec:
   template:
     spec:
@@ -642,7 +642,7 @@ spec:
 apiVersion: bootstrap.cluster.x-k8s.io/v1beta2
 kind: KubeadmConfigTemplate
 metadata:
-  name: dciab-proxmox-v1-worker
+  name: dciab-proxmox-r1-worker
 spec:
   template:
     spec:

@@ -1,7 +1,8 @@
-# Class versions to install. Keep every version a cluster still uses: removing one
-# deletes its ClusterClass, and clusters that reference it stop reconciling.
-versions:
-  - v1
+# Class revisions to install (classes/<revision>/). Keep every revision a cluster still
+# uses: removing one deletes its ClusterClasses, and clusters that reference them stop
+# reconciling. See docs/VERSIONING.md.
+revisions:
+  - r1
 
 # Providers whose classes are installed. DCiaB installs every provider on MGMT, so all
 # three are on; turn one off only if its CRDs are absent from the cluster.

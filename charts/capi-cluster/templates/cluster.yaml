@@ -19,7 +19,7 @@ spec:
       cidrBlocks: [{{ $v.serviceCIDR | quote }}]
   topology:
     classRef:
-      name: {{ printf "dciab-%s-%s" $v.class $v.classVersion | quote }}
+      name: {{ printf "dciab-%s-%s" $v.class $v.classRevision | quote }}
       namespace: {{ $v.classNamespace | quote }}
     version: {{ $v.kubernetesVersion | quote }}
     controlPlane:
