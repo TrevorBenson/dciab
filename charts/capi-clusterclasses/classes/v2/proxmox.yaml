@@ -552,8 +552,11 @@ spec:
   template:
     spec:
       dnsServers: [set-by-patch]
-      # Placeholder pool (TEST-NET-1): CAPMOX's webhook rejects a template without one.
-      # The proxmoxCluster patch replaces it with the cluster's node network.
+      # Placeholders (TEST-NET-1): CAPMOX's webhook rejects a template without an
+      # endpoint and an IP pool. The proxmoxCluster patch replaces both.
+      controlPlaneEndpoint:
+        host: 192.0.2.5
+        port: 6443
       ipv4Config:
         addresses: [192.0.2.10-192.0.2.20]
         prefix: 24
