@@ -49,8 +49,9 @@ metal3:
     version: v0.14.3
 
 # Images referenced directly by DCiaB's own manifests (charts bring their own lists).
+# Pinned by digest; CI checks the tag still resolves to it (hack/check_image_digests.py).
 images:
-  kubeVip: ghcr.io/kube-vip/kube-vip:v1.3.1
+  kubeVip: ghcr.io/kube-vip/kube-vip:v1.3.1@sha256:1962f9daf226503f7e6b107f595cb28b7917fd2d0113957075e19a3e5a6c1e33
 
 charts:
   cilium: 1.20.5
