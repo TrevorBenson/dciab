@@ -27,10 +27,13 @@ No inputs from Trevor are needed. Nothing here touches the lab.
 
 ## Steps
 
+Run everything in one shell session with `set -o pipefail`. The work folder is fixed at `/tmp/dciab-0001`, so it survives across commands.
+
 1. **Validate a good config.** Expected: `exit=0`.
 
    ```bash
-   work=$(mktemp -d); cp examples/proxmox.yaml "$work/"
+   set -o pipefail
+   work=/tmp/dciab-0001; rm -rf "$work"; mkdir -p "$work"; cp examples/proxmox.yaml "$work/"
    for s in vsphere.pw longhorn-s3.env pki/intermediate.crt pki/intermediate.key pki/chain.pem; do
      mkdir -p "$(dirname "$work/secrets/$s")"; echo placeholder > "$work/secrets/$s"; chmod 600 "$work/secrets/$s"
    done
@@ -38,19 +41,20 @@ No inputs from Trevor are needed. Nothing here touches the lab.
    ```
 
 2. **Validate a broken config.**
-   - In `$work/proxmox.yaml`, set `spec.clusters.infra.apiVIP` to the same address as `spec.clusters.mgmt.apiVIP`, then rerun step 1's validate command.
+   - In `/tmp/dciab-0001/proxmox.yaml`, set `spec.clusters.infra.apiVIP` to the same address as `spec.clusters.mgmt.apiVIP`, then rerun step 1's validate command.
    - Expected: `exit=1`, and an error at `spec.clusters.infra.apiVIP` that names the overlap and the line.
 
 3. **Run the ClusterClass e2e on kind.**
+   - If `kind get clusters` already lists `dciab-e2e`, stop and ask Trevor. Don't reuse or delete a cluster this task didn't create.
    - Run:
      ```bash
      kind create cluster --name dciab-e2e
-     hack/e2e/run.sh 2>&1 | tee /tmp/dciab-e2e.log
+     hack/e2e/run.sh 2>&1 | tee /tmp/dciab-e2e.log; echo "exit=$?"
      ```
    - Expected: the script exits 0, and `verify.py` lists no mismatches. It takes about 10–15 minutes.
    - The clusters point at made-up infrastructure, so the providers stop after the topology step. That's expected.
 
-4. **Clean up:** `kind delete cluster --name dciab-e2e && rm -rf "$work"`.
+4. **Clean up:** `kind delete cluster --name dciab-e2e` (only if step 3 created it), then `rm -rf /tmp/dciab-0001`.
 
 ## Stop and ask
 

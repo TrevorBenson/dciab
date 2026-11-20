@@ -38,17 +38,23 @@ if [[ -z "$runtime" && "$print_only" == false ]]; then
   exit 2
 fi
 
-# Optional build settings from the env file (DCIAB_*); the PROXMOX_* values go to the
-# container as they are.
-set -a
-# shellcheck disable=SC1090
-source "$env_file"
-set +a
-
+# One build at a time per checkout: .build/ and the image tag are shared.
 mkdir -p "$HERE/.build"
-python3 - "$ROOT/bundle.lock" "$HERE/.build/dciab-node.json" > "$HERE/.build/base-image" <<'PY'
-import json, os, re, sys
+python3 - "$ROOT/bundle.lock" "$HERE/.build/dciab-node.json" "$env_file" > "$HERE/.build/base-image" <<'PY'
+import json, re, sys
 import yaml
+
+# The env file is parsed, never sourced: KEY=value lines only. The PROXMOX_* values go
+# to the container through --env-file; only the optional DCIAB_* values are read here.
+env = {}
+for n, line in enumerate(open(sys.argv[3]), 1):
+    line = line.strip()
+    if not line or line.startswith("#"):
+        continue
+    key, sep, value = line.partition("=")
+    if not sep or not re.fullmatch(r"[A-Z][A-Z0-9_]*", key):
+        sys.exit(f"build.sh: {sys.argv[3]} line {n}: expected KEY=value")
+    env[key] = value
 
 lock = yaml.safe_load(open(sys.argv[1]))
 nodes = lock["nodeImages"]
@@ -84,9 +90,9 @@ optional = {
     "DCIAB_DISK_SIZE": "disk_size",
     "DCIAB_CPU_TYPE": "cpu_type",
 }
-for env, var in optional.items():
-    if os.environ.get(env):
-        variables[var] = os.environ[env]
+for name, var in optional.items():
+    if env.get(name):
+        variables[var] = env[name]
 json.dump(variables, open(sys.argv[2], "w"), indent=2, sort_keys=True)
 print(f'{ib["image"]}@{ib["digest"]}')
 PY

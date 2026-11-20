@@ -18,7 +18,7 @@ This is the first run of the Rocky 10 target, which DCiaB adds on top of upstrea
 
 ## Needs
 
-- podman or docker, and python3 with PyYAML
+- podman or docker, and python3 with PyYAML and pytest (`dnf install -y python3-pyyaml`, then `pip install --user -r requirements-dev.txt`)
 - skopeo (`dnf install -y skopeo`), or another way to read an image digest
 - From Trevor (ask in one message):
   - A Proxmox API token for a user with the privileges in image-builder's Proxmox guide (linked from `images/node/README.md`). Show him the list.
@@ -36,9 +36,9 @@ This is the first run of the Rocky 10 target, which DCiaB adds on top of upstrea
    - Run `python3 -m pytest -q`. It must pass.
    - Commit this on the task branch. It's the only change allowed outside `handoff/`.
 2. **Write the env file.** Copy `images/node/proxmox.env.example` to `~/.dciab/proxmox-build.env`, fill it in with Trevor's answers, and `chmod 600` it. Set `DCIAB_STORAGE_POOL_TYPE` when the storage isn't lvm.
-3. **Build.** Run `images/node/build.sh ~/.dciab/proxmox-build.env 2>&1 | tee /tmp/dciab-node-build.log`. Expected: Packer finishes with a template named `rocky10-kube-v1.36.6`. It takes about 20–40 minutes.
+3. **Build.** First note whether a VM named `rocky10-kube-v1.36.6` (or the chosen VMID) already exists. If one does, stop and ask Trevor. Then run `set -o pipefail; images/node/build.sh ~/.dciab/proxmox-build.env 2>&1 | tee /tmp/dciab-node-build.log; echo "exit=$?"`. Expected: Packer finishes with a template named `rocky10-kube-v1.36.6`. It takes about 20–40 minutes.
 4. **Check the template.** Using the Proxmox API (or ask Trevor for `qm config <vmid>`), confirm:
-   - the VM is a template
+   - the VM is the one this build created, and is a template
    - the CPU type is x86-64-v3 or newer
    - the disk size and the qemu-guest-agent setting
 5. **Clean up the build host:** `rm -rf images/node/.build`. Keep the template.

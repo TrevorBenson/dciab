@@ -59,4 +59,8 @@ The result is a template on `PROXMOX_NODE`. Record its VMID and node: cluster va
 - **The build VM never gets the kickstart:** check DHCP on the bridge, and that the VM can reach this machine on ports 8000–9000 (`firewall-cmd --add-port=8000-9000/tcp` on a Rocky host).
 - **Kernel panic or "CPU not supported" at boot:** the CPU type is older than x86-64-v3.
 - **Packer waits for SSH forever:** open the VM console in Proxmox; the installer shows kickstart errors there.
-- **The TLS certificate isn't checked:** upstream's Proxmox template sets `insecure_skip_tls_verify`. Only build over a network you trust.
+## Known limits
+
+- **Build on a trusted network.** Upstream's Proxmox template sets `insecure_skip_tls_verify`, so the Proxmox certificate isn't checked. The kickstart, with the build user's one-time password, is served over plain HTTP during the build.
+- **Hardening is still to come.** The template ships with SELinux permissive and no host firewall, as upstream image-builder's EL images do. Enforcing SELinux and a firewall with Kubernetes rules are planned.
+- **Run one build at a time per checkout.** Builds share `images/node/.build/` and the local image tag.

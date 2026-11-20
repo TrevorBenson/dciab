@@ -53,7 +53,7 @@ may_change: [bundle.lock]   # files outside handoff/ the runner may edit, if any
    Then it pushes the branch, opens a PR titled `handoff NNNN: <title>`, and gives Trevor the PR link.
 6. **Planner picks it up.** Trevor tells the planner the PR number, or the planner lists open `handoff/*` PRs. The planner reads the report, merges the PR, and follows up with fix PRs and new tasks.
 
-The status in the task file on `main` is the state of record. Where a task stands is `git grep '^status:' handoff/tasks`.
+There is one runner, and it runs one task at a time. The status in the task file on `main` is the state of record. Where a task stands is `git grep '^status:' handoff/tasks`.
 
 ## Rules for the runner
 

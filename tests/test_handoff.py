@@ -55,6 +55,7 @@ def test_reports_match_a_task_and_finished_tasks_have_reports():
             continue
         assert path.name in task_names, f"report {path.name} has no task"
         fm = front_matter(path)
+        assert fm["id"] == path.name[:4], f"report {path.name}: id must be {path.name[:4]!r}"
         assert fm["result"] in {"pass", "fail", "partial", "blocked"}, path.name
     for path in tasks():
         if front_matter(path)["status"] in {"done", "blocked"}:
@@ -62,9 +63,10 @@ def test_reports_match_a_task_and_finished_tasks_have_reports():
 
 
 def test_attachments_stay_small():
-    for path in (HANDOFF / "reports").rglob("*"):
-        if path.is_file():
-            assert path.stat().st_size < 200_000, f"{path} is over 200 KB"
+    for folder in (HANDOFF / "reports").iterdir():
+        if folder.is_dir():
+            total = sum(p.stat().st_size for p in folder.rglob("*") if p.is_file())
+            assert total < 200_000, f"{folder.name}: attachments total {total} bytes, over 200 KB"
 
 
 def test_node_image_pins_are_empty_or_well_formed():

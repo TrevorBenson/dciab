@@ -17,6 +17,8 @@ network --bootproto=dhcp --device=link --onboot=on --ipv6=auto --activate --host
 rootpw --lock
 user --name=builder --groups=wheel --password=$SSH_PASSWORD --plaintext --shell=/bin/bash
 
+# Same as upstream image-builder's EL kickstarts. SELinux enforcing and a host firewall
+# with Kubernetes rules are planned hardening (images/node/README.md).
 selinux --permissive
 firewall --disabled
 services --enabled="NetworkManager,sshd,chronyd"
@@ -58,11 +60,11 @@ sed -ri '/\sswap\s/s/^#?/#/' /etc/fstab
 
 dnf install -y cloud-init systemd-resolved
 
-# Allow guest-exec through qemu-guest-agent.
-echo 'FILTER_RPC_ARGS=$FILTER_RPC_ARGS,guest-exec' >> /etc/sysconfig/qemu-ga
+# guest-exec stays filtered (unlike upstream's Rocky 9 kickstart): Packer and CAPMOX
+# only need the agent for addresses and shutdown, not for running commands as root.
 systemctl enable qemu-guest-agent systemd-resolved
 
-# EL10 has no network-scripts: drop the installer's NetworkManager profile so clones
-# get their addresses from cloud-init instead of the build VM's.
-rm -f /etc/NetworkManager/system-connections/*.nmconnection
+# The installer's NetworkManager profile stays: Packer reconnects over SSH after this
+# reboot. image-builder's sysprep role clears machine-specific network state before
+# the VM becomes a template.
 %end
