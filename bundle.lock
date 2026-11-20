@@ -136,12 +136,18 @@ bootstrapAppliance:
   vtoyboot:
     version: "1.0.36"
     url: "https://github.com/ventoy/vtoyboot/releases/download/v1.0.36/vtoyboot-1.0.36.iso"
-    sha256: ""
+    sha256: "e0fd493014b57f2c72c7b1b45c53b3e7cd3b746fedee5a9f20b057811168267e"
   # Installed onto the USB image by images/usb/build.sh.
   ventoy:
     version: "1.1.17"
     url: "https://github.com/ventoy/Ventoy/releases/download/v1.1.17/ventoy-1.1.17-linux.tar.gz"
-    sha256: ""
+    sha256: "7fb4ed08cef6a6b4d39dd19260d8c80291a78dfdf9af7d461571e23cbbc43805"
+  # sha256 of the linux-amd64 binaries baked into the appliance, for tools.kind,
+  # tools.helm and kubernetes.version. Update them together with those versions.
+  toolChecksums:
+    kind: "aee6151561422756b764a4ae28e7f44cda5af5a9eead3cc9985112b1de8d8e0d"
+    kubectl: ""
+    helm: ""   # of helm-<version>-linux-amd64.tar.gz
 
 charts:
   cilium: 1.20.5

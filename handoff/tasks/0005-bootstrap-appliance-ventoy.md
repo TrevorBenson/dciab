@@ -32,18 +32,18 @@ Read `docs/adr/0002-bootstrap-appliance-on-ventoy.md`, `images/bootstrap-bootc/R
 
 - Task 0004 done: the Rocky 10 bootc base (`localhost/dciab-rocky-bootc-base:minimal`) in root's podman storage, and `nodeImages.bootc.bootcImageBuilder` pinned. If the base image is gone, rebuild it with `sudo images/node-bootc/build.sh`.
 - Rootful podman, xorriso, exfatprogs, parted, curl; about 150 GB free disk.
-- From Trevor, at the stop point:
-  - two VMIDs on `pve1`: the server-zero VM and an installer-test VM
+- From Trevor, **before step 5** (the test config needs them):
   - one free IP on untagged `vmbr0` for the appliance, and its gateway and prefix
   - his SSH public key for `identity.initialAdmins`
-  - someone at the Proxmox console (noVNC) for the MokManager screens
+  - two VMIDs on `pve1`, the server-zero VM and an installer-test VM, so you can choose the server-zero VM's MAC now
+- From Trevor, at the stop point before step 6: the go-ahead to create the VMs, and someone at the Proxmox console (noVNC) for the MokManager screens.
 
 ## Steps
 
 1. **Pins.** In `bundle.lock` → `bootstrapAppliance`:
-   - `vtoyboot.sha256`: from the vtoyboot v1.0.36 release's published checksums
-   - `ventoy.sha256`: from the Ventoy v1.1.17 release's published checksums (`ventoy-1.1.17-linux.tar.gz`)
-   - If a newer release exists, record it, but keep these versions unless one fails.
+   - Check `ventoy.sha256` against the Ventoy v1.1.17 release's `sha256.txt`, and `vtoyboot.sha256` against the vtoyboot v1.0.36 release page. The planner computed the vtoyboot one from a download; it couldn't read the release page.
+   - Fill in `toolChecksums.kubectl` (the published `.sha256` for `kubectl` at `kubernetes.version`, linux/amd64) and `toolChecksums.helm` (the published `.sha256sum` for `helm-<tools.helm>-linux-amd64.tar.gz`). Check `toolChecksums.kind` the same way.
+   - If newer Ventoy or vtoyboot releases exist, record them, but keep these versions unless one fails.
    - Run `python3 -m pytest -q`.
 2. **Plan.** Run `images/bootstrap-bootc/build.sh --print` and `images/usb/build.sh --print`. They must show the pinned versions and the base image.
 3. **Build the appliance.**
@@ -61,6 +61,7 @@ Read `docs/adr/0002-bootstrap-appliance-on-ventoy.md`, `images/bootstrap-bootc/R
      - `dciab.yaml` made from `examples/proxmox-bare.yaml`, with `bootstrap.interface` set to the server-zero VM's NIC MAC (quoted), `bootstrap.managementVLAN: untagged`, Trevor's IP and gateway in `bootstrap.address` and `network.nodes`, and his key in `identity.initialAdmins`
      - dummy files for every secret it references
    - Keep the config's other values coherent enough that `dciab validate` passes; record anything you had to change.
+   - Copy the Rocky 10 ISO from `nodeImages.rocky10` into `isos/` too, if it fits. Do all of this on the image file before step 6 imports it, because the imported volume is a copy.
 6. **Boot server zero.**
    1. Create the server-zero VM:
       - OVMF with an EFI disk using `pre-enrolled-keys=1` (Secure Boot on)
@@ -94,7 +95,7 @@ Read `docs/adr/0002-bootstrap-appliance-on-ventoy.md`, `images/bootstrap-bootc/R
 10. **Installers from the same stick.**
     - With server zero shut down, attach the same disk to the installer-test VM: OVMF with Secure Boot on (the key is per machine, so MokManager appears again), and no other disks except an empty 32 GB disk.
     - From the Ventoy menu, boot the Proxmox VE ISO in `isos/` and confirm the installer's first screen appears. Don't install.
-    - Repeat with the Rocky 10 ISO from `nodeImages.rocky10` if it fits on the stick (copy it into `isos/` by loop-mounting the image).
+    - Repeat with the Rocky 10 ISO, if step 5 added it.
 11. **Clean up.**
     - Delete both VMs and the imported disks.
     - Remove `images/bootstrap-bootc/{build,output}/` and `images/usb/{build,output}/`, and delete local images you don't need (keep the bootc base).
@@ -102,6 +103,7 @@ Read `docs/adr/0002-bootstrap-appliance-on-ventoy.md`, `images/bootstrap-bootc/R
 
 ## Stop and ask
 
+- **Before step 5:** ask Trevor for the IP, gateway, prefix, SSH key and VMIDs listed under Needs.
 - **Before step 6:** show Trevor the step 3–5 results and the VM plan. Step 6 creates VMs on his Proxmox.
 - **At step 6.3 and step 10:** the MokManager enrollment needs someone at the console.
 - **If the appliance fails to boot as a vDisk after two different fixes:** stop. Report what you tried, and whether booting the raw disk directly (without Ventoy) works, since that tells the planner which part failed.

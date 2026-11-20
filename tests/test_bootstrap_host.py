@@ -1,8 +1,12 @@
-"""The bootstrap appliance's setup plan, from the shipped examples."""
-import pytest
+"""The bootstrap appliance's setup plans, from the shipped examples."""
+import json
 
-from conftest import load_example
-from dciab_bootstrap_host.setup import ConfigError, main, plan
+import pytest
+import yaml
+
+from conftest import ROOT, load_example
+from dciab_bootstrap_host import setup
+from dciab_bootstrap_host.setup import ConfigError, main, plan_admins, plan_network
 
 
 def _doc(**bootstrap):
@@ -11,46 +15,83 @@ def _doc(**bootstrap):
     return doc
 
 
-def test_plan_by_name_untagged():
-    p = plan(_doc(managementVLAN="untagged"))
-    assert p["match"] == {"name": "eth0"}
-    assert p["vlan"] is None
-    assert p["address"] == "10.30.110.5/24"
-    assert p["gateway"] == "10.30.110.1"
-    assert p["dns"] == []                       # isolated site
-    assert p["dnsSearch"] == "lab1.example.com"
-    assert [a["username"] for a in p["admins"]] == ["tparker"]
+def test_network_by_name_untagged():
+    p = plan_network(_doc(interface="enp3s0f1", managementVLAN="untagged"))
+    assert p == {
+        "match": {"name": "enp3s0f1"},
+        "vlan": None,
+        "address": "10.30.110.5/24",
+        "gateway": "10.30.110.1",
+        "dns": [],                          # isolated site
+        "dnsSearch": "lab1.example.com",
+    }
 
 
-def test_plan_by_mac_tagged():
-    p = plan(_doc(interface="B8:CA:3A:00:00:05", managementVLAN="tagged"))
+def test_network_by_mac_tagged():
+    p = plan_network(_doc(interface="B8:CA:3A:00:00:05", managementVLAN="tagged"))
     assert p["match"] == {"mac": "b8:ca:3a:00:00:05"}
     assert p["vlan"] == 110
 
 
-def test_plan_needs_vlan_mode():
+def test_network_needs_vlan_mode():
     doc = _doc()
     doc["spec"]["bootstrap"].pop("managementVLAN", None)
     with pytest.raises(ConfigError, match="managementVLAN"):
-        plan(doc)
+        plan_network(doc)
 
 
-def test_plan_rejects_address_outside_node_network():
+def test_network_rejects_address_outside_node_network():
     with pytest.raises(ConfigError, match="outside"):
-        plan(_doc(managementVLAN="untagged", address="10.99.0.5"))
+        plan_network(_doc(managementVLAN="untagged", address="10.99.0.5"))
 
 
-def test_print_mode(tmp_path, capsys):
-    import yaml
+def test_admins_merge_keys_per_user():
+    doc = _doc()
+    first = doc["spec"]["identity"]["initialAdmins"][0]
+    doc["spec"]["identity"]["initialAdmins"].append(dict(first, sshPublicKey="ssh-ed25519 AAAAsecond second"))
+    [a] = plan_admins(doc)
+    assert a["username"] == "tparker"
+    assert len(a["sshPublicKeys"]) == 2
 
+
+def test_admins_reject_root():
+    doc = _doc()
+    doc["spec"]["identity"]["initialAdmins"][0]["username"] = "root"
+    with pytest.raises(ConfigError, match="root"):
+        plan_admins(doc)
+
+
+def test_print_shows_both_plans(tmp_path, capsys):
     path = tmp_path / "dciab.yaml"
-    path.write_text(yaml.safe_dump(_doc(managementVLAN="untagged")))
+    path.write_text(yaml.safe_dump(_doc(interface="eno1", managementVLAN="tagged")))
     assert main([str(path), "--print"]) == 0
-    assert '"address": "10.30.110.5/24"' in capsys.readouterr().out
+    out = json.loads(capsys.readouterr().out)
+    assert out["network"]["match"] == {"name": "eno1"}
+    assert out["network"]["vlan"] == 110
+    assert out["network"]["address"] == "10.30.110.5/24"
+    assert [a["username"] for a in out["admins"]] == ["tparker"]
 
 
-def test_missing_section_is_a_clear_error(tmp_path, capsys):
+def test_admins_still_planned_when_network_is_not(tmp_path, capsys):
+    doc = _doc()
+    doc["spec"]["bootstrap"].pop("managementVLAN", None)
     path = tmp_path / "dciab.yaml"
-    path.write_text("spec: {}\n")
+    path.write_text(yaml.safe_dump(doc))
     assert main([str(path), "--print"]) == 1
-    assert "has no spec.bootstrap" in capsys.readouterr().err
+    captured = capsys.readouterr()
+    out = json.loads(captured.out)
+    assert out["network"] is None and out["admins"]
+    assert "managementVLAN" in captured.err
+
+
+def test_blocking_errors_only_cover_network_and_identity(site, monkeypatch):
+    monkeypatch.setenv("DCIAB_ROOT", str(ROOT))
+    doc = _doc(managementVLAN="untagged")
+    doc["spec"]["hypervisors"]["rootPassword"] = {"file": "./secrets/hv/missing"}  # not blocking
+    path = site.dir / "dciab.yaml"
+    path.write_text(yaml.safe_dump(doc))
+    assert setup.blocking_errors(str(path)) == []
+    doc["spec"]["network"]["ntpServers"] = ["10.30.0.123"]                          # blocking
+    path.write_text(yaml.safe_dump(doc))
+    [err] = setup.blocking_errors(str(path))
+    assert err.startswith("spec.network.ntpServers")

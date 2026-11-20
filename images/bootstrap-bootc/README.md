@@ -13,10 +13,12 @@ A Rocky Linux 10 image-mode (bootc) system that runs the whole DCiaB bootstrap. 
 ## On every boot
 
 1. `var-mnt-dciab.mount` mounts the USB's exFAT data partition (label `DCIAB`) at `/var/mnt/dciab`. Every file is root-only (mode 0600), so secret files pass `dciab validate`'s permission check.
-2. `dciab-bootstrap-setup.service` reads `/var/mnt/dciab/dciab.yaml` and:
-   - configures `spec.bootstrap.interface` (a NIC name, or its MAC) with `spec.bootstrap.address`, the node network's gateway and `network.upstreamResolvers`, tagging `network.nodes.vlan` when `spec.bootstrap.managementVLAN` is `tagged`
-   - creates a login for each `identity.initialAdmins` entry, with its SSH key and passwordless sudo
-   - runs `dciab validate` and prints the result on the console. A failing config doesn't stop the appliance from coming up, so the operator can SSH in and fix it.
+2. `dciab-bootstrap-setup.service` reads `/var/mnt/dciab/dciab.yaml`:
+   1. It runs `dciab validate` and prints the result on the console.
+   2. It creates a login for each `identity.initialAdmins` user, with that user's SSH keys and passwordless sudo. Logins it created earlier for users no longer listed lose their keys and are locked.
+   3. It configures `spec.bootstrap.interface` (a NIC name, or its MAC) with `spec.bootstrap.address`, the node network's gateway and `network.upstreamResolvers`, tagging `network.nodes.vlan` when `spec.bootstrap.managementVLAN` is `tagged`. It does this only when validation finds no errors under `spec.bootstrap`, `spec.network` or `spec.identity`, so a wrong address never reaches the site network. Other errors (a missing secret file, say) don't stop it, so the operator can SSH in and fix them.
+
+   If the network isn't configured, fix `dciab.yaml` from a laptop (the `DCIAB` partition) and reboot the appliance.
 
 There are no passwords: access is by SSH key only.
 

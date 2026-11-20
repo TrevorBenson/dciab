@@ -20,7 +20,8 @@ if (( ${#kernels[@]} != 1 )); then
 fi
 kver=${kernels[0]}
 dracut --force --no-hostonly --reproducible "/usr/lib/modules/$kver/initramfs.img" "$kver"
-if ! lsinitrd "/usr/lib/modules/$kver/initramfs.img" | grep -qi ventoy; then
+listing=$(lsinitrd "/usr/lib/modules/$kver/initramfs.img")
+if ! grep -qi ventoy <<<"$listing"; then
   echo "install-vtoyboot: no Ventoy hook in the initramfs" >&2
   exit 1
 fi

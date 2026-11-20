@@ -4,8 +4,8 @@
 #
 #   sudo images/bootstrap-bootc/build.sh [--size GiB] [--type raw] [--type qcow2] [--print]
 #
-# 1. Downloads kind, helm and kubectl (versions from bundle.lock, checked against the
-#    projects' published sha256 files) and vtoyboot (sha256 pinned in bundle.lock).
+# 1. Downloads kind, helm, kubectl and vtoyboot, each checked against its sha256 in
+#    bundle.lock (bootstrapAppliance).
 # 2. Builds images/bootstrap-bootc/Containerfile on nodeImages.bootc's base: the pinned
 #    baseImage, or the base images/node-bootc/build.sh built locally.
 # 3. bootc-image-builder writes the disks under images/bootstrap-bootc/output/.
@@ -33,7 +33,7 @@ done
 (( ${#types[@]} )) || types=(--type raw)
 [[ "$size" =~ ^[0-9]+$ ]] || { echo "build.sh: --size must be a whole number of GiB" >&2; exit 2; }
 
-read -r version k8s kind helm base_image manifest bib vtb_ver vtb_url vtb_sha < <(python3 - "$ROOT" <<'PY'
+read -r version k8s kind helm base_image manifest bib vtb_ver vtb_url vtb_sha sha_kind sha_kubectl sha_helm < <(python3 - "$ROOT" <<'PY'
 import re, sys
 from pathlib import Path
 import yaml
@@ -48,11 +48,14 @@ if not pinned(b["bootcImageBuilder"]):
     sys.exit("build.sh: pin nodeImages.bootc.bootcImageBuilder as image@sha256:<digest>")
 if b.get("baseImage") and not pinned(b["baseImage"]):
     sys.exit("build.sh: nodeImages.bootc.baseImage must be image@sha256:<digest>")
-if not re.fullmatch(r"[0-9a-f]{64}", v.get("sha256") or ""):
-    sys.exit("build.sh: pin bootstrapAppliance.vtoyboot.sha256 (64 hex)")
+t = lock["bootstrapAppliance"]["toolChecksums"]
+for name, sha in [("vtoyboot.sha256", v.get("sha256")), ("toolChecksums.kind", t.get("kind")),
+                  ("toolChecksums.kubectl", t.get("kubectl")), ("toolChecksums.helm", t.get("helm"))]:
+    if not re.fullmatch(r"[0-9a-f]{64}", sha or ""):
+        sys.exit(f"build.sh: pin bootstrapAppliance.{name} (64 hex)")
 print((root / "VERSION").read_text().strip(), lock["kubernetes"]["version"], lock["tools"]["kind"],
       lock["tools"]["helm"], b.get("baseImage") or "-", b["manifest"], b["bootcImageBuilder"],
-      v["version"], v["url"], v["sha256"])
+      v["version"], v["url"], v["sha256"], t["kind"], t["kubectl"], t["helm"])
 PY
 )
 base="$base_image"
@@ -63,7 +66,7 @@ build_cmd=(podman build -f "$HERE/Containerfile" -t "$tag" --build-arg "BASE_IMA
 disk_cmd=(podman run --rm --privileged --security-opt label=type:unconfined_t
   -v "$OUT:/output" -v "$BUILD/config.toml:/config.toml:ro"
   -v /var/lib/containers/storage:/var/lib/containers/storage
-  "$bib" "${types[@]}" --rootfs xfs "$tag")
+  "$bib" --config /config.toml "${types[@]}" --rootfs xfs "$tag")
 
 if [[ "$print_only" == true ]]; then
   echo "appliance $version: kubernetes $k8s, kind $kind, helm $helm, vtoyboot $vtb_ver; root >= ${size} GiB"
@@ -77,8 +80,12 @@ if (( EUID != 0 )); then
   exit 2
 fi
 if ! podman image exists "$base"; then
-  echo "build.sh: base image $base not found; run images/node-bootc/build.sh first, or pin nodeImages.bootc.baseImage" >&2
-  exit 1
+  if [[ "$base_image" != - ]]; then
+    podman pull "$base"
+  else
+    echo "build.sh: base image $base not found; run images/node-bootc/build.sh first, or pin nodeImages.bootc.baseImage" >&2
+    exit 1
+  fi
 fi
 
 rm -rf "$BUILD" "$OUT"
@@ -89,15 +96,11 @@ fetch() {
   curl -fsSL --retry 3 -o "$2" "$1"
   echo "$3  $2" | sha256sum -c --quiet -
 }
-upstream_sha() { curl -fsSL --retry 3 "$1" | awk '{print $1; exit}'; }
 
 echo "== tools"
-fetch "https://github.com/kubernetes-sigs/kind/releases/download/$kind/kind-linux-amd64" "$BUILD/bin/kind" \
-  "$(upstream_sha "https://github.com/kubernetes-sigs/kind/releases/download/$kind/kind-linux-amd64.sha256sum")"
-fetch "https://dl.k8s.io/release/$k8s/bin/linux/amd64/kubectl" "$BUILD/bin/kubectl" \
-  "$(upstream_sha "https://dl.k8s.io/release/$k8s/bin/linux/amd64/kubectl.sha256")"
-fetch "https://get.helm.sh/helm-$helm-linux-amd64.tar.gz" "$BUILD/helm.tar.gz" \
-  "$(upstream_sha "https://get.helm.sh/helm-$helm-linux-amd64.tar.gz.sha256sum")"
+fetch "https://github.com/kubernetes-sigs/kind/releases/download/$kind/kind-linux-amd64" "$BUILD/bin/kind" "$sha_kind"
+fetch "https://dl.k8s.io/release/$k8s/bin/linux/amd64/kubectl" "$BUILD/bin/kubectl" "$sha_kubectl"
+fetch "https://get.helm.sh/helm-$helm-linux-amd64.tar.gz" "$BUILD/helm.tar.gz" "$sha_helm"
 tar -xzf "$BUILD/helm.tar.gz" -C "$BUILD" linux-amd64/helm
 mv "$BUILD/linux-amd64/helm" "$BUILD/bin/helm"
 rm -rf "$BUILD/helm.tar.gz" "$BUILD/linux-amd64"
