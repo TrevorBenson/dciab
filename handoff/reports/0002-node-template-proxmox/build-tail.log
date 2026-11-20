@@ -1,0 +1,200 @@
+[0;32m    proxmox-iso.rockylinux-10:             "meta": null,[0m
+[0;32m    proxmox-iso.rockylinux-10:             "property": "running",[0m
+[0;32m    proxmox-iso.rockylinux-10:             "resource-id": "auditd",[0m
+[0;32m    proxmox-iso.rockylinux-10:             "resource-type": "Service",[0m
+[0;32m    proxmox-iso.rockylinux-10:             "result": 0,[0m
+[0;32m    proxmox-iso.rockylinux-10:             "skipped": false,[0m
+[0;32m    proxmox-iso.rockylinux-10:             "successful": true,[0m
+[0;32m    proxmox-iso.rockylinux-10:             "summary-line": "Service: auditd: running: matches expectation: [true]",[0m
+[0;32m    proxmox-iso.rockylinux-10:             "test-type": 0,[0m
+[0;32m    proxmox-iso.rockylinux-10:             "title": ""[0m
+[0;32m    proxmox-iso.rockylinux-10:         },[0m
+[0;32m    proxmox-iso.rockylinux-10:         {[0m
+[0;32m    proxmox-iso.rockylinux-10:             "duration": 23668231,[0m
+[0;32m    proxmox-iso.rockylinux-10:             "err": null,[0m
+[0;32m    proxmox-iso.rockylinux-10:             "expected": [[0m
+[0;32m    proxmox-iso.rockylinux-10:                 "false"[0m
+[0;32m    proxmox-iso.rockylinux-10:             ],[0m
+[0;32m    proxmox-iso.rockylinux-10:             "found": [[0m
+[0;32m    proxmox-iso.rockylinux-10:                 "false"[0m
+[0;32m    proxmox-iso.rockylinux-10:             ],[0m
+[0;32m    proxmox-iso.rockylinux-10:             "human": "",[0m
+[0;32m    proxmox-iso.rockylinux-10:             "meta": null,[0m
+[0;32m    proxmox-iso.rockylinux-10:             "property": "enabled",[0m
+[0;32m    proxmox-iso.rockylinux-10:             "resource-id": "conntrackd",[0m
+[0;32m    proxmox-iso.rockylinux-10:             "resource-type": "Service",[0m
+[0;32m    proxmox-iso.rockylinux-10:             "result": 0,[0m
+[0;32m    proxmox-iso.rockylinux-10:             "skipped": false,[0m
+[0;32m    proxmox-iso.rockylinux-10:             "successful": true,[0m
+[0;32m    proxmox-iso.rockylinux-10:             "summary-line": "Service: conntrackd: enabled: matches expectation: [false]",[0m
+[0;32m    proxmox-iso.rockylinux-10:             "test-type": 0,[0m
+[0;32m    proxmox-iso.rockylinux-10:             "title": ""[0m
+[0;32m    proxmox-iso.rockylinux-10:         },[0m
+[0;32m    proxmox-iso.rockylinux-10:         {[0m
+[0;32m    proxmox-iso.rockylinux-10:             "duration": 12646641,[0m
+[0;32m    proxmox-iso.rockylinux-10:             "err": null,[0m
+[0;32m    proxmox-iso.rockylinux-10:             "expected": [[0m
+[0;32m    proxmox-iso.rockylinux-10:                 "false"[0m
+[0;32m    proxmox-iso.rockylinux-10:             ],[0m
+[0;32m    proxmox-iso.rockylinux-10:             "found": [[0m
+[0;32m    proxmox-iso.rockylinux-10:                 "false"[0m
+[0;32m    proxmox-iso.rockylinux-10:             ],[0m
+[0;32m    proxmox-iso.rockylinux-10:             "human": "",[0m
+[0;32m    proxmox-iso.rockylinux-10:             "meta": null,[0m
+[0;32m    proxmox-iso.rockylinux-10:             "property": "running",[0m
+[0;32m    proxmox-iso.rockylinux-10:             "resource-id": "conntrackd",[0m
+[0;32m    proxmox-iso.rockylinux-10:             "resource-type": "Service",[0m
+[0;32m    proxmox-iso.rockylinux-10:             "result": 0,[0m
+[0;32m    proxmox-iso.rockylinux-10:             "skipped": false,[0m
+[0;32m    proxmox-iso.rockylinux-10:             "successful": true,[0m
+[0;32m    proxmox-iso.rockylinux-10:             "summary-line": "Service: conntrackd: running: matches expectation: [false]",[0m
+[0;32m    proxmox-iso.rockylinux-10:             "test-type": 0,[0m
+[0;32m    proxmox-iso.rockylinux-10:             "title": ""[0m
+[0;32m    proxmox-iso.rockylinux-10:         },[0m
+[0;32m    proxmox-iso.rockylinux-10:         {[0m
+[0;32m    proxmox-iso.rockylinux-10:             "duration": 32753501,[0m
+[0;32m    proxmox-iso.rockylinux-10:             "err": null,[0m
+[0;32m    proxmox-iso.rockylinux-10:             "expected": [[0m
+[0;32m    proxmox-iso.rockylinux-10:                 "true"[0m
+[0;32m    proxmox-iso.rockylinux-10:             ],[0m
+[0;32m    proxmox-iso.rockylinux-10:             "found": [[0m
+[0;32m    proxmox-iso.rockylinux-10:                 "true"[0m
+[0;32m    proxmox-iso.rockylinux-10:             ],[0m
+[0;32m    proxmox-iso.rockylinux-10:             "human": "",[0m
+[0;32m    proxmox-iso.rockylinux-10:             "meta": null,[0m
+[0;32m    proxmox-iso.rockylinux-10:             "property": "enabled",[0m
+[0;32m    proxmox-iso.rockylinux-10:             "resource-id": "containerd",[0m
+[0;32m    proxmox-iso.rockylinux-10:             "resource-type": "Service",[0m
+[0;32m    proxmox-iso.rockylinux-10:             "result": 0,[0m
+[0;32m    proxmox-iso.rockylinux-10:             "skipped": false,[0m
+[0;32m    proxmox-iso.rockylinux-10:             "successful": true,[0m
+[0;32m    proxmox-iso.rockylinux-10:             "summary-line": "Service: containerd: enabled: matches expectation: [true]",[0m
+[0;32m    proxmox-iso.rockylinux-10:             "test-type": 0,[0m
+[0;32m    proxmox-iso.rockylinux-10:             "title": ""[0m
+[0;32m    proxmox-iso.rockylinux-10:         },[0m
+[0;32m    proxmox-iso.rockylinux-10:         {[0m
+[0;32m    proxmox-iso.rockylinux-10:             "duration": 9630380,[0m
+[0;32m    proxmox-iso.rockylinux-10:             "err": null,[0m
+[0;32m    proxmox-iso.rockylinux-10:             "expected": [[0m
+[0;32m    proxmox-iso.rockylinux-10:                 "true"[0m
+[0;32m    proxmox-iso.rockylinux-10:             ],[0m
+[0;32m    proxmox-iso.rockylinux-10:             "found": [[0m
+[0;32m    proxmox-iso.rockylinux-10:                 "true"[0m
+[0;32m    proxmox-iso.rockylinux-10:             ],[0m
+[0;32m    proxmox-iso.rockylinux-10:             "human": "",[0m
+[0;32m    proxmox-iso.rockylinux-10:             "meta": null,[0m
+[0;32m    proxmox-iso.rockylinux-10:             "property": "running",[0m
+[0;32m    proxmox-iso.rockylinux-10:             "resource-id": "containerd",[0m
+[0;32m    proxmox-iso.rockylinux-10:             "resource-type": "Service",[0m
+[0;32m    proxmox-iso.rockylinux-10:             "result": 0,[0m
+[0;32m    proxmox-iso.rockylinux-10:             "skipped": false,[0m
+[0;32m    proxmox-iso.rockylinux-10:             "successful": true,[0m
+[0;32m    proxmox-iso.rockylinux-10:             "summary-line": "Service: containerd: running: matches expectation: [true]",[0m
+[0;32m    proxmox-iso.rockylinux-10:             "test-type": 0,[0m
+[0;32m    proxmox-iso.rockylinux-10:             "title": ""[0m
+[0;32m    proxmox-iso.rockylinux-10:         },[0m
+[0;32m    proxmox-iso.rockylinux-10:         {[0m
+[0;32m    proxmox-iso.rockylinux-10:             "duration": 21844571,[0m
+[0;32m    proxmox-iso.rockylinux-10:             "err": null,[0m
+[0;32m    proxmox-iso.rockylinux-10:             "expected": [[0m
+[0;32m    proxmox-iso.rockylinux-10:                 "true"[0m
+[0;32m    proxmox-iso.rockylinux-10:             ],[0m
+[0;32m    proxmox-iso.rockylinux-10:             "found": [[0m
+[0;32m    proxmox-iso.rockylinux-10:                 "true"[0m
+[0;32m    proxmox-iso.rockylinux-10:             ],[0m
+[0;32m    proxmox-iso.rockylinux-10:             "human": "",[0m
+[0;32m    proxmox-iso.rockylinux-10:             "meta": null,[0m
+[0;32m    proxmox-iso.rockylinux-10:             "property": "enabled",[0m
+[0;32m    proxmox-iso.rockylinux-10:             "resource-id": "chronyd",[0m
+[0;32m    proxmox-iso.rockylinux-10:             "resource-type": "Service",[0m
+[0;32m    proxmox-iso.rockylinux-10:             "result": 0,[0m
+[0;32m    proxmox-iso.rockylinux-10:             "skipped": false,[0m
+[0;32m    proxmox-iso.rockylinux-10:             "successful": true,[0m
+[0;32m    proxmox-iso.rockylinux-10:             "summary-line": "Service: chronyd: enabled: matches expectation: [true]",[0m
+[0;32m    proxmox-iso.rockylinux-10:             "test-type": 0,[0m
+[0;32m    proxmox-iso.rockylinux-10:             "title": ""[0m
+[0;32m    proxmox-iso.rockylinux-10:         },[0m
+[0;32m    proxmox-iso.rockylinux-10:         {[0m
+[0;32m    proxmox-iso.rockylinux-10:             "duration": 13477773,[0m
+[0;32m    proxmox-iso.rockylinux-10:             "err": null,[0m
+[0;32m    proxmox-iso.rockylinux-10:             "expected": [[0m
+[0;32m    proxmox-iso.rockylinux-10:                 "true"[0m
+[0;32m    proxmox-iso.rockylinux-10:             ],[0m
+[0;32m    proxmox-iso.rockylinux-10:             "found": [[0m
+[0;32m    proxmox-iso.rockylinux-10:                 "true"[0m
+[0;32m    proxmox-iso.rockylinux-10:             ],[0m
+[0;32m    proxmox-iso.rockylinux-10:             "human": "",[0m
+[0;32m    proxmox-iso.rockylinux-10:             "meta": null,[0m
+[0;32m    proxmox-iso.rockylinux-10:             "property": "running",[0m
+[0;32m    proxmox-iso.rockylinux-10:             "resource-id": "chronyd",[0m
+[0;32m    proxmox-iso.rockylinux-10:             "resource-type": "Service",[0m
+[0;32m    proxmox-iso.rockylinux-10:             "result": 0,[0m
+[0;32m    proxmox-iso.rockylinux-10:             "skipped": false,[0m
+[0;32m    proxmox-iso.rockylinux-10:             "successful": true,[0m
+[0;32m    proxmox-iso.rockylinux-10:             "summary-line": "Service: chronyd: running: matches expectation: [true]",[0m
+[0;32m    proxmox-iso.rockylinux-10:             "test-type": 0,[0m
+[0;32m    proxmox-iso.rockylinux-10:             "title": ""[0m
+[0;32m    proxmox-iso.rockylinux-10:         },[0m
+[0;32m    proxmox-iso.rockylinux-10:         {[0m
+[0;32m    proxmox-iso.rockylinux-10:             "duration": 29627766,[0m
+[0;32m    proxmox-iso.rockylinux-10:             "err": null,[0m
+[0;32m    proxmox-iso.rockylinux-10:             "expected": [[0m
+[0;32m    proxmox-iso.rockylinux-10:                 "true"[0m
+[0;32m    proxmox-iso.rockylinux-10:             ],[0m
+[0;32m    proxmox-iso.rockylinux-10:             "found": [[0m
+[0;32m    proxmox-iso.rockylinux-10:                 "true"[0m
+[0;32m    proxmox-iso.rockylinux-10:             ],[0m
+[0;32m    proxmox-iso.rockylinux-10:             "human": "",[0m
+[0;32m    proxmox-iso.rockylinux-10:             "meta": null,[0m
+[0;32m    proxmox-iso.rockylinux-10:             "property": "enabled",[0m
+[0;32m    proxmox-iso.rockylinux-10:             "resource-id": "kubelet",[0m
+[0;32m    proxmox-iso.rockylinux-10:             "resource-type": "Service",[0m
+[0;32m    proxmox-iso.rockylinux-10:             "result": 0,[0m
+[0;32m    proxmox-iso.rockylinux-10:             "skipped": false,[0m
+[0;32m    proxmox-iso.rockylinux-10:             "successful": true,[0m
+[0;32m    proxmox-iso.rockylinux-10:             "summary-line": "Service: kubelet: enabled: matches expectation: [true]",[0m
+[0;32m    proxmox-iso.rockylinux-10:             "test-type": 0,[0m
+[0;32m    proxmox-iso.rockylinux-10:             "title": ""[0m
+[0;32m    proxmox-iso.rockylinux-10:         },[0m
+[0;32m    proxmox-iso.rockylinux-10:         {[0m
+[0;32m    proxmox-iso.rockylinux-10:             "duration": 11321482,[0m
+[0;32m    proxmox-iso.rockylinux-10:             "err": null,[0m
+[0;32m    proxmox-iso.rockylinux-10:             "expected": [[0m
+[0;32m    proxmox-iso.rockylinux-10:                 "false"[0m
+[0;32m    proxmox-iso.rockylinux-10:             ],[0m
+[0;32m    proxmox-iso.rockylinux-10:             "found": [[0m
+[0;32m    proxmox-iso.rockylinux-10:                 "false"[0m
+[0;32m    proxmox-iso.rockylinux-10:             ],[0m
+[0;32m    proxmox-iso.rockylinux-10:             "human": "",[0m
+[0;32m    proxmox-iso.rockylinux-10:             "meta": null,[0m
+[0;32m    proxmox-iso.rockylinux-10:             "property": "running",[0m
+[0;32m    proxmox-iso.rockylinux-10:             "resource-id": "kubelet",[0m
+[0;32m    proxmox-iso.rockylinux-10:             "resource-type": "Service",[0m
+[0;32m    proxmox-iso.rockylinux-10:             "result": 0,[0m
+[0;32m    proxmox-iso.rockylinux-10:             "skipped": false,[0m
+[0;32m    proxmox-iso.rockylinux-10:             "successful": true,[0m
+[0;32m    proxmox-iso.rockylinux-10:             "summary-line": "Service: kubelet: running: matches expectation: [false]",[0m
+[0;32m    proxmox-iso.rockylinux-10:             "test-type": 0,[0m
+[0;32m    proxmox-iso.rockylinux-10:             "title": ""[0m
+[0;32m    proxmox-iso.rockylinux-10:         }[0m
+[0;32m    proxmox-iso.rockylinux-10:     ],[0m
+[0;32m    proxmox-iso.rockylinux-10:     "summary": {[0m
+[0;32m    proxmox-iso.rockylinux-10:         "failed-count": 1,[0m
+[0;32m    proxmox-iso.rockylinux-10:         "skipped-count": 0,[0m
+[0;32m    proxmox-iso.rockylinux-10:         "summary-line": "Count: 50, Failed: 1, Skipped: 0, Duration: 0.055s",[0m
+[0;32m    proxmox-iso.rockylinux-10:         "test-count": 50,[0m
+[0;32m    proxmox-iso.rockylinux-10:         "total-duration": 54724929[0m
+[0;32m    proxmox-iso.rockylinux-10:     }[0m
+[0;32m    proxmox-iso.rockylinux-10: }[0m
+[1;32m==> proxmox-iso.rockylinux-10: Provisioning step had errors: Running the cleanup provisioner, if present...[0m
+[1;32m==> proxmox-iso.rockylinux-10: Stopping VM[0m
+[1;32m==> proxmox-iso.rockylinux-10: Deleting VM[0m
+[1;31mBuild 'proxmox-iso.rockylinux-10' errored after 9 minutes 50 seconds: Error running Goss: goss non-zero exit status[0m
+
+==> Wait completed after 9 minutes 50 seconds
+
+==> Some builds didn't complete successfully and had errors:
+--> proxmox-iso.rockylinux-10: Error running Goss: goss non-zero exit status
+
+==> Builds finished but no artifacts were created.
+make: *** [Makefile:672: build-proxmox-rockylinux-10] Error 1
