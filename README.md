@@ -57,7 +57,7 @@ charts/
 hack/                    fetch_crds.py, check_manifests.py (CRD-based checks), render_components.py
   e2e/                   ClusterClass end-to-end test on kind (run.sh, verify.py)
 images/node/              node template build (image-builder: Rocky 10 on Proxmox)
-handoff/                 tasks and reports between the planner and runner agents
+handoff/                 development only: lab test tasks and reports (not part of the product)
 examples/                vsphere.yaml, proxmox.yaml, metal3-cluster.yaml
 tests/                   pytest suite
 CLAUDE.md                how AI agents work in this repo
@@ -65,8 +65,6 @@ docs/                    roadmap, versioning (VERSIONING.md) and design notes
 ```
 
 ## Development
-
-Work is split between a planner agent (code and docs) and a runner agent on the lab workstation (real infrastructure), with tasks and reports in [handoff/](handoff/README.md). Agents start from [CLAUDE.md](CLAUDE.md). Node templates are built with [images/node/](images/node/README.md).
 
 ```console
 $ pip install -r requirements-dev.txt

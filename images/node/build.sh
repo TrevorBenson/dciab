@@ -74,7 +74,7 @@ missing = [name for name, value in [
 ] if not value]
 if missing:
     sys.exit("build.sh: bundle.lock has no value for " + ", ".join(missing)
-             + " (handoff task 0002, step 1 resolves them)")
+             + " (images/node/README.md, Changing versions)")
 if not re.fullmatch(r"sha256:[0-9a-f]{64}", ib["digest"]):
     sys.exit("build.sh: nodeImages.imageBuilder.digest must be sha256:<64 hex>")
 if not re.fullmatch(r"[0-9a-f]{64}", rocky["isoSHA256"]):
@@ -91,6 +91,9 @@ variables = {
     "iso_checksum_type": "sha256",
     # Matches the template name the site config and examples use.
     "artifact_name": f"rocky10-kube-{k8s}",
+    # raw works on every Proxmox storage. Upstream's default, qcow2, fails on block
+    # storage (ZFS, LVM, LVM-thin, Ceph RBD) with "unsupported format 'qcow2'".
+    "disk_format": env.get("DCIAB_DISK_FORMAT") or "raw",
 }
 optional = {
     "DCIAB_TEMPLATE_VMID": "vmid",

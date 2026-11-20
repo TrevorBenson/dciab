@@ -14,6 +14,7 @@ DCiaB is built by a **planner** (Claude in a cloud session: writes the code and 
 - **Use a branch and a PR for every change.** Never push to `main`.
 - **Never edit a released ClusterClass revision** (`charts/capi-clusterclasses/classes/rN/`). Read `docs/VERSIONING.md` first. CI enforces it.
 - **Every version lives in `bundle.lock`.** Never inline a version in a chart or script.
+- **Product docs stay product-focused.** `README.md`, `docs/` and component READMEs describe DCiaB for any site. Lab specifics and test nuances belong under `handoff/` (`LAB.md`, tasks, reports); see `handoff/README.md`.
 - **Never commit secrets, built images, ISOs or large binaries.** Node images are built from the recipe in `images/node/` and live on the hypervisor.
 - **Before pushing, run:**
   - `python3 -m pytest -q`

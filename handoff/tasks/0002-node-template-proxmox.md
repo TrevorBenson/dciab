@@ -21,7 +21,7 @@ This is the first run of the Rocky 10 target, which DCiaB adds on top of upstrea
 - podman or docker, and python3 with PyYAML and pytest (`dnf install -y python3-pyyaml`, then `pip install --user -r requirements-dev.txt`)
 - skopeo (`dnf install -y skopeo`), or another way to read an image digest
 - From Trevor (ask in one message):
-  - A Proxmox API token for a user with the privileges in image-builder's Proxmox guide (linked from `images/node/README.md`). Show him the list.
+  - A Proxmox API token for a user with the privileges in image-builder's Proxmox guide. Show him the list, and the "Proxmox token permissions" section of `images/node/README.md`: grant the user and set the token to `privsep=0`.
   - Which node builds the template, the ISO storage, the disk storage and its type (lvm, lvm-thin, zfspool, rbd, dir, ...), and the bridge and VLAN.
   - Whether that network has DHCP, and whether VMs on it can reach this workstation on ports 8000–9000 and the internet.
   - A VMID for the template, or let Proxmox choose.
