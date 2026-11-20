@@ -1,7 +1,7 @@
 ---
 id: "0002"
 title: Build the Rocky 10 node template on Proxmox
-status: blocked
+status: open
 runner: workstation
 depends: []
 report: handoff/reports/0002-node-template-proxmox.md
@@ -15,6 +15,15 @@ Build the first DCiaB node template on Trevor's Proxmox lab with `images/node/bu
 This is the first run of the Rocky 10 target, which DCiaB adds on top of upstream image-builder. A failure in the kickstart or in Ansible is a useful result. Report it rather than patching the overlay.
 
 **Out of scope:** using the template in a cluster, vSphere or Metal3 images, and anything under `charts/`.
+
+## Retry (attempt 4)
+
+The third attempt got through install and Ansible, then failed on one Goss check: upstream expected `cloud-utils`. `images/node/Containerfile` now fixes that check. For the retry:
+- Pull `main`, and create the branch `handoff/0002-node-template-proxmox-retry`.
+- Reuse the env file: `pool0`, raw disks, untagged `vmbr0` (see `handoff/LAB.md`).
+- Run steps 3–5 again. The pins are already in `bundle.lock`, so skip steps 1–2, but check `--print-vars` first.
+- While the image-builder container builds, its output should include `goss-vars: rockylinux.qemu expects cloud-utils-growpart`.
+- Append an "Attempt 4" section to the existing report, keeping attempts 1–3. Update the report's front matter (`result`, `commit`, `date`) and its Summary to match attempt 4.
 
 ## Needs
 
