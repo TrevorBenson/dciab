@@ -27,7 +27,15 @@ if [[ "$(stat -c %a "$env_file")" != 600 ]]; then
 fi
 
 print_only=false
-[[ "${2:-}" == --print-vars ]] && print_only=true
+case "${2:-}" in
+  "") ;;
+  --print-vars) print_only=true ;;
+  *) echo "build.sh: unknown argument '$2' (only --print-vars)" >&2; exit 2 ;;
+esac
+if (( $# > 2 )); then
+  echo "build.sh: too many arguments" >&2
+  exit 2
+fi
 
 runtime="${CONTAINER_RUNTIME:-}"
 if [[ -z "$runtime" ]]; then
