@@ -81,12 +81,12 @@ nodeImages:
     # Pinned by digest. Empty until handoff task 0002 resolves it; images/node/build.sh
     # refuses to run without it.
     image: registry.k8s.io/scl-image-builder/cluster-node-image-builder-amd64:v0.1.55
-    digest: ""
+    digest: "sha256:03051205c79c5c7d5ce3693b5ff3841fed6938f7e126137815bb7d70c1646dfe"
   rocky10:
     # Rocky Linux 10 minimal ISO: a versioned URL (10.N, not "10") and its sha256 from the
     # CHECKSUM file beside it. Empty until handoff task 0002 resolves them.
-    isoURL: ""
-    isoSHA256: ""
+    isoURL: "https://download.rockylinux.org/pub/rocky/10.3/isos/x86_64/Rocky-10.3-x86_64-minimal.iso"
+    isoSHA256: "878a3f92281d3eb91ca9d1a195794d47b5bce4e02a85f351c606709e98481cc4"
 
 charts:
   cilium: 1.20.5
