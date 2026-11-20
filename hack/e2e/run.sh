@@ -10,6 +10,9 @@
 # No VM or server is built: the example vCenter, Proxmox and BMCs don't exist, so the
 # providers stop after the topology step. That step is what this test covers.
 #
+# DCIAB_E2E_MANAGEMENT_ONLY=1 stops after the ClusterClasses: a management cluster for
+# building real clusters, with no example Clusters in it.
+#
 # Needs: kubectl, helm, python3 with PyYAML, and a disposable kind cluster as the current
 # context. It refuses any context not named kind-*; set DCIAB_E2E_CONTEXT to the exact
 # context name to use another disposable cluster.
@@ -84,6 +87,11 @@ retry 10 15 helm upgrade --install classes "$ROOT/charts/capi-clusterclasses" \
   --namespace "$CLASS_NS" --create-namespace --wait
 kubectl -n "$CLASS_NS" get clusterclasses
 endgroup
+
+if [[ "${DCIAB_E2E_MANAGEMENT_ONLY:-}" == 1 ]]; then
+  echo "Management cluster ready: CAPI, providers and ClusterClasses installed; no Clusters created."
+  exit 0
+fi
 
 for values in "$ROOT"/charts/capi-cluster/ci/*-values.yaml; do
   read -r cluster class < <(python3 -c 'import sys, yaml; v = yaml.safe_load(open(sys.argv[1])); print(v["name"], v["class"])' "$values")

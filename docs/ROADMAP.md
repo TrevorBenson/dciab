@@ -28,3 +28,12 @@ Each phase ends in a gate that must pass on both a vSphere lab and a Proxmox lab
 - [ ] Archive build pipeline
 - [ ] `dciab seed`
 - [ ] `dciab mgmt`
+
+## Backlog
+
+- **CRI-O instead of containerd** (preferred). Node templates use containerd today: image-builder installs it, and it's the only runtime image-builder supports. The switch needs:
+  - a CRI-O role in the node image recipe
+  - the classes' registry mirror files moved from containerd `hosts.toml` to `/etc/containers/registries.conf.d`
+  - `criSocket` set in the kubeadm configuration
+
+  Ideally it lands before `r1` is released; after that it needs a new class revision.
