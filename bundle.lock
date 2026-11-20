@@ -92,6 +92,15 @@ charts:
   cert-manager: v1.21.3
   longhorn: 1.13.0
 
+# Where online installs fetch the charts above. The archive build will vendor them.
+chartRepositories:
+  cilium: https://helm.cilium.io
+
+# sha256 of each chart .tgz, checked before install. Empty: the installer warns and
+# prints the sum to pin.
+chartDigests:
+  cilium: "0c7592eb75179ecf46dd3ec22145916f0164c4401214ea15afb5b230b1d11a21"
+
 tools:
   helm: v4.3.2
   kind: v0.33.0   # default node image: Kubernetes v1.37.0 (CAPI v1.14 supports it as a management cluster)

@@ -72,6 +72,13 @@ jobs:
             python hack/check_manifests.py --crds "$CRDS" --expect Cluster=1 --expect ClusterClass=3 \
               out/classes.yaml:dciab-clusterclasses "out/$name.yaml:cluster-$name"
           done
+      - name: Render Cilium for every CI cluster
+        run: |
+          set -euo pipefail
+          for values in charts/capi-cluster/ci/*-values.yaml; do
+            addons/cilium/install.sh "$values" --template > /dev/null
+            echo "ok: cilium renders for $values"
+          done
       - name: Bad values fail the render, with the expected message
         run: |
           set -uo pipefail
@@ -166,7 +173,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: shellcheck dciab hack/e2e/run.sh hack/check_frozen_classes.sh images/node/build.sh
+      - run: shellcheck dciab hack/e2e/run.sh hack/check_frozen_classes.sh images/node/build.sh addons/cilium/install.sh
 
   rocky10:
     # The validator must run on the bootstrap host with distro packages only.
