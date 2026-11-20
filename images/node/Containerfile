@@ -1,0 +1,12 @@
+# image-builder with DCiaB's Rocky Linux 10 Proxmox target added.
+# Built by images/node/build.sh; BASE_IMAGE is the digest-pinned image from bundle.lock.
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE}
+
+# Upstream image-builder has no Rocky 10 Proxmox target yet; these files add one.
+COPY --chown=imagebuilder:imagebuilder overlay/packer/ /home/imagebuilder/packer/
+# Versions and the ISO pin, generated from bundle.lock by build.sh (no secrets).
+COPY --chown=imagebuilder:imagebuilder .build/dciab-node.json /home/imagebuilder/dciab-node.json
+
+ENV PROXMOX_BUILD_NAMES=proxmox-rockylinux-10 \
+    PACKER_VAR_FILES=/home/imagebuilder/dciab-node.json
