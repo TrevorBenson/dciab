@@ -45,7 +45,7 @@ Run everything in one shell session with `set -o pipefail`. The work folder is f
    - Expected: `exit=1`, and an error at `spec.clusters.infra.apiVIP` that names the overlap and the line.
 
 3. **Run the ClusterClass e2e on kind.**
-   - If `kind get clusters` already lists `dciab-e2e`, stop and ask Trevor. Don't reuse or delete a cluster this task didn't create.
+   - If `kind get clusters` already lists `dciab-e2e`, ask Trevor whether to delete it. This step needs a fresh cluster: a run against an existing one doesn't count. If he says no, mark this step SKIPPED.
    - Run:
      ```bash
      kind create cluster --name dciab-e2e

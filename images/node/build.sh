@@ -91,6 +91,9 @@ variables = {
     "iso_checksum_type": "sha256",
     # Matches the template name the site config and examples use.
     "artifact_name": f"rocky10-kube-{k8s}",
+    # raw works on every Proxmox storage. Upstream's default, qcow2, fails on block
+    # storage (ZFS, LVM, LVM-thin, Ceph RBD) with "unsupported format 'qcow2'".
+    "disk_format": env.get("DCIAB_DISK_FORMAT") or "raw",
 }
 optional = {
     "DCIAB_TEMPLATE_VMID": "vmid",
