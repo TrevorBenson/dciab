@@ -84,5 +84,7 @@ def test_node_image_overlay_parses():
     var_file = ROOT / "images/node/overlay/packer/proxmox/rockylinux-10.json"
     variables = json.loads(var_file.read_text())
     assert variables["distro_version"] == "10" and variables["build_name"] == "rockylinux-10"
+    build = (ROOT / "images/node/build.sh").read_text()
+    assert '"disk_format": env.get("DCIAB_DISK_FORMAT") or "raw"' in build, "raw must stay the default disk format"
     ks = ROOT / "images/node/overlay/packer/proxmox/linux/rockylinux/http/10/ks.cfg.tmpl"
     assert "$SSH_PASSWORD" in ks.read_text()
