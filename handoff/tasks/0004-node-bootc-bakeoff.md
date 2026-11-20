@@ -1,7 +1,7 @@
 ---
 id: "0004"
 title: "Spike: Rocky 10 bootc node image (RESF SIG recipe, minimal, CRI-O) vs the image-builder template"
-status: open
+status: done
 runner: workstation
 depends: ["0002"]
 report: handoff/reports/0004-node-bootc-bakeoff.md
