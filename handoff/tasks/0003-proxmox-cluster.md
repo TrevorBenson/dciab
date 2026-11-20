@@ -30,16 +30,16 @@ Read first:
 - The template from task 0002 (VMID 121 on `pve1`; see `LAB.md`).
 - From Trevor, in one message:
   - **Node network:** VLAN 150 or untagged `vmbr0`. The kind cluster on this workstation must reach the cluster's API VIP: check it with `ping` or `curl` to a host on that network before choosing. The nodes need DHCP-free static addresses, a gateway, and internet access.
-  - **Addresses:** a free node IP range of at least 6 addresses (3 control plane nodes, 1 worker, and room for rolling replacements), the prefix and gateway, and a free API VIP in the same subnet.
+  - **Addresses:** a free node IP range of at least 6 addresses (3 control plane nodes, 1 worker, and room for rolling replacements), the prefix and gateway, and a free API VIP in the same subnet. The VIP must be **outside** the node range.
   - **Pod and service CIDRs** that don't overlap any lab network.
   - **DNS servers and NTP servers** the nodes can reach.
   - **An SSH public key** for the break-glass user `dciab`.
-  - **Proxmox nodes and storage:** which nodes VMs may run on (`allowedNodes`), and the VM disk storage (`pool0` is fine).
+  - **Proxmox nodes and storage:** which nodes VMs may run on (`allowedNodes`, which must include `pve1`, where the template lives), the VM disk storage (`pool0` is fine), and the bridge, plus the VLAN tag if the nodes go on VLAN 150.
   - **CAPMOX credentials:** the existing token can be reused if its user also holds CAPMOX's privileges. Give the API URL without `/api2/json`.
 
 ## Steps
 
-Keep everything outside the repo in `~/.dciab/0003/` (mode 700). Run commands with `set -o pipefail`.
+Keep everything outside the repo in `~/.dciab/0003/`: create it first with `mkdir -p ~/.dciab/0003 && chmod 700 ~/.dciab/0003`. Run commands with `set -o pipefail`.
 
 1. **Management cluster.**
    - Run:
@@ -48,7 +48,7 @@ Keep everything outside the repo in `~/.dciab/0003/` (mode 700). Run commands wi
      DCIAB_E2E_MANAGEMENT_ONLY=1 hack/e2e/run.sh
      ```
    - Expected: it ends with "Management cluster ready", and `kubectl get clusterclasses -A` lists the three `-r1` classes.
-   - If `dciab-lab` already exists, ask Trevor before reusing or deleting it.
+   - If `dciab-lab` already exists, ask Trevor before reusing or deleting it, and record what he decided. Cleanup deletes the kind cluster only if this task created it.
 2. **Values and secrets.**
    - Generate a throwaway CA for `nodes.trustBundle`:
      ```bash
@@ -57,9 +57,12 @@ Keep everything outside the repo in `~/.dciab/0003/` (mode 700). Run commands wi
    - Write `~/.dciab/0003/lab01-values.yaml` from Trevor's answers:
      - `name: lab01`, `class: proxmox`, `kubernetesVersion: v1.36.6`
      - `proxmox.templateID: 121`, `proxmox.templateNode: pve1`
-     - `controlPlane.replicas: 3` with `{cpu: 2, memoryGiB: 4, diskGiB: 20}`
-     - one worker pool `general` with `replicas: 1` and `{cpu: 2, memoryGiB: 4, diskGiB: 30}`
+     - `proxmox.allowedNodes`, `storage` and `bridge`, plus `vlanTag` when the nodes are on VLAN 150
+     - `controlPlane.replicas: 3` with `{cpu: 2, memoryGiB: 4, diskGiB: 40}`. 40 GiB is the chart's minimum; CAPMOX grows the 20G template disk when it clones.
+     - one worker pool `general` with `replicas: 1` and `{cpu: 2, memoryGiB: 4, diskGiB: 40}`
      - `nodes.registryMirror: mirror.invalid`
+     - `nodes.trustBundle`: the contents of `ca.crt`
+     - the rest (network, DNS, NTP, SSH key, CIDRs, VIP) from Trevor's answers
    - Run `helm lint charts/capi-cluster -f ~/.dciab/0003/lab01-values.yaml`. It must pass.
    - Create namespace `cluster-lab01` and the Secret `lab01-proxmox-credentials`, with keys `url`, `token` and `secret`. Read the values from a file, not the command line.
 3. **Build.**
@@ -92,7 +95,7 @@ Keep everything outside the repo in `~/.dciab/0003/` (mode 700). Run commands wi
      - chrony uses the given NTP servers
    - **VIP holder:** exactly one control plane node holds the API VIP (kube-vip leader).
 6. **Node replacement.**
-   - Start a loop that runs `kubectl get --raw /readyz` every 5 s against the VIP, and count the failures.
+   - Start a loop that runs `kubectl --kubeconfig ~/.dciab/0003/lab01.kubeconfig get --raw /readyz` every 5 s, and count the failures. Use that kubeconfig, not the kind context, so the loop goes through the cluster's API VIP.
    - Delete the worker Machine. Record the time until the new node is Ready, and check the old VM is gone from Proxmox.
    - Delete one control plane Machine. Record the time until KCP is back to 3, and check etcd still has 3 healthy members.
    - Stop the loop and record the failure count.
@@ -110,7 +113,7 @@ Keep everything outside the repo in `~/.dciab/0003/` (mode 700). Run commands wi
 8. **Clean up.**
    1. Run `helm -n cluster-lab01 uninstall lab01`, and wait until the Cluster is gone and Proxmox shows no `lab01` VMs.
    2. Run `kind delete cluster --name dciab-lab`.
-   3. Revert the repo: `git checkout -- charts/capi-clusterclasses/values.yaml && rm -rf charts/capi-clusterclasses/classes/r2`. `git status` must show only your `handoff/` changes.
+   3. Revert step 7's local changes: `git checkout -- charts/capi-clusterclasses/values.yaml && rm -rf charts/capi-clusterclasses/classes/r2`. Before step 7, check that `git status` is clean; if it isn't, stop and ask. Afterwards, `git status` must show only your `handoff/` changes.
    4. Keep the template.
 
 ## Stop and ask
