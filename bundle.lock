@@ -99,7 +99,7 @@ chartRepositories:
 # sha256 of each chart .tgz, checked before install. Empty: the installer warns and
 # prints the sum to pin.
 chartDigests:
-  cilium: ""
+  cilium: "0c7592eb75179ecf46dd3ec22145916f0164c4401214ea15afb5b230b1d11a21"
 
 tools:
   helm: v4.3.2
