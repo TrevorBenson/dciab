@@ -339,7 +339,7 @@ class Checker:
                 self.error(hp + ("bootMACAddress",), h["bootMACAddress"],
                            f"each host needs its own boot MAC; hosts[{macs[mac]}] already uses it")
             macs.setdefault(mac, i)
-            addr = h["bmc"]["address"].split("://", 1)[1].split("/", 1)[0]
+            addr = self._bmc_host(h)
             if addr in bmcs:
                 self.error(hp + ("bmc", "address"), addr,
                            f"each host needs its own BMC; hosts[{bmcs[addr]}] already uses {addr}")
@@ -402,6 +402,14 @@ class Checker:
         listed = set(net["ntpServers"])
         serving = "ntp" in self.spec["bootstrap"]
         if serving:
+            if "hypervisors" not in self.spec:
+                self.error(("spec", "bootstrap", "ntp"), "set without spec.hypervisors",
+                           "remove it, or add spec.hypervisors: the bootstrap host serves NTP only in the Day 0 steps, "
+                           "which run for sites that start from bare servers")
+            for i, up in enumerate(self.spec["bootstrap"]["ntp"]["upstream"]):
+                if up in service_ips:
+                    self.error(("spec", "bootstrap", "ntp", "upstream", i), f"{up} (a DNS service IP)",
+                               "use an NTP server outside the site: the bootstrap host itself serves NTP on the DNS service IPs")
             if listed != set(service_ips):
                 self.error(ntp_path, ", ".join(net["ntpServers"]),
                            "with spec.bootstrap.ntp set, use exactly the DNS service IPs: "
@@ -462,7 +470,7 @@ class Checker:
 
     @staticmethod
     def _bmc_host(host: dict) -> str:
-        return host["bmc"]["address"].split("://", 1)[1].split("/", 1)[0]
+        return host["bmc"]["address"].split("://", 1)[1].split("/", 1)[0].lower()
 
     def _check_esxi_installer(self, path: Path, raw: str) -> None:
         import yaml

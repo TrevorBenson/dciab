@@ -576,9 +576,10 @@
     "hypervisors": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["type", "method", "rootPassword", "managementVLAN", "hosts"],
+      "required": ["type", "method", "bootMode", "rootPassword", "managementVLAN", "hosts"],
       "properties": {
         "type": {"enum": ["proxmox", "esxi"], "description": "proxmox or esxi"},
+        "bootMode": {"enum": ["UEFI", "UEFISecureBoot"], "description": "UEFI or UEFISecureBoot; set on each server over Redfish before installing"},
         "method": {"enum": ["virtualmedia"], "description": "virtualmedia: the installer ISO is attached through each host's BMC (Redfish)"},
         "installerFile": {"type": "string", "minLength": 1, "description": "esxi only: path to the ESXi installer ISO, which DCiaB doesn't ship; its sha256 must match bundle.lock"},
         "rootPassword": {"$ref": "#/$defs/secretRef"},

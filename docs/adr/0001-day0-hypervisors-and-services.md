@@ -26,7 +26,7 @@ These are needed only until the platform's own services (PowerDNS and the rest, 
 | 2 | `dciab hypervisors` | Hypervisors installed on the servers and configured for CAPMOX or CAPV |
 | 3+ | `seed`, `mgmt`, ... | As before |
 
-Steps 1 and 2 run only when the config has `spec.hypervisors`. A site whose hypervisors already exist leaves it out and starts at `seed`.
+Steps 1 and 2 run only when the config has `spec.hypervisors` (so `spec.bootstrap.ntp` requires it too). A site whose hypervisors already exist leaves it out and starts at `seed`.
 
 ### 2. Hypervisors are installed over Redfish virtual media
 
@@ -83,7 +83,7 @@ HTTP listens on `bootstrap.address`: only installers and BMCs use it, and it goe
 - New optional config: `spec.hypervisors` and `spec.bootstrap.ntp`. `validate` checks them: the hypervisor type matches `platform.type`; host addresses sit in the node network without overlapping anything; MACs and BMCs are unique across hypervisor and Metal3 hosts; Proxmox hosts appear in `platform.proxmox.nodes`; the ESXi ISO matches its pin; NTP servers match the DNS service addresses when the bootstrap host serves NTP.
 - `bundle.lock` gains `hypervisors` and `day0` sections; the image digest check covers `day0.images`.
 - `dciab services` must handle the workstation: ports already in use (Rocky's own `chronyd` holds UDP 123, so the pod binds only to the service addresses), runtime-only firewalld rules opened for the step and closed at teardown, and a readiness check that queries DNS (both directions), NTP and ranged HTTP from the network.
-- Before a server is installed, the hypervisor step checks or sets over Redfish: UEFI boot mode, Secure Boot per `baremetal.bootMode`, virtualization extensions, and that a disk matches `rootDeviceHints`.
+- Before a server is installed, the hypervisor step checks or sets over Redfish: UEFI boot mode, Secure Boot per `spec.hypervisors.bootMode`, virtualization extensions, and that a disk matches `rootDeviceHints`.
 
 ## Not decided here (roadmap)
 

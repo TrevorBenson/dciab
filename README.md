@@ -9,17 +9,17 @@ One archive and one YAML file build a data center platform from bare power and n
 | Step | Command | Result |
 | --- | --- | --- |
 | 0 | `./dciab validate dciab.yaml` | The config passes schema and semantic checks |
-| 0a | `./dciab services` | Bare servers only: DNS, NTP and HTTP on the bootstrap host |
-| 0b | `./dciab hypervisors` | Bare servers only: Proxmox VE or ESXi installed over Redfish virtual media |
+| 0a | `./dciab services` | Bare servers only (planned): DNS, NTP and HTTP on the bootstrap host |
+| 0b | `./dciab hypervisors` | Bare servers only (planned): Proxmox VE or ESXi installed over Redfish virtual media |
 | 1 | `./dciab seed` | Local registry, seed DNS and KinD with all CAPI providers |
 | 2 | `./dciab mgmt` | MGMT built, CAPI pivoted into it, DNS moved onto it |
 | 3 | `./dciab infra` | INFRA built with Argo CD, Forgejo, OpenBao, CloudNativePG |
 | 4 | `./dciab platform` | Repos pushed; Argo CD and OpenTofu bring up the rest |
 | 5 | `./dciab finalize` | Images moved to Artifact Keeper; seed torn down |
 
-### Starting from bare servers
+### Starting from bare servers (planned)
 
-When a site has no hypervisors yet, add `spec.hypervisors` to the config (see [examples/proxmox-bare.yaml](examples/proxmox-bare.yaml)). `services` and `hypervisors` then run before `seed`: the bootstrap host serves DNS (and NTP, with `spec.bootstrap.ntp`) on `network.dnsServiceIPs` and installs each server through its BMC. Those addresses move to MGMT later, so nothing installed on Day 0 needs reconfiguring. The site must provide:
+The config format and its checks exist; the `services` and `hypervisors` steps don't yet (see the roadmap). When a site has no hypervisors yet, add `spec.hypervisors` to the config (see [examples/proxmox-bare.yaml](examples/proxmox-bare.yaml)). `services` and `hypervisors` then run before `seed`: the bootstrap host serves DNS (and NTP, with `spec.bootstrap.ntp`) on `network.dnsServiceIPs` and installs each server through its BMC. Those addresses move to MGMT later, so nothing installed on Day 0 needs reconfiguring. The site must provide:
 
 - switches configured: VLANs, trunks, MTU, gateways, and BGP peers when `loadBalancer.mode: bgp`
 - a route from the node network's gateway to the BMC networks and back, with HTTPS allowed from the bootstrap host to each BMC and HTTP from each BMC to the bootstrap host

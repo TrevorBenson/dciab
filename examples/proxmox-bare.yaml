@@ -95,6 +95,7 @@ spec:
   hypervisors:
     type: proxmox
     method: virtualmedia
+    bootMode: UEFISecureBoot             # UEFI | UEFISecureBoot
     rootPassword: {file: ./secrets/hv/root}
     managementVLAN: tagged               # the management NIC tags network.nodes.vlan (110)
     hosts:

@@ -458,3 +458,33 @@ def test_esxi_installer_without_a_pin(site, tmp_path):
     root, doc = _esxi_site(site, tmp_path, b"esxi", None)
     _, report = _validate_with_root(site, root, doc)
     assert "no tested ESXi build" in errors(report, "spec.hypervisors.installerFile")[0]["fix"]
+
+
+def test_bmc_hostnames_compare_case_insensitively(site):
+    doc = load_example("proxmox-bare")
+    hosts = doc["spec"]["hypervisors"]["hosts"]
+    hosts[0]["bmc"]["address"] = "redfish-virtualmedia+https://idrac-a.example.net/redfish/v1/Systems/1"
+    hosts[1]["bmc"]["address"] = "redfish-virtualmedia+https://IDRAC-A.example.net/redfish/v1/Systems/1"
+    _, report = site.validate(doc)
+    assert errors(report, "spec.hypervisors.hosts[1].bmc.address")
+
+
+def test_bootstrap_ntp_needs_hypervisors(site):
+    doc = load_example("proxmox-bare")
+    del doc["spec"]["hypervisors"]
+    _, report = site.validate(doc)
+    assert "spec.hypervisors" in errors(report, "spec.bootstrap.ntp")[0]["fix"]
+
+
+def test_bootstrap_ntp_upstream_must_not_be_a_service_ip(site):
+    doc = load_example("proxmox-bare")
+    doc["spec"]["bootstrap"]["ntp"]["upstream"] = ["10.30.110.53"]
+    _, report = site.validate(doc)
+    assert errors(report, "spec.bootstrap.ntp.upstream[0]")
+
+
+def test_hypervisors_need_a_boot_mode(site):
+    doc = load_example("proxmox-bare")
+    del doc["spec"]["hypervisors"]["bootMode"]
+    _, report = site.validate(doc)
+    assert errors(report, "spec.hypervisors.bootMode")
