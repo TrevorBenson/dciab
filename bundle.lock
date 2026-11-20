@@ -101,6 +101,33 @@ nodeImages:
     # CRI-O follows Kubernetes minor versions.
     crioSeries: v1.36
 
+# Day 0, for sites that start from bare servers (docs/adr/0001-day0-hypervisors-and-services.md).
+# Hypervisor installers DCiaB has tested. bundle.lock pins a version whether or not the
+# archive carries the file: "shipped" says which.
+hypervisors:
+  proxmox:
+    version: "9.2-1"
+    isoURL: "https://enterprise.proxmox.com/iso/proxmox-ve_9.2-1.iso"
+    isoSHA256: "4e88fe416df9b527624a175f24c9aa07c714d3332afb1ee3dbf3879573ef2c6c"
+    shipped: true
+  esxi:
+    # Not redistributable: the site supplies the ISO (spec.hypervisors.installerFile) and
+    # validate checks it against this sha256. Empty until the first build DCiaB has tested.
+    version: ""
+    isoFile: ""
+    isoSHA256: ""
+    shipped: false
+
+# Day 0 services: DNS, NTP and HTTP on the bootstrap host, only until the platform's own
+# services take over (docs/adr/0001-day0-hypervisors-and-services.md). Pinned by digest;
+# hack/check_image_digests.py checks them like the images above.
+day0:
+  images:
+    coredns: docker.io/coredns/coredns:1.14.6
+    caddy: docker.io/library/caddy:2.11.7
+    # Base of DCiaB's chrony image (images/day0-chrony/Containerfile).
+    chronyBase: docker.io/rockylinux/rockylinux:10-minimal
+
 charts:
   cilium: 1.20.5
   cert-manager: v1.21.3

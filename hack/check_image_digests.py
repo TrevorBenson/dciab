@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Check that every image in bundle.lock is pinned by digest, and that the digest
-is still what the registry serves for that tag.
+"""Check that every image in bundle.lock (images and day0.images) is pinned by digest,
+and that the digest is still what the registry serves for that tag.
 
     python3 hack/check_image_digests.py
 
@@ -29,7 +29,9 @@ def registry_digest(ref: str) -> str:
 def main() -> int:
     lock = yaml.safe_load((ROOT / "bundle.lock").read_text())
     failed = False
-    for name, ref in lock["images"].items():
+    images = dict(lock["images"])
+    images.update({f"day0.{k}": v for k, v in lock.get("day0", {}).get("images", {}).items()})
+    for name, ref in images.items():
         tagged, _, pinned = ref.partition("@")
         actual = registry_digest(tagged)
         if not pinned:

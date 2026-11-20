@@ -49,7 +49,8 @@
               "uniqueItems": true,
               "items": {"type": "string", "pattern": "^age1[0-9a-z]{58}$", "description": "an age public key (age1...)"},
               "description": "at least two age public keys, so break-glass access never depends on one person"
-            }
+            },
+            "ntp": {"$ref": "#/$defs/bootstrapNTP"}
           }
         },
         "network": {"$ref": "#/$defs/network"},
@@ -66,6 +67,7 @@
         "pki": {"$ref": "#/$defs/pki"},
         "identity": {"$ref": "#/$defs/identity"},
         "baremetal": {"$ref": "#/$defs/baremetal"},
+        "hypervisors": {"$ref": "#/$defs/hypervisors"},
         "workloadClusters": {
           "type": "array",
           "items": {"$ref": "#/$defs/workloadCluster"},
@@ -377,46 +379,9 @@
       "required": ["name", "bmc", "bootMACAddress", "rootDeviceHints", "labels"],
       "properties": {
         "name": {"type": "string", "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$"},
-        "bmc": {
-          "type": "object",
-          "additionalProperties": false,
-          "required": ["address", "credentials"],
-          "properties": {
-            "address": {"type": "string", "pattern": "^redfish-virtualmedia\\+https://\\S+$", "description": "a Redfish virtual-media address: redfish-virtualmedia+https://<bmc>/redfish/v1/Systems/<id>"},
-            "tlsFingerprint": {"$ref": "#/$defs/fingerprint"},
-            "caBundle": {"$ref": "#/$defs/secretRef"},
-            "credentials": {
-              "type": "object",
-              "additionalProperties": false,
-              "required": ["username", "password"],
-              "properties": {
-                "username": {"type": "string", "minLength": 1},
-                "password": {"$ref": "#/$defs/secretRef"}
-              }
-            }
-          },
-          "oneOf": [
-            {"required": ["tlsFingerprint"], "not": {"required": ["caBundle"]}},
-            {"required": ["caBundle"], "not": {"required": ["tlsFingerprint"]}}
-          ],
-          "description": "give exactly one of tlsFingerprint or caBundle to trust the BMC certificate"
-        },
-        "bootMACAddress": {"type": "string", "pattern": "^([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}$", "description": "a MAC address, quoted"},
-        "rootDeviceHints": {
-          "type": "object",
-          "additionalProperties": false,
-          "minProperties": 1,
-          "properties": {
-            "deviceName": {"type": "string", "pattern": "^/dev/"},
-            "serialNumber": {"type": "string", "minLength": 1},
-            "wwn": {"type": "string", "minLength": 1},
-            "model": {"type": "string", "minLength": 1},
-            "vendor": {"type": "string", "minLength": 1},
-            "hctl": {"type": "string", "minLength": 1},
-            "minSizeGigabytes": {"type": "integer", "minimum": 1},
-            "rotational": {"type": "boolean"}
-          }
-        },
+        "bmc": {"$ref": "#/$defs/bmc"},
+        "bootMACAddress": {"$ref": "#/$defs/macAddress"},
+        "rootDeviceHints": {"$ref": "#/$defs/rootDeviceHints"},
         "labels": {
           "type": "object",
           "minProperties": 1,
@@ -538,6 +503,93 @@
           "workerPools": {"type": "array", "items": {"$ref": "#/$defs/vmWorkerPool"}}
         }
       }
+    },
+    "bmc": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["address", "credentials"],
+      "properties": {
+        "address": {"type": "string", "pattern": "^redfish-virtualmedia\\+https://\\S+$", "description": "a Redfish virtual-media address: redfish-virtualmedia+https://<bmc>/redfish/v1/Systems/<id>"},
+        "tlsFingerprint": {"$ref": "#/$defs/fingerprint"},
+        "caBundle": {"$ref": "#/$defs/secretRef"},
+        "credentials": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["username", "password"],
+          "properties": {
+            "username": {"type": "string", "minLength": 1},
+            "password": {"$ref": "#/$defs/secretRef"}
+          }
+        }
+      },
+      "oneOf": [
+        {"required": ["tlsFingerprint"], "not": {"required": ["caBundle"]}},
+        {"required": ["caBundle"], "not": {"required": ["tlsFingerprint"]}}
+      ],
+      "description": "give exactly one of tlsFingerprint or caBundle to trust the BMC certificate"
+    },
+    "macAddress": {"type": "string", "pattern": "^([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}$", "description": "a MAC address, quoted"},
+    "rootDeviceHints": {
+      "type": "object",
+      "additionalProperties": false,
+      "minProperties": 1,
+      "properties": {
+        "deviceName": {"type": "string", "pattern": "^/dev/"},
+        "serialNumber": {"type": "string", "minLength": 1},
+        "wwn": {"type": "string", "minLength": 1},
+        "model": {"type": "string", "minLength": 1},
+        "vendor": {"type": "string", "minLength": 1},
+        "hctl": {"type": "string", "minLength": 1},
+        "minSizeGigabytes": {"type": "integer", "minimum": 1},
+        "rotational": {"type": "boolean"}
+      }
+    },
+    "bootstrapNTP": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["upstream", "serveLocalClock"],
+      "properties": {
+        "upstream": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {"type": "string", "minLength": 1},
+          "description": "NTP servers the bootstrap host syncs from; an explicit empty list means none (an isolated site)"
+        },
+        "serveLocalClock": {"type": "boolean", "description": "true to serve the bootstrap host's own clock when no upstream answers; required true with no upstream"}
+      },
+      "if": {"properties": {"upstream": {"maxItems": 0}}, "required": ["upstream"]},
+      "then": {"properties": {"serveLocalClock": {"const": true, "description": "true: with no upstream, the bootstrap host's clock is the only time source"}}},
+      "description": "optional; the bootstrap host serves NTP on network.dnsServiceIPs until the platform takes over. Then network.ntpServers must be exactly the dnsServiceIPs"
+    },
+    "hypervisorHost": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "address", "bmc", "bootMACAddress", "rootDeviceHints"],
+      "properties": {
+        "name": {"type": "string", "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$", "description": "the host name, without the domain (network.domain is added)"},
+        "address": {"$ref": "#/$defs/ipv4"},
+        "bmc": {"$ref": "#/$defs/bmc"},
+        "bootMACAddress": {"$ref": "#/$defs/macAddress"},
+        "rootDeviceHints": {"$ref": "#/$defs/rootDeviceHints"}
+      }
+    },
+    "hypervisors": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "method", "rootPassword", "managementVLAN", "hosts"],
+      "properties": {
+        "type": {"enum": ["proxmox", "esxi"], "description": "proxmox or esxi"},
+        "method": {"enum": ["virtualmedia"], "description": "virtualmedia: the installer ISO is attached through each host's BMC (Redfish)"},
+        "installerFile": {"type": "string", "minLength": 1, "description": "esxi only: path to the ESXi installer ISO, which DCiaB doesn't ship; its sha256 must match bundle.lock"},
+        "rootPassword": {"$ref": "#/$defs/secretRef"},
+        "managementVLAN": {"enum": ["tagged", "untagged"], "description": "tagged: the management NIC tags network.nodes.vlan; untagged: it sits on an access port"},
+        "hosts": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/hypervisorHost"}}
+      },
+      "allOf": [
+        {"if": {"properties": {"type": {"const": "esxi"}}, "required": ["type"]}, "then": {"required": ["installerFile"]}},
+        {"if": {"properties": {"type": {"const": "proxmox"}}, "required": ["type"]}, "then": {"not": {"required": ["installerFile"]}}}
+      ],
+      "description": "optional; hypervisors DCiaB installs on bare servers before the seed step. Leave it out when the hypervisors already exist"
     }
   }
 }
