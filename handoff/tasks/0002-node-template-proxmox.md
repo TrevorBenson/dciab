@@ -1,7 +1,7 @@
 ---
 id: "0002"
 title: Build the Rocky 10 node template on Proxmox
-status: open
+status: done
 runner: workstation
 depends: []
 report: handoff/reports/0002-node-template-proxmox.md

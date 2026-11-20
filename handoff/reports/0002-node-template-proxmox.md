@@ -1,21 +1,20 @@
 ---
 id: "0002"
-result: blocked
-commit: d25726c
+result: pass
+commit: 17f4b33
 date: 2026-11-20
 ---
 
 ## Summary
 
-Resolved the `bundle.lock` pins and made three build attempts against
-Trevor's Proxmox lab (`pve1`). The first two attempts found real problems
-(one already fixed upstream on `main` mid-session, one a lab network gap);
-the third got all the way through ISO boot, kickstart, and Ansible, and
-failed on the very last step — one Goss check (from pinned upstream
-image-builder, not DCiaB's own overlay) expects a package, `cloud-utils`,
-that has never existed as a real RPM on Rocky 9 or Rocky 10. No template
-was built, but the remaining issue is narrow, well isolated, and traced to
-its exact source line upstream.
+Four attempts total. The first three (below, unchanged from the prior
+report) found and traced a disk-format bug, a lab network gap, and an
+upstream Goss package-name bug, all now fixed or worked around. Attempt 4,
+after pulling `main`'s fix for the Goss issue (`images/node/Containerfile`
+patching `goss-vars.yaml` via `images/node/patches/goss_vars_growpart.py`),
+succeeded: Packer finished in 9m25s, Goss validated 49/49, and Proxmox has
+a template, `rocky10-kube-v1.36.6` (VMID 121) on node `pve1`, storage
+`pool0`.
 
 ## Steps
 
@@ -139,12 +138,77 @@ its exact source line upstream.
   the other 49 cover containerd, kubelet, kubeadm, chronyd and more, all
   successfully installed and enabled on Rocky 10.
 
+## Attempt 4 (retry, after the Goss fix)
+
+Pulled `main` (`17f4b33`, "Node image: fix upstream Goss check for Rocky;
+reopen task 0002" / PR #11), branched `handoff/0002-node-template-proxmox-retry`
+from it. Pins already resolved in `bundle.lock`, so skipped steps 1–2;
+`python3 -m pytest -q` re-checked anyway: 85 passed. `--print-vars` showed
+`disk_format: raw` as expected, and no `rocky10-kube-v1.36.6` VM already
+existed. Reused the attempt-3 env file unchanged (`pool0`, raw, untagged
+`vmbr0`, per `handoff/LAB.md`).
+
+Ran `images/node/build.sh ~/.dciab/proxmox-build.env`. The container build
+step printed the patch confirmation: `goss-vars: rockylinux.qemu expects
+cloud-utils-growpart (fixed line 281)`. Packer finished in **9m25s**, exit 0:
+
+- ISO boot, kickstart, SSH, Ansible (`firstboot.yml`, `node.yml`): all
+  succeeded, as in attempt 3.
+- Goss validation: **49/49 passed** (one fewer test than attempt 3's 50,
+  since the broken `cloud-utils` check is gone rather than fixed to a
+  different assertion — the patch script removes the duplicate line once
+  `cloud-utils-growpart` is already present).
+- Template created: VMID **121** on node `pve1`. (Coincidentally the same
+  number as attempt 2's half-built, since-deleted VM — Proxmox reused the
+  freed ID; this is a different, complete VM.)
+
+### Template check (step 4)
+
+Via `GET /nodes/pve1/qemu/121/config`:
+- `template: 1` — confirmed a template, not a running VM.
+- `name: rocky10-kube-v1.36.6` — matches.
+- `cpu: x86-64-v3` — matches the Rocky 10 requirement.
+- `agent: "1"` — qemu-guest-agent enabled.
+- `scsi0: pool0:base-121-disk-1,...,size=20G` — image-builder's default
+  disk size (no `DCIAB_DISK_SIZE` override was set).
+- `efidisk0: pool0:base-121-disk-0,...` and `bios: seabios` — present as
+  image-builder's Proxmox target sets up.
+
+### Installed versions (from the Ansible invocation's extra-vars)
+
+- Kubernetes (kubeadm, kubelet): **1.36.6** (also confirmed directly by
+  Goss's package-version checks)
+- containerd: **2.3.2**
+- runc: **1.4.3**
+- crictl: **1.36.0**
+
+### Clean up
+
+`images/node/.build/` removed. Template kept, as the task says to.
+
 ## Artifacts
 
-None kept — no template or VM was created on any of the three attempts.
-Left behind intentionally, for reuse by a retry: the uploaded Rocky 10.3
-minimal ISO at `local:iso/2750aa1110330781670afa1d9f4a95f927568a6b.iso` on
-node `pve1` (~1.5 GB, reused unchanged across all three attempts).
+- **Template `rocky10-kube-v1.36.6`, VMID 121, node `pve1`, storage
+  `pool0`.** Kept — this is the task's deliverable, for a later task to
+  clone cluster nodes from.
+- Rocky point release: **10.3** (minimal ISO).
+- image-builder digest:
+  `sha256:03051205c79c5c7d5ce3693b5ff3841fed6938f7e126137815bb7d70c1646dfe`
+  (`registry.k8s.io/scl-image-builder/cluster-node-image-builder-amd64:v0.1.55`).
+- The uploaded Rocky 10.3 ISO stays at
+  `local:iso/2750aa1110330781670afa1d9f4a95f927568a6b.iso` on `pve1`
+  (reused unchanged across all four attempts) — not cleaned up since
+  Packer/image-builder doesn't remove it and it's small relative to the
+  template it helped build; say if you'd like it removed.
+- Attempts 1–3 left nothing behind (see their own Artifacts note below,
+  kept for history).
+
+None kept from attempts 1–3 specifically — no template or VM was created on
+any of them. Left behind intentionally at the time, for reuse by a retry:
+the uploaded Rocky 10.3 minimal ISO at
+`local:iso/2750aa1110330781670afa1d9f4a95f927568a6b.iso` on node `pve1`
+(~1.5 GB, reused unchanged across all three attempts, and again in attempt 4
+above).
 
 ## Workarounds
 
@@ -168,17 +232,16 @@ node `pve1` (~1.5 GB, reused unchanged across all three attempts).
 
 ## Questions
 
-- Should the `images/node/Containerfile` overlay patch
-  `packer/goss/goss-vars.yaml`'s `rockylinux.qemu.package` entry (swap
-  `cloud-utils` for `cloud-utils-growpart`), or add a dedicated
-  `rockylinux.proxmox` entry and point the Rocky 10 target's goss
-  `PROVIDER` at it instead? Either should let a retry produce a real
-  template — this is the one concrete blocker left.
-- Worth reporting upstream to kubernetes-sigs/image-builder too, since the
-  same `cloud-utils` vs `cloud-utils-growpart` mismatch sits in the
-  `rhel`/`photon` blocks of the same file, and `PROVIDER=qemu` is hardcoded
-  for every Proxmox target — this should already affect upstream's existing
-  Rocky 9 + Proxmox target, not just DCiaB's new Rocky 10 one.
-- Should `handoff/LAB.md` note that vlan150 is for deployed nodes only, not
-  for node-image builds (which need a route back to the runner host)? That
-  would save a future task the same detour.
+- Resolved: `images/node/Containerfile` now patches `goss-vars.yaml` via
+  `images/node/patches/goss_vars_growpart.py`, confirmed working in
+  attempt 4 (`goss-vars: rockylinux.qemu expects cloud-utils-growpart (fixed
+  line 281)`, 49/49 Goss checks passed).
+- Still open: worth reporting upstream to kubernetes-sigs/image-builder,
+  since the same `cloud-utils` vs `cloud-utils-growpart` mismatch sits in
+  the `rhel`/`photon` blocks of the same file, and `PROVIDER=qemu` is
+  hardcoded for every Proxmox target — this should already affect
+  upstream's existing Rocky 9 + Proxmox target, not just DCiaB's new Rocky
+  10 one.
+- Resolved: `handoff/LAB.md` now documents both the Proxmox token
+  permission pattern and that vlan150 is for deployed nodes only, not
+  node-image builds — confirmed accurate against this session's findings.
