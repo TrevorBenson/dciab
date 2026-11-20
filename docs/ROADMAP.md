@@ -20,6 +20,10 @@ Each phase ends in a gate that must pass on both a vSphere lab and a Proxmox lab
 - [x] `capi-clusterclasses` chart: `r1` classes (draft until the first release; see [VERSIONING.md](VERSIONING.md)) for vSphere, Proxmox and Metal3
 - [x] `capi-cluster` chart
 - [x] ClusterClass end-to-end test: CAPI and all providers on kind, one Cluster per class, generated objects verified (no infrastructure)
+- [x] Node template recipe: image-builder with a Rocky 10 Proxmox target (`images/node/`)
+- [ ] First Proxmox template built (handoff task 0002)
+- [ ] Node templates for vSphere and Metal3
+- [ ] Real-cluster spike on Proxmox from the template (needs task 0002; Cilium installed by hand until `dciab mgmt` exists)
 - [ ] Archive build pipeline
 - [ ] `dciab seed`
 - [ ] `dciab mgmt`

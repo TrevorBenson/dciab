@@ -1,0 +1,17 @@
+{
+  "boot_command_prefix": "<up>e<down><down><end> text inst.ks=",
+  "boot_command_suffix": "/10/ks.cfg<leftCtrlOn>x<leftCtrlOff>",
+  "boot_media_path": "http://{{ .HTTPIP }}:{{ .HTTPPort }}",
+  "build_name": "rockylinux-10",
+  "cpu_type": "x86-64-v3",
+  "distribution_version": "10",
+  "distro_arch": "amd64",
+  "distro_name": "rockylinux",
+  "distro_version": "10",
+  "epel_rpm_gpg_key": "https://dl.fedoraproject.org/pub/epel/RPM-GPG-KEY-EPEL-10",
+  "guest_os_type": "rockylinux-64",
+  "iso_checksum_type": "sha256",
+  "os_display_name": "Rocky Linux 10",
+  "redhat_epel_rpm": "https://dl.fedoraproject.org/pub/epel/epel-release-latest-10.noarch.rpm",
+  "shutdown_command": "/sbin/halt -h -p"
+}

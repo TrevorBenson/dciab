@@ -4,7 +4,8 @@
 # Rules:
 # - Bump a version here, never inline in a chart or script.
 # - Anything that changes a node (Kubernetes, kube-vip) also needs a new ClusterClass
-#   version in charts/capi-clusterclasses, because classes are immutable.
+#   revision in charts/capi-clusterclasses once the current one is released
+#   (docs/VERSIONING.md).
 apiVersion: dciab.io/v1alpha1
 kind: BundleLock
 
@@ -71,6 +72,21 @@ certManager:
 # Pinned by digest; CI checks the tag still resolves to it (hack/check_image_digests.py).
 images:
   kubeVip: ghcr.io/kube-vip/kube-vip:v1.3.1@sha256:1962f9daf226503f7e6b107f595cb28b7917fd2d0113957075e19a3e5a6c1e33
+
+# Node images: VM templates cluster nodes are cloned from, built with Kubernetes
+# image-builder (images/node/README.md). Built artifacts are never committed.
+nodeImages:
+  imageBuilder:
+    version: v0.1.55
+    # Pinned by digest. Empty until handoff task 0002 resolves it; images/node/build.sh
+    # refuses to run without it.
+    image: registry.k8s.io/scl-image-builder/cluster-node-image-builder-amd64:v0.1.55
+    digest: ""
+  rocky10:
+    # Rocky Linux 10 minimal ISO: a versioned URL (10.N, not "10") and its sha256 from the
+    # CHECKSUM file beside it. Empty until handoff task 0002 resolves them.
+    isoURL: ""
+    isoSHA256: ""
 
 charts:
   cilium: 1.20.5
