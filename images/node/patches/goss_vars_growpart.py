@@ -16,8 +16,9 @@ import sys
 path = sys.argv[1]
 lines = open(path).read().split("\n")
 
-in_rocky = in_qemu = False
+in_rocky = in_qemu = found_block = False
 qemu_indent = None
+fixed, has_growpart = [], False
 for i, line in enumerate(lines):
     if re.match(r"^\S", line):                      # top-level key
         in_rocky, in_qemu = line.startswith("rockylinux:"), False
@@ -26,19 +27,27 @@ for i, line in enumerate(lines):
         continue
     m = re.match(r"^(\s+)qemu:\s*$", line)
     if m:
-        in_qemu, qemu_indent = True, len(m.group(1))
+        in_qemu, qemu_indent, found_block = True, len(m.group(1)), True
         continue
     if in_qemu and line.strip() and len(line) - len(line.lstrip()) <= qemu_indent:
         in_qemu = False                              # left the qemu block
     if in_qemu:
         m = re.match(r"^(\s+)cloud-utils:\s*$", line)
         if m:
-            lines[i] = f"{m.group(1)}cloud-utils-growpart:"
-            open(path, "w").write("\n".join(lines))
-            print(f"goss-vars: rockylinux.qemu expects cloud-utils-growpart (line {i + 1})")
-            sys.exit(0)
-        if re.match(r"^\s+cloud-utils-growpart:\s*$", line):
-            print("goss-vars: already expects cloud-utils-growpart upstream; this patch can be dropped")
-            sys.exit(0)
+            fixed.append(i)
+            lines[i] = None if has_growpart else f"{m.group(1)}cloud-utils-growpart:"
+            has_growpart = True
+        elif re.match(r"^\s+cloud-utils-growpart:\s*$", line):
+            if has_growpart:
+                lines[i] = None                      # a stale entry already became this one
+            has_growpart = True
 
-sys.exit("goss-vars: rockylinux.qemu package list not found; check the upstream file layout")
+if not found_block:
+    sys.exit("goss-vars: rockylinux.qemu not found; check the upstream file layout")
+if fixed:
+    open(path, "w").write("\n".join(l for l in lines if l is not None))
+    print(f"goss-vars: rockylinux.qemu expects cloud-utils-growpart (fixed line {', '.join(str(i + 1) for i in fixed)})")
+elif has_growpart:
+    print("goss-vars: already expects cloud-utils-growpart upstream; this patch can be dropped")
+else:
+    print("goss-vars: rockylinux.qemu lists neither cloud-utils nor cloud-utils-growpart; nothing to fix")

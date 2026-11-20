@@ -23,7 +23,7 @@ The third attempt got through install and Ansible, then failed on one Goss check
 - Reuse the env file: `pool0`, raw disks, untagged `vmbr0` (see `handoff/LAB.md`).
 - Run steps 3–5 again. The pins are already in `bundle.lock`, so skip steps 1–2, but check `--print-vars` first.
 - While the image-builder container builds, its output should include `goss-vars: rockylinux.qemu expects cloud-utils-growpart`.
-- Append an "Attempt 4" section to the existing report. Keep attempts 1–3.
+- Append an "Attempt 4" section to the existing report, keeping attempts 1–3. Update the report's front matter (`result`, `commit`, `date`) and its Summary to match attempt 4.
 
 ## Needs
 
