@@ -57,6 +57,7 @@ charts/
 hack/                    fetch_crds.py, check_manifests.py (CRD-based checks), render_components.py
   e2e/                   ClusterClass end-to-end test on kind (run.sh, verify.py)
 images/node/              node template build (image-builder: Rocky 10 on Proxmox)
+addons/cilium/           Cilium install for any cluster (pinned chart, DCiaB values)
 handoff/                 development only: lab test tasks and reports (not part of the product)
 examples/                vsphere.yaml, proxmox.yaml, metal3-cluster.yaml
 tests/                   pytest suite

@@ -18,6 +18,7 @@ There has been no release yet, so `r1` is a draft.
 
 ## What every class sets up
 
+- **No kube-proxy**: kubeadm skips its kube-proxy addon. Cilium replaces it and is installed after the control plane is up ([addons/cilium](../../addons/cilium/README.md)); nodes stay `NotReady` until then.
 - **API VIP**: a kube-vip static pod in ARP mode on the control plane nodes (`apiVIP` variable).
 - **Registry mirror**: containerd `hosts.toml` for `docker.io`, `quay.io`, `ghcr.io` and `registry.k8s.io`, pointing at `https://<registryMirror>/v2/<upstream>/` (`override_path`). The node template's containerd must use `config_path = "/etc/containerd/certs.d"`.
 - **Trust**: the platform CA (`trustBundle`) in the node trust store, applied before kubeadm runs.

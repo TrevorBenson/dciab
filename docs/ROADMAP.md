@@ -23,7 +23,8 @@ Each phase ends in a gate that must pass on both a vSphere lab and a Proxmox lab
 - [x] Node template recipe: image-builder with a Rocky 10 Proxmox target (`images/node/`)
 - [x] First Proxmox template built and verified
 - [ ] Node templates for vSphere and Metal3
-- [ ] Real-cluster spike on Proxmox from the template (Cilium installed by hand until `dciab mgmt` exists)
+- [x] Cilium install for any cluster (`addons/cilium`), with kube-proxy replaced
+- [ ] Real-cluster spike on Proxmox from the template
 - [ ] Archive build pipeline
 - [ ] `dciab seed`
 - [ ] `dciab mgmt`

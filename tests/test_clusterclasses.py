@@ -75,6 +75,23 @@ def test_newest_classes_use_bundle_kube_vip():
         assert images == {lock["images"]["kubeVip"]}, f"{f.name} uses {images}"
 
 
+def test_installed_classes_skip_kube_proxy():
+    # Cilium (addons/cilium) replaces kube-proxy.
+    for rev in installed_revisions():
+        for f in (CLASSES / rev).glob("*.yaml"):
+            kcp = next(d for d in yaml.safe_load_all(f.read_text()) if d and d["kind"] == "KubeadmControlPlaneTemplate")
+            init = kcp["spec"]["template"]["spec"]["kubeadmConfigSpec"]["initConfiguration"]
+            assert "addon/kube-proxy" in init.get("skipPhases", []), f"{rev}/{f.name}"
+
+
+def test_cilium_addon_matches_the_classes():
+    values = yaml.safe_load((ROOT / "addons/cilium/values.yaml").read_text())
+    assert values["kubeProxyReplacement"] == "true"
+    assert values["k8sServicePort"] == 6443
+    lock = yaml.safe_load((ROOT / "bundle.lock").read_text())
+    assert lock["charts"]["cilium"] and lock["chartRepositories"]["cilium"].startswith("https://")
+
+
 def test_class_names_carry_their_revision():
     for v in revisions():
         for f in (CLASSES / v).glob("*.yaml"):

@@ -113,6 +113,9 @@ class Verifier:
         self.expect("control plane version", spec["version"], self.v["kubernetesVersion"])
         self.expect("control plane replicas", spec["replicas"], self.v["controlPlane"]["replicas"])
         cfg = spec["kubeadmConfigSpec"]
+        # Cilium replaces kube-proxy, so kubeadm must not install it.
+        self.expect_true("kubeadm skips addon/kube-proxy",
+                         "addon/kube-proxy" in cfg.get("initConfiguration", {}).get("skipPhases", []))
         files = self.check_node_files("control plane", cfg)
         kube_vip = files.get("/etc/kubernetes/manifests/kube-vip.yaml", "")
         self.expect_true("kube-vip manifest present", bool(kube_vip))

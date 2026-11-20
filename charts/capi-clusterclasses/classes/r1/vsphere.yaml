@@ -604,6 +604,8 @@ spec:
             extraArgs:
               - {name: profiling, value: "false"}
         initConfiguration:
+          # Cilium replaces kube-proxy (Gateway API needs it); see addons/cilium.
+          skipPhases: [addon/kube-proxy]
           nodeRegistration:
             name: '{{ local_hostname }}'
             kubeletExtraArgs:
