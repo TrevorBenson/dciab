@@ -96,6 +96,11 @@ charts:
 chartRepositories:
   cilium: https://helm.cilium.io
 
+# sha256 of each chart .tgz, checked before install. Empty: the installer warns and
+# prints the sum to pin.
+chartDigests:
+  cilium: ""
+
 tools:
   helm: v4.3.2
   kind: v0.33.0   # default node image: Kubernetes v1.37.0 (CAPI v1.14 supports it as a management cluster)

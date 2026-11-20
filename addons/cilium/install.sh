@@ -25,7 +25,7 @@ overrides="$(mktemp)"
 trap 'rm -f "$overrides"' EXIT
 
 # Per-cluster values, and the chart pin, from the cluster values and bundle.lock.
-read -r version repo < <(python3 - "$ROOT/bundle.lock" "$cluster_values" "$overrides" <<'PY'
+read -r version repo digest nodes < <(python3 - "$ROOT/bundle.lock" "$cluster_values" "$overrides" <<'PY'
 import sys
 import yaml
 
@@ -39,12 +39,31 @@ values = {
     "cluster": {"name": cluster["name"]},
 }
 yaml.safe_dump(values, open(sys.argv[3], "w"), sort_keys=False)
-print(lock["charts"]["cilium"], lock["chartRepositories"]["cilium"])
+# Nodes the cluster should end up with: control plane plus every worker pool.
+nodes = cluster.get("controlPlane", {}).get("replicas", 0) + sum(
+    p.get("replicas", 0) for p in cluster.get("workerPools", []))
+digest = lock.get("chartDigests", {}).get("cilium") or "-"
+print(lock["charts"]["cilium"], lock["chartRepositories"]["cilium"], digest, nodes)
 PY
 )
 
-chart=(cilium --repo "$repo" --version "$version" --namespace kube-system
-       --values "$HERE/values.yaml" --values "$overrides")
+# Fetch the pinned chart once and check its sha256 against bundle.lock (chartDigests).
+workdir="$(mktemp -d)"
+trap 'rm -f "$overrides"; rm -rf "$workdir"' EXIT
+fetch_chart() {
+  helm pull cilium --repo "$repo" --version "$version" --destination "$workdir" >/dev/null
+  local tgz sum
+  tgz="$(ls "$workdir"/cilium-*.tgz)"
+  sum="$(sha256sum "$tgz" | cut -d' ' -f1)"
+  if [[ "$digest" == - ]]; then
+    echo "install.sh: warning: bundle.lock has no chartDigests.cilium; this chart's sha256 is $sum" >&2
+  elif [[ "$sum" != "$digest" ]]; then
+    echo "install.sh: cilium $version chart sha256 is $sum, bundle.lock pins $digest; refusing" >&2
+    exit 1
+  fi
+  echo "$tgz"
+}
+values=(--namespace kube-system --values "$HERE/values.yaml" --values "$overrides")
 
 case "$mode" in
   --print-values)
@@ -52,7 +71,8 @@ case "$mode" in
     cat "$overrides"
     ;;
   --template)
-    helm template "${chart[@]}"
+    tgz="$(fetch_chart)"
+    helm template cilium "$tgz" "${values[@]}"
     ;;
   -*)
     usage
@@ -61,8 +81,15 @@ case "$mode" in
     kubeconfig="$mode"
     [[ -f "$kubeconfig" ]] || { echo "install.sh: no such kubeconfig: $kubeconfig" >&2; exit 2; }
     echo "== cilium $version on $(KUBECONFIG="$kubeconfig" kubectl config current-context)"
-    helm upgrade --install "${chart[@]}" --kubeconfig "$kubeconfig" --wait --timeout 10m
-    echo "== waiting for every node to be Ready"
+    tgz="$(fetch_chart)"
+    helm upgrade --install cilium "$tgz" "${values[@]}" --kubeconfig "$kubeconfig" --wait --timeout 10m
+    # Nodes still joining aren't listed yet, so wait for the expected count, then Ready.
+    echo "== waiting for $nodes nodes to register and be Ready"
+    for _ in $(seq 1 120); do
+      registered="$(kubectl --kubeconfig "$kubeconfig" get nodes --no-headers 2>/dev/null | wc -l)"
+      (( registered >= nodes )) && break
+      sleep 10
+    done
     kubectl --kubeconfig "$kubeconfig" wait node --all --for=condition=Ready --timeout=10m
     kubectl --kubeconfig "$kubeconfig" get nodes -o wide
     ;;

@@ -90,6 +90,7 @@ def test_cilium_addon_matches_the_classes():
     assert values["k8sServicePort"] == 6443
     lock = yaml.safe_load((ROOT / "bundle.lock").read_text())
     assert lock["charts"]["cilium"] and lock["chartRepositories"]["cilium"].startswith("https://")
+    assert re.fullmatch(r"(|[0-9a-f]{64})", lock["chartDigests"]["cilium"])
 
 
 def test_class_names_carry_their_revision():
