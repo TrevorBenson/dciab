@@ -302,3 +302,189 @@ def test_proxmox_template_node_must_be_listed(site):
     doc["spec"]["platform"]["proxmox"]["templateNode"] = "pve09"
     _, report = site.validate(doc)
     assert errors(report, "spec.platform.proxmox.templateNode")
+
+
+# --- Day 0: hypervisors and bootstrap NTP -------------------------------------------
+
+def test_hypervisor_type_must_match_platform(site):
+    doc = load_example("proxmox-bare")
+    doc["spec"]["hypervisors"]["type"] = "esxi"
+    doc["spec"]["hypervisors"]["installerFile"] = "./isos/esxi.iso"
+    _, report = site.validate(doc)
+    assert "use type: proxmox" in errors(report, "spec.hypervisors.type")[0]["fix"]
+
+
+def test_esxi_needs_installer_file(site):
+    doc = load_example("vsphere")
+    doc["spec"]["hypervisors"] = load_example("proxmox-bare")["spec"]["hypervisors"]
+    doc["spec"]["hypervisors"]["type"] = "esxi"
+    _, report = site.validate(doc)
+    assert errors(report, "spec.hypervisors.installerFile")
+
+
+def test_proxmox_rejects_installer_file(site):
+    doc = load_example("proxmox-bare")
+    doc["spec"]["hypervisors"]["installerFile"] = "./isos/pve.iso"
+    _, report = site.validate(doc)
+    assert errors(report, "spec.hypervisors")
+
+
+def test_only_virtualmedia_for_now(site):
+    doc = load_example("proxmox-bare")
+    doc["spec"]["hypervisors"]["method"] = "pxe"
+    _, report = site.validate(doc)
+    assert errors(report, "spec.hypervisors.method")
+
+
+def test_hypervisor_address_must_not_overlap(site):
+    doc = load_example("proxmox-bare")
+    doc["spec"]["hypervisors"]["hosts"][1]["address"] = "10.30.110.25"  # inside mgmt nodeIPRange
+    _, report = site.validate(doc)
+    assert errors(report, "spec.hypervisors.hosts[1].address")
+
+
+def test_hypervisor_address_inside_node_network(site):
+    doc = load_example("proxmox-bare")
+    doc["spec"]["hypervisors"]["hosts"][0]["address"] = "10.99.0.6"
+    _, report = site.validate(doc)
+    assert "outside" in errors(report, "spec.hypervisors.hosts[0].address")[0]["found"]
+
+
+def test_hypervisor_duplicate_mac_and_bmc(site):
+    doc = load_example("proxmox-bare")
+    hosts = doc["spec"]["hypervisors"]["hosts"]
+    hosts[2]["bootMACAddress"] = hosts[0]["bootMACAddress"].upper()
+    hosts[2]["bmc"]["address"] = hosts[0]["bmc"]["address"]
+    _, report = site.validate(doc)
+    assert errors(report, "spec.hypervisors.hosts[2].bootMACAddress")
+    assert errors(report, "spec.hypervisors.hosts[2].bmc.address")
+
+
+def test_hypervisor_not_in_proxmox_nodes_is_a_warning(site):
+    doc = load_example("proxmox-bare")
+    doc["spec"]["hypervisors"]["hosts"][2]["name"] = "pve09"
+    code, report = site.validate(doc)
+    assert code == 0
+    assert warnings(report, "spec.hypervisors.hosts[2].name")
+    assert any("pve03" in n for n in report["notes"])
+
+
+def test_hypervisor_root_password_must_exist(site):
+    doc = load_example("proxmox-bare")
+    doc["spec"]["hypervisors"]["rootPassword"] = {"file": "./secrets/hv/missing"}
+    _, report = site.validate(doc)
+    assert errors(report, "spec.hypervisors.rootPassword.file")
+
+
+def test_bootstrap_ntp_needs_service_ips_as_ntp_servers(site):
+    doc = load_example("proxmox-bare")
+    doc["spec"]["network"]["ntpServers"] = ["10.30.0.123"]
+    _, report = site.validate(doc)
+    assert "10.30.110.53, 10.30.110.54" in errors(report, "spec.network.ntpServers")[0]["fix"]
+
+
+def test_service_ips_as_ntp_servers_need_bootstrap_ntp(site):
+    doc = load_example("proxmox-bare")
+    del doc["spec"]["bootstrap"]["ntp"]
+    _, report = site.validate(doc)
+    assert "spec.bootstrap.ntp" in errors(report, "spec.network.ntpServers")[0]["fix"]
+
+
+def test_no_upstream_requires_serving_local_clock(site):
+    doc = load_example("proxmox-bare")
+    doc["spec"]["bootstrap"]["ntp"]["serveLocalClock"] = False
+    _, report = site.validate(doc)
+    assert errors(report, "spec.bootstrap.ntp.serveLocalClock")
+
+
+def test_no_upstream_is_noted(site):
+    _, report = site.validate(load_example("proxmox-bare"))
+    assert any("bootstrap host's clock" in n for n in report["notes"])
+
+
+# --- ESXi installer pin (needs its own archive root with a pinned bundle.lock) ----------
+
+def _esxi_site(site, tmp_path, iso_bytes: bytes, pin_bytes):
+    import hashlib
+    import shutil
+
+    import yaml
+
+    root = tmp_path / "archive"
+    (root / "schema").mkdir(parents=True)
+    shutil.copy(ROOT / "VERSION", root / "VERSION")
+    shutil.copy(ROOT / "schema" / "dciab.schema.json", root / "schema" / "dciab.schema.json")
+    lock = yaml.safe_load((ROOT / "bundle.lock").read_text())
+    if pin_bytes is not None:
+        lock["hypervisors"]["esxi"].update(
+            version="test", isoFile="esxi-test.iso", isoSHA256=hashlib.sha256(pin_bytes).hexdigest())
+    (root / "bundle.lock").write_text(yaml.safe_dump(lock))
+    (site.dir / "isos").mkdir()
+    (site.dir / "isos" / "esxi.iso").write_bytes(iso_bytes)
+
+    doc = load_example("vsphere")
+    doc["spec"]["hypervisors"] = load_example("proxmox-bare")["spec"]["hypervisors"]
+    doc["spec"]["hypervisors"].update(type="esxi", installerFile="./isos/esxi.iso")
+    for i, h in enumerate(doc["spec"]["hypervisors"]["hosts"]):
+        h["address"] = f"10.20.110.{6 + i}"
+    return root, doc
+
+
+def _validate_with_root(site, root, doc):
+    import json
+
+    from dciab_validate import cli
+
+    path = site.dir / "dciab.yaml"
+    path.write_text(__import__("yaml").safe_dump(doc, sort_keys=False))
+    code = cli.main([str(path), "--root", str(root), "--output", "json"])
+    return code, json.loads(site.capsys.readouterr().out)
+
+
+def test_esxi_installer_matching_pin(site, tmp_path):
+    root, doc = _esxi_site(site, tmp_path, b"esxi", b"esxi")
+    code, report = _validate_with_root(site, root, doc)
+    assert errors(report) == [], errors(report)
+    assert any("vCenter" in n for n in report["notes"])
+
+
+def test_esxi_installer_wrong_build(site, tmp_path):
+    root, doc = _esxi_site(site, tmp_path, b"other", b"esxi")
+    _, report = _validate_with_root(site, root, doc)
+    assert "esxi-test.iso" in errors(report, "spec.hypervisors.installerFile")[0]["fix"]
+
+
+def test_esxi_installer_without_a_pin(site, tmp_path):
+    root, doc = _esxi_site(site, tmp_path, b"esxi", None)
+    _, report = _validate_with_root(site, root, doc)
+    assert "no tested ESXi build" in errors(report, "spec.hypervisors.installerFile")[0]["fix"]
+
+
+def test_bmc_hostnames_compare_case_insensitively(site):
+    doc = load_example("proxmox-bare")
+    hosts = doc["spec"]["hypervisors"]["hosts"]
+    hosts[0]["bmc"]["address"] = "redfish-virtualmedia+https://idrac-a.example.net/redfish/v1/Systems/1"
+    hosts[1]["bmc"]["address"] = "redfish-virtualmedia+https://IDRAC-A.example.net/redfish/v1/Systems/1"
+    _, report = site.validate(doc)
+    assert errors(report, "spec.hypervisors.hosts[1].bmc.address")
+
+
+def test_bootstrap_ntp_needs_hypervisors(site):
+    doc = load_example("proxmox-bare")
+    del doc["spec"]["hypervisors"]
+    _, report = site.validate(doc)
+    assert "spec.hypervisors" in errors(report, "spec.bootstrap.ntp")[0]["fix"]
+
+
+def test_bootstrap_ntp_upstream_must_not_be_a_service_ip(site):
+    doc = load_example("proxmox-bare")
+    doc["spec"]["bootstrap"]["ntp"]["upstream"] = ["10.30.110.53"]
+    _, report = site.validate(doc)
+    assert errors(report, "spec.bootstrap.ntp.upstream[0]")
+
+
+def test_hypervisors_need_a_boot_mode(site):
+    doc = load_example("proxmox-bare")
+    del doc["spec"]["hypervisors"]["bootMode"]
+    _, report = site.validate(doc)
+    assert errors(report, "spec.hypervisors.bootMode")

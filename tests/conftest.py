@@ -15,8 +15,9 @@ SECRET_FILES = [
     "vsphere.pw", "longhorn-s3.env",
     "pki/intermediate.crt", "pki/intermediate.key", "pki/chain.pem",
     "bmc/ca.pem", *[f"bmc/r760-0{i}" for i in range(1, 8)],
+    "hv/root", "bmc/pve01", "bmc/pve02", "bmc/pve03",
 ]
-EXAMPLES = ["vsphere", "proxmox", "metal3-cluster"]
+EXAMPLES = ["vsphere", "proxmox", "proxmox-bare", "metal3-cluster"]
 
 
 def load_example(name: str) -> dict:

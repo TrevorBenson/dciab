@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # DCiaB entrypoint. Each step is idempotent and runs in order:
-#   validate -> seed -> mgmt -> infra -> platform -> finalize
+#   validate -> [services -> hypervisors] -> seed -> mgmt -> infra -> platform -> finalize
+# services and hypervisors run only for sites that start from bare servers.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
@@ -11,6 +12,7 @@ Usage: dciab <command> [options]
 
 Commands:
   validate <config> [--output text|json]   Check a site config; changes nothing
+  services | hypervisors                   Day 0 for bare servers (not implemented yet)
   seed | mgmt | infra | platform | finalize
                                            Bootstrap steps (not implemented yet)
   status | verify                          Site state (not implemented yet)
@@ -43,7 +45,7 @@ case "$cmd" in
     require_python
     PYTHONPATH="$ROOT/lib${PYTHONPATH:+:$PYTHONPATH}" exec python3 -m dciab_validate --root "$ROOT" "$@"
     ;;
-  seed|mgmt|infra|platform|finalize|status|verify)
+  services|hypervisors|seed|mgmt|infra|platform|finalize|status|verify)
     echo "dciab $cmd: not implemented yet (see docs/ROADMAP.md)" >&2
     exit 2
     ;;

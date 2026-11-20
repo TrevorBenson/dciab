@@ -29,7 +29,24 @@ Each phase ends in a gate that must pass on both a vSphere lab and a Proxmox lab
 - [ ] `dciab seed`
 - [ ] `dciab mgmt`
 
+## Day 0 for bare servers
+
+Decided in [ADR 0001](adr/0001-day0-hypervisors-and-services.md).
+
+- [x] Config: `spec.hypervisors` and `spec.bootstrap.ntp`, with `validate` checks
+- [x] `bundle.lock`: Proxmox VE installer pinned; ESXi entry (not shipped); Day 0 service images
+- [x] Day 0 image digests pinned (CoreDNS, Caddy, chrony base)
+- [ ] ESXi build tested and pinned
+- [ ] `dciab services`: CoreDNS, chrony and Caddy as one pod on the DNS service IPs
+- [ ] `dciab hypervisors` for Proxmox VE: Redfish preparation, virtual media install, API token, bridge and storage
+- [ ] `dciab hypervisors` for ESXi
+- [ ] Live checks: BMC routes, Redfish and credentials
+
 ## Backlog
+
+- **vCenter deployment** on the first ESXi host (datacenter, cluster, networks). Until then, ESXi sites need an existing vCenter.
+- **Proxmox VE clustering** and shared storage across hosts installed by `dciab hypervisors`.
+- **Only if a site needs them:** PXE as a second install method; a direct out-of-band interface on the bootstrap host, with DHCP for BMCs; separate NTP service addresses.
 
 - **Node image recipe: image-builder (containerd) or image mode (bootc, CRI-O).** The bootc recipe in `images/node-bootc/` is under evaluation against the image-builder template.
 - **CRI-O instead of containerd** (preferred). Node templates use containerd today: image-builder installs it, and it's the only runtime image-builder supports. The switch needs:

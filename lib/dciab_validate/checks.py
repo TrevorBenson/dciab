@@ -6,6 +6,7 @@ and have the right types.
 
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 import stat
@@ -16,7 +17,7 @@ from typing import Dict, List, Optional, Tuple
 from . import netutil as nu
 from .findings import ERROR, WARNING, Finding, Path, format_path
 
-SECRET_KEYS = {"password", "tokenSecret", "backupCredentials", "certificate", "key", "chain", "caBundle"}
+SECRET_KEYS = {"password", "rootPassword", "tokenSecret", "backupCredentials", "certificate", "key", "chain", "caBundle"}
 RESERVED_CLUSTER_NAMES = {"mgmt", "infra"}
 
 
@@ -71,6 +72,8 @@ class Checker:
         self.check_addresses()
         self.check_cidrs()
         self.check_baremetal()
+        self.check_bootstrap_ntp()
+        self.check_hypervisors()
         self.check_storage()
         self.check_resilience()
         self.check_template_version()
@@ -230,6 +233,10 @@ class Checker:
                 self._claim(claims["nodes"], cpath + ("lbPool",), c["lbPool"], "range")
                 self._check_vm_range_size(cpath, c)
 
+        # After the clusters, so an overlap is reported on the hypervisor address.
+        for i, h in enumerate(self.spec.get("hypervisors", {}).get("hosts", [])):
+            self._claim(claims["nodes"], ("spec", "hypervisors", "hosts", i, "address"), h["address"], "ip")
+
         for name, items in claims.items():
             n, npath = nets[name]
             if n is None:
@@ -332,7 +339,7 @@ class Checker:
                 self.error(hp + ("bootMACAddress",), h["bootMACAddress"],
                            f"each host needs its own boot MAC; hosts[{macs[mac]}] already uses it")
             macs.setdefault(mac, i)
-            addr = h["bmc"]["address"].split("://", 1)[1].split("/", 1)[0]
+            addr = self._bmc_host(h)
             if addr in bmcs:
                 self.error(hp + ("bmc", "address"), addr,
                            f"each host needs its own BMC; hosts[{bmcs[addr]}] already uses {addr}")
@@ -385,6 +392,110 @@ class Checker:
                     if role["network"] != cp_net["name"] and role["network"] in networks:
                         self.warn(role_path + ("network",), role["network"],
                                   "this pool is on a different network from its control plane; make sure the networks route to each other")
+
+    def check_bootstrap_ntp(self) -> None:
+        """When the bootstrap host serves NTP, it does so on the DNS service IPs, so every
+        host must be pointed at exactly those; and nothing may point at them otherwise."""
+        net = self.spec["network"]
+        ntp_path = ("spec", "network", "ntpServers")
+        service_ips = list(net["dnsServiceIPs"])
+        listed = set(net["ntpServers"])
+        serving = "ntp" in self.spec["bootstrap"]
+        if serving:
+            if "hypervisors" not in self.spec:
+                self.error(("spec", "bootstrap", "ntp"), "set without spec.hypervisors",
+                           "remove it, or add spec.hypervisors: the bootstrap host serves NTP only in the Day 0 steps, "
+                           "which run for sites that start from bare servers")
+            for i, up in enumerate(self.spec["bootstrap"]["ntp"]["upstream"]):
+                if up in service_ips:
+                    self.error(("spec", "bootstrap", "ntp", "upstream", i), f"{up} (a DNS service IP)",
+                               "use an NTP server outside the site: the bootstrap host itself serves NTP on the DNS service IPs")
+            if listed != set(service_ips):
+                self.error(ntp_path, ", ".join(net["ntpServers"]),
+                           "with spec.bootstrap.ntp set, use exactly the DNS service IPs: "
+                           + ", ".join(service_ips) + " (that is where the bootstrap host serves NTP)")
+            if not self.spec["bootstrap"]["ntp"]["upstream"]:
+                self.notes.append("spec.bootstrap.ntp has no upstream: the whole site will take its time "
+                                  "from the bootstrap host's clock; set that clock correctly before running dciab")
+        elif listed & set(service_ips):
+            self.error(ntp_path, ", ".join(sorted(listed & set(service_ips))) + " (a DNS service IP)",
+                       "add spec.bootstrap.ntp so the bootstrap host serves NTP there, or list the site's own NTP servers")
+
+    def check_hypervisors(self) -> None:
+        hv = self.spec.get("hypervisors")
+        if hv is None:
+            return
+        base = ("spec", "hypervisors")
+        ptype = self.spec["platform"]["type"]
+        want = {"proxmox": "proxmox", "esxi": "vsphere"}[hv["type"]]
+        if want != ptype:
+            self.error(base + ("type",), hv["type"],
+                       f"use type: {'esxi' if ptype == 'vsphere' else 'proxmox'} to match spec.platform.type ({ptype})")
+
+        self._unique(hv["hosts"], "name", base + ("hosts",))
+        macs: Dict[str, Path] = {}
+        bmcs: Dict[str, Path] = {}
+        if self.spec["baremetal"]["enabled"]:
+            for i, h in enumerate(self.spec["baremetal"]["hosts"]):
+                macs.setdefault(h["bootMACAddress"].lower(), ("spec", "baremetal", "hosts", i))
+                bmcs.setdefault(self._bmc_host(h), ("spec", "baremetal", "hosts", i))
+        for i, h in enumerate(hv["hosts"]):
+            hp = base + ("hosts", i)
+            mac = h["bootMACAddress"].lower()
+            if mac in macs:
+                self.error(hp + ("bootMACAddress",), h["bootMACAddress"],
+                           f"each server needs its own MAC; {format_path(macs[mac])} already uses it")
+            macs.setdefault(mac, hp)
+            addr = self._bmc_host(h)
+            if addr in bmcs:
+                self.error(hp + ("bmc", "address"), addr,
+                           f"each server needs its own BMC; {format_path(bmcs[addr])} already uses {addr}")
+            bmcs.setdefault(addr, hp)
+
+        if ptype == "proxmox" and hv["type"] == "proxmox":
+            nodes = self.spec["platform"]["proxmox"]["nodes"]
+            names = [h["name"] for h in hv["hosts"]]
+            for i, name in enumerate(names):
+                if name not in nodes:
+                    self.warn(base + ("hosts", i, "name"), name,
+                              "add it to spec.platform.proxmox.nodes, or CAPMOX will never place VMs on it")
+            missing = [n for n in nodes if n not in names]
+            if missing:
+                self.notes.append("spec.platform.proxmox.nodes lists hosts DCiaB won't install ("
+                                  + ", ".join(missing) + "); they must already exist and be joined to the cluster")
+        if hv["type"] == "esxi":
+            self.notes.append("spec.hypervisors installs ESXi only; vCenter (spec.platform.vsphere.server) "
+                              "must already exist or be deployed separately for now")
+            self._check_esxi_installer(base + ("installerFile",), hv["installerFile"])
+
+    @staticmethod
+    def _bmc_host(host: dict) -> str:
+        return host["bmc"]["address"].split("://", 1)[1].split("/", 1)[0].lower()
+
+    def _check_esxi_installer(self, path: Path, raw: str) -> None:
+        import yaml
+
+        lock_file = self.root / "bundle.lock"
+        if not lock_file.is_file():
+            return  # reported by check_bundle_lock
+        pin = yaml.safe_load(lock_file.read_text(encoding="utf-8")).get("hypervisors", {}).get("esxi", {})
+        if not pin.get("isoSHA256"):
+            self.error(path, raw, "this archive has no tested ESXi build pinned (bundle.lock hypervisors.esxi); "
+                                  "use an archive that has one")
+            return
+        target = FsPath(raw) if os.path.isabs(raw) else self.config_dir / raw
+        if not target.is_file():
+            self.error(path, f"{raw}: no such file (looked at {target})",
+                       f"copy the ESXi installer ({pin.get('isoFile') or pin.get('version')}) there, or correct the path")
+            return
+        digest = hashlib.sha256()
+        with target.open("rb") as fh:
+            for chunk in iter(lambda: fh.read(1 << 20), b""):
+                digest.update(chunk)
+        if digest.hexdigest() != pin["isoSHA256"]:
+            self.error(path, f"{raw} has sha256 {digest.hexdigest()}",
+                       f"use the ESXi build this archive was tested with: {pin.get('isoFile') or pin.get('version')} "
+                       f"(sha256 {pin['isoSHA256']})")
 
     def _unique(self, items: List[dict], key: str, path: Path) -> Dict[str, dict]:
         out: Dict[str, dict] = {}
