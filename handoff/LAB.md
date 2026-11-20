@@ -17,4 +17,7 @@ Never put secrets here: no token secrets, passwords or keys.
   - `pool0` (zfspool) and `local-lvm` (lvm-thin): block storage, so `raw` disks only.
   - `local` (dir): ISOs. A Rocky 10.3 minimal ISO is already uploaded there.
 - API access is user `claude@pam` with token `claude-dciab`, which has privilege separation off (`privsep=0`). The roles are granted to the user, not the token: on this install, roles granted to a privilege-separated token alone gave it nothing. A custom `ImageBuilder` role adds the image-builder privileges to the user's earlier CAPMOX grants.
-- The build and node network is `vmbr0`, VLAN 150 (the "k8s VLAN"). DHCP and routing for it come from the OPNsense VM (VMID 100).
+- Networks on `vmbr0`:
+  - **Untagged:** the network the other VMs use. It can reach the workstation, so use it for node image builds: Packer's kickstart server runs on the workstation.
+  - **VLAN 150 (the "k8s VLAN"):** for deployed cluster nodes. DHCP and routing come from the OPNsense VM (VMID 100). It does **not** route back to the workstation, so builds on it hang at "Waiting for SSH".
+- The workstation is on 192.168.186.0/24. Its firewalld already allows TCP 1025–65535.

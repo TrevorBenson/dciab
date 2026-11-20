@@ -5,6 +5,10 @@ FROM ${BASE_IMAGE}
 
 # Upstream image-builder has no Rocky 10 Proxmox target yet; these files add one.
 COPY --chown=imagebuilder:imagebuilder overlay/packer/ /home/imagebuilder/packer/
+# Fix upstream's Goss package list for Rocky on QEMU-based (Proxmox) builds: it expects
+# `cloud-utils`, an RPM that doesn't exist; the installed package is cloud-utils-growpart.
+COPY patches/goss_vars_growpart.py /tmp/goss_vars_growpart.py
+RUN python3 /tmp/goss_vars_growpart.py /home/imagebuilder/packer/goss/goss-vars.yaml
 # Versions and the ISO pin, generated from bundle.lock by build.sh (no secrets).
 COPY --chown=imagebuilder:imagebuilder .build/dciab-node.json /home/imagebuilder/dciab-node.json
 

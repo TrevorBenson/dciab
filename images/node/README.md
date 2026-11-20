@@ -27,6 +27,7 @@ bundle.lock ──► build.sh ──► .build/dciab-node.json (versions, ISO p
 - **Versions come from `bundle.lock`.** Kubernetes comes from `kubernetes.version`. The image-builder container (pinned by digest) and the Rocky 10 ISO (URL and sha256) come from `nodeImages`. `build.sh` refuses to run while a pin is empty.
 - **Why there is an overlay.** Upstream image-builder supports Proxmox with Rocky 9, and EL10 only on other providers (CentOS Stream 10 on QEMU). `overlay/` adds a Rocky 10 Proxmox target: a var file (`rockylinux-10.json`) and a kickstart (`http/10/ks.cfg.tmpl`). Both are adapted from upstream's Rocky 9 Proxmox and CentOS 10 files. If upstream adds Rocky 10 for Proxmox, drop the overlay and use the upstream target.
 - **Disk format.** `raw` by default (`DCIAB_DISK_FORMAT` overrides it). Proxmox block storage (ZFS, LVM, LVM-thin, Ceph RBD) accepts only `raw`; `qcow2`, upstream image-builder's default, needs file storage.
+- **Upstream fixes.** `patches/` holds small fixes to the pinned image-builder, applied when the container is built. `goss_vars_growpart.py` corrects one Goss check: for Rocky on Proxmox builds, it expected a package named `cloud-utils`, which no Rocky release has; the installed package is `cloud-utils-growpart`. Each patch says when it can be dropped.
 - **CPU type.** Rocky 10 needs an x86-64-v3 CPU. The build VM uses `x86-64-v3`, and so must the VMs cloned from the template.
 - **Template name.** It's `rocky10-kube-<k8s version>`, the name the site config examples use. CAPMOX picks the template by VMID (`proxmox.templateID` in the cluster values). Set `DCIAB_TEMPLATE_VMID` to choose one.
 
@@ -51,7 +52,7 @@ The result is a template on `PROXMOX_NODE`. Record its VMID and node: cluster va
 
 - **Kubernetes:** bump `kubernetes.version` in `bundle.lock` and rebuild. The new template gets a new name. A cluster moves to it with a Kubernetes upgrade (`kubernetesVersion` plus `proxmox.templateID`). Classes don't change for that.
 - **Rocky point release:** set `nodeImages.rocky10.isoURL` to the versioned path (`.../pub/rocky/10.N/isos/x86_64/Rocky-10.N-x86_64-minimal.iso`), and `isoSHA256` from the `CHECKSUM` file next to it. Superseded releases move to `dl.rockylinux.org/vault/rocky/`.
-- **image-builder:** bump `nodeImages.imageBuilder.version` and `image`, then resolve the new digest (`skopeo inspect docker://<image> | jq -r .Digest`). Check the overlay still matches upstream's Rocky 9 / CentOS 10 files.
+- **image-builder:** bump `nodeImages.imageBuilder.version` and `image`, then resolve the new digest (`skopeo inspect docker://<image> | jq -r .Digest`). Check that the overlay still matches upstream's Rocky 9 and CentOS 10 files, and that each patch in `patches/` still applies or is no longer needed.
 
 ## Troubleshooting
 
