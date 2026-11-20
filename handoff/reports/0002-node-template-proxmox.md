@@ -11,9 +11,11 @@ Resolved the `bundle.lock` pins and made three build attempts against
 Trevor's Proxmox lab (`pve1`). The first two attempts found real problems
 (one already fixed upstream on `main` mid-session, one a lab network gap);
 the third got all the way through ISO boot, kickstart, and Ansible, and
-failed on the very last step — one inherited Goss check expects a package
-(`cloud-utils`) that doesn't exist in Rocky 10's repos. No template was
-built, but the remaining issue is narrow and well isolated.
+failed on the very last step — one Goss check (from pinned upstream
+image-builder, not DCiaB's own overlay) expects a package, `cloud-utils`,
+that has never existed as a real RPM on Rocky 9 or Rocky 10. No template
+was built, but the remaining issue is narrow, well isolated, and traced to
+its exact source line upstream.
 
 ## Steps
 
@@ -65,16 +67,9 @@ built, but the remaining issue is narrow and well isolated.
   that vlan150 isn't suitable for node-image builds, only for deployed
   nodes.
 
-- **Attempt 3 — kickstart `%packages` requests a package Rocky 10 doesn't
-  have.** Where: `images/node/overlay/packer/proxmox/linux/rockylinux/http/10/ks.cfg.tmpl`
-  `%packages` section lists `cloud-utils` (inherited from upstream's Rocky 9
-  template, per `images/node/README.md`'s note that the overlay is adapted
-  from Rocky 9 and CentOS 10 files). Rocky 10's repos only carry
-  `cloud-utils-growpart`, not a separate base `cloud-utils` package — the
-  kickstart's `--ignoremissing` flag let the install continue instead of
-  failing there. The Goss check (also inherited) still expects
-  `cloud-utils: installed: true`, so validation fails at the very end.
-  Exact failure:
+- **Attempt 3 — a Goss check expects a package name (`cloud-utils`) that
+  has never existed as a real RPM on Rocky 9 or Rocky 10, and it's an
+  upstream image-builder gap, not DCiaB's overlay.** Exact failure:
   ```
   Package: cloud-utils: installed:
   Expected
@@ -82,12 +77,67 @@ built, but the remaining issue is narrow and well isolated.
   to equal
       <bool>: true
   ```
-  `cloud-utils-growpart` is installed and passes its own, separate check —
-  so this looks like exactly one stale package name, not a deeper packaging
-  gap. I didn't edit the overlay or the goss var list per the task's
-  instructions; reporting instead. 49/50 Goss checks passed; the other 49
-  cover containerd, kubelet, kubeadm, chronyd and more, all successfully
-  installed and enabled on Rocky 10.
+  I first mis-attributed this to our own `ks.cfg.tmpl`'s `%packages` list in
+  an earlier version of this report — that was wrong. DCiaB's actual
+  `images/node/overlay/packer/proxmox/linux/rockylinux/http/10/ks.cfg.tmpl`
+  does **not** list `cloud-utils` at all (checked the file directly). The
+  `cloud-utils` mention I'd seen in the build log at that point was from a
+  *different*, VMware-targeted kickstart (`open-vm-tools` in the same
+  package list gives it away) printed during an unrelated build-log stage,
+  not the kickstart this build actually used.
+
+  Tracing it properly, inside the pinned image-builder container
+  (`localhost/dciab-node-image-builder:v1.36.6`, built locally from the
+  digest in `bundle.lock`):
+  - `ansible/roles/providers/tasks/proxmox.yml` installs the **correct**
+    package, `cloud-utils-growpart`, for `os_family == "RedHat"`. That's why
+    it's installed and passes its own separate Goss check.
+  - `packer/proxmox/packer.json.tmpl` (upstream, unmodified by DCiaB's
+    overlay) hardcodes `"PROVIDER": "qemu"` in the Goss provisioner's
+    `vars_inline` for **every** Proxmox-target build, any OS — not specific
+    to Rocky or to DCiaB's new EL10 target. (Makes sense: Proxmox's builder
+    is QEMU-based under the hood.)
+  - `packer/goss/goss-vars.yaml`'s `rockylinux: qemu: package:` block lists
+    `open-vm-tools`, `cloud-init`, and `cloud-utils` (not
+    `cloud-utils-growpart`). Since Proxmox builds validate with
+    `PROVIDER=qemu`, this is exactly the block Rocky+Proxmox Goss checks
+    draw from — there's no `rockylinux: proxmox:` key in `goss-vars.yaml` at
+    all, nor does one need to exist, since `qemu` is what's actually wired
+    up. The same stale `cloud-utils` name (versus `-growpart`) also appears
+    in the `rhel: qemu:` and `photon:` blocks in the same file, so this
+    looks like a small, pre-existing naming inconsistency upstream, not
+    something introduced by DCiaB's overlay.
+  - I verified directly (not from documentation) that `cloud-utils` has
+    never been a real binary RPM, on either release: ran
+    `dnf repoquery --qf '%{name} %{version}-%{release} (from %{sourcerpm})'`
+    for `cloud-utils`/`cloud-utils-growpart` against the actual Rocky 9 and
+    Rocky 10 BaseOS/AppStream repos (via `podman run rockylinux:9`/`:10`)
+    and against EPEL 10. Every case: the `cloud-utils` SRPM builds exactly
+    one binary package, `cloud-utils-growpart`. No standalone `cloud-utils`
+    RPM exists, and EPEL 10 doesn't add `cloud-utils-cloud-localds` or
+    `cloud-utils-resize-part-image` either (a claim from elsewhere that
+    doesn't hold for RHEL/Rocky's actual packaging — maybe conflated with a
+    different distro's package split).
+
+  Net: because upstream's own `rockylinux: proxmox:` entry doesn't exist and
+  Proxmox goss checks fall back to the shared `qemu`-provider package list,
+  **this would affect upstream's existing Rocky 9 + Proxmox target too**,
+  not just DCiaB's new Rocky 10 one — worth reporting upstream as well as
+  fixing locally. DCiaB's own fix doesn't need to touch the kickstart (it
+  was never wrong); it needs to correct `goss-vars.yaml` inside the pinned
+  image-builder container. There's no env-var override hook for this file
+  (checked `hack/generate-goss-specs.py`: the path
+  `packer/goss/goss-vars.yaml` is hardcoded, no override). The practical fix
+  is in `images/node/Containerfile`, which already layers DCiaB's overlay on
+  top of the pinned image-builder image: add a step there that patches (or
+  replaces) the `rockylinux.qemu.package` entry — or adds a dedicated
+  `rockylinux.proxmox.package` entry and repoints
+  `packer/proxmox/packer.json.tmpl`'s `PROVIDER` for the Rocky 10 target,
+  though patching the one wrong line in `goss-vars.yaml` is the smaller
+  change. I didn't make this change myself, per the task's instructions to
+  report rather than patch the overlay/recipe. 49/50 Goss checks passed;
+  the other 49 cover containerd, kubelet, kubeadm, chronyd and more, all
+  successfully installed and enabled on Rocky 10.
 
 ## Artifacts
 
@@ -118,10 +168,17 @@ node `pve1` (~1.5 GB, reused unchanged across all three attempts).
 
 ## Questions
 
-- Should `ks.cfg.tmpl`'s `%packages` list drop `cloud-utils` (or should the
-  Goss check target `cloud-utils-growpart` instead)? This is the one
-  concrete blocker left; fixing it should let a retry produce a real
-  template.
+- Should the `images/node/Containerfile` overlay patch
+  `packer/goss/goss-vars.yaml`'s `rockylinux.qemu.package` entry (swap
+  `cloud-utils` for `cloud-utils-growpart`), or add a dedicated
+  `rockylinux.proxmox` entry and point the Rocky 10 target's goss
+  `PROVIDER` at it instead? Either should let a retry produce a real
+  template — this is the one concrete blocker left.
+- Worth reporting upstream to kubernetes-sigs/image-builder too, since the
+  same `cloud-utils` vs `cloud-utils-growpart` mismatch sits in the
+  `rhel`/`photon` blocks of the same file, and `PROVIDER=qemu` is hardcoded
+  for every Proxmox target — this should already affect upstream's existing
+  Rocky 9 + Proxmox target, not just DCiaB's new Rocky 10 one.
 - Should `handoff/LAB.md` note that vlan150 is for deployed nodes only, not
   for node-image builds (which need a route back to the runner host)? That
   would save a future task the same detour.
