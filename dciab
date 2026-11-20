@@ -13,6 +13,7 @@ Usage: dciab <command> [options]
 Commands:
   validate <config> [--output text|json]   Check a site config; changes nothing
   services | hypervisors                   Day 0 for bare servers (not implemented yet)
+  media DIR                                Installer media for hosts without a usable BMC (not implemented yet)
   seed | mgmt | infra | platform | finalize
                                            Bootstrap steps (not implemented yet)
   status | verify                          Site state (not implemented yet)
@@ -45,7 +46,7 @@ case "$cmd" in
     require_python
     PYTHONPATH="$ROOT/lib${PYTHONPATH:+:$PYTHONPATH}" exec python3 -m dciab_validate --root "$ROOT" "$@"
     ;;
-  services|hypervisors|seed|mgmt|infra|platform|finalize|status|verify)
+  services|hypervisors|media|seed|mgmt|infra|platform|finalize|status|verify)
     echo "dciab $cmd: not implemented yet (see docs/ROADMAP.md)" >&2
     exit 2
     ;;

@@ -1,0 +1,20 @@
+[Unit]
+Description=Configure the DCiaB bootstrap appliance from dciab.yaml on the USB
+Requires=var-mnt-dciab.mount
+After=var-mnt-dciab.mount NetworkManager.service
+Before=sshd.service
+ConditionPathExists=/var/mnt/dciab/dciab.yaml
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+Environment=PYTHONPATH=/usr/share/dciab/lib
+ExecStart=/usr/bin/python3 -m dciab_bootstrap_host.setup /var/mnt/dciab/dciab.yaml
+# Show the full validation result on the console too; a failing config doesn't stop the
+# appliance from coming up, so the operator can SSH in and fix it.
+ExecStartPost=-/usr/bin/dciab validate /var/mnt/dciab/dciab.yaml
+StandardOutput=journal+console
+StandardError=journal+console
+
+[Install]
+WantedBy=multi-user.target
