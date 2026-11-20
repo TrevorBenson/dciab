@@ -26,7 +26,9 @@ The config format and its checks exist; the `services` and `hypervisors` steps d
 - BMCs with their addresses and credentials already set, and licensed for virtual media
 - for ESXi, the installer ISO of the build in `bundle.lock` (DCiaB can't ship it), and for now an existing vCenter
 
-The design and its trade-offs are in [docs/adr/0001-day0-hypervisors-and-services.md](docs/adr/0001-day0-hypervisors-and-services.md).
+The bootstrap host itself can be the DCiaB USB: a Rocky Linux 10 appliance that boots on one server in the rack, so the operator's laptop only needs SSH and a browser, on any OS ([images/usb/](images/usb/README.md), under evaluation).
+
+The design and its trade-offs are in [ADR 0001](docs/adr/0001-day0-hypervisors-and-services.md) (Day 0) and [ADR 0002](docs/adr/0002-bootstrap-appliance-on-ventoy.md) (the bootstrap appliance and USB).
 
 ## Validating a config
 
@@ -72,6 +74,8 @@ hack/                    fetch_crds.py, check_manifests.py (CRD-based checks), r
   e2e/                   ClusterClass end-to-end test on kind (run.sh, verify.py)
 images/node/              node template build (image-builder: Rocky 10 on Proxmox)
 images/day0-chrony/      Day 0 NTP server image
+images/bootstrap-bootc/  bootstrap appliance ("server zero"), under evaluation
+images/usb/              the DCiaB USB (Ventoy) image, under evaluation
 addons/cilium/           Cilium install for any cluster (pinned chart, DCiaB values)
 handoff/                 development only: lab test tasks and reports (not part of the product)
 examples/                vsphere.yaml, proxmox.yaml, proxmox-bare.yaml, metal3-cluster.yaml

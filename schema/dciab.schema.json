@@ -41,7 +41,8 @@
           "additionalProperties": false,
           "required": ["interface", "address", "recipients"],
           "properties": {
-            "interface": {"type": "string", "minLength": 1, "description": "the bootstrap host NIC on the node network"},
+            "interface": {"type": "string", "minLength": 1, "description": "the bootstrap host NIC on the node network: its name, or its MAC (quoted) when the name isn't known in advance, as on the DCiaB bootstrap appliance"},
+            "managementVLAN": {"enum": ["tagged", "untagged"], "description": "tagged: the bootstrap NIC tags network.nodes.vlan; untagged: it sits on an access port. Required by the DCiaB bootstrap appliance, which configures its own network"},
             "address": {"$ref": "#/$defs/ipv4"},
             "recipients": {
               "type": "array",

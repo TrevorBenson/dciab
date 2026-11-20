@@ -42,10 +42,22 @@ Decided in [ADR 0001](adr/0001-day0-hypervisors-and-services.md).
 - [ ] `dciab hypervisors` for ESXi
 - [ ] Live checks: BMC routes, Redfish and credentials
 
+## Bootstrap appliance and USB
+
+Decided in [ADR 0002](adr/0002-bootstrap-appliance-on-ventoy.md).
+
+- [x] Config: `bootstrap.interface` by name or MAC; `bootstrap.managementVLAN`
+- [x] Recipes under evaluation: `images/bootstrap-bootc/` (appliance), `images/usb/` (Ventoy stick)
+- [ ] Spike (task 0005): vDisk boot, Secure Boot with MOK, first boot from `dciab.yaml`, multi-hour soak, installers from the same stick
+- [ ] Day 0 images preloaded in the appliance
+- [ ] `dciab media`: installer media on a second stick, or per-host ISOs before the bootstrap
+- [ ] Plain (non-Ventoy) stick for strict Secure Boot sites
+
 ## Backlog
 
 - **vCenter deployment** on the first ESXi host (datacenter, cluster, networks). Until then, ESXi sites need an existing vCenter.
 - **Proxmox VE clustering** and shared storage across hosts installed by `dciab hypervisors`.
+- **Reclaim server zero** as the last hypervisor at `finalize`.
 - **Only if a site needs them:** PXE as a second install method; a direct out-of-band interface on the bootstrap host, with DHCP for BMCs; separate NTP service addresses.
 
 - **Node image recipe: image-builder (containerd) or image mode (bootc, CRI-O).** The bootc recipe in `images/node-bootc/` is under evaluation against the image-builder template.

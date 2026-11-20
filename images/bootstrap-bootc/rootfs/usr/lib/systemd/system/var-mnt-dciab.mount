@@ -1,0 +1,13 @@
+[Unit]
+Description=DCiaB USB data partition (label DCIAB)
+# exFAT has no permissions of its own: these options make every file root-only (0600),
+# which is what dciab validate expects of secret files.
+
+[Mount]
+What=/dev/disk/by-label/DCIAB
+Where=/var/mnt/dciab
+Type=exfat
+Options=uid=0,gid=0,fmask=0177,dmask=0077,nofail
+
+[Install]
+WantedBy=multi-user.target

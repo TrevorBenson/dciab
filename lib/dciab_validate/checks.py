@@ -400,6 +400,9 @@ class Checker:
         ntp_path = ("spec", "network", "ntpServers")
         service_ips = list(net["dnsServiceIPs"])
         listed = set(net["ntpServers"])
+        if "managementVLAN" not in self.spec["bootstrap"]:
+            self.notes.append("spec.bootstrap.managementVLAN isn't set; the DCiaB bootstrap appliance needs it "
+                              "(tagged or untagged) to configure its own network")
         serving = "ntp" in self.spec["bootstrap"]
         if serving:
             if "hypervisors" not in self.spec:

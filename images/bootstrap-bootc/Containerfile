@@ -1,0 +1,38 @@
+# DCiaB bootstrap appliance ("server zero"), image mode (bootc): Rocky Linux 10 with
+# podman, kind, helm, kubectl and dciab. Booted from the DCiaB USB as a Ventoy Linux
+# vDisk (docs/adr/0002-bootstrap-appliance-on-ventoy.md). Built by build.sh; every
+# version comes from bundle.lock.
+#
+# Build context: the repository root (build.sh passes it). build.sh first downloads and
+# verifies kind, helm, kubectl and vtoyboot into images/bootstrap-bootc/build/.
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE}
+
+# exfatprogs: the USB's data partition. xorriso: unpacking and preparing installer ISOs.
+# python3-pyyaml/jsonschema: dciab validate. NetworkManager: dciab-bootstrap-setup.
+RUN dnf -y install \
+      podman skopeo NetworkManager openssh-server firewalld sudo \
+      python3 python3-pyyaml python3-jsonschema \
+      exfatprogs xorriso git jq tar gzip curl ca-certificates iproute bind-utils \
+ && dnf clean all
+
+COPY images/bootstrap-bootc/build/bin/ /usr/bin/
+
+# Ventoy Linux vDisk boot needs Ventoy's dracut module in the initramfs. The image's
+# initramfs is built here, once, so the hook is baked in and nothing on the appliance
+# ever regenerates it.
+COPY images/bootstrap-bootc/build/vtoyboot/ /tmp/vtoyboot/
+COPY images/bootstrap-bootc/install-vtoyboot.sh /tmp/install-vtoyboot.sh
+RUN bash /tmp/install-vtoyboot.sh && rm -rf /tmp/vtoyboot /tmp/install-vtoyboot.sh
+
+# dciab itself, read-only under /usr; state and the USB live under /var.
+COPY dciab VERSION bundle.lock /usr/share/dciab/
+COPY lib /usr/share/dciab/lib
+COPY schema /usr/share/dciab/schema
+COPY charts /usr/share/dciab/charts
+COPY addons /usr/share/dciab/addons
+COPY examples /usr/share/dciab/examples
+COPY images/bootstrap-bootc/rootfs/ /
+
+RUN systemctl enable sshd NetworkManager firewalld var-mnt-dciab.mount dciab-bootstrap-setup.service \
+ && bootc container lint

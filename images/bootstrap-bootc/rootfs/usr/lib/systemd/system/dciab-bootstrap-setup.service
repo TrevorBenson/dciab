@@ -1,0 +1,21 @@
+[Unit]
+Description=Configure the DCiaB bootstrap appliance from dciab.yaml on the USB
+Requires=var-mnt-dciab.mount
+After=var-mnt-dciab.mount NetworkManager.service
+Before=sshd.service
+ConditionPathExists=/var/mnt/dciab/dciab.yaml
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+Environment=PYTHONPATH=/usr/share/dciab/lib
+# Show the full validation result on the console first, whatever happens next.
+ExecStartPre=-/usr/bin/dciab validate /var/mnt/dciab/dciab.yaml
+# Admin logins are set up whenever identity is valid; the network only when nothing in
+# spec.bootstrap, spec.network or spec.identity has errors (see setup.py).
+ExecStart=/usr/bin/python3 -m dciab_bootstrap_host.setup /var/mnt/dciab/dciab.yaml
+StandardOutput=journal+console
+StandardError=journal+console
+
+[Install]
+WantedBy=multi-user.target

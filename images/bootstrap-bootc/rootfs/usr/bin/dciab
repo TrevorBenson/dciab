@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+# dciab on the bootstrap appliance: the read-only copy shipped in the image.
+exec /usr/share/dciab/dciab "$@"
