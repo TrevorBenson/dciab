@@ -44,10 +44,11 @@ Read `images/node-bootc/README.md` first.
    - Record the sizes of the base image, the node image (`podman image ls`), and each disk.
 4. **Inspect the image without booting it.** Run `sudo podman run --rm localhost/dciab-node:v1.36.6 ...` and record:
    - the package count (`rpm -qa | wc -l`)
-   - the `crio`, `kubelet` and `kubeadm` versions
+   - the `crio`, `kubelet` and `kubeadm` versions. CRI-O comes from its v1.36 stream, so record the exact version for pinning later.
    - `bootc container lint` passed (in the build log)
    - `/opt/cni/bin` is a symlink to `/var/lib/cni/bin`
 5. **Make a Proxmox template.**
+   - First confirm through the API that the chosen VMID doesn't exist. If it does, stop and ask.
    - Import `disk.raw` (or the qcow2) into the chosen VMID on `pve1` storage `pool0`, using whichever method this Proxmox supports: an API upload to `import` storage plus `import-from`, or `qm importdisk`.
    - Use the same VM settings as the task-0002 template: CPU `x86-64-v3`, virtio-scsi, guest agent on, SeaBIOS or UEFI as the image requires. Convert it to a template.
    - Write down the exact steps. They become the product's "publish a template" step later.

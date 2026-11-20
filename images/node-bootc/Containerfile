@@ -29,11 +29,13 @@ gpgkey=https://download.opensuse.org/repositories/isv:/cri-o:/stable:/${CRIO_SER
 REPO
 
 # kubelet/kubeadm/kubectl pinned to the bundle's Kubernetes version; CRI-O from its minor
-# stream. cloud-init: CAPMOX and CAPV hand node config over as cloud-init data.
+# stream (the installed CRI-O version is recorded at build time). NetworkManager is
+# cloud-init's network backend on EL; the minimal manifest may not include it.
+# cloud-init: CAPMOX and CAPV hand node config over as cloud-init data.
 RUN dnf -y install \
       container-selinux cri-o \
       "kubelet-${KUBERNETES_VERSION}" "kubeadm-${KUBERNETES_VERSION}" "kubectl-${KUBERNETES_VERSION}" cri-tools \
-      cloud-init qemu-guest-agent chrony \
+      NetworkManager cloud-init qemu-guest-agent chrony \
       conntrack-tools iproute iptables-nft ethtool socat \
       ca-certificates openssh-server sudo \
  && dnf clean all \
@@ -44,7 +46,7 @@ COPY rootfs/ /
 # write to /opt/cni/bin, so point it at /var (created by tmpfiles.d at boot).
 RUN mkdir -p /opt/cni && ln -sfn /var/lib/cni/bin /opt/cni/bin
 # cloud-init's units are enabled by the package's systemd presets.
-RUN systemctl enable crio kubelet chronyd sshd qemu-guest-agent
+RUN systemctl enable NetworkManager crio kubelet chronyd sshd qemu-guest-agent
 
 LABEL containers.bootc=1
 STOPSIGNAL SIGRTMIN+3

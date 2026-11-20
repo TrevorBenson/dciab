@@ -81,6 +81,8 @@ if (( EUID != 0 )); then
   exit 2
 fi
 mkdir -p "$OUT"
+# Disks from an earlier run must never be mistaken for this one's.
+find "$OUT" -mindepth 1 -maxdepth 1 ! -name rocky-bootc -exec rm -rf {} +
 
 if [[ "$base_image" == - ]]; then
   src="$OUT/rocky-bootc"
