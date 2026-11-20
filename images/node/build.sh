@@ -74,7 +74,7 @@ missing = [name for name, value in [
 ] if not value]
 if missing:
     sys.exit("build.sh: bundle.lock has no value for " + ", ".join(missing)
-             + " (handoff task 0002, step 1 resolves them)")
+             + " (images/node/README.md, Changing versions)")
 if not re.fullmatch(r"sha256:[0-9a-f]{64}", ib["digest"]):
     sys.exit("build.sh: nodeImages.imageBuilder.digest must be sha256:<64 hex>")
 if not re.fullmatch(r"[0-9a-f]{64}", rocky["isoSHA256"]):

@@ -4,9 +4,11 @@ Cluster nodes are cloned from a VM template that already has the OS, containerd,
 
 | Platform | Status | Output |
 | --- | --- | --- |
-| Proxmox VE | Rocky Linux 10 target (this directory); first build is handoff task 0002 | VM template `rocky10-kube-<k8s version>` on a Proxmox node |
+| Proxmox VE | Rocky Linux 10 target | VM template `rocky10-kube-<k8s version>` on a Proxmox node |
 | vSphere | Not yet | OVA / template |
 | Metal3 | Not yet | Raw image served by Ironic |
+
+image-builder itself can build for many more targets, such as local QEMU images and vSphere OVAs. DCiaB pins and supports only the targets in the table.
 
 **Built images are never committed.** The repo holds only the recipe: the overlay files, the `Containerfile` and `build.sh`. Templates live on the hypervisor. Later, the archive build will carry images as files next to the archive, not in Git.
 
@@ -24,40 +26,26 @@ bundle.lock ──► build.sh ──► .build/dciab-node.json (versions, ISO p
 
 - **Versions come from `bundle.lock`.** Kubernetes comes from `kubernetes.version`. The image-builder container (pinned by digest) and the Rocky 10 ISO (URL and sha256) come from `nodeImages`. `build.sh` refuses to run while a pin is empty.
 - **Why there is an overlay.** Upstream image-builder supports Proxmox with Rocky 9, and EL10 only on other providers (CentOS Stream 10 on QEMU). `overlay/` adds a Rocky 10 Proxmox target: a var file (`rockylinux-10.json`) and a kickstart (`http/10/ks.cfg.tmpl`). Both are adapted from upstream's Rocky 9 Proxmox and CentOS 10 files. If upstream adds Rocky 10 for Proxmox, drop the overlay and use the upstream target.
-- **Disk format.** It's `raw` by default, which every Proxmox storage accepts. Upstream image-builder defaults to `qcow2`, which only file storage (dir, NFS, CIFS) supports; ZFS, LVM, LVM-thin and Ceph RBD refuse it. Set `DCIAB_DISK_FORMAT=qcow2` only for file storage, if you want thin qcow2 files.
+- **Disk format.** `raw` by default (`DCIAB_DISK_FORMAT` overrides it). Proxmox block storage (ZFS, LVM, LVM-thin, Ceph RBD) accepts only `raw`; `qcow2`, upstream image-builder's default, needs file storage.
 - **CPU type.** Rocky 10 needs an x86-64-v3 CPU. The build VM uses `x86-64-v3`, and so must the VMs cloned from the template.
 - **Template name.** It's `rocky10-kube-<k8s version>`, the name the site config examples use. CAPMOX picks the template by VMID (`proxmox.templateID` in the cluster values). Set `DCIAB_TEMPLATE_VMID` to choose one.
 
 ## Building a Proxmox template
 
-Needs:
-- podman or docker
-- python3 with PyYAML
-- network access to the Proxmox API and the internet
-- a bridge for the build VM. Its network needs **DHCP**, and the VM must reach this machine (Packer serves the kickstart over HTTP on a random port from 8000 to 9000) and the internet (packages).
+What the build needs:
+- podman or docker, and python3 with PyYAML
+- access to the Proxmox API and the internet
+- a Proxmox API token with the privileges in image-builder's [Proxmox guide](https://image-builder.sigs.k8s.io/capi/providers/proxmox). A token with privilege separation only gets the privileges that both it and its user hold.
+- a network for the build VM that has DHCP and can reach the machine running the build. Packer serves the kickstart over HTTP on a port from 8000 to 9000.
 
-1. Create a Proxmox user and API token with the privileges in image-builder's [Proxmox guide](https://image-builder.sigs.k8s.io/capi/providers/proxmox): `Datastore.*`, `SDN.*`, `Sys.AccessNetwork`, `Sys.Audit` and `VM.*` on `/`, propagated. See [Proxmox token permissions](#proxmox-token-permissions) for where to grant them.
-2. Copy `proxmox.env.example` outside the repo, fill it in, and `chmod 600` it.
-3. Check what will be built, then build:
+Copy `proxmox.env.example` outside the repo, fill it in, and make it readable only by you (`build.sh` checks it is mode 600). Then:
 
-   ```bash
-   images/node/build.sh ~/.dciab/proxmox-build.env --print-vars   # prints the base image and Packer variables; builds nothing
-   images/node/build.sh ~/.dciab/proxmox-build.env
-   ```
-
-   A build takes roughly 20–40 minutes: ISO upload, install, packages, conversion to a template.
+```bash
+images/node/build.sh <env file> --print-vars   # prints the base image and Packer variables; builds nothing
+images/node/build.sh <env file>
+```
 
 The result is a template on `PROXMOX_NODE`. Record its VMID and node: cluster values need `proxmox.templateID` and `proxmox.templateNode`.
-
-## Proxmox token permissions
-
-A Proxmox API token with **privilege separation** (the default, `privsep=1`) gets only the permissions that both it and its user have. If you grant a role to the token alone, the user lacks it, so the token effectively has nothing. Proxmox reports no error: `/access/permissions` comes back as `{}`, and list calls return empty results.
-
-Use one of these:
-- **Recommended for a dedicated build user:** grant the role to the user, and create the token with `privsep=0`, so it inherits the user's permissions.
-- Keep `privsep=1`, and grant the same role to **both** the user and the token.
-
-CAPMOX credentials for clusters work the same way.
 
 ## Changing versions
 
@@ -67,11 +55,12 @@ CAPMOX credentials for clusters work the same way.
 
 ## Troubleshooting
 
-- **The build VM never gets the kickstart:** check DHCP on the bridge, and that the VM can reach this machine on ports 8000–9000 (`firewall-cmd --add-port=8000-9000/tcp` on a Rocky host).
-- **`unsupported format 'qcow2'` when Packer creates the VM:** the storage is block storage. Leave `DCIAB_DISK_FORMAT` empty (it defaults to `raw`).
-- **Calls succeed but return nothing, or Packer can't see nodes or storage:** see [Proxmox token permissions](#proxmox-token-permissions).
+- **The build VM never gets the kickstart:** the VM has no DHCP lease, or can't reach the build machine on ports 8000–9000.
+- **`unsupported format 'qcow2'`:** the storage doesn't support that disk format (see Disk format above).
+- **API calls succeed but return nothing:** the token lacks privileges. With privilege separation on, the token needs them granted as well as its user.
 - **Kernel panic or "CPU not supported" at boot:** the CPU type is older than x86-64-v3.
 - **Packer waits for SSH forever:** open the VM console in Proxmox; the installer shows kickstart errors there.
+
 ## Known limits
 
 - **Build on a trusted network.** Upstream's Proxmox template sets `insecure_skip_tls_verify`, so the Proxmox certificate isn't checked. The kickstart, with the build user's one-time password, is served over plain HTTP during the build.

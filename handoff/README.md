@@ -13,6 +13,7 @@ DCiaB is developed by two Claude agents with Trevor in the loop. This directory 
 ```text
 handoff/
   README.md                 this file: the protocol
+  LAB.md                    facts about Trevor's lab that tasks rely on (no secrets)
   tasks/NNNN-<slug>.md      one task per file, written by the planner
   reports/NNNN-<slug>.md    one report per task, written by the runner
   reports/NNNN-<slug>/      optional small attachments (trimmed logs, command output)
@@ -61,6 +62,7 @@ There is one runner, and it runs one task at a time. The status in the task file
 - **No large files.** Never commit templates, disk images, ISOs or full logs. Attachments are trimmed text, under 200 KB per task. Name artifacts by identifier instead, such as "template VMID 9010 on pve01".
 - **Don't fix DCiaB in the task branch.** If a chart, class, script or doc is wrong, describe it in the report: the exact error, where it happened, what you suspect. The planner fixes it in its own PR, so the fix goes through CI and review. A local workaround is fine only to get further, and the report must say exactly what it was.
 - **Ask before creating or destroying infrastructure,** unless the task says that step is pre-approved.
+- **Record durable lab facts in `LAB.md`,** in the report PR: storage names, networks, how API access is set up, versions.
 - **Clean up what the task created,** unless the task says to keep it (a built template, for example). The report lists anything left behind.
 - Record the commit you ran against (`git rev-parse --short HEAD`), tool versions, and how long each step took.
 
@@ -81,6 +83,15 @@ date: 2026-11-20
 ## Workarounds      anything done that the task didn't say to do
 ## Questions        for the planner or Trevor
 ```
+
+## Product docs vs. test context
+
+DCiaB's docs (`README.md`, `docs/`, and component READMEs such as `images/node/README.md`) describe the product for any site and any build environment. They state facts and requirements, not the settings one lab happened to need. Keep everything about our testing under `handoff/`:
+- lab facts go in `LAB.md`
+- run-specific steps and settings go in the task files
+- results go in reports
+
+A finding from a lab run reaches the product docs only as a general fact. For example, "Proxmox block storage accepts only raw disks" belongs in the product docs; "use `local-lvm` with `privsep=0`" does not.
 
 ## Rules for the planner
 
