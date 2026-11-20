@@ -1,7 +1,7 @@
 ---
 id: "0001"
 title: Smoke test what exists today (validate + ClusterClass e2e on kind)
-status: open
+status: done
 runner: workstation
 depends: []
 report: handoff/reports/0001-smoke-test.md
