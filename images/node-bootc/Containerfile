@@ -1,0 +1,52 @@
+# DCiaB node image, image mode (bootc): Rocky Linux 10 + CRI-O + kubeadm.
+# Built by build.sh; every version comes from bundle.lock (nodeImages.bootc).
+#
+# BASE_IMAGE is a Rocky Linux 10 bootc base: the RESF SIG/Containers rocky-bootc recipe
+# built with its minimal manifest (bootc, systemd, kernel, dnf), or a prebuilt base
+# pinned by digest.
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE}
+
+ARG KUBERNETES_VERSION
+ARG KUBERNETES_SERIES
+ARG CRIO_SERIES
+# Package repos for Kubernetes (pkgs.k8s.io) and CRI-O (isv:cri-o on OBS), one minor each.
+RUN cat > /etc/yum.repos.d/kubernetes.repo <<REPO
+[kubernetes]
+name=Kubernetes ${KUBERNETES_SERIES}
+baseurl=https://pkgs.k8s.io/core:/stable:/${KUBERNETES_SERIES}/rpm/
+enabled=1
+gpgcheck=1
+gpgkey=https://pkgs.k8s.io/core:/stable:/${KUBERNETES_SERIES}/rpm/repodata/repomd.xml.key
+REPO
+RUN cat > /etc/yum.repos.d/cri-o.repo <<REPO
+[cri-o]
+name=CRI-O ${CRIO_SERIES}
+baseurl=https://download.opensuse.org/repositories/isv:/cri-o:/stable:/${CRIO_SERIES}/rpm/
+enabled=1
+gpgcheck=1
+gpgkey=https://download.opensuse.org/repositories/isv:/cri-o:/stable:/${CRIO_SERIES}/rpm/repodata/repomd.xml.key
+REPO
+
+# kubelet/kubeadm/kubectl pinned to the bundle's Kubernetes version; CRI-O from its minor
+# stream. cloud-init: CAPMOX and CAPV hand node config over as cloud-init data.
+RUN dnf -y install \
+      container-selinux cri-o \
+      "kubelet-${KUBERNETES_VERSION}" "kubeadm-${KUBERNETES_VERSION}" "kubectl-${KUBERNETES_VERSION}" cri-tools \
+      cloud-init qemu-guest-agent chrony \
+      conntrack-tools iproute iptables-nft ethtool socat \
+      ca-certificates openssh-server sudo \
+ && dnf clean all \
+ && rm -rf /var/cache/dnf /var/log/dnf*
+
+COPY rootfs/ /
+# /opt is read-only in image mode. CNI plugins that install themselves at runtime (Cilium)
+# write to /opt/cni/bin, so point it at /var (created by tmpfiles.d at boot).
+RUN mkdir -p /opt/cni && ln -sfn /var/lib/cni/bin /opt/cni/bin
+# cloud-init's units are enabled by the package's systemd presets.
+RUN systemctl enable crio kubelet chronyd sshd qemu-guest-agent
+
+LABEL containers.bootc=1
+STOPSIGNAL SIGRTMIN+3
+CMD ["/sbin/init"]
+RUN bootc container lint

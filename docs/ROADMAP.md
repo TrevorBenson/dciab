@@ -31,6 +31,7 @@ Each phase ends in a gate that must pass on both a vSphere lab and a Proxmox lab
 
 ## Backlog
 
+- **Node image recipe: image-builder (containerd) or image mode (bootc, CRI-O).** The bootc recipe in `images/node-bootc/` is under evaluation against the image-builder template.
 - **CRI-O instead of containerd** (preferred). Node templates use containerd today: image-builder installs it, and it's the only runtime image-builder supports. The switch needs:
   - a CRI-O role in the node image recipe
   - the classes' registry mirror files moved from containerd `hosts.toml` to `/etc/containers/registries.conf.d`

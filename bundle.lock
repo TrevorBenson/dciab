@@ -86,6 +86,20 @@ nodeImages:
     # CHECKSUM file beside it.
     isoURL: "https://download.rockylinux.org/pub/rocky/10.3/isos/x86_64/Rocky-10.3-x86_64-minimal.iso"
     isoSHA256: "878a3f92281d3eb91ca9d1a195794d47b5bce4e02a85f351c606709e98481cc4"
+  # Image mode (bootc) recipe, under evaluation: images/node-bootc/README.md.
+  bootc:
+    # Rocky Linux 10 bootc base from the RESF SIG/Containers recipe, at a pinned commit.
+    sigRecipe:
+      url: https://git.resf.org/sig_containers/rocky-bootc.git
+      branch: r10
+      commit: ""
+    manifest: minimal
+    # A prebuilt base (image@sha256:...) instead of building the recipe; empty = build it.
+    baseImage: ""
+    # Turns the OCI image into raw/qcow2/vmdk disks. Pin as image@sha256:<digest>.
+    bootcImageBuilder: quay.io/centos-bootc/bootc-image-builder
+    # CRI-O follows Kubernetes minor versions.
+    crioSeries: v1.36
 
 charts:
   cilium: 1.20.5

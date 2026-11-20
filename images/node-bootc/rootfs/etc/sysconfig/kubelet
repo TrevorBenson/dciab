@@ -1,0 +1,2 @@
+# /usr is read-only in image mode: FlexVolume plugins live under /var.
+KUBELET_EXTRA_ARGS=--volume-plugin-dir=/var/lib/kubelet/volumeplugins
