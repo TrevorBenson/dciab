@@ -1,20 +1,19 @@
 ---
 id: "0002"
 result: blocked
-commit: 0821e23
+commit: d25726c
 date: 2026-11-20
 ---
 
 ## Summary
 
-Resolved the `bundle.lock` pins, built the image-builder container, and ran
-the Proxmox build. Packer failed while creating the ephemeral build VM
-itself — before ISO boot, kickstart, or Ansible ran — because the overlay's
-Rocky 10 Proxmox var file requests a `qcow2` disk, and every VM-disk-capable
-storage on this Proxmox host is block storage (ZFS, LVM-thin), which Proxmox
-only allows in `raw` format. No template was built. This is an overlay bug,
-not an environment problem: there's no storage-pool choice on this host that
-avoids it.
+Resolved the `bundle.lock` pins and made three build attempts against
+Trevor's Proxmox lab (`pve1`). The first two attempts found real problems
+(one already fixed upstream on `main` mid-session, one a lab network gap);
+the third got all the way through ISO boot, kickstart, and Ansible, and
+failed on the very last step — one inherited Goss check expects a package
+(`cloud-utils`) that doesn't exist in Rocky 10's repos. No template was
+built, but the remaining issue is narrow and well isolated.
 
 ## Steps
 
@@ -23,92 +22,106 @@ avoids it.
    → `sha256:03051205c79c5c7d5ce3693b5ff3841fed6938f7e126137815bb7d70c1646dfe`.
    `nodeImages.rocky10.isoURL`/`isoSHA256` from Rocky Linux 10.3 (current
    point release) and its `CHECKSUM` file. `python3 -m pytest -q`: 85 passed.
-   Committed on this branch.
 2. Write the env file: PASS. `~/.dciab/proxmox-build.env`, mode 600, outside
-   the repo. `DCIAB_STORAGE_POOL_TYPE=zfspool` (the only accurate value for
-   this host's `pool0` storage).
-3. Build: FAIL (2m 24s to the failure). `images/node/build.sh` exit 2.
-   Packer error creating the ephemeral build VM:
-   `unable to create VM 121 - unsupported format 'qcow2' at
-   /usr/share/perl5/PVE/Storage/ZFSPoolPlugin.pm line 292`. The VM disk
-   params Packer sent: `scsi0:pool0:20,cache=none,format=qcow2,replicate=0`.
-   No VM 121 was ever created (confirmed via the Proxmox API: its config
-   file doesn't exist). See Problems.
+   the repo.
+3. Build: three attempts, see Problems for detail on each:
+   - **Attempt 1** (`pool0`, default `qcow2`, vlan150): FAIL after 2m24s,
+     `unsupported format 'qcow2'`. Fixed upstream mid-session by PR #9
+     (`disk_format` now defaults to `raw`), merged into this branch.
+   - **Attempt 2** (`pool0`, `raw`, vlan150): stuck ~25 min on "Waiting for
+     SSH to become available" — the build VM on vlan150 couldn't reach the
+     kickstart HTTP server on this workstation (vlan150 only routes to
+     deployed-node traffic via OPNsense, not back to the runner). Killed
+     manually, half-built VM 121 stopped and deleted via the Proxmox API.
+   - **Attempt 3** (`pool0`, `raw`, untagged `vmbr0`, matching the network
+     every other VM on this host already uses): FAIL after 9m50s, but only
+     at the very last step. ISO boot, kickstart, SSH, and Ansible all
+     succeeded; Goss validation ran 50 checks, 49 passed, 1 failed
+     (`cloud-utils` package not installed). Packer tore the VM down itself
+     on failure; nothing was left behind.
 4. Check the template: SKIPPED, nothing was built.
-5. Clean up the build host: PASS. `images/node/.build/` removed.
+5. Clean up the build host: PASS. `images/node/.build/` removed after each
+   attempt.
 
 ## Problems
 
-- **Overlay requests `format=qcow2` for the Proxmox VM disk; every
-  VM-capable storage on this host is block storage, which only supports
-  `raw`.** Where: `images/node/overlay/packer/proxmox/rockylinux-10.json`
-  (the Rocky 10 Proxmox var file this task's `images/node/README.md` says
-  is adapted from upstream's Rocky 9 Proxmox target). Exact error:
-  `error creating VM: unable to create VM 121 - unsupported format 'qcow2'
-  at /usr/share/perl5/PVE/Storage/ZFSPoolPlugin.pm line 292.` This matches a
-  known caveat in image-builder's own Proxmox guide: disk format may need to
-  change from qcow2 to raw when storage is block-only (ZFS, and the same is
-  true of LVM/LVM-thin). This host's only two VM-disk-capable storages —
-  `pool0` (zfspool) and `local-lvm` (lvmthin) — are both block storage, so
-  there's no `PROXMOX_STORAGE_POOL` choice on this host that works around it
-  without an overlay change. I suspect the overlay needs either a `format`
-  var that defaults to `raw` (matching upstream's non-Proxmox-ZFS EL
-  targets) or a documented requirement to use dir-backed storage, which this
-  host doesn't have configured for VM images. I did not edit
-  `images/node/overlay/` per the task's instructions; reporting instead.
+- **Attempt 1 — `qcow2` unsupported on ZFS storage.** Already fixed on
+  `main` (PR #9, "Node image: default disk format to raw"), merged into
+  this branch. No longer an open issue; recorded for the sequence of
+  events.
+
+- **Attempt 2 — vlan150 doesn't route back to the runner.** `vlan150`
+  ("k8s vlan") is fronted by the `opnsense` VM (vmid 100) and is meant for
+  deployed cluster nodes, not for build-time traffic back to this
+  workstation. With DHCP/firewall on vlan150 enabled, the build VM still
+  couldn't reach the kickstart HTTP server here — Packer sat at "Waiting for
+  SSH" indefinitely. This workstation's own firewall was not the cause
+  (`firewalld` already allows `1025-65535/tcp`, which covers Packer's
+  8000–9000 kickstart-port range, and the listener was confirmed up with
+  `ss -tlnp`). Root cause (missing route or firewall rule from vlan150 back
+  to `192.168.186.0/24` through OPNsense) wasn't fully isolated — Trevor
+  redirected to a different network instead of debugging OPNsense further.
+  Not a DCiaB bug: this is lab topology, worth a line in `handoff/LAB.md`
+  that vlan150 isn't suitable for node-image builds, only for deployed
+  nodes.
+
+- **Attempt 3 — kickstart `%packages` requests a package Rocky 10 doesn't
+  have.** Where: `images/node/overlay/packer/proxmox/linux/rockylinux/http/10/ks.cfg.tmpl`
+  `%packages` section lists `cloud-utils` (inherited from upstream's Rocky 9
+  template, per `images/node/README.md`'s note that the overlay is adapted
+  from Rocky 9 and CentOS 10 files). Rocky 10's repos only carry
+  `cloud-utils-growpart`, not a separate base `cloud-utils` package — the
+  kickstart's `--ignoremissing` flag let the install continue instead of
+  failing there. The Goss check (also inherited) still expects
+  `cloud-utils: installed: true`, so validation fails at the very end.
+  Exact failure:
+  ```
+  Package: cloud-utils: installed:
+  Expected
+      <bool>: false
+  to equal
+      <bool>: true
+  ```
+  `cloud-utils-growpart` is installed and passes its own, separate check —
+  so this looks like exactly one stale package name, not a deeper packaging
+  gap. I didn't edit the overlay or the goss var list per the task's
+  instructions; reporting instead. 49/50 Goss checks passed; the other 49
+  cover containerd, kubelet, kubeadm, chronyd and more, all successfully
+  installed and enabled on Rocky 10.
 
 ## Artifacts
 
-- None kept — no template or VM was created.
-- Left behind on purpose, for reuse by a retry once the overlay is fixed:
-  the uploaded Rocky 10.3 minimal ISO at `local:iso/2750aa1110330781670afa1d9f4a95f927568a6b.iso`
-  on node `pve1` (~1.5 GB). Not deleted since a next attempt will re-upload
-  the same ISO otherwise; say if you'd rather it be removed.
+None kept — no template or VM was created on any of the three attempts.
+Left behind intentionally, for reuse by a retry: the uploaded Rocky 10.3
+minimal ISO at `local:iso/2750aa1110330781670afa1d9f4a95f927568a6b.iso` on
+node `pve1` (~1.5 GB, reused unchanged across all three attempts).
 
 ## Workarounds
 
-None — the two retry knobs the task allows (`DCIAB_CPU_TYPE`,
-`DCIAB_STORAGE_POOL_TYPE`) don't address a hardcoded disk format, so I didn't
-retry; see Problems for why no storage-pool choice on this host avoids it.
-
-Separately, getting to this point needed real lab setup beyond the task's
-own steps, recorded here since it shapes how reproducible this build is:
-- The Proxmox token (`claude@pam!claude-dciab`) needed privileges beyond
-  what an earlier CAPMOX-focused grant had. I resolved image-builder's
-  required privileges (`Datastore.*`, `SDN.*`, `Sys.AccessNetwork`,
-  `Sys.Audit`, `VM.*` on `/`) from its own Proxmox guide and had Trevor grant
-  a custom `ImageBuilder` role for the missing pieces
-  (`Datastore.Allocate`, `Datastore.AllocateSpace`,
-  `Datastore.AllocateTemplate`, `SDN.Allocate`, `SDN.Use`,
-  `Sys.AccessNetwork`) to the `claude@pam` user (not the token — see the
-  next point).
-- On this Proxmox 9.2.3 install, ACL grants applied directly to a **token**
-  (`ugid` containing `!`) are silently ineffective: `/access/permissions`
-  for the token reports `{}` and every list/read endpoint returns an empty
-  result instead of an error, even with a confirmed-correct `/etc/pve/user.cfg`
-  entry and after restarting `pvedaemon`/`pveproxy`. The only pattern that
-  works is granting the role to the plain **user** and setting the token's
-  `privsep` to `0` so it inherits. This cost significant back-and-forth
-  before being isolated via a working control (`tofu@pve`'s token, which
-  uses exactly that pattern) versus a non-working one (direct token grants).
-  Worth a note in `images/node/README.md` or `handoff/README.md` if other
-  Proxmox installs behave the same way.
-- The intended build network (`vmbr0` tag 150, "k8s vlan") had no DHCP or
-  routing until Trevor enabled ISC DHCP and the relevant firewall rule on
-  the `opnsense` VM (vmid 100) that fronts it. Not a DCiaB issue, just
-  recorded since it was a precondition this task's "Needs" section doesn't
-  mention checking for.
+- Switched `PROXMOX_BRIDGE`/`PROXMOX_VLAN` from `vmbr0`/`150` to plain
+  `vmbr0` (no tag) between attempts 2 and 3, at Trevor's direction, since
+  vlan150 wasn't built for this traffic. This is an env-file-only change
+  (not `images/node/`), matching the task's "retry once with a different
+  setting in the env file only" allowance, extended here to a network
+  setting rather than the two `DCIAB_*` knobs the task names, since neither
+  of those could have fixed a routing problem.
+- Manually stopped and deleted VM 121 (attempt 2's half-built VM) via the
+  Proxmox API after killing the stuck build process, since Packer itself
+  never got the chance to clean it up.
+- (Carried over from the first report, still relevant): the Proxmox token
+  needed image-builder's documented privilege set (`Datastore.*`, `SDN.*`,
+  `Sys.AccessNetwork`, `Sys.Audit`, `VM.*` on `/`), granted to the
+  `claude@pam` **user** (not the token — token-direct ACL grants were
+  silently ineffective on this Proxmox 9.2.3 install; only
+  `privsep=0` + user-level grants work). Both now documented in
+  `handoff/LAB.md` by the planner.
 
 ## Questions
 
-- Should `images/node/overlay/packer/proxmox/rockylinux-10.json` set
-  `format: raw` (or expose it as a configurable var) for the VM disk, to
-  match what upstream's own Proxmox guidance says is needed for block
-  storage? This blocks every Proxmox host whose VM-disk storage isn't
-  dir-backed, which — ZFS and LVM-thin both being common defaults — may be
-  most of them.
-- Is there a known Proxmox behavior difference for token-vs-user ACL grants
-  worth documenting, or was this specific to this install? If it's general,
-  future handoff tasks that ask for "a token with privileges X" should
-  probably say to grant the user with `privsep=0`, not the token directly,
-  to save re-discovering this.
+- Should `ks.cfg.tmpl`'s `%packages` list drop `cloud-utils` (or should the
+  Goss check target `cloud-utils-growpart` instead)? This is the one
+  concrete blocker left; fixing it should let a retry produce a real
+  template.
+- Should `handoff/LAB.md` note that vlan150 is for deployed nodes only, not
+  for node-image builds (which need a route back to the runner host)? That
+  would save a future task the same detour.
