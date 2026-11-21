@@ -94,6 +94,8 @@ if [[ "$base_image" == - ]]; then
     git -C "$src" fetch -q "$recipe_url" "$recipe_branch"
   fi
   git -C "$src" checkout -q "$recipe_commit"
+  # The recipe's preflight.sh needs its fedora-bootc submodule (pinned by the commit's gitlink).
+  git -C "$src" submodule update -q --init --recursive --depth 1
   # The recipe's own build invocation: nested rpm-ostree compose needs these privileges.
   (cd "$src" && podman build --security-opt=label=disable --cap-add=all --device /dev/fuse \
      -v "$src:/buildcontext" --build-arg "MANIFEST=$manifest" -t "$local_base" .)

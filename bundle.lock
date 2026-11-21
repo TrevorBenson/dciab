@@ -92,12 +92,12 @@ nodeImages:
     sigRecipe:
       url: https://git.resf.org/sig_containers/rocky-bootc.git
       branch: r10
-      commit: ""
+      commit: "7de0140298a426c89d7ca014f127689a596b5cc0"
     manifest: minimal
     # A prebuilt base (image@sha256:...) instead of building the recipe; empty = build it.
     baseImage: ""
     # Turns the OCI image into raw/qcow2/vmdk disks. Pin as image@sha256:<digest>.
-    bootcImageBuilder: quay.io/centos-bootc/bootc-image-builder
+    bootcImageBuilder: quay.io/centos-bootc/bootc-image-builder@sha256:dab86ee6b46dcade411b37f4e70b07d93b6a06da0dbfec6fe89247a220e0d9f8
     # CRI-O follows Kubernetes minor versions.
     crioSeries: v1.36
 

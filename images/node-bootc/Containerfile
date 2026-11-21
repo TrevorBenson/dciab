@@ -44,9 +44,20 @@ RUN dnf -y install \
 COPY rootfs/ /
 # /opt is read-only in image mode. CNI plugins that install themselves at runtime (Cilium)
 # write to /opt/cni/bin, so point it at /var (created by tmpfiles.d at boot).
-RUN mkdir -p /opt/cni && ln -sfn /var/lib/cni/bin /opt/cni/bin
+# The kubernetes-cni package (a kubelet dependency) already installs the stock plugins into
+# /opt/cni/bin, and `ln -sfn` into an existing directory only creates a stray link inside it.
+# Move the plugins to /usr/libexec/cni (in CRI-O's plugin_dirs), then make /opt/cni/bin the link.
+RUN mkdir -p /usr/libexec/cni \
+ && mv /opt/cni/bin/* /usr/libexec/cni/ \
+ && rm -rf /opt/cni/bin \
+ && ln -s /var/lib/cni/bin /opt/cni/bin
 # cloud-init's units are enabled by the package's systemd presets.
 RUN systemctl enable NetworkManager crio kubelet chronyd sshd qemu-guest-agent
+
+# The base image's /usr/local is an absolute symlink to /var/usrlocal, which bootc's
+# `container lint` (runtime-deps, bootc 1.17) rejects as "a path led outside of the
+# filesystem". A relative link means the same thing and passes.
+RUN ln -sfn ../var/usrlocal /usr/local
 
 LABEL containers.bootc=1
 STOPSIGNAL SIGRTMIN+3
