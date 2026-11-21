@@ -1,7 +1,7 @@
 ---
 id: "0006"
 title: Rebuild the bootc node template with root filesystem growth
-status: open
+status: done
 runner: workstation
 depends: ["0004"]
 report: handoff/reports/0006-node-bootc-template.md

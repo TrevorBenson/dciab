@@ -22,7 +22,7 @@ Never put secrets here: no token secrets, passwords or keys.
   - **Untagged:** the network the other VMs use. It can reach the workstation, so use it for node image builds: Packer's kickstart server runs on the workstation.
   - **VLAN 150 (the "k8s VLAN"):** for deployed cluster nodes. DHCP and routing come from the OPNsense VM (VMID 100). It does **not** route back to the workstation, so builds on it hang at "Waiting for SSH".
 - The workstation is on 192.168.186.0/24. Its firewalld already allows TCP 1025–65535.
-- Bootc node template: `rocky10-bootc-kube-v1.36.6`, VMID 122 on `pve1`, storage `pool0` (task 0004): Rocky 10.3, CRI-O 1.36.9, Kubernetes 1.36.6, a 20 GiB disk, SeaBIOS, a cloud-init drive. Its root filesystem does not grow past about 8.5 GiB yet (see the 0004 report).
+- Bootc node template: `rocky10-bootc-kube-v1.36.6`, **VMID 123** on `pve1`, storage `pool0` (task 0006): Rocky 10.3, CRI-O 1.36.9, Kubernetes 1.36.6, a 20 GiB disk, SeaBIOS, a cloud-init drive. Its root filesystem grows to fill a larger disk at boot (a 40G clone gets a 38.5 GiB root). VMID 122, the task-0004 template with the same name and no growth, still exists until Trevor deletes it; use 123.
 - Importing a disk image: `local` has no `import` content type, so copy the qcow2 to the node (`scp` to `/var/tmp`) and run `qm importdisk <vmid> <file> pool0` over SSH as root, using the diagnostic key.
 - On `pve1`, `qm guest exec` is disabled, so a guest-agent command cannot run inside a VM; use SSH.
 - `sudo` on the workstation needs a password, so the runner cannot run root builds. The bootc image stages build rootless; only the bootc-image-builder disk step needs root, which Trevor runs.
