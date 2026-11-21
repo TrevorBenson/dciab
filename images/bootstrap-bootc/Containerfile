@@ -27,5 +27,10 @@ COPY addons /usr/share/dciab/addons
 COPY examples /usr/share/dciab/examples
 COPY images/bootstrap-bootc/rootfs/ /
 
+# The base image's /usr/local is an absolute symlink to /var/usrlocal, which bootc's
+# `container lint` (runtime-deps, bootc 1.17) rejects ("a path led outside of the
+# filesystem"). A relative link means the same thing and passes.
+RUN ln -sfn ../var/usrlocal /usr/local
+
 RUN systemctl enable sshd NetworkManager firewalld var-mnt-dciab.mount dciab-bootstrap-setup.service \
  && bootc container lint

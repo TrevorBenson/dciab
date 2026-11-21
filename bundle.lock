@@ -149,8 +149,8 @@ bootstrapAppliance:
   # tools.helm and kubernetes.version. Update them together with those versions.
   toolChecksums:
     kind: "aee6151561422756b764a4ae28e7f44cda5af5a9eead3cc9985112b1de8d8e0d"
-    kubectl: ""
-    helm: ""   # of helm-<version>-linux-amd64.tar.gz
+    kubectl: "29818b6729dc9262b692307470d0558d027725e738be5dd47c760261868a2634"
+    helm: "d1c0278d46beab79582d7e50f5b3dc206944ba8e577cde618513fd07daa53983"   # of helm-<version>-linux-amd64.tar.gz
 
 charts:
   cilium: 1.20.5
