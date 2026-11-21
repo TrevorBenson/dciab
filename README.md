@@ -13,7 +13,7 @@ One archive and one YAML file build a data center platform from bare power and n
 | 0b | `./dciab services` | Bare servers only (planned): DNS, NTP and HTTP on the bootstrap host |
 | 0c | `./dciab hypervisors` | Bare servers only (planned): Proxmox VE or ESXi installed over Redfish virtual media |
 | 1 | `./dciab seed` | Local registry, seed DNS and KinD with all CAPI providers |
-| 2 | `./dciab mgmt` | MGMT built, CAPI pivoted into it, DNS moved onto it |
+| 2 | `./dciab mgmt` | MGMT built, Cilium installed, CAPI moved into it (in progress: DNS handoff and MGMT services still to come) |
 | 3 | `./dciab infra` | INFRA built with Argo CD, Forgejo, OpenBao, CloudNativePG |
 | 4 | `./dciab platform` | Repos pushed; Argo CD and OpenTofu bring up the rest |
 | 5 | `./dciab finalize` | Images moved to Artifact Keeper; seed torn down |

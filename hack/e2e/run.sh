@@ -19,7 +19,6 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-CLASS_NS=dciab-clusterclasses
 
 context="$(kubectl config current-context)"
 if [[ "$context" != kind-* && "$context" != "${DCIAB_E2E_CONTEXT:-}" ]]; then
@@ -57,36 +56,9 @@ diagnostics() {
 }
 trap 'diagnostics' ERR
 
-# Rendered components may hold credentials passed through the environment: keep them in
-# a private file and remove it on exit.
-components="$(mktemp)"
-chmod 600 "$components"
-trap 'rm -f "$components"' EXIT
-
-crds="$(python3 "$ROOT/hack/fetch_crds.py")"
-
-group "cert-manager"
-kubectl apply --server-side -f "$crds"/cert-manager-*/cert-manager.yaml
-kubectl -n cert-manager wait --for=condition=Available deployment --all --timeout=5m
-endgroup
-
-group "Bare Metal Operator CRDs (CAPM3 watches BareMetalHosts)"
-kubectl apply --server-side -f "$crds"/baremetal-operator-*/
-endgroup
-
-group "Cluster API and providers"
-python3 "$ROOT/hack/render_components.py" \
-  "$crds"/cluster-api-*/*.yaml "$crds"/infrastructure-*/*.yaml "$crds"/ipam-*/*.yaml > "$components"
-retry 5 15 kubectl apply --server-side --force-conflicts -f "$components"
-kubectl wait --for=condition=Available deployment --all -A --timeout=10m
-kubectl get deployments -A
-endgroup
-
-group "ClusterClasses"
-retry 10 15 helm upgrade --install classes "$ROOT/charts/capi-clusterclasses" \
-  --namespace "$CLASS_NS" --create-namespace --wait
-kubectl -n "$CLASS_NS" get clusterclasses
-endgroup
+# cert-manager, Cluster API, the providers and the ClusterClasses: the same step dciab
+# uses on site.
+"$ROOT/lib/steps/capi-providers.sh" --with-classes
 
 if [[ "${DCIAB_E2E_MANAGEMENT_ONLY:-}" == 1 ]]; then
   echo "Management cluster ready: CAPI, providers and ClusterClasses installed; no Clusters created."
