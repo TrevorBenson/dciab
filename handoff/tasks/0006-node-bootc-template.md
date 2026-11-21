@@ -1,12 +1,16 @@
 ---
 id: "0006"
 title: Rebuild the bootc node template with root filesystem growth
-status: done
+status: open
 runner: workstation
 depends: ["0004"]
 report: handoff/reports/0006-node-bootc-template.md
 may_change: []
 ---
+
+## Rerun (2026-11-21)
+
+The first run (report at commit `619c9a0`) built template 123 before the small, thin template change (#22) merged, so 123 has the old 10 GiB root, resized to 20G. Run the task again against current `main` to publish the small template that tasks 0003 and 0007 use. Overwrite the report, keeping a one-line pointer to the first run. Use a new VMID; ask Trevor whether to delete 122 and 123 once the new one passes.
 
 ## Goal
 
