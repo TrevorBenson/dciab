@@ -13,6 +13,8 @@ Usage: dciab <command> [options]
 
 Commands:
   validate <config> [--output text|json]   Check a site config; changes nothing
+  cluster-values <config> <cluster> [--trust-bundle FILE] [-o FILE]
+                                           Print a cluster's capi-cluster values (--list: cluster names)
   media                                    Copy the USB payload to the bootstrap host's work disk (not implemented yet)
   services | hypervisors                   Day 0 for bare servers (not implemented yet)
   seed | mgmt | infra | platform | finalize
@@ -46,6 +48,10 @@ case "$cmd" in
     fi
     require_python
     PYTHONPATH="$ROOT/lib${PYTHONPATH:+:$PYTHONPATH}" exec python3 -m dciab_validate --root "$ROOT" "$@"
+    ;;
+  cluster-values)
+    require_python
+    PYTHONPATH="$ROOT/lib${PYTHONPATH:+:$PYTHONPATH}" exec python3 -m dciab_cluster --root "$ROOT" "$@"
     ;;
   services|hypervisors|media|seed|mgmt|infra|platform|finalize|status|verify)
     echo "dciab $cmd: not implemented yet (see docs/ROADMAP.md)" >&2
