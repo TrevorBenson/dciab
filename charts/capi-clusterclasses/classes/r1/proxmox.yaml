@@ -120,7 +120,7 @@ spec:
               minimum: 4
             diskGiB:
               type: integer
-              minimum: 40
+              minimum: 25
           description: Machine size. Set at cluster level and override per control plane or worker pool.
     - name: dnsServers
       required: true

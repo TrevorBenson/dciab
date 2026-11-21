@@ -62,7 +62,10 @@ node_cmd=(podman build -f "$HERE/Containerfile" -t "$tag"
   --build-arg "CRIO_SERIES=$crio" "$HERE")
 disk_cmd=(podman run --rm --privileged --security-opt label=type:unconfined_t
   -v "$OUT:/output" -v /var/lib/containers/storage:/var/lib/containers/storage
+  -v "$HERE/config.toml:/config.toml:ro"
   "$bib" "${types[@]}" --rootfs xfs "$tag")
+# config.toml sizes the root for an image up to this size; past it, raise the root to 5 GiB.
+max_image_bytes=$((18 * 1024 * 1024 * 1024 / 10))   # 1.8 GiB
 
 if [[ "$print_only" == true ]]; then
   echo "kubernetes $k8s (series $series), cri-o $crio"
@@ -103,6 +106,13 @@ fi
 
 echo "== node: $tag"
 "${node_cmd[@]}"
+size="$(podman image inspect --format '{{.Size}}' "$tag")"
+echo "== node image: $((size / 1024 / 1024)) MiB (limit for the 2 GiB root: $((max_image_bytes / 1024 / 1024)) MiB)"
+if (( size > max_image_bytes )); then
+  echo "build.sh: the node image no longer fits the template's 2 GiB root with headroom;" >&2
+  echo "          raise the root in images/node-bootc/config.toml to \"5 GiB\" (see README)" >&2
+  exit 1
+fi
 echo "== disks: ${types[*]}"
 "${disk_cmd[@]}"
 find "$OUT" -path "$OUT/rocky-bootc" -prune -o -type f -printf '%p  %s bytes\n'

@@ -58,8 +58,8 @@ Keep everything outside the repo in `~/.dciab/0003/`: create it first with `mkdi
      - `name: lab01`, `class: proxmox`, `kubernetesVersion: v1.36.6`
      - `proxmox.templateID: <the 0006 template's VMID>`, `proxmox.templateNode: pve1`
      - `proxmox.allowedNodes`, `storage` and `bridge`, plus `vlanTag` when the nodes are on VLAN 150
-     - `controlPlane.replicas: 3` with `{cpu: 2, memoryGiB: 4, diskGiB: 40}`. 40 GiB is the chart's minimum; CAPMOX grows the 20G template disk when it clones.
-     - one worker pool `general` with `replicas: 1` and `{cpu: 2, memoryGiB: 4, diskGiB: 40}`
+     - `controlPlane.replicas: 3` with `{cpu: 2, memoryGiB: 4, diskGiB: 25}`. 25 GiB is the minimum; CAPMOX grows the small template disk when it clones, and growroot grows the filesystem.
+     - one worker pool `general` with `replicas: 1` and `{cpu: 2, memoryGiB: 4, diskGiB: 25}`
      - `nodes.registryMirror: mirror.invalid`
      - `nodes.trustBundle`: the contents of `ca.crt`
      - the rest (network, DNS, NTP, SSH key, CIDRs, VIP) from Trevor's answers
@@ -91,7 +91,7 @@ Keep everything outside the repo in `~/.dciab/0003/`: create it first with `mkdi
      3. Delete the test resources.
    - **Node setup:** on one node, via SSH as `dciab` or `kubectl debug node/...`, check:
      - `/etc/containers/registries.conf.d/50-dciab-mirror.conf` points at `mirror.invalid`, and pods still pull (CRI-O falls back to upstream)
-     - the root filesystem fills the 40 GiB disk (`df -h /var`)
+     - the root filesystem fills the 25 GiB disk (`df -h /var`)
      - the CA is in the trust store
      - chrony uses the given NTP servers
    - **VIP holder:** exactly one control plane node holds the API VIP (kube-vip leader).
