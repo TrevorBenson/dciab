@@ -1,7 +1,9 @@
 """Configure the bootstrap appliance from dciab.yaml, on every boot.
 
-The DCiaB USB's data partition (label DCIAB) is mounted at /var/mnt/dciab. This module
-reads dciab.yaml there and makes the appliance reachable:
+The DCiaB USB's data partition (label DCIAB) is mounted at /var/mnt/dciab when the stick
+is plugged in. Its dciab.yaml and secrets/ are copied to /var/lib/dciab/site on the
+appliance's own disk, so the appliance keeps working once the stick is taken out; the
+copy is what everything reads. Then this module makes the appliance reachable:
 
 - one login per identity.initialAdmins user, with its SSH keys and passwordless sudo.
   Logins this module created for users no longer listed lose their keys and are locked.
@@ -24,6 +26,7 @@ import json
 import os
 import pwd
 import re
+import shutil
 import subprocess
 import sys
 from contextlib import redirect_stdout
@@ -98,6 +101,53 @@ def blocking_errors(config: str) -> List[str]:
     report = json.loads(buf.getvalue())
     return [f"{f['path']}: {f['found']} ({f['fix']})" for f in report["findings"]
             if f["severity"] == "error" and str(f["path"]).startswith(NETWORK_PATHS)]
+
+
+def sync_site(usb: str, site: str) -> bool:
+    """Copy dciab.yaml and secrets/ from the stick to the site directory, replacing the
+    previous copy as a whole. False when the stick has no dciab.yaml (keep the copy).
+
+    `site` is a symlink to a versioned directory beside it. The new copy is written to a
+    fresh directory, then the symlink is replaced in one rename, so a crash at any point
+    leaves either the old copy or the new one, never neither. A lock serializes runs."""
+    import fcntl
+    import tempfile
+
+    if not os.path.isfile(os.path.join(usb, "dciab.yaml")):
+        return False
+    site = site.rstrip("/")
+    parent, base = os.path.split(site)
+    os.makedirs(parent, exist_ok=True)
+    with open(os.path.join(parent, f".{base}.lock"), "w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        staged = tempfile.mkdtemp(dir=parent, prefix=f".{base}-")
+        try:
+            shutil.copyfile(os.path.join(usb, "dciab.yaml"), os.path.join(staged, "dciab.yaml"))
+            if os.path.isdir(os.path.join(usb, "secrets")):
+                shutil.copytree(os.path.join(usb, "secrets"), os.path.join(staged, "secrets"),
+                                copy_function=shutil.copyfile)
+            for dirpath, _dirnames, filenames in os.walk(staged):
+                os.chmod(dirpath, 0o700)
+                for f in filenames:
+                    os.chmod(os.path.join(dirpath, f), 0o600)
+            previous = os.path.realpath(site) if os.path.islink(site) else None
+            if os.path.isdir(site) and not os.path.islink(site):
+                # A plain directory from an older layout: keep it aside until the swap is done.
+                legacy = tempfile.mkdtemp(dir=parent, prefix=f".{base}-legacy-")
+                os.rmdir(legacy)
+                os.replace(site, legacy)
+                previous = legacy
+            link = os.path.join(parent, f".{base}.link")
+            if os.path.lexists(link):
+                os.remove(link)
+            os.symlink(os.path.basename(staged), link)
+            os.replace(link, site)
+        except BaseException:
+            shutil.rmtree(staged, ignore_errors=True)
+            raise
+        if previous and os.path.isdir(previous) and previous != os.path.realpath(site):
+            shutil.rmtree(previous, ignore_errors=True)
+    return True
 
 
 def _run(*cmd: str) -> None:
@@ -198,10 +248,28 @@ def main(argv: Optional[List[str]] = None) -> int:
     import yaml
 
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("config", help="path to dciab.yaml")
+    ap.add_argument("config", nargs="?", help="path to dciab.yaml (default: SITE/dciab.yaml)")
+    ap.add_argument("--usb", help="the stick's data partition; its dciab.yaml and secrets/ are copied to --site")
+    ap.add_argument("--site", default="/var/lib/dciab/site", help="where the appliance keeps its copy of the config")
     ap.add_argument("--print", action="store_true", help="show the plans; change nothing")
     args = ap.parse_args(argv)
     say = lambda msg: print(f"dciab-bootstrap-setup: {msg}", file=sys.stderr)  # noqa: E731
+
+    usb_config = os.path.join(args.usb, "dciab.yaml") if args.usb else None
+    if args.print and args.config is None and usb_config and os.path.isfile(usb_config):
+        args.config = usb_config  # a dry run shows what the stick's config would do
+    elif args.usb and not args.print:
+        try:
+            if sync_site(args.usb, args.site):
+                say(f"copied dciab.yaml and secrets/ from {args.usb} to {args.site}")
+            else:
+                say(f"no dciab.yaml on {args.usb}; using the copy in {args.site}")
+        except OSError as exc:
+            # Applying the older copy would silently ignore the operator's change.
+            say(f"couldn't copy the config from {args.usb}: {exc}; nothing changed. Fix the stick and reboot.")
+            return 1
+    if args.config is None:
+        args.config = os.path.join(args.site, "dciab.yaml")
 
     try:
         with open(args.config, encoding="utf-8") as fh:
@@ -231,6 +299,10 @@ def main(argv: Optional[List[str]] = None) -> int:
             apply_admins(admins)
             say("admin logins: " + ", ".join(str(a["username"]) for a in admins))
         if network is not None:
+            from dciab_validate import cli
+
+            # The full validation report, for the console.
+            cli.main([args.config, "--root", os.environ.get("DCIAB_ROOT", "/usr/share/dciab")])
             blocking = blocking_errors(args.config)
             if blocking:
                 say("network not configured, because dciab validate reports:\n  " + "\n  ".join(blocking))

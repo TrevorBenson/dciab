@@ -43,6 +43,17 @@
           "properties": {
             "interface": {"type": "string", "minLength": 1, "description": "the bootstrap host NIC on the node network: its name, or its MAC (quoted) when the name isn't known in advance, as on the DCiaB bootstrap appliance"},
             "managementVLAN": {"enum": ["tagged", "untagged"], "description": "tagged: the bootstrap NIC tags network.nodes.vlan; untagged: it sits on an access port. Required by the DCiaB bootstrap appliance, which configures its own network"},
+            "workDisk": {
+              "oneOf": [
+                {"type": "object", "additionalProperties": false, "required": ["disk"],
+                 "properties": {"disk": {"$ref": "#/$defs/rootDeviceHints"}},
+                 "description": "disk: the local disk the DCiaB appliance installs onto and works from (wiped), selected like rootDeviceHints"},
+                {"type": "object", "additionalProperties": false, "required": ["path"],
+                 "properties": {"path": {"type": "string", "pattern": "^/", "description": "an absolute directory"}},
+                 "description": "path: a directory on a Rocky Linux 10 bootstrap host you provide"}
+              ],
+              "description": "where the bootstrap host keeps the payload dciab media copies from the USB, and its heavy state (container storage, kind, the seed registry)"
+            },
             "address": {"$ref": "#/$defs/ipv4"},
             "recipients": {
               "type": "array",

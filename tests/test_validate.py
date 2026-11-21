@@ -488,3 +488,23 @@ def test_hypervisors_need_a_boot_mode(site):
     del doc["spec"]["hypervisors"]["bootMode"]
     _, report = site.validate(doc)
     assert errors(report, "spec.hypervisors.bootMode")
+
+
+def test_workdisk_disk_or_absolute_path(site):
+    doc = load_example("proxmox-bare")
+    doc["spec"]["bootstrap"]["workDisk"] = {"path": "/srv/dciab"}
+    code, _ = site.validate(doc)
+    assert code == 0
+    doc["spec"]["bootstrap"]["workDisk"] = {"path": "relative/dir"}
+    _, report = site.validate(doc)
+    assert errors(report, "spec.bootstrap.workDisk")
+    doc["spec"]["bootstrap"]["workDisk"] = {"disk": {}}
+    _, report = site.validate(doc)
+    assert errors(report, "spec.bootstrap.workDisk")
+
+
+def test_missing_workdisk_is_noted(site):
+    doc = load_example("proxmox-bare")
+    del doc["spec"]["bootstrap"]["workDisk"]
+    _, report = site.validate(doc)
+    assert any("workDisk" in n for n in report["notes"])

@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
-# Build the DCiaB USB image: Ventoy (pinned in bundle.lock) with the bootstrap appliance
-# as a Linux vDisk, on an exFAT data partition labelled DCIAB. Any OS writes the image to
-# a stick with an ordinary imaging tool. See docs/adr/0002-bootstrap-appliance-on-ventoy.md.
+# Build the DCiaB USB image: Ventoy (pinned in bundle.lock) with the bootstrap appliance's
+# installer ISO, on an exFAT data partition labelled DCIAB. Any OS writes the image to a
+# stick with an ordinary imaging tool. See docs/adr/0002-bootstrap-appliance-on-ventoy.md.
 #
 #   sudo images/usb/build.sh [--size GiB] [--with-isos] [--print]
 #
-# Input: images/bootstrap-bootc/output/image/disk.raw (images/bootstrap-bootc/build.sh).
+# Input: images/bootstrap-bootc/output/bootiso/install.iso (images/bootstrap-bootc/build.sh).
 # Output: images/usb/output/dciab-usb-<version>.img, plus its sha256.
 #
-# --size     the whole stick image; defaults to the appliance disk plus 16 GiB
+# --size     the whole stick image; defaults to the appliance ISO plus 16 GiB
 # --with-isos  also copy the hypervisor installers DCiaB ships (bundle.lock hypervisors,
 #              shipped: true) into isos/, checked against their sha256
 #
@@ -20,7 +20,7 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
 OUT="$HERE/output"
 BUILD="$HERE/build"
-APPLIANCE="$ROOT/images/bootstrap-bootc/output/image/disk.raw"
+APPLIANCE="$ROOT/images/bootstrap-bootc/output/bootiso/install.iso"
 
 size=""
 with_isos=false
@@ -34,19 +34,22 @@ while (( $# )); do
   esac
 done
 
-read -r version vt_ver vt_url vt_sha < <(python3 - "$ROOT" <<'PY'
+read -r version vt_ver vt_url vt_sha py_ver py_url py_sha < <(python3 - "$ROOT" <<'PY'
 import re, sys
 from pathlib import Path
 import yaml
 
 root = Path(sys.argv[1])
-v = yaml.safe_load((root / "bundle.lock").read_text())["bootstrapAppliance"]["ventoy"]
-if not re.fullmatch(r"[0-9a-f]{64}", v.get("sha256") or ""):
-    sys.exit("build.sh: pin bootstrapAppliance.ventoy.sha256 (64 hex)")
-print((root / "VERSION").read_text().strip(), v["version"], v["url"], v["sha256"])
+a = yaml.safe_load((root / "bundle.lock").read_text())["bootstrapAppliance"]
+v, p = a["ventoy"], a["pyyaml"]
+for name, sha in (("ventoy", v.get("sha256")), ("pyyaml", p.get("sha256"))):
+    if not re.fullmatch(r"[0-9a-f]{64}", sha or ""):
+        sys.exit(f"build.sh: pin bootstrapAppliance.{name}.sha256 (64 hex)")
+print((root / "VERSION").read_text().strip(), v["version"], v["url"], v["sha256"],
+      p["version"], p["url"], p["sha256"])
 PY
 )
-vdisk="dciab-bootstrap-$version.raw.vtoy"
+iso="dciab-bootstrap-$version.iso"
 image="$OUT/dciab-usb-$version.img"
 
 if [[ -z "$size" ]]; then
@@ -58,7 +61,7 @@ if [[ -z "$size" ]]; then
 fi
 
 if [[ "$print_only" == true ]]; then
-  echo "USB $version: Ventoy $vt_ver, ${size} GiB image, appliance vDisk /$vdisk, isos: $with_isos"
+  echo "USB $version: Ventoy $vt_ver, ${size} GiB image, appliance installer /$iso, PyYAML $py_ver, isos: $with_isos"
   echo "appliance: $APPLIANCE$([[ -f "$APPLIANCE" ]] || echo ' (not built yet)')"
   echo "output: $image"
   exit 0
@@ -101,18 +104,26 @@ data="${loop}p1"
 mkdir -p "$mnt"
 mount -t exfat "$data" "$mnt"
 
-echo "== appliance vDisk: $vdisk"
-cp --sparse=never "$APPLIANCE" "$mnt/$vdisk"
+echo "== appliance installer: $iso"
+cp "$APPLIANCE" "$mnt/$iso"
+
+# The installer's %pre script runs dciab_bootstrap_host.install from here, with a
+# pure-Python PyYAML (the installer environment has python3 but not PyYAML).
+echo "== installer helper (PyYAML $py_ver)"
+curl -fsSL --retry 3 -o "$BUILD/pyyaml.tar.gz" "$py_url"
+echo "$py_sha  $BUILD/pyyaml.tar.gz" | sha256sum -c --quiet -
+tar -xzf "$BUILD/pyyaml.tar.gz" -C "$BUILD"
+mkdir -p "$mnt/.dciab/installer"
+cp -r "$BUILD/pyyaml-$py_ver/lib/yaml" "$mnt/.dciab/installer/yaml"
+cp -r "$ROOT/lib/dciab_bootstrap_host" "$mnt/.dciab/installer/dciab_bootstrap_host"
+find "$mnt/.dciab" -name '__pycache__' -prune -exec rm -rf {} +
 
 mkdir -p "$mnt/ventoy" "$mnt/isos" "$mnt/secrets" "$mnt/examples"
+# No default entry and no timeout: the installer wipes a disk, so it must be chosen by hand.
 cat > "$mnt/ventoy/ventoy.json" <<JSON
 {
-  "control": [
-    { "VTOY_DEFAULT_IMAGE": "/$vdisk" },
-    { "VTOY_MENU_TIMEOUT": "10" }
-  ],
   "menu_alias": [
-    { "image": "/$vdisk", "alias": "DCiaB $version: bootstrap appliance (server zero)" }
+    { "image": "/$iso", "alias": "DCiaB $version: install the bootstrap appliance (server zero)" }
   ]
 }
 JSON
@@ -121,10 +132,14 @@ cat > "$mnt/README.txt" <<TXT
 DCiaB $version
 
 1. Put your site config here as dciab.yaml (start from examples/), and the files it
-   references under secrets/. For ESXi, copy the installer ISO it names here too.
-2. Boot one x86_64 server on the node network from this stick: "DCiaB $version:
-   bootstrap appliance" starts after 10 seconds.
+   references under secrets/. Set spec.bootstrap.workDisk.disk to the server-zero disk
+   the appliance installs onto: that disk is wiped. For ESXi, copy the installer ISO the
+   config names here too.
+2. Boot one x86_64 server on the node network from this stick and choose "DCiaB $version:
+   install the bootstrap appliance". It installs unattended onto that one disk and
+   reboots into the appliance (boot from the disk, not the stick, from then on).
 3. SSH to spec.bootstrap.address as one of identity.initialAdmins, and run dciab.
+   The stick can then be removed: its config is copied to the appliance's disk.
 
 isos/ holds installers you can also boot from this menu by hand.
 TXT

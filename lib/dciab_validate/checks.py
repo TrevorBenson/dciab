@@ -400,6 +400,9 @@ class Checker:
         ntp_path = ("spec", "network", "ntpServers")
         service_ips = list(net["dnsServiceIPs"])
         listed = set(net["ntpServers"])
+        if "workDisk" not in self.spec["bootstrap"]:
+            self.notes.append("spec.bootstrap.workDisk isn't set; dciab media and the DCiaB appliance installer "
+                              "need it (disk: for the appliance, path: for a Rocky Linux 10 host you provide)")
         if "managementVLAN" not in self.spec["bootstrap"]:
             self.notes.append("spec.bootstrap.managementVLAN isn't set; the DCiaB bootstrap appliance needs it "
                               "(tagged or untagged) to configure its own network")

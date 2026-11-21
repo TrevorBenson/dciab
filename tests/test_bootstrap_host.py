@@ -95,3 +95,57 @@ def test_blocking_errors_only_cover_network_and_identity(site, monkeypatch):
     path.write_text(yaml.safe_dump(doc))
     [err] = setup.blocking_errors(str(path))
     assert err.startswith("spec.network.ntpServers")
+
+
+def test_sync_copies_config_and_secrets_privately(tmp_path):
+    usb, site = tmp_path / "usb", tmp_path / "site"
+    (usb / "secrets" / "bmc").mkdir(parents=True)
+    (usb / "dciab.yaml").write_text("spec: {}\n")
+    (usb / "secrets" / "bmc" / "pve01").write_text("pw\n")
+    (usb / "isos").mkdir()
+    (usb / "isos" / "big.iso").write_text("not copied")
+    assert setup.sync_site(str(usb), str(site)) is True
+    assert (site / "dciab.yaml").read_text() == "spec: {}\n"
+    assert (site / "dciab.yaml").stat().st_mode & 0o777 == 0o600
+    assert (site / "secrets" / "bmc" / "pve01").stat().st_mode & 0o777 == 0o600
+    assert site.is_symlink() and site.resolve().stat().st_mode & 0o777 == 0o700
+    assert not (site / "isos").exists()
+    # A second sync replaces the copy as a whole.
+    (usb / "secrets" / "bmc" / "pve01").unlink()
+    first = site.resolve()
+    assert setup.sync_site(str(usb), str(site)) is True
+    assert not (site / "secrets" / "bmc" / "pve01").exists()
+    assert not first.exists()                      # the previous copy is cleaned up
+    assert sorted(p.name for p in tmp_path.iterdir() if not p.name.startswith(".")) == ["site", "usb"]
+    assert [p for p in tmp_path.glob(".site-*")] == [site.resolve()]   # only the current copy
+
+
+def test_sync_replaces_an_old_plain_directory(tmp_path):
+    usb, site = tmp_path / "usb", tmp_path / "site"
+    usb.mkdir()
+    (usb / "dciab.yaml").write_text("new\n")
+    site.mkdir()
+    (site / "dciab.yaml").write_text("old\n")
+    assert setup.sync_site(str(usb), str(site)) is True
+    assert site.is_symlink() and (site / "dciab.yaml").read_text() == "new\n"
+
+
+def test_failed_copy_stops_setup(tmp_path, monkeypatch, capsys):
+    usb = tmp_path / "usb"
+    usb.mkdir()
+    (usb / "dciab.yaml").write_text("spec: {}\n")
+
+    def boom(*a, **k):
+        raise OSError("read error")
+
+    monkeypatch.setattr(setup, "sync_site", boom)
+    assert main(["--usb", str(usb), "--site", str(tmp_path / "site")]) == 1
+    assert "nothing changed" in capsys.readouterr().err
+
+
+def test_sync_without_stick_keeps_the_copy(tmp_path):
+    site = tmp_path / "site"
+    site.mkdir()
+    (site / "dciab.yaml").write_text("kept\n")
+    assert setup.sync_site(str(tmp_path / "no-stick"), str(site)) is False
+    assert (site / "dciab.yaml").read_text() == "kept\n"
