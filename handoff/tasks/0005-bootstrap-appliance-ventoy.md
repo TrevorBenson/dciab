@@ -1,7 +1,7 @@
 ---
 id: "0005"
 title: "Spike: bootstrap appliance as a Ventoy vDisk on the DCiaB USB"
-status: open
+status: blocked
 runner: workstation
 depends: ["0004"]
 report: handoff/reports/0005-bootstrap-appliance-ventoy.md
