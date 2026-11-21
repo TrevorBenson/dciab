@@ -117,6 +117,9 @@ def inventory(lock: dict, manifest_dirs: List[Path], extras: List[Path], kubeadm
         add(ref, source or "--image")
     if kubeadm:
         for line in kubeadm.read_text().split():
+            # The ClusterClasses skip kubeadm's kube-proxy addon: Cilium replaces it.
+            if "/kube-proxy:" in line:
+                continue
             add(line.strip(), f"kubeadm {lock['kubernetes']['version']}")
     return found
 

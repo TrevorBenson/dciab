@@ -39,11 +39,12 @@ def test_inventory_records_sources(tmp_path):
     extra = tmp_path / "cilium.yaml"
     extra.write_text("kind: DaemonSet\nspec: {template: {spec: {containers: [{name: c, image: 'quay.io/cilium/cilium:v1@sha256:" + "a" * 64 + "'}]}}}\n")
     kubeadm = tmp_path / "kubeadm.txt"
-    kubeadm.write_text("registry.k8s.io/kube-apiserver:v1.36.6\nregistry.k8s.io/pause:3.10\n")
+    kubeadm.write_text("registry.k8s.io/kube-apiserver:v1.36.6\nregistry.k8s.io/kube-proxy:v1.36.6\nregistry.k8s.io/pause:3.10\n")
     found = inventory(lock, [d], [extra], kubeadm, ["kindest/node:v1.37.0=kind"])
     assert found["registry.k8s.io/x:v1"] == {"provider-v1/components.yaml"}
     assert found["registry.k8s.io/kube-apiserver:v1.36.6"] == {f"kubeadm {lock['kubernetes']['version']}"}
     assert found["docker.io/kindest/node:v1.37.0"] == {"kind"}
+    assert not any("kube-proxy" in ref for ref in found)
     assert any(ref.startswith("quay.io/cilium/cilium") for ref in found)
     assert any(src == {"bundle.lock images.kubeVip"} for src in found.values())
 
