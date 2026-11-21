@@ -1,4 +1,6 @@
-# Node images
+# Node images (image-builder)
+
+> DCiaB is moving to the image-mode recipe in [`images/node-bootc/`](../node-bootc/README.md) (Rocky 10 bootc with CRI-O). This recipe stays until a cluster passes on a bootc template.
 
 Cluster nodes are cloned from a VM template that already has the OS, containerd, kubelet and kubeadm at the Kubernetes version pinned in `bundle.lock`. CAPI clones the template and kubeadm joins the node; nothing is installed at boot. This directory builds those templates with [Kubernetes image-builder](https://image-builder.sigs.k8s.io/), the SIG Cluster Lifecycle tool that the CAPI providers' own images come from.
 

@@ -60,10 +60,5 @@ Decided in [ADR 0002](adr/0002-bootstrap-appliance-on-ventoy.md).
 - **Reclaim server zero** as the last hypervisor at `finalize`.
 - **Only if a site needs them:** PXE as a second install method; a direct out-of-band interface on the bootstrap host, with DHCP for BMCs; separate NTP service addresses.
 
-- **Node image recipe: image-builder (containerd) or image mode (bootc, CRI-O).** The bootc recipe in `images/node-bootc/` is under evaluation against the image-builder template.
-- **CRI-O instead of containerd** (preferred). Node templates use containerd today: image-builder installs it, and it's the only runtime image-builder supports. The switch needs:
-  - a CRI-O role in the node image recipe
-  - the classes' registry mirror files moved from containerd `hosts.toml` to `/etc/containers/registries.conf.d`
-  - `criSocket` set in the kubeadm configuration
-
-  Ideally it lands before `r1` is released; after that it needs a new class revision.
+- **Node image recipe: image mode (bootc) with CRI-O is the choice.** It builds and boots on Proxmox (12 s to SSH, SELinux enforcing). The image-builder recipe stays until a cluster passes on the bootc template; then it's removed, along with the classes' containerd mirror files.
+- **CRI-O instead of containerd.** It comes with the bootc recipe, which installs CRI-O. The `r1` classes already write CRI-O's mirror files next to containerd's, and kubeadm finds the only runtime socket on its own. What's left is a cluster passing on a bootc template (task 0003), then removing the containerd files and the image-builder recipe.

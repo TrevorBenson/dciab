@@ -1,16 +1,16 @@
 ---
 id: "0003"
-title: First real cluster on Proxmox (r1 class, Rocky 10 template, Cilium)
+title: First real cluster on Proxmox (r1 class, bootc Rocky 10 template with CRI-O, Cilium)
 status: open
 runner: workstation
-depends: ["0002"]
+depends: ["0006"]
 report: handoff/reports/0003-proxmox-cluster.md
 may_change: []
 ---
 
 ## Goal
 
-Build a real cluster on Proxmox from the `dciab-proxmox-r1` ClusterClass, with nodes cloned from the task-0002 template, and Cilium installed by `addons/cilium/install.sh`. Then check that it survives node replacement and a move to a new class revision. These are the roadmap's Phase 0 gate items for the Proxmox class, except the Kubernetes upgrade: that needs a second template and is a later task.
+Build a real cluster on Proxmox from the `dciab-proxmox-r1` ClusterClass, with nodes cloned from the bootc template from task 0006 (Rocky 10, CRI-O), and Cilium installed by `addons/cilium/install.sh`. Then check that it survives node replacement and a move to a new class revision. These are the roadmap's Phase 0 gate items for the Proxmox class, except the Kubernetes upgrade: that needs a second template and is a later task.
 
 Read first:
 - `charts/capi-cluster/README.md`, with `charts/capi-cluster/ci/proxmox-values.yaml` as the shape of the values
@@ -27,7 +27,7 @@ Read first:
 ## Needs
 
 - The workstation tools from task 0001: kind, helm, kubectl, python3 with PyYAML.
-- The template from task 0002 (VMID 121 on `pve1`; see `LAB.md`).
+- The bootc template from task 0006 (its VMID is in `LAB.md` and the 0006 report). The task-0002 template no longer exists.
 - From Trevor, in one message:
   - **Node network:** VLAN 150 or untagged `vmbr0`. The kind cluster on this workstation must reach the cluster's API VIP: check it with `ping` or `curl` to a host on that network before choosing. The nodes need DHCP-free static addresses, a gateway, and internet access.
   - **Addresses:** a free node IP range of at least 6 addresses (3 control plane nodes, 1 worker, and room for rolling replacements), the prefix and gateway, and a free API VIP in the same subnet. The VIP must be **outside** the node range.
@@ -56,7 +56,7 @@ Keep everything outside the repo in `~/.dciab/0003/`: create it first with `mkdi
      ```
    - Write `~/.dciab/0003/lab01-values.yaml` from Trevor's answers:
      - `name: lab01`, `class: proxmox`, `kubernetesVersion: v1.36.6`
-     - `proxmox.templateID: 121`, `proxmox.templateNode: pve1`
+     - `proxmox.templateID: <the 0006 template's VMID>`, `proxmox.templateNode: pve1`
      - `proxmox.allowedNodes`, `storage` and `bridge`, plus `vlanTag` when the nodes are on VLAN 150
      - `controlPlane.replicas: 3` with `{cpu: 2, memoryGiB: 4, diskGiB: 40}`. 40 GiB is the chart's minimum; CAPMOX grows the 20G template disk when it clones.
      - one worker pool `general` with `replicas: 1` and `{cpu: 2, memoryGiB: 4, diskGiB: 40}`
@@ -90,7 +90,8 @@ Keep everything outside the repo in `~/.dciab/0003/`: create it first with `mkdi
      2. From a third pod, `curl` the Service name. This proves that DNS and ClusterIP routing work.
      3. Delete the test resources.
    - **Node setup:** on one node, via SSH as `dciab` or `kubectl debug node/...`, check:
-     - containerd `hosts.toml` points at `mirror.invalid`
+     - `/etc/containers/registries.conf.d/50-dciab-mirror.conf` points at `mirror.invalid`, and pods still pull (CRI-O falls back to upstream)
+     - the root filesystem fills the 40 GiB disk (`df -h /var`)
      - the CA is in the trust store
      - chrony uses the given NTP servers
    - **VIP holder:** exactly one control plane node holds the API VIP (kube-vip leader).

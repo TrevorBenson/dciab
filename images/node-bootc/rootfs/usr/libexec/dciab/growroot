@@ -1,0 +1,32 @@
+#!/bin/bash
+# Grow the root partition and its filesystem to fill the disk.
+#
+# CAPMOX and CAPV grow the VM disk to the cluster's diskGiB, but the image's root
+# partition keeps the size bootc-image-builder gave it. cloud-init can't fix that in image
+# mode: it looks at / (a composefs overlay) instead of the real filesystem at /sysroot.
+set -euo pipefail
+
+src="$(findmnt -no SOURCE /sysroot)"              # e.g. /dev/sda4
+dev="$(realpath "$src")"
+name="$(basename "$dev")"
+disk="/dev/$(lsblk -no PKNAME "$dev")"
+part="$(cat "/sys/class/block/$name/partition")"
+
+rc=0
+growpart "$disk" "$part" || rc=$?
+case "$rc" in
+  0) echo "growroot: grew $disk partition $part" ;;
+  1) echo "growroot: $disk partition $part already fills the disk" ;;
+  *) echo "growroot: growpart $disk $part failed ($rc)" >&2; exit "$rc" ;;
+esac
+
+# xfs_growfs grows the filesystem behind a mount point. /sysroot is mounted read-only, but
+# the same filesystem is also mounted read-write (the /var bind mount), so use that.
+target="$(findmnt -rn -S "$src" -o TARGET,OPTIONS | awk '$2 ~ /(^|,)rw(,|$)/ {print $1; exit}')"
+if [[ -n "$target" ]]; then
+  xfs_growfs "$target"
+else
+  mount -o remount,rw /sysroot
+  xfs_growfs /sysroot
+  mount -o remount,ro /sysroot
+fi

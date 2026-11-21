@@ -20,7 +20,9 @@ There has been no release yet, so `r1` is a draft.
 
 - **No kube-proxy**: kubeadm skips its kube-proxy addon. Cilium replaces it and is installed after the control plane is up ([addons/cilium](../../addons/cilium/README.md)); nodes stay `NotReady` until then.
 - **API VIP**: a kube-vip static pod in ARP mode on the control plane nodes (`apiVIP` variable).
-- **Registry mirror**: containerd `hosts.toml` for `docker.io`, `quay.io`, `ghcr.io` and `registry.k8s.io`, pointing at `https://<registryMirror>/v2/<upstream>/` (`override_path`). The node template's containerd must use `config_path = "/etc/containerd/certs.d"`.
+- **Registry mirror**: for `docker.io`, `quay.io`, `ghcr.io` and `registry.k8s.io`, nodes pull through `https://<registryMirror>/v2/<upstream>/`. The classes write the configuration for both runtimes, so either kind of node image works:
+  - **containerd:** `hosts.toml` files with `override_path`. The template's containerd must use `config_path = "/etc/containerd/certs.d"`.
+  - **CRI-O:** `/etc/containers/registries.conf.d/50-dciab-mirror.conf`, with mirror location `<registryMirror>/<upstream>`.
 - **Trust**: the platform CA (`trustBundle`) in the node trust store, applied before kubeadm runs.
 - **Time**: NTP servers (`ntpServers`).
 - **Break-glass user**: `dciab` with the given SSH keys (`sshAuthorizedKeys`).
