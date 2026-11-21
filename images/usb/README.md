@@ -28,6 +28,8 @@ Output: `images/usb/output/dciab-usb-<version>.img` and its `.sha256`. Ventoy's 
 2. On any laptop, open the `DCIAB` partition. Add `dciab.yaml` (start from `examples/`) and the files it references under `secrets/`. Set `spec.bootstrap.workDisk.disk` to the server-zero disk the appliance installs onto. For ESXi, add the installer ISO of the build in `bundle.lock`.
 3. Boot one x86_64 server on the node network from the stick. With Secure Boot on, the first boot on each machine asks you to enroll Ventoy's key in MokManager at the console (see the ADR).
 4. Choose "install the bootstrap appliance". It installs onto that one disk and reboots; from then on, boot server zero from its disk.
-5. SSH to `spec.bootstrap.address` and run `dciab`. After `dciab media` has copied the payload, the stick can be removed: the appliance keeps its own copy of the config.
+5. SSH to `spec.bootstrap.address` and run `dciab`. Once `dciab media` (planned) has copied the payload, the stick can be removed: the appliance already keeps its own copy of the config.
+
+Keep every file `dciab.yaml` references under `secrets/` (with relative paths), because the appliance copies only `dciab.yaml` and `secrets/`.
 
 A Rocky Linux 10 host you provide uses the same stick as its payload source: mount the `DCIAB` partition and run dciab there, with `spec.bootstrap.workDisk.path`.

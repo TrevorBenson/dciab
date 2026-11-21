@@ -105,25 +105,48 @@ def blocking_errors(config: str) -> List[str]:
 
 def sync_site(usb: str, site: str) -> bool:
     """Copy dciab.yaml and secrets/ from the stick to the site directory, replacing the
-    previous copy as a whole. False when the stick has no dciab.yaml (keep the copy)."""
+    previous copy as a whole. False when the stick has no dciab.yaml (keep the copy).
+
+    `site` is a symlink to a versioned directory beside it. The new copy is written to a
+    fresh directory, then the symlink is replaced in one rename, so a crash at any point
+    leaves either the old copy or the new one, never neither. A lock serializes runs."""
+    import fcntl
+    import tempfile
+
     if not os.path.isfile(os.path.join(usb, "dciab.yaml")):
         return False
-    staged = site.rstrip("/") + ".new"
-    shutil.rmtree(staged, ignore_errors=True)
-    os.makedirs(staged, mode=0o700)
-    shutil.copyfile(os.path.join(usb, "dciab.yaml"), os.path.join(staged, "dciab.yaml"))
-    if os.path.isdir(os.path.join(usb, "secrets")):
-        shutil.copytree(os.path.join(usb, "secrets"), os.path.join(staged, "secrets"), copy_function=shutil.copyfile)
-    for dirpath, dirnames, filenames in os.walk(staged):
-        os.chmod(dirpath, 0o700)
-        for f in filenames:
-            os.chmod(os.path.join(dirpath, f), 0o600)
-    old = site.rstrip("/") + ".old"
-    shutil.rmtree(old, ignore_errors=True)
-    if os.path.exists(site):
-        os.replace(site, old)
-    os.replace(staged, site)
-    shutil.rmtree(old, ignore_errors=True)
+    site = site.rstrip("/")
+    parent, base = os.path.split(site)
+    os.makedirs(parent, exist_ok=True)
+    with open(os.path.join(parent, f".{base}.lock"), "w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        staged = tempfile.mkdtemp(dir=parent, prefix=f".{base}-")
+        try:
+            shutil.copyfile(os.path.join(usb, "dciab.yaml"), os.path.join(staged, "dciab.yaml"))
+            if os.path.isdir(os.path.join(usb, "secrets")):
+                shutil.copytree(os.path.join(usb, "secrets"), os.path.join(staged, "secrets"),
+                                copy_function=shutil.copyfile)
+            for dirpath, _dirnames, filenames in os.walk(staged):
+                os.chmod(dirpath, 0o700)
+                for f in filenames:
+                    os.chmod(os.path.join(dirpath, f), 0o600)
+            previous = os.path.realpath(site) if os.path.islink(site) else None
+            if os.path.isdir(site) and not os.path.islink(site):
+                # A plain directory from an older layout: keep it aside until the swap is done.
+                legacy = tempfile.mkdtemp(dir=parent, prefix=f".{base}-legacy-")
+                os.rmdir(legacy)
+                os.replace(site, legacy)
+                previous = legacy
+            link = os.path.join(parent, f".{base}.link")
+            if os.path.lexists(link):
+                os.remove(link)
+            os.symlink(os.path.basename(staged), link)
+            os.replace(link, site)
+        except BaseException:
+            shutil.rmtree(staged, ignore_errors=True)
+            raise
+        if previous and os.path.isdir(previous) and previous != os.path.realpath(site):
+            shutil.rmtree(previous, ignore_errors=True)
     return True
 
 
@@ -232,14 +255,19 @@ def main(argv: Optional[List[str]] = None) -> int:
     args = ap.parse_args(argv)
     say = lambda msg: print(f"dciab-bootstrap-setup: {msg}", file=sys.stderr)  # noqa: E731
 
-    if args.usb and not args.print:
+    usb_config = os.path.join(args.usb, "dciab.yaml") if args.usb else None
+    if args.print and args.config is None and usb_config and os.path.isfile(usb_config):
+        args.config = usb_config  # a dry run shows what the stick's config would do
+    elif args.usb and not args.print:
         try:
             if sync_site(args.usb, args.site):
                 say(f"copied dciab.yaml and secrets/ from {args.usb} to {args.site}")
             else:
                 say(f"no dciab.yaml on {args.usb}; using the copy in {args.site}")
         except OSError as exc:
-            say(f"couldn't copy the config from {args.usb}: {exc}; using the copy in {args.site}")
+            # Applying the older copy would silently ignore the operator's change.
+            say(f"couldn't copy the config from {args.usb}: {exc}; nothing changed. Fix the stick and reboot.")
+            return 1
     if args.config is None:
         args.config = os.path.join(args.site, "dciab.yaml")
 

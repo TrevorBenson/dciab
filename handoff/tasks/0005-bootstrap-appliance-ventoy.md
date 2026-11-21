@@ -17,7 +17,7 @@ Find out whether server zero can be installed from the DCiaB USB and come up rea
 - kind and podman work on it, end to end.
 - The same stick still boots the Proxmox VE and Rocky installers by hand.
 
-An earlier version of this task booted the appliance as a Ventoy vDisk. With Secure Boot on, Ventoy went back to its menu instead of booting it, so the appliance is now an installer ISO. Read `docs/adr/0002-bootstrap-appliance-on-ventoy.md`, `images/bootstrap-bootc/README.md` and `images/usb/README.md` first.
+An earlier version of this task booted the appliance as a Ventoy vDisk. The partial report (`handoff/reports/0005-bootstrap-appliance-ventoy.md`) found that Secure Boot, MokManager enrollment, the stick layout and both installer ISOs work, but the vDisk entry returned to Ventoy's menu before reaching a kernel. So the appliance is now an installer ISO. Overwrite that report when you finish this run, keeping a one-line pointer to the earlier finding. Read `docs/adr/0002-bootstrap-appliance-on-ventoy.md`, `images/bootstrap-bootc/README.md` and `images/usb/README.md` first.
 
 **This is a spike.** You may edit files under `images/bootstrap-bootc/`, `images/usb/` and `lib/dciab_bootstrap_host/` to get it working. Record each edit in the report: what failed, what you changed, why. Expected trouble spots:
 - how bootc-image-builder merges `kickstart.ks` with its own lines (`ostreecontainer`, and any defaults it adds)
@@ -31,6 +31,7 @@ An earlier version of this task booted the appliance as a Ventoy vDisk. With Sec
 
 ## Needs
 
+- VM 125 from the earlier run: ask Trevor whether to delete it before step 5, or reuse its VMID for the server-zero VM.
 - Task 0004's Rocky 10 bootc base (`localhost/dciab-rocky-bootc-base:minimal`) in root's podman storage, and `nodeImages.bootc.bootcImageBuilder` pinned. If the base is gone, Trevor rebuilds it with `sudo images/node-bootc/build.sh`.
 - Root builds: the runner can't use `sudo` (`LAB.md`), so Trevor runs `build.sh` for both images.
 - Rootful podman, exfatprogs, parted and curl on the workstation, and about 40 GB free disk.
@@ -42,9 +43,7 @@ An earlier version of this task booted the appliance as a Ventoy vDisk. With Sec
 
 ## Steps
 
-1. **Pins.** In `bundle.lock`, under `bootstrapAppliance`:
-   - Fill in `toolChecksums.kubectl` (the published `.sha256` for `kubectl` at `kubernetes.version`, linux/amd64) and `toolChecksums.helm` (the published `.sha256sum` for `helm-<tools.helm>-linux-amd64.tar.gz`). Check `toolChecksums.kind`, `ventoy.sha256` and `pyyaml.sha256` against their release pages.
-   - Run `python3 -m pytest -q`.
+1. **Pins.** In `bundle.lock`, under `bootstrapAppliance`, check `pyyaml.sha256` against PyPI's published sha256 for `pyyaml-6.0.3.tar.gz`. The tool checksums were verified in the earlier run. Run `python3 -m pytest -q`.
 2. **Plan.** Run `images/bootstrap-bootc/build.sh --print` and `images/usb/build.sh --print`. They must show the pinned versions and the base image.
 3. **Build.** Trevor runs, from the repo root, with `set -o pipefail`:
    - `sudo images/bootstrap-bootc/build.sh 2>&1 | tee /tmp/dciab-appliance.log`. The log must show `bootc container lint` passing and end with `output/bootiso/install.iso`.

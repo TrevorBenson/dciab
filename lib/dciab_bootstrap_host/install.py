@@ -13,11 +13,14 @@ match_disk() and kickstart() are pure and tested in CI; disks() reads lsblk.
 """
 import argparse
 import json
+import os
 import subprocess
 import sys
 from typing import Dict, List, Optional
 
 GiB = 1 << 30
+# Preferred /dev/disk/by-id link kinds, most stable first.
+BY_ID_ORDER = ("wwn-", "nvme-eui.", "nvme-", "scsi-", "ata-", "virtio-")
 
 
 class InstallError(Exception):
@@ -42,16 +45,34 @@ def disks() -> List[Dict[str, object]]:
             "serialNumber": (dev.get("serial") or "").strip(), "model": (dev.get("model") or "").strip(),
             "vendor": (dev.get("vendor") or "").strip(), "wwn": (dev.get("wwn") or "").strip(),
             "hctl": (dev.get("hctl") or "").strip(), "isDciabStick": "DCIAB" in labels,
+            "byId": stable_path(dev["path"]),
         })
     return result
+
+
+def stable_path(dev_path: str, by_id_dir: str = "/dev/disk/by-id") -> str:
+    """A /dev/disk/by-id link for the disk, so the kickstart names it by identity, not by
+    a kernel name that could change; the kernel path when there's none."""
+    try:
+        links = sorted(os.listdir(by_id_dir))
+    except OSError:
+        return dev_path
+    target = os.path.realpath(dev_path)
+    mine = [n for n in links if "-part" not in n and os.path.realpath(os.path.join(by_id_dir, n)) == target]
+    for prefix in BY_ID_ORDER:
+        for n in mine:
+            if n.startswith(prefix):
+                return os.path.join(by_id_dir, n)
+    return os.path.join(by_id_dir, mine[0]) if mine else dev_path
 
 
 def _matches(hints: Dict[str, object], d: Dict[str, object]) -> bool:
     for key, want in hints.items():
         if key == "deviceName":
-            if d["path"] != want:
+            if os.path.realpath(str(want)) != os.path.realpath(str(d["path"])):
                 return False
         elif key == "minSizeGigabytes":
+            # GiB, as in Ironic's size root device hint, which Metal3 maps it to.
             if int(d["size"]) < int(want) * GiB:  # type: ignore[call-overload]
                 return False
         elif key == "rotational":
@@ -80,8 +101,8 @@ def match_disk(hints: Dict[str, object], candidates: List[Dict[str, object]]) ->
 
 
 def kickstart(disk: Dict[str, object]) -> str:
-    """Kickstart lines that wipe and use only this disk."""
-    name = disk["name"]
+    """Kickstart lines that wipe and use only this disk, named by its by-id link."""
+    name = disk.get("byId") or disk["name"]
     return "\n".join([
         f"# DCiaB: install onto {disk['path']} (serial {disk['serialNumber'] or '-'}, model {disk['model'] or '-'})",
         f"ignoredisk --only-use={name}",
@@ -99,10 +120,18 @@ def hints_from(doc: dict) -> Dict[str, object]:
     except (KeyError, TypeError):
         raise InstallError("dciab.yaml has no spec.bootstrap.workDisk: set workDisk.disk to the disk "
                            "the appliance installs onto") from None
-    if "disk" not in work:
+    if not isinstance(work, dict) or "disk" not in work:
         raise InstallError("the appliance installs onto a disk: set spec.bootstrap.workDisk.disk "
                            "(workDisk.path is for a Rocky Linux 10 host you provide)")
-    return dict(work["disk"])
+    hints = work["disk"]
+    known = {"deviceName", "serialNumber", "wwn", "model", "vendor", "hctl", "minSizeGigabytes", "rotational"}
+    if not isinstance(hints, dict) or not hints:
+        raise InstallError("spec.bootstrap.workDisk.disk must name the disk with at least one hint "
+                           "(serialNumber, wwn, model, ...); an empty one would match any disk")
+    unknown = sorted(set(hints) - known)
+    if unknown:
+        raise InstallError(f"spec.bootstrap.workDisk.disk has unknown hints: {', '.join(unknown)}")
+    return dict(hints)
 
 
 def main(argv: Optional[List[str]] = None) -> int:

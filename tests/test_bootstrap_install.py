@@ -2,7 +2,7 @@
 import pytest
 
 from conftest import load_example
-from dciab_bootstrap_host.install import GiB, InstallError, hints_from, kickstart, match_disk
+from dciab_bootstrap_host.install import GiB, InstallError, hints_from, kickstart, match_disk, stable_path
 
 
 def _disk(name, size_gib, serial="", model="", rotational=False, stick=False, **extra):
@@ -36,7 +36,8 @@ def test_ambiguous_hints_stop_the_install():
 def test_no_match_lists_the_disks():
     with pytest.raises(InstallError, match="matches no disk") as exc:
         match_disk({"serialNumber": "nope"}, DISKS)
-    assert "/dev/sdb: 3840 GiB, serial PHYF1234" in str(exc.value)
+    for d in DISKS:
+        assert f"{d['path']}: {d['size'] // GiB} GiB, serial {d['serialNumber']}" in str(exc.value)
     assert "(the DCiaB stick)" in str(exc.value)
 
 
@@ -56,7 +57,27 @@ def test_kickstart_touches_only_the_chosen_disk():
     assert "ignoredisk --only-use=sda" in ks
     assert "clearpart --all --initlabel --drives=sda" in ks
     assert "--ondisk=sda" in ks
-    assert "sdb" not in ks and "sdc" not in ks
+    for other in DISKS[1:]:
+        assert other["name"] not in ks
+
+
+def test_kickstart_prefers_the_by_id_name():
+    disk = dict(DISKS[0], byId="/dev/disk/by-id/wwn-0x5000c500a1b2c3d4")
+    ks = kickstart(disk)
+    assert "ignoredisk --only-use=/dev/disk/by-id/wwn-0x5000c500a1b2c3d4" in ks
+    assert "--drives=/dev/disk/by-id/wwn-0x5000c500a1b2c3d4" in ks
+    assert "--ondisk=/dev/disk/by-id/wwn-0x5000c500a1b2c3d4" in ks
+
+
+def test_stable_path_picks_the_most_stable_link(tmp_path):
+    dev = tmp_path / "sda"
+    dev.write_text("")
+    by_id = tmp_path / "by-id"
+    by_id.mkdir()
+    for name in ("ata-SAMSUNG_X_123", "wwn-0x5000c500a1b2c3d4", "ata-SAMSUNG_X_123-part1"):
+        (by_id / name).symlink_to(dev)
+    assert stable_path(str(dev), str(by_id)) == str(by_id / "wwn-0x5000c500a1b2c3d4")
+    assert stable_path(str(tmp_path / "sdb"), str(by_id)) == str(tmp_path / "sdb")
 
 
 def test_hints_from_the_example():
@@ -67,6 +88,14 @@ def test_workdisk_path_is_not_for_the_appliance():
     doc = load_example("proxmox-bare")
     doc["spec"]["bootstrap"]["workDisk"] = {"path": "/var/lib/dciab"}
     with pytest.raises(InstallError, match="workDisk.disk"):
+        hints_from(doc)
+
+
+@pytest.mark.parametrize("work", [None, {"disk": None}, {"disk": {}}, {"disk": {"serial": "x"}}, "disk"])
+def test_unusable_workdisk_is_a_clear_error(work):
+    doc = load_example("proxmox-bare")
+    doc["spec"]["bootstrap"]["workDisk"] = work
+    with pytest.raises(InstallError):
         hints_from(doc)
 
 
