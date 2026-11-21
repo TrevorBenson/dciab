@@ -25,7 +25,7 @@ Each phase ends in a gate that must pass on both a vSphere lab and a Proxmox lab
 - [ ] Node templates for vSphere and Metal3
 - [x] Cilium install for any cluster (`addons/cilium`), with kube-proxy replaced
 - [ ] Real-cluster spike on Proxmox from the template
-- [ ] Archive build pipeline
+- [ ] Archive build pipeline ([build/](../build/README.md)): image inventory done; image pull, charts, binaries, SBOMs and signing next
 - [x] `dciab cluster-values`: capi-cluster values for MGMT, INFRA and workload clusters, generated from the site config
 - [ ] `dciab seed`
 - [ ] `dciab mgmt`: builds MGMT, installs Cilium and the providers, and moves Cluster API into MGMT (not yet proven on real infrastructure). Still to come: MGMT's services (Longhorn, Metal3, PowerDNS, Kea) and the DNS handoff
