@@ -13,7 +13,7 @@ Usage: dciab <command> [options]
 Commands:
   validate <config> [--output text|json]   Check a site config; changes nothing
   services | hypervisors                   Day 0 for bare servers (not implemented yet)
-  media DIR                                Installer media for hosts without a usable BMC (not implemented yet)
+  media                                    Copy the USB payload to the bootstrap host's work disk (not implemented yet)
   seed | mgmt | infra | platform | finalize
                                            Bootstrap steps (not implemented yet)
   status | verify                          Site state (not implemented yet)

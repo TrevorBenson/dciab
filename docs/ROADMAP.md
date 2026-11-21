@@ -50,7 +50,7 @@ Decided in [ADR 0002](adr/0002-bootstrap-appliance-on-ventoy.md).
 - [x] Recipes under evaluation: `images/bootstrap-bootc/` (appliance), `images/usb/` (Ventoy stick)
 - [ ] Spike (task 0005): vDisk boot, Secure Boot with MOK, first boot from `dciab.yaml`, multi-hour soak, installers from the same stick
 - [ ] Day 0 images preloaded in the appliance
-- [ ] `dciab media`: installer media on a second stick, or per-host ISOs before the bootstrap
+- [ ] `dciab media` and `spec.bootstrap.workDisk`: copy the USB payload to a local disk, and run the bootstrap's heavy state from it
 - [ ] Plain (non-Ventoy) stick for strict Secure Boot sites
 
 ## Backlog
