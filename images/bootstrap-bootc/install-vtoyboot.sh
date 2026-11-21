@@ -25,5 +25,8 @@ if ! grep -qi ventoy <<<"$listing"; then
   echo "install-vtoyboot: no Ventoy hook in the initramfs" >&2
   exit 1
 fi
+# vtoyboot.sh ran its own dracut and left a copy in /boot; bootc only uses the initramfs
+# under /usr/lib/modules, and a non-empty /boot is a lint warning.
+rm -f /boot/initramfs-*.img
 rm -rf "$work"
 echo "install-vtoyboot: Ventoy hook is in the initramfs for $kver"

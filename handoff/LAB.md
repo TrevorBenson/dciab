@@ -27,3 +27,10 @@ Never put secrets here: no token secrets, passwords or keys.
 - On `pve1`, `qm guest exec` is disabled, so a guest-agent command cannot run inside a VM; use SSH.
 - `sudo` on the workstation needs a password, so the runner cannot run root builds. The bootc image stages build rootless; only the bootc-image-builder disk step needs root, which Trevor runs.
 - VMID 122 is the bootc template, so a clone for tests uses a separate VMID (0004 used 123, then deleted it).
+
+## Bootstrap USB tests (task 0005)
+
+- A Secure Boot VM on `pve1`: `qm create <id> --machine q35 --bios ovmf --efidisk0 pool0:1,efitype=4m,pre-enrolled-keys=1 --sata0 pool0:<GiB> …`. Proxmox 9.2.3 turns `pre-enrolled-keys=1` into `ms-cert=2023k`. For Secure Boot off, create the EFI disk with `pre-enrolled-keys=0`.
+- A Ventoy stick image booted under that Secure Boot VM first shows `Verification failed: (0x1A) Security Violation`. Press OK, choose *Enroll key from disk*, pick `ENROLL_THIS_KEY_IN_MOKMANAGER.cer` on VTOYEFI, confirm, reboot. It needs someone at the Proxmox console.
+- The Proxmox console scales poorly under Ventoy's grub2 mode (a thin black bar); pressing Enter still starts the installer.
+- A large raw image can go straight into a VM's zvol without staging on `local` (about 38 GB free there): `zstd -c image | ssh root@pve1 'zstd -d | dd of=/dev/zvol/pool0/vm-<id>-disk-<n> bs=4M'`; 42 GiB took 1m 38s. Check with `head -c <bytes> /dev/zvol/... | sha256sum`.
