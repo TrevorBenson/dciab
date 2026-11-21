@@ -18,9 +18,21 @@ from __future__ import annotations
 
 import ipaddress
 import os
+import re
 from typing import Any, Dict, List
 
 OIDC_CLIENT_ID = "kubernetes"
+
+
+CERT_BLOCK = re.compile(r"-----BEGIN CERTIFICATE-----\r?\n.*?\r?\n-----END CERTIFICATE-----", re.S)
+
+
+def certificates_only(pem: str) -> str:
+    """The CERTIFICATE blocks of a PEM text, nothing else: never a key that shares the file."""
+    blocks = CERT_BLOCK.findall(pem)
+    if not blocks:
+        raise ValuesError("the trust bundle holds no PEM certificate")
+    return "\n".join(b.replace("\r\n", "\n") for b in blocks) + "\n"
 
 
 class ValuesError(Exception):
@@ -72,8 +84,7 @@ def cluster_values(site: dict, name: str, trust_bundle: str) -> Dict[str, Any]:
     keys = [a["sshPublicKey"] for a in spec["identity"]["initialAdmins"] if a.get("sshPublicKey")]
     if not keys:
         raise ValuesError("no SSH key: set identity.initialAdmins[].sshPublicKey for at least one admin")
-    if "-----BEGIN CERTIFICATE-----" not in trust_bundle:
-        raise ValuesError("the trust bundle holds no PEM certificate")
+    trust_bundle = certificates_only(trust_bundle)
 
     values: Dict[str, Any] = {
         "name": name,
@@ -85,7 +96,7 @@ def cluster_values(site: dict, name: str, trust_bundle: str) -> Dict[str, Any]:
         "labels": {"dciab.io/role": role},
         "nodes": {
             "registryMirror": f"registry.{domain}",
-            "trustBundle": trust_bundle if trust_bundle.endswith("\n") else trust_bundle + "\n",
+            "trustBundle": trust_bundle,
             "ntpServers": list(net["ntpServers"]),
             "sshAuthorizedKeys": keys,
             "dnsServers": list(net["dnsServiceIPs"]),

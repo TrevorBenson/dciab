@@ -66,6 +66,15 @@ def test_roles_labels_and_oidc():
     assert mgmt["nodes"]["registryMirror"] == "registry.dc1.example.com"
 
 
+def test_trust_bundle_keeps_only_certificates():
+    key = "-----BEGIN PRIVATE KEY-----\nMIIEsecret\n-----END PRIVATE KEY-----\n"
+    values = cluster_values(load_example("proxmox"), "mgmt", key + CA + CA)
+    assert "PRIVATE" not in values["nodes"]["trustBundle"]
+    assert values["nodes"]["trustBundle"].count("BEGIN CERTIFICATE") == 2
+    with pytest.raises(ValuesError, match="no PEM certificate"):
+        cluster_values(load_example("proxmox"), "mgmt", key)
+
+
 def test_unknown_cluster_names_the_choices():
     with pytest.raises(ValuesError, match="mgmt, infra, apps01"):
         cluster_values(load_example("vsphere"), "nope", CA)
@@ -90,6 +99,8 @@ def test_cli_uses_the_imported_chain_and_writes_mode_600(site, tmp_path):
     config = site.dir / "dciab.yaml"
     config.write_text((ROOT / "examples" / "proxmox.yaml").read_text())
     out = tmp_path / "infra-values.yaml"
+    out.write_text("old")
+    out.chmod(0o644)
     assert cli.main([str(config), "infra", "--root", str(ROOT), "-o", str(out)]) == 0
     values = yaml.safe_load(out.read_text())
     assert values["nodes"]["trustBundle"] == CA
