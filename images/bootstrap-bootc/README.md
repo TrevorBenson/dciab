@@ -31,4 +31,4 @@ $ sudo images/bootstrap-bootc/build.sh --size 24     # raw disk for the USB
 $ sudo images/bootstrap-bootc/build.sh --type qcow2 --type vhd   # to run it as a VM instead
 ```
 
-`--size` sets the root filesystem's minimum size in GiB (default 24). The vDisk can't grow once it's on the stick, but it holds only the OS and dciab: `dciab media` copies the payload to a local work disk, and container storage, kind and the seed registry run from there. The USB image is then built by [`images/usb/`](../usb/README.md).
+`--size` sets the root filesystem's minimum size in GiB (default 24). The vDisk can't grow once it's on the stick, but it holds only the OS and dciab. `dciab media` (planned) will copy the payload to a local work disk, and container storage, kind and the seed registry will run from there. The USB image is then built by [`images/usb/`](../usb/README.md).

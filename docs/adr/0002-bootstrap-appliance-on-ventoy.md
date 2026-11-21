@@ -46,9 +46,11 @@ Ventoy boots under Secure Boot through a Microsoft-signed shim, but each machine
 A USB stick shouldn't carry hours of registry, container and kind I/O, and exFAT has no journal. So the stick only boots the appliance and holds the payload. The first step on the bootstrap host copies the payload to local storage, and everything after runs from there:
 
 - `dciab media` copies the bundle (installer ISOs, node disk images, OCI archives) from `/var/mnt/dciab` to the work area named in `spec.bootstrap.workDisk`. It also moves the appliance's heavy state there: container storage, kind and the seed registry.
-- `spec.bootstrap.workDisk` is either a local disk, selected like `rootDeviceHints`, that DCiaB wipes and formats (server zero's spare disk, or a laptop VM's second disk), or an existing directory (on a Rocky Linux 10 host, or the OS disk of the machine running the appliance).
-- It copies directly to that local disk: no ISOs, no second stick. The stick's job is done once the copy finishes, though it stays in server zero because the appliance's OS runs from it.
-- Re-running it is safe: it verifies every file against its checksum and copies only what is missing or different.
+- `spec.bootstrap.workDisk` is either:
+  - a local disk, selected like `rootDeviceHints`, that DCiaB wipes and formats: server zero's spare disk, or a laptop VM's second disk. This is the only choice for the appliance booted from the stick, because its own filesystem is the stick.
+  - an existing directory, only where dciab runs on an installed OS (a Rocky Linux 10 host, or the appliance installed on a disk per §3).
+- It copies the payload files directly onto that disk. It doesn't build ISO images or write another stick. The stick stays in server zero because the appliance's OS runs from it, but carries no heavy I/O after the copy.
+- Re-running it is safe: a lock stops two runs at once; each file is copied to a temporary name, checked against its sha256, then renamed into place; files already present and correct are skipped.
 - Hosts whose BMC can't be used are installed by hand from the Ventoy stick's `isos/` menu, before server zero starts the bootstrap or after it finishes, or later over PXE from server zero (ADR 0001's roadmap).
 
 ### 6. Config

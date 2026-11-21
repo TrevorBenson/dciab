@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # DCiaB entrypoint. Each step is idempotent and runs in order:
-#   validate -> [services -> hypervisors] -> seed -> mgmt -> infra -> platform -> finalize
+#   validate -> [media] -> [services -> hypervisors] -> seed -> mgmt -> infra -> platform -> finalize
+# media runs on the bootstrap appliance (or wherever spec.bootstrap.workDisk is set);
 # services and hypervisors run only for sites that start from bare servers.
 set -euo pipefail
 
@@ -12,8 +13,8 @@ Usage: dciab <command> [options]
 
 Commands:
   validate <config> [--output text|json]   Check a site config; changes nothing
-  services | hypervisors                   Day 0 for bare servers (not implemented yet)
   media                                    Copy the USB payload to the bootstrap host's work disk (not implemented yet)
+  services | hypervisors                   Day 0 for bare servers (not implemented yet)
   seed | mgmt | infra | platform | finalize
                                            Bootstrap steps (not implemented yet)
   status | verify                          Site state (not implemented yet)
