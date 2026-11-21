@@ -134,11 +134,12 @@ day0:
 # (docs/adr/0002-bootstrap-appliance-on-ventoy.md). The appliance image builds on
 # nodeImages.bootc's base; its tools are tools.kind, tools.helm and kubernetes.version.
 bootstrapAppliance:
-  # Ventoy's Linux vDisk boot hook, baked into the appliance's initramfs.
-  vtoyboot:
-    version: "1.0.36"
-    url: "https://github.com/ventoy/vtoyboot/releases/download/v1.0.36/vtoyboot-1.0.36.iso"
-    sha256: "e0fd493014b57f2c72c7b1b45c53b3e7cd3b746fedee5a9f20b057811168267e"
+  # Pure-Python PyYAML for the appliance installer's disk choice: the installer
+  # environment has python3 but not PyYAML. images/usb/build.sh puts it on the stick.
+  pyyaml:
+    version: "6.0.3"
+    url: "https://files.pythonhosted.org/packages/05/8e/961c0007c59b8dd7729d542c61a4d537767a59645b82a0b521206e1e25c2/pyyaml-6.0.3.tar.gz"
+    sha256: "d76623373421df22fb4cf8817020cbb7ef15c725b9d5e45f17e189bfc384190f"
   # Installed onto the USB image by images/usb/build.sh.
   ventoy:
     version: "1.1.17"

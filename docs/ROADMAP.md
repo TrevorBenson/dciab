@@ -47,11 +47,11 @@ Decided in [ADR 0001](adr/0001-day0-hypervisors-and-services.md).
 
 Decided in [ADR 0002](adr/0002-bootstrap-appliance-on-ventoy.md).
 
-- [x] Config: `bootstrap.interface` by name or MAC; `bootstrap.managementVLAN`
-- [x] Recipes under evaluation: `images/bootstrap-bootc/` (appliance), `images/usb/` (Ventoy stick)
-- [ ] Spike (task 0005): vDisk boot, Secure Boot with MOK, first boot from `dciab.yaml`, a short end-to-end check, installers from the same stick
+- [x] Config: `bootstrap.interface` by name or MAC; `bootstrap.managementVLAN`; `bootstrap.workDisk`
+- [x] Recipes under evaluation: `images/bootstrap-bootc/` (appliance installer ISO), `images/usb/` (Ventoy stick)
+- [ ] Spike (task 0005): unattended install of server zero from the stick with Secure Boot on, first boot from `dciab.yaml`, a short end-to-end check, installers from the same stick
 - [ ] Day 0 images preloaded in the appliance
-- [ ] `dciab media` and `spec.bootstrap.workDisk`: copy the USB payload to a local disk, and run the bootstrap's heavy state from it
+- [ ] `dciab media`: copy the USB payload to the work disk, and run the bootstrap's heavy state from it
 - [ ] Plain (non-Ventoy) stick for strict Secure Boot sites
 
 ## Backlog

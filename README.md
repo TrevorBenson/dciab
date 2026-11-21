@@ -4,6 +4,15 @@ One archive and one YAML file build a data center platform from bare power and n
 
 **Status:** Phase 1, in progress. The config schema, `dciab validate` (offline checks), the pinned `bundle.lock`, and the ClusterClass and cluster charts exist; the bootstrap steps don't yet. See [docs/ROADMAP.md](docs/ROADMAP.md).
 
+## The bootstrap host
+
+Everything from `dciab media` on runs on the bootstrap host, which must be **Rocky Linux 10 (x86_64)** with a wired NIC on the node network. Either:
+
+- **Server zero (default):** one server in the rack, installed from the DCiaB USB with the DCiaB bootstrap appliance (Rocky Linux 10). The operator's laptop, on any OS, only needs SSH and a browser. See [images/usb/](images/usb/README.md) (under evaluation).
+- **A Rocky Linux 10 machine you provide**, such as a Linux laptop. It needs podman, kind, helm and kubectl at the `bundle.lock` versions (the appliance has them built in).
+
+Both run the same steps. `spec.bootstrap.workDisk` says where the payload and the bootstrap's heavy state go: `disk:` on server zero (the disk the appliance installs onto), `path:` on a host you provide. Other operating systems can edit the config and run `dciab validate`, but can't be the bootstrap host.
+
 ## Steps
 
 | Step | Command | Result |
@@ -26,8 +35,6 @@ The config format and its checks exist; the `services` and `hypervisors` steps d
 - a route from the node network's gateway to the BMC networks and back, with HTTPS allowed from the bootstrap host to each BMC and HTTP from each BMC to the bootstrap host
 - BMCs with their addresses and credentials already set, and licensed for virtual media
 - for ESXi, the installer ISO of the build in `bundle.lock` (DCiaB can't ship it), and for now an existing vCenter
-
-The bootstrap host itself can be the DCiaB USB: a Rocky Linux 10 appliance that boots on one server in the rack, so the operator's laptop only needs SSH and a browser, on any OS ([images/usb/](images/usb/README.md), under evaluation).
 
 The design and its trade-offs are in [ADR 0001](docs/adr/0001-day0-hypervisors-and-services.md) (Day 0) and [ADR 0002](docs/adr/0002-bootstrap-appliance-on-ventoy.md) (the bootstrap appliance and USB).
 

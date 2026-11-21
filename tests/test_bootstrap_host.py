@@ -95,3 +95,29 @@ def test_blocking_errors_only_cover_network_and_identity(site, monkeypatch):
     path.write_text(yaml.safe_dump(doc))
     [err] = setup.blocking_errors(str(path))
     assert err.startswith("spec.network.ntpServers")
+
+
+def test_sync_copies_config_and_secrets_privately(tmp_path):
+    usb, site = tmp_path / "usb", tmp_path / "site"
+    (usb / "secrets" / "bmc").mkdir(parents=True)
+    (usb / "dciab.yaml").write_text("spec: {}\n")
+    (usb / "secrets" / "bmc" / "pve01").write_text("pw\n")
+    (usb / "isos").mkdir()
+    (usb / "isos" / "big.iso").write_text("not copied")
+    assert setup.sync_site(str(usb), str(site)) is True
+    assert (site / "dciab.yaml").read_text() == "spec: {}\n"
+    assert (site / "secrets" / "bmc" / "pve01").stat().st_mode & 0o777 == 0o600
+    assert site.stat().st_mode & 0o777 == 0o700
+    assert not (site / "isos").exists()
+    # A second sync replaces the copy as a whole.
+    (usb / "secrets" / "bmc" / "pve01").unlink()
+    assert setup.sync_site(str(usb), str(site)) is True
+    assert not (site / "secrets" / "bmc" / "pve01").exists()
+
+
+def test_sync_without_stick_keeps_the_copy(tmp_path):
+    site = tmp_path / "site"
+    site.mkdir()
+    (site / "dciab.yaml").write_text("kept\n")
+    assert setup.sync_site(str(tmp_path / "no-stick"), str(site)) is False
+    assert (site / "dciab.yaml").read_text() == "kept\n"

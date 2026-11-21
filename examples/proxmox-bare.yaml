@@ -28,8 +28,11 @@ spec:
     version: v1.36.6
 
   bootstrap:
-    interface: eth0
+    interface: "b8:ca:3a:00:00:05"       # server zero's NIC by MAC: its name isn't known before it boots
+    managementVLAN: tagged               # the NIC tags network.nodes.vlan (110)
     address: 10.30.110.5
+    workDisk:
+      disk: {serialNumber: "S6XXNX0T500001"}   # server zero's disk the appliance installs onto (wiped)
     recipients:
       - age1j5xfcwdps86qjrrxvv8uresmxqessnxskgml6p7x7xw8az4th6mpns0acs
       - age1skgjkfxj3tkldtdnkd9cwuhennz9uuvg4q058rte5yhwk2vypq0g0u2207
