@@ -14,7 +14,7 @@ DCiaB's node image recipe. A node is an OCI image built from a Containerfile, th
    - CRI-O defaults: systemd cgroups, and CNI plugin directories under `/var`
    - the kubelet volume plugin directory under `/var`
    - `dciab-growroot.service`, which grows the root filesystem to the disk size at boot
-3. **Disks:** bootc-image-builder converts the node image (`--type raw`, `qcow2`, `vmdk`, ...).
+3. **Disks:** bootc-image-builder converts the node image (`--type raw`, `qcow2`, `vmdk`, ...), with `config.toml`.
 
 ```console
 $ images/node-bootc/build.sh --print                         # pins and commands; builds nothing
@@ -29,4 +29,5 @@ Needs root: the base recipe composes the OS with nested containers (`--cap-add=a
   - CNI plugins that install themselves at boot (Cilium) write to `/opt/cni/bin`, so the image points that at `/var/lib/cni/bin`, and CRI-O looks there.
   - kubelet's FlexVolume directory moves to `/var/lib/kubelet/volumeplugins`.
 - The ClusterClasses write registry mirror files for both containerd and CRI-O; CRI-O reads `/etc/containers/registries.conf.d`.
+- **Small, thin templates.** `config.toml` gives the root 2 GiB: the node image is about 1.3 GiB, and nodes are replaced rather than upgraded in place, so no room for a second deployment is needed. `build.sh` stops if the node image passes 1.8 GiB; raise the root to 5 GiB then. Publish the template at the size it was built, without growing it. Disk images are sparse, so the space actually used is about the size of the OS.
 - **Root filesystem growth.** The disk gets grown to the cluster's `diskGiB`, but the image's root partition keeps the size bootc-image-builder gave it, and cloud-init's resize looks at `/` (a composefs overlay) instead of the real filesystem. `dciab-growroot.service` grows the partition behind `/sysroot` with `growpart`, then the XFS filesystem through its read-write mount. cloud-init's own growpart and resize are turned off.

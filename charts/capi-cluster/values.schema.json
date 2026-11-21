@@ -450,7 +450,7 @@
         },
         "diskGiB": {
           "type": "integer",
-          "minimum": 40
+          "minimum": 25
         }
       }
     },
