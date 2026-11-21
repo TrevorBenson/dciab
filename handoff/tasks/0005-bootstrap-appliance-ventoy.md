@@ -45,7 +45,7 @@ An earlier version of this task booted the appliance as a Ventoy vDisk. The part
 
 1. **Pins.** In `bundle.lock`, under `bootstrapAppliance`, check `pyyaml.sha256` against PyPI's published sha256 for `pyyaml-6.0.3.tar.gz`. The tool checksums were verified in the earlier run. Run `python3 -m pytest -q`.
 2. **Plan.** Run `images/bootstrap-bootc/build.sh --print` and `images/usb/build.sh --print`. They must show the pinned versions and the base image.
-3. **Build.** Trevor runs, from the repo root, with `set -o pipefail`:
+3. **Build.** If Trevor already ran these builds from current `main` in the same session as task 0006's, use their logs and outputs instead of rebuilding. Otherwise Trevor runs, from the repo root, with `set -o pipefail`:
    - `sudo images/bootstrap-bootc/build.sh 2>&1 | tee /tmp/dciab-appliance.log`. The log must show `bootc container lint` passing and end with `output/bootiso/install.iso`.
    - `sudo images/usb/build.sh --with-isos 2>&1 | tee /tmp/dciab-usb.log`
    - Record the ISO and stick image sizes, the lint warnings, and the partition layout (`sfdisk -l` and `blkid` on a loop device).
