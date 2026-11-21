@@ -12,3 +12,6 @@ RemainAfterExit=yes
 
 [Install]
 WantedBy=multi-user.target
+# kubelet must not run on an undersized root filesystem: if growth fails, the node
+# doesn't join, and the failure shows up in the cluster.
+RequiredBy=kubelet.service

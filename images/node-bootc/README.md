@@ -1,6 +1,6 @@
-# Node images in image mode (bootc) — under evaluation
+# Node images in image mode (bootc)
 
-An alternative to the image-builder recipe in [`images/node/`](../node/README.md): a node is an OCI image built from a Containerfile, then turned into disk images. DCiaB will keep one recipe. This one is being evaluated because:
+DCiaB's node image recipe. A node is an OCI image built from a Containerfile, then turned into disk images. It replaces the image-builder recipe in [`images/node/`](../node/README.md), which stays until a cluster passes on a bootc template. It was chosen because:
 
 - **CRI-O.** It's the preferred runtime (see the roadmap backlog). image-builder's playbook always installs containerd and pre-pulls images through it, so switching runtimes there means working against the tool.
 - **OCI-native.** The node image is a container image. It can be mirrored into the site registry like any other image, and the same image yields Proxmox/Ironic raw, qcow2 and vSphere vmdk disks.

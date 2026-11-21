@@ -21,6 +21,7 @@ import json
 import subprocess
 import sys
 import time
+import tomllib
 from pathlib import Path
 from typing import Any, List, Optional
 
@@ -103,9 +104,15 @@ class Verifier:
             self.expect_true(f"{where}: {upstream} mirrors through {nodes['registryMirror']}",
                              f'https://{nodes["registryMirror"]}/v2/{upstream}' in hosts)
         registries = files.get("/etc/containers/registries.conf.d/50-dciab-mirror.conf", "")
+        try:
+            entries = tomllib.loads(registries).get("registry", [])
+        except tomllib.TOMLDecodeError as e:
+            entries = []
+            self.expect_true(f"{where}: CRI-O mirror file is valid TOML ({e})", False)
+        mirrors = {r.get("prefix"): [m.get("location") for m in r.get("mirror", [])] for r in entries}
         for upstream in MIRRORED:
-            self.expect_true(f"{where}: CRI-O mirrors {upstream} through {nodes['registryMirror']}",
-                             f'location = "{nodes["registryMirror"]}/{upstream}"' in registries)
+            self.expect(f"{where}: CRI-O mirrors {upstream}", mirrors.get(upstream),
+                        [f'{nodes["registryMirror"]}/{upstream}'])
         self.expect(f"{where}: NTP servers", config.get("ntp", {}).get("servers"), nodes["ntpServers"])
         users = {u["name"]: u for u in config.get("users", [])}
         self.expect(f"{where}: break-glass user keys", users.get("dciab", {}).get("sshAuthorizedKeys"),
