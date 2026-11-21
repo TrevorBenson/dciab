@@ -60,24 +60,42 @@ finish_if() { if [[ "$until" == "$1" ]]; then echo "dciab mgmt: stopped after '$
 
 platform="$(python3 -c 'import sys, yaml; print(yaml.safe_load(open(sys.argv[1]))["spec"]["platform"]["type"])' "$config")"
 
-# Where MGMT's Cluster object lives: before the move on the bootstrap cluster, after it on MGMT.
+# One run at a time per state folder: two runs could move objects concurrently.
+exec 9>"$state/.lock"
+flock -n 9 || die "another dciab mgmt is running with state $state"
+
+# Where MGMT's Cluster object lives: before the move on the bootstrap cluster, after it on
+# MGMT. A failed lookup (API down, access denied) stops the run instead of reading as absent.
+cluster_on() {   # cluster_on <kubeconfig>: prints the Cluster's name if it exists there
+  KUBECONFIG="$1" kubectl -n "$NS" get cluster mgmt --ignore-not-found -o name
+}
 moved() {
-  [[ -f "$mgmt_kubeconfig" ]] && on_mgmt kubectl -n "$NS" get cluster mgmt >/dev/null 2>&1 \
-    && ! on_bootstrap kubectl -n "$NS" get cluster mgmt >/dev/null 2>&1
+  local on_m on_b
+  [[ -f "$mgmt_kubeconfig" ]] || return 1
+  on_m="$(cluster_on "$mgmt_kubeconfig")" || return 1   # MGMT not reachable yet: not moved
+  on_b="$(cluster_on "$bootstrap")" || die "can't read Clusters on the bootstrap cluster"
+  [[ -n "$on_m" && -z "$on_b" ]]
 }
 
 step preflight
-for tool in kubectl helm clusterctl python3; do
+for tool in kubectl helm clusterctl python3 flock; do
   command -v "$tool" >/dev/null || die "$tool is not on PATH"
 done
-want="$(python3 -c 'import sys, yaml; print(yaml.safe_load(open(sys.argv[1]))["clusterAPI"]["version"])' "$ROOT/bundle.lock")"
+want="$(python3 -c 'import sys, yaml; print(yaml.safe_load(open(sys.argv[1]))["clusterAPI"]["core"]["version"])' "$ROOT/bundle.lock")"
 have="$(clusterctl version -o short 2>/dev/null || true)"
 [[ "$have" == "$want" ]] || die "clusterctl is ${have:-unknown}; bundle.lock pins Cluster API $want and clusterctl must match"
 if ! moved; then
+  # dciab seed will set the bootstrap cluster up; until it exists, lib/steps/capi-providers.sh
+  # --with-classes does that part.
+  seed_hint="install them with: KUBECONFIG=$bootstrap $ROOT/lib/steps/capi-providers.sh --with-classes"
   on_bootstrap kubectl -n capi-system get deployment capi-controller-manager >/dev/null 2>&1 \
-    || die "the bootstrap cluster has no Cluster API; run dciab seed first"
+    || die "the bootstrap cluster has no Cluster API; $seed_hint"
   on_bootstrap kubectl -n "$CLASS_NS" get clusterclasses -o name | grep -q "dciab-$platform-" \
-    || die "the bootstrap cluster has no dciab-$platform ClusterClass; run dciab seed first"
+    || die "the bootstrap cluster has no dciab-$platform ClusterClass; $seed_hint"
+  # clusterctl move takes every CAPI object on the bootstrap cluster: it must hold MGMT only.
+  others="$(on_bootstrap kubectl get clusters -A --no-headers -o custom-columns=NS:.metadata.namespace,NAME:.metadata.name \
+    | awk -v ns="$NS" '!($1 == ns && $2 == "mgmt")')"
+  [[ -z "$others" ]] || die "the bootstrap cluster holds other Clusters, which the move would take to MGMT: $others"
 fi
 finish_if preflight
 
@@ -88,12 +106,17 @@ python3 -m dciab_cluster --root "$ROOT" "${args[@]}"
 echo "wrote $values"
 finish_if values
 
+apply_credentials() {   # apply_credentials <kubeconfig>
+  KUBECONFIG="$1" kubectl create namespace "$NS" --dry-run=client -o yaml | KUBECONFIG="$1" kubectl apply -f -
+  python3 -m dciab_cluster.credentials "$config" mgmt "$NS" | KUBECONFIG="$1" kubectl apply -f -
+}
+
 if moved; then
   echo "MGMT already manages itself; checking the remaining steps"
+  finish_if cluster
 else
   step cluster
-  on_bootstrap kubectl create namespace "$NS" --dry-run=client -o yaml | on_bootstrap kubectl apply -f -
-  python3 -m dciab_cluster.credentials "$config" mgmt "$NS" | on_bootstrap kubectl apply -f -
+  apply_credentials "$bootstrap"
   on_bootstrap helm upgrade --install mgmt "$ROOT/charts/capi-cluster" --namespace "$NS" --values "$values"
   finish_if cluster
 
@@ -125,6 +148,9 @@ fi
 finish_if move
 
 step adopt
+# The credentials Secret moves with the Cluster (clusterctl's move label); applying it here
+# as well keeps it current when the config's secret changes after the move.
+apply_credentials "$mgmt_kubeconfig"
 # clusterctl move keeps Helm's ownership annotations, so these releases take the moved
 # objects over instead of creating them again.
 on_mgmt helm upgrade --install classes "$ROOT/charts/capi-clusterclasses" --namespace "$CLASS_NS" --create-namespace

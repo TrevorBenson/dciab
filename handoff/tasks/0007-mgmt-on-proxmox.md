@@ -25,7 +25,7 @@ Read first:
 ## Needs
 
 - Task 0003 passed: the class, the bootc template and Cilium work on this Proxmox.
-- kind, helm, kubectl, python3 (PyYAML, jsonschema), and **clusterctl at the Cluster API version in `bundle.lock`** (`clusterAPI.version`), from the Cluster API GitHub release.
+- kind, helm, kubectl, python3 (PyYAML, jsonschema), and **clusterctl at the Cluster API version in `bundle.lock`** (`clusterAPI.core.version`), from the Cluster API GitHub release.
 - From Trevor: the same network, addresses and access as task 0003, used here for MGMT. A free node range of at least 6 addresses, an API VIP, the pod and service CIDRs, the DNS and NTP servers, and an SSH key.
 
 ## Steps

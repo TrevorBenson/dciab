@@ -85,11 +85,16 @@ case "$mode" in
     helm upgrade --install cilium "$tgz" "${values[@]}" --kubeconfig "$kubeconfig" --wait --timeout 10m
     # Nodes still joining aren't listed yet, so wait for the expected count, then Ready.
     echo "== waiting for $nodes nodes to register and be Ready"
+    registered=0
     for _ in $(seq 1 120); do
       registered="$(kubectl --kubeconfig "$kubeconfig" get nodes --no-headers 2>/dev/null | wc -l)"
       (( registered >= nodes )) && break
       sleep 10
     done
+    if (( registered < nodes )); then
+      echo "install.sh: only $registered of $nodes nodes registered after 20 minutes" >&2
+      exit 1
+    fi
     kubectl --kubeconfig "$kubeconfig" wait node --all --for=condition=Ready --timeout=10m
     kubectl --kubeconfig "$kubeconfig" get nodes -o wide
     ;;

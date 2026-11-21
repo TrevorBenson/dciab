@@ -49,7 +49,8 @@ def secret(site: dict, cluster: str, namespace: str, config_dir: FsPath) -> Dict
         "kind": "Secret",
         "type": "Opaque",
         "metadata": {"name": f"{cluster}-{kind}-credentials", "namespace": namespace,
-                     "labels": {"app.kubernetes.io/managed-by": "dciab"}},
+                     # clusterctl move takes objects with this label along with the Cluster.
+                     "labels": {"app.kubernetes.io/managed-by": "dciab", "clusterctl.cluster.x-k8s.io/move": ""}},
         "data": {k: base64.b64encode(v.encode()).decode() for k, v in data.items()},
     }
 

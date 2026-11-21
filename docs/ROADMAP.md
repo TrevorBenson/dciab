@@ -28,7 +28,7 @@ Each phase ends in a gate that must pass on both a vSphere lab and a Proxmox lab
 - [ ] Archive build pipeline
 - [x] `dciab cluster-values`: capi-cluster values for MGMT, INFRA and workload clusters, generated from the site config
 - [ ] `dciab seed`
-- [ ] `dciab mgmt`: build MGMT, Cilium, providers, `clusterctl move`, Helm adoption. Written; CI runs it up to the Cluster on kind, and a real run on Proxmox is task 0007. Still to come: MGMT's services (cert-manager, Longhorn, Metal3, PowerDNS, Kea) and the DNS handoff
+- [ ] `dciab mgmt`: builds MGMT, installs Cilium and the providers, and moves Cluster API into MGMT (not yet proven on real infrastructure). Still to come: MGMT's services (Longhorn, Metal3, PowerDNS, Kea) and the DNS handoff
 
 ## Day 0 for bare servers
 
