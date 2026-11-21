@@ -79,6 +79,7 @@ images/day0-chrony/      Day 0 NTP server image
 images/bootstrap-bootc/  bootstrap appliance ("server zero"), under evaluation
 images/usb/              the DCiaB USB (Ventoy) image, under evaluation
 addons/cilium/           Cilium install for any cluster (pinned chart, DCiaB values)
+build/                   archive build: image inventory (more to come)
 handoff/                 development only: lab test tasks and reports (not part of the product)
 examples/                vsphere.yaml, proxmox.yaml, proxmox-bare.yaml, metal3-cluster.yaml
 tests/                   pytest suite
