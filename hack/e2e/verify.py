@@ -102,6 +102,10 @@ class Verifier:
             hosts = files.get(f"/etc/containerd/certs.d/{upstream}/hosts.toml", "")
             self.expect_true(f"{where}: {upstream} mirrors through {nodes['registryMirror']}",
                              f'https://{nodes["registryMirror"]}/v2/{upstream}' in hosts)
+        registries = files.get("/etc/containers/registries.conf.d/50-dciab-mirror.conf", "")
+        for upstream in MIRRORED:
+            self.expect_true(f"{where}: CRI-O mirrors {upstream} through {nodes['registryMirror']}",
+                             f'location = "{nodes["registryMirror"]}/{upstream}"' in registries)
         self.expect(f"{where}: NTP servers", config.get("ntp", {}).get("servers"), nodes["ntpServers"])
         users = {u["name"]: u for u in config.get("users", [])}
         self.expect(f"{where}: break-glass user keys", users.get("dciab", {}).get("sshAuthorizedKeys"),

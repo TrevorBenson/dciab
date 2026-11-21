@@ -13,6 +13,7 @@ An alternative to the image-builder recipe in [`images/node/`](../node/README.md
    - kernel modules and sysctls for Kubernetes
    - CRI-O defaults: systemd cgroups, and CNI plugin directories under `/var`
    - the kubelet volume plugin directory under `/var`
+   - `dciab-growroot.service`, which grows the root filesystem to the disk size at boot
 3. **Disks:** bootc-image-builder converts the node image (`--type raw`, `qcow2`, `vmdk`, ...).
 
 ```console
@@ -27,4 +28,5 @@ Needs root: the base recipe composes the OS with nested containers (`--cap-add=a
 - `/usr` and `/opt` are read-only; `/etc` and `/var` are writable.
   - CNI plugins that install themselves at boot (Cilium) write to `/opt/cni/bin`, so the image points that at `/var/lib/cni/bin`, and CRI-O looks there.
   - kubelet's FlexVolume directory moves to `/var/lib/kubelet/volumeplugins`.
-- The ClusterClasses' registry mirror files currently target containerd (`/etc/containerd/certs.d`). CRI-O reads `/etc/containers/registries.conf.d`, so nodes from this image pull directly from upstream until the classes write both.
+- The ClusterClasses write registry mirror files for both containerd and CRI-O; CRI-O reads `/etc/containers/registries.conf.d`.
+- **Root filesystem growth.** The disk gets grown to the cluster's `diskGiB`, but the image's root partition keeps the size bootc-image-builder gave it, and cloud-init's resize looks at `/` (a composefs overlay) instead of the real filesystem. `dciab-growroot.service` grows the partition behind `/sysroot` with `growpart`, then the XFS filesystem through its read-write mount. cloud-init's own growpart and resize are turned off.

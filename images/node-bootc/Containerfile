@@ -37,6 +37,7 @@ RUN dnf -y install \
       "kubelet-${KUBERNETES_VERSION}" "kubeadm-${KUBERNETES_VERSION}" "kubectl-${KUBERNETES_VERSION}" cri-tools \
       NetworkManager cloud-init qemu-guest-agent chrony \
       conntrack-tools iproute iptables-nft ethtool socat \
+      cloud-utils-growpart xfsprogs zstd \
       ca-certificates openssh-server sudo \
  && dnf clean all \
  && rm -rf /var/cache/dnf /var/log/dnf*
@@ -52,7 +53,7 @@ RUN mkdir -p /usr/libexec/cni \
  && rm -rf /opt/cni/bin \
  && ln -s /var/lib/cni/bin /opt/cni/bin
 # cloud-init's units are enabled by the package's systemd presets.
-RUN systemctl enable NetworkManager crio kubelet chronyd sshd qemu-guest-agent
+RUN systemctl enable NetworkManager crio kubelet chronyd sshd qemu-guest-agent dciab-growroot
 
 # The base image's /usr/local is an absolute symlink to /var/usrlocal, which bootc's
 # `container lint` (runtime-deps, bootc 1.17) rejects as "a path led outside of the

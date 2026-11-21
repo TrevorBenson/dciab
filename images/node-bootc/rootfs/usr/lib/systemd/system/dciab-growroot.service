@@ -1,0 +1,14 @@
+[Unit]
+Description=Grow the root partition and filesystem to fill the disk
+DefaultDependencies=no
+After=local-fs.target
+Before=cloud-init.service kubelet.service
+ConditionPathIsMountPoint=/sysroot
+
+[Service]
+Type=oneshot
+ExecStart=/usr/libexec/dciab/growroot
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
