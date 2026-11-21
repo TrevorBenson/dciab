@@ -92,10 +92,6 @@ if ! moved; then
     || die "the bootstrap cluster has no Cluster API; $seed_hint"
   on_bootstrap kubectl -n "$CLASS_NS" get clusterclasses -o name | grep -q "dciab-$platform-" \
     || die "the bootstrap cluster has no dciab-$platform ClusterClass; $seed_hint"
-  # clusterctl move takes every CAPI object on the bootstrap cluster: it must hold MGMT only.
-  others="$(on_bootstrap kubectl get clusters -A --no-headers -o custom-columns=NS:.metadata.namespace,NAME:.metadata.name \
-    | awk -v ns="$NS" '!($1 == ns && $2 == "mgmt")')"
-  [[ -z "$others" ]] || die "the bootstrap cluster holds other Clusters, which the move would take to MGMT: $others"
 fi
 finish_if preflight
 
@@ -142,6 +138,10 @@ step move
 if moved; then
   echo "already moved"
 else
+  # clusterctl move takes every CAPI object on the bootstrap cluster: it must hold MGMT only.
+  others="$(on_bootstrap kubectl get clusters -A --no-headers -o custom-columns=NS:.metadata.namespace,NAME:.metadata.name \
+    | awk -v ns="$NS" '!($1 == ns && $2 == "mgmt")')"
+  [[ -z "$others" ]] || die "the bootstrap cluster holds other Clusters, which the move would take to MGMT: $others"
   on_bootstrap kubectl -n "$NS" wait cluster/mgmt --for=condition=Available --timeout=45m
   clusterctl move --kubeconfig "$bootstrap" --to-kubeconfig "$mgmt_kubeconfig"
 fi

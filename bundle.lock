@@ -166,7 +166,7 @@ chartDigests:
 # sha256 of release binaries DCiaB runs, checked after download. clusterctl's version is
 # clusterAPI.core.version. Empty: the download warns and prints the sum to pin.
 binarySHA256:
-  clusterctl-linux-amd64: ""
+  clusterctl-linux-amd64: "c7301a8515ed329562b06c958463051dd55d9649fac591393f5df54a868fa79b"
 
 tools:
   helm: v4.3.2
