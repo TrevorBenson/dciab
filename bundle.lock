@@ -163,6 +163,11 @@ chartRepositories:
 chartDigests:
   cilium: "0c7592eb75179ecf46dd3ec22145916f0164c4401214ea15afb5b230b1d11a21"
 
+# sha256 of release binaries DCiaB runs, checked after download. clusterctl's version is
+# clusterAPI.core.version. Empty: the download warns and prints the sum to pin.
+binarySHA256:
+  clusterctl-linux-amd64: "c7301a8515ed329562b06c958463051dd55d9649fac591393f5df54a868fa79b"
+
 tools:
   helm: v4.3.2
   kind: v0.33.0   # default node image: Kubernetes v1.37.0 (CAPI v1.14 supports it as a management cluster)

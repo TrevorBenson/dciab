@@ -125,15 +125,17 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install pyyaml
+      - run: pip install pyyaml jsonschema
       - name: Read tool versions from bundle.lock
         id: lock
         run: |
           python - <<'PY' >> "$GITHUB_OUTPUT"
           import yaml
-          tools = yaml.safe_load(open("bundle.lock"))["tools"]
-          print(f"helm={tools['helm']}")
-          print(f"kind={tools['kind']}")
+          lock = yaml.safe_load(open("bundle.lock"))
+          print(f"helm={lock['tools']['helm']}")
+          print(f"kind={lock['tools']['kind']}")
+          print(f"capi={lock['clusterAPI']['core']['version']}")
+          print(f"clusterctl_sha256={lock['binarySHA256']['clusterctl-linux-amd64']}")
           PY
       - uses: azure/setup-helm@v4
         with:
@@ -147,6 +149,41 @@ jobs:
           path: .cache/crds
           key: crds-${{ hashFiles('bundle.lock') }}
       - run: hack/e2e/run.sh
+      - name: clusterctl (same version as Cluster API, sha256 from bundle.lock)
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/bin"
+          bin="$RUNNER_TEMP/bin/clusterctl"
+          curl -fsSL -o "$bin" \
+            "https://github.com/kubernetes-sigs/cluster-api/releases/download/${{ steps.lock.outputs.capi }}/clusterctl-linux-amd64"
+          want="${{ steps.lock.outputs.clusterctl_sha256 }}"
+          got="$(sha256sum "$bin" | cut -d' ' -f1)"
+          if [[ -z "$want" ]]; then
+            echo "::warning::bundle.lock has no binarySHA256.clusterctl-linux-amd64; this download is $got"
+          elif [[ "$got" != "$want" ]]; then
+            echo "clusterctl sha256 is $got, bundle.lock pins $want" >&2; exit 1
+          fi
+          chmod +x "$bin"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+          "$bin" version -o short
+      - name: dciab mgmt up to the Cluster (the example infrastructure doesn't exist)
+        run: |
+          set -euo pipefail
+          site="$(mktemp -d)"
+          cp examples/proxmox.yaml "$site/dciab.yaml"
+          for s in vsphere.pw longhorn-s3.env pki/intermediate.key; do
+            mkdir -p "$(dirname "$site/secrets/$s")"; echo placeholder > "$site/secrets/$s"
+          done
+          printf -- '-----BEGIN CERTIFICATE-----\nMIIBe2eCertificateOnly\n-----END CERTIFICATE-----\n' \
+            | tee "$site/secrets/pki/chain.pem" > "$site/secrets/pki/intermediate.crt"
+          chmod -R go-rwx "$site/secrets"
+          kind get kubeconfig --name dciab-e2e > "$site/bootstrap.kubeconfig"
+          export DCIAB_PVE_TOKEN=placeholder
+          ./dciab mgmt "$site/dciab.yaml" --bootstrap-kubeconfig "$site/bootstrap.kubeconfig" --until cluster
+          # Re-running changes nothing.
+          ./dciab mgmt "$site/dciab.yaml" --bootstrap-kubeconfig "$site/bootstrap.kubeconfig" --until cluster
+          kubectl -n cluster-mgmt wait cluster/mgmt --for=condition=TopologyReconciled --timeout=5m
+          kubectl -n cluster-mgmt get cluster,kubeadmcontrolplane,secret -o wide
 
   frozen-classes:
     # A class revision freezes when a DCiaB release tag first contains it; drafts may change (docs/VERSIONING.md).
@@ -173,7 +210,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: shellcheck dciab hack/e2e/run.sh hack/check_frozen_classes.sh images/node/build.sh images/node-bootc/build.sh images/node-bootc/rootfs/usr/libexec/dciab/growroot images/bootstrap-bootc/build.sh images/bootstrap-bootc/install-vtoyboot.sh images/usb/build.sh addons/cilium/install.sh
+      - run: shellcheck dciab hack/e2e/run.sh hack/check_frozen_classes.sh images/node/build.sh lib/steps/mgmt.sh lib/steps/capi-providers.sh images/node-bootc/build.sh images/node-bootc/rootfs/usr/libexec/dciab/growroot images/bootstrap-bootc/build.sh images/bootstrap-bootc/install-vtoyboot.sh images/usb/build.sh addons/cilium/install.sh
 
   rocky10:
     # The validator must run on the bootstrap host with distro packages only.
