@@ -13,8 +13,10 @@ may_change: [bundle.lock, images/bootstrap-bootc/, images/usb/, lib/dciab_bootst
 Find out whether the bootstrap appliance can run the DCiaB bootstrap from a Ventoy stick (ADR 0002):
 - it boots as a Ventoy Linux vDisk with Secure Boot on
 - it configures itself from `dciab.yaml` on the stick
-- it survives a multi-hour soak and a hard reset
+- kind and podman work on it, end to end
 - the same stick still boots installers by hand
+
+No long soak: `dciab media` will copy the payload to a local disk and run the heavy state from there (ADR 0002 §5), so the stick only carries the OS.
 
 Read `docs/adr/0002-bootstrap-appliance-on-ventoy.md`, `images/bootstrap-bootc/README.md` and `images/usb/README.md` first.
 
@@ -25,13 +27,14 @@ Read `docs/adr/0002-bootstrap-appliance-on-ventoy.md`, `images/bootstrap-bootc/R
 
 **Out of scope:**
 - `dciab services`, `hypervisors` and `media` (not implemented)
-- a physical stick and server (optional step 9 only)
+- `dciab media` and the work disk (not implemented)
+- long-running load or power-loss testing
 - VLAN-tagged bootstrap ports
 
 ## Needs
 
 - Task 0004 done: the Rocky 10 bootc base (`localhost/dciab-rocky-bootc-base:minimal`) in root's podman storage, and `nodeImages.bootc.bootcImageBuilder` pinned. If the base image is gone, rebuild it with `sudo images/node-bootc/build.sh`.
-- Rootful podman, xorriso, exfatprogs, parted, curl; about 150 GB free disk.
+- Rootful podman, xorriso, exfatprogs, parted, curl; about 60 GB free disk.
 - From Trevor, **before step 5** (the test config needs them):
   - one free IP on untagged `vmbr0` for the appliance, and its gateway and prefix
   - his SSH public key for `identity.initialAdmins`
@@ -47,7 +50,7 @@ Read `docs/adr/0002-bootstrap-appliance-on-ventoy.md`, `images/bootstrap-bootc/R
    - Run `python3 -m pytest -q`.
 2. **Plan.** Run `images/bootstrap-bootc/build.sh --print` and `images/usb/build.sh --print`. They must show the pinned versions and the base image.
 3. **Build the appliance.**
-   - Run `sudo images/bootstrap-bootc/build.sh --size 64 2>&1 | tee /tmp/dciab-appliance.log`, with `set -o pipefail`.
+   - Run `sudo images/bootstrap-bootc/build.sh --size 24 2>&1 | tee /tmp/dciab-appliance.log`, with `set -o pipefail`.
    - The log must show `install-vtoyboot: Ventoy hook is in the initramfs` and `bootc container lint` passing.
    - Record the build time, the image size (`podman image ls`) and the raw disk size.
 4. **Inspect without booting.** In `sudo podman run --rm localhost/dciab-bootstrap:<version> ...`, record:
@@ -80,32 +83,25 @@ Read `docs/adr/0002-bootstrap-appliance-on-ventoy.md`, `images/bootstrap-bootc/R
       - `dciab validate /var/mnt/dciab/dciab.yaml` passes
       - `mokutil --sb-state` shows Secure Boot enabled
       - `findmnt /` and `lsblk` show how the vDisk is mapped; record this
-7. **Soak (4 hours).** On the appliance:
-   - Start a local registry container. Create a kind cluster with the podman provider (`KIND_EXPERIMENTAL_PROVIDER=podman`).
-   - In a loop for 4 hours, every 5 minutes: push and pull a 500 MB image through the registry, `kubectl apply` and delete a deployment that writes 1 GB to an emptyDir, and append `iostat -x 1 5`, `free -m` and any new `dmesg` lines to a log.
-   - Record:
-     - the throughput and latency ranges on the vDisk
-     - any errors or stalls
-     - whether kind and the registry survive a clean reboot of the appliance
-8. **Hard reset.**
-   - During a soak write, reset the VM through the API (`qm reset`).
-   - On the next boot, record whether the vDisk boots, whether xfs replays its log cleanly (journal), and whether kind and the registry come back or need recreating.
-   - Then shut the VM down. On the workstation, map the imported disk read-only and run `fsck.exfat -n` on partition 1; record the result.
-9. **Optional, if Trevor has a spare x86_64 machine and a USB 3.2 SSD-class stick.** Write the image to the stick, boot the machine from it, and repeat step 6.4 plus one hour of step 7. Record the throughput next to the VM's.
-10. **Installers from the same stick.**
-    - With server zero shut down, attach the same disk to the installer-test VM: OVMF with Secure Boot on (the key is per machine, so MokManager appears again), and no other disks except an empty 32 GB disk.
-    - From the Ventoy menu, boot the Proxmox VE ISO in `isos/` and confirm the installer's first screen appears. Don't install.
-    - Repeat with the Rocky 10 ISO, if step 5 added it.
-11. **Clean up.**
-    - Delete both VMs and the imported disks.
-    - Remove `images/bootstrap-bootc/{build,output}/` and `images/usb/{build,output}/`, and delete local images you don't need (keep the bootc base).
-    - `git status` must show only `handoff/`, `bundle.lock` and edits under the `may_change` paths.
+7. **End to end.** On the appliance, as the admin user with sudo:
+   1. Start a registry container (`docker.io/library/registry` is fine for a test), then push and pull one small image through it.
+   2. `KIND_EXPERIMENTAL_PROVIDER=podman kind create cluster`, then `kubectl get nodes` (Ready) and run one pod to completion. Delete the cluster.
+   3. Reboot the VM cleanly. Check that it comes back with the same address, that SSH works, and that `dciab-bootstrap-setup` succeeded again.
+   - Record the time for each part and any errors. This is a pass/fail check, not a measurement.
+8. **Installers from the same stick.**
+   - With server zero shut down, attach the same disk to the installer-test VM: OVMF with Secure Boot on (the key is per machine, so MokManager appears again), and no other disks except an empty 32 GB disk.
+   - From the Ventoy menu, boot the Proxmox VE ISO in `isos/` and confirm the installer's first screen appears. Don't install.
+   - Repeat with the Rocky 10 ISO, if step 5 added it.
+9. **Clean up.**
+   - Delete both VMs and the imported disks.
+   - Remove `images/bootstrap-bootc/{build,output}/` and `images/usb/{build,output}/`, and delete local images you don't need (keep the bootc base).
+   - `git status` must show only `handoff/`, `bundle.lock` and edits under the `may_change` paths.
 
 ## Stop and ask
 
 - **Before step 5:** ask Trevor for the IP, gateway, prefix, SSH key and VMIDs listed under Needs.
 - **Before step 6:** show Trevor the step 3–5 results and the VM plan. Step 6 creates VMs on his Proxmox.
-- **At step 6.3 and step 10:** the MokManager enrollment needs someone at the console.
+- **At step 6.3 and step 8:** the MokManager enrollment needs someone at the console.
 - **If the appliance fails to boot as a vDisk after two different fixes:** stop. Report what you tried, and whether booting the raw disk directly (without Ventoy) works, since that tells the planner which part failed.
 
 ## Report
@@ -113,7 +109,7 @@ Read `docs/adr/0002-bootstrap-appliance-on-ventoy.md`, `images/bootstrap-bootc/R
 Use the format in `handoff/README.md`. It must include:
 - every edit under the `may_change` paths, with the reason for each
 - the boot sequence from step 6.3, with timings
-- the soak results (step 7) and the hard-reset results (step 8)
+- the end-to-end results (step 7)
 - a verdict on ADR 0002 §3: keep vDisk boot, or fall back to installing the appliance on a disk, with the deciding reasons
 
 Record durable facts in `LAB.md`, such as how to create a Secure Boot OVMF VM through the API here.

@@ -9,8 +9,9 @@ One archive and one YAML file build a data center platform from bare power and n
 | Step | Command | Result |
 | --- | --- | --- |
 | 0 | `./dciab validate dciab.yaml` | The config passes schema and semantic checks |
-| 0a | `./dciab services` | Bare servers only (planned): DNS, NTP and HTTP on the bootstrap host |
-| 0b | `./dciab hypervisors` | Bare servers only (planned): Proxmox VE or ESXi installed over Redfish virtual media |
+| 0a | `./dciab media` | Bootstrap appliance (planned): copy the USB payload to the work disk |
+| 0b | `./dciab services` | Bare servers only (planned): DNS, NTP and HTTP on the bootstrap host |
+| 0c | `./dciab hypervisors` | Bare servers only (planned): Proxmox VE or ESXi installed over Redfish virtual media |
 | 1 | `./dciab seed` | Local registry, seed DNS and KinD with all CAPI providers |
 | 2 | `./dciab mgmt` | MGMT built, CAPI pivoted into it, DNS moved onto it |
 | 3 | `./dciab infra` | INFRA built with Argo CD, Forgejo, OpenBao, CloudNativePG |

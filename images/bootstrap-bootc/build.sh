@@ -10,8 +10,8 @@
 #    baseImage, or the base images/node-bootc/build.sh built locally.
 # 3. bootc-image-builder writes the disks under images/bootstrap-bootc/output/.
 #
-# --size is the root filesystem's minimum size. The vDisk can't grow on the stick, and it
-# holds container storage, kind and the seed registry for the whole bootstrap.
+# --size is the root filesystem's minimum size. The vDisk can't grow on the stick; it holds
+# only the OS and dciab, because `dciab media` moves the heavy state to a local work disk.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -19,7 +19,7 @@ ROOT="$(cd "$HERE/../.." && pwd)"
 OUT="$HERE/output"
 BUILD="$HERE/build"
 
-size=64
+size=24
 types=()
 print_only=false
 while (( $# )); do

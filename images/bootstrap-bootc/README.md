@@ -27,8 +27,8 @@ There are no passwords: access is by SSH key only.
 ```console
 $ sudo images/node-bootc/build.sh --type raw          # once: builds the Rocky 10 bootc base
 $ images/bootstrap-bootc/build.sh --print            # pins and commands; builds nothing
-$ sudo images/bootstrap-bootc/build.sh --size 64     # raw disk for the USB
+$ sudo images/bootstrap-bootc/build.sh --size 24     # raw disk for the USB
 $ sudo images/bootstrap-bootc/build.sh --type qcow2 --type vhd   # to run it as a VM instead
 ```
 
-`--size` sets the root filesystem's minimum size in GiB. The vDisk can't grow once it's on the stick, and it holds container storage, kind and the seed registry for the whole bootstrap. The USB image is then built by [`images/usb/`](../usb/README.md).
+`--size` sets the root filesystem's minimum size in GiB (default 24). The vDisk can't grow once it's on the stick, but it holds only the OS and dciab. `dciab media` (planned) will copy the payload to a local work disk, and container storage, kind and the seed registry will run from there. The USB image is then built by [`images/usb/`](../usb/README.md).
