@@ -5,12 +5,13 @@
                                [--kubeadm-images FILE] [--format text|yaml]
 
 Sources, each recorded next to the image:
-- bundle.lock: images (kube-vip) and day0 (CoreDNS, Caddy, chrony base), pinned by digest
+- bundle.lock: every image it pins by digest, wherever it sits (kube-vip, the kind node
+  image, the Day 0 services, bootc-image-builder, ...)
 - the Cluster API, provider and cert-manager manifests hack/fetch_crds.py downloads
   (rendered with bundle.lock's provider variables, as DCiaB installs them)
 - --extra: rendered manifests of other add-ons, such as Cilium
   (addons/cilium/install.sh <values> --template)
-- --image: single images, such as the kind node image the bootstrap cluster boots
+- --image: single images not covered by the other sources
 - --kubeadm-images: the output of `kubeadm config images list --kubernetes-version <v>`
   for the bundle's Kubernetes version: the control plane images nodes pull
 
@@ -35,6 +36,23 @@ sys.path.insert(0, str(ROOT / "hack"))
 from render_components import substitute, values_from  # noqa: E402
 
 DIGEST = re.compile(r"@sha256:[0-9a-f]{64}$")
+PINNED_REF = re.compile(r"^[a-z0-9.-]+(:[0-9]+)?/[^\s@]+@sha256:[0-9a-f]{64}$")
+
+
+class InventoryError(Exception):
+    pass
+
+
+def pinned_in_lock(node, path: str = "") -> Iterable[tuple]:
+    """(image, bundle.lock path) for every digest-pinned image reference in the lock."""
+    if isinstance(node, dict):
+        for k, v in node.items():
+            yield from pinned_in_lock(v, f"{path}.{k}" if path else str(k))
+    elif isinstance(node, list):
+        for i, v in enumerate(node):
+            yield from pinned_in_lock(v, f"{path}[{i}]")
+    elif isinstance(node, str) and PINNED_REF.match(node):
+        yield node, path
 
 
 def images_in(doc) -> Iterable[str]:
@@ -74,18 +92,24 @@ def inventory(lock: dict, manifest_dirs: List[Path], extras: List[Path], kubeadm
     def add(ref: str, source: str) -> None:
         found.setdefault(normalize(ref), set()).add(source)
 
-    for name, ref in (lock.get("images") or {}).items():
-        add(ref, f"bundle.lock images.{name}")
-    for name, ref in ((lock.get("day0") or {}).get("images") or {}).items():
-        add(ref, f"bundle.lock day0.images.{name}")
+    for ref, path in pinned_in_lock(lock):
+        add(ref, f"bundle.lock {path}")
 
     values = values_from(lock, {})
     for d in manifest_dirs:
-        for f in sorted(d.rglob("*.yaml")):
-            rendered, _ = substitute(f.read_text(), values)
+        files = sorted(d.rglob("*.yaml")) if d.is_dir() else []
+        if not files:
+            raise InventoryError(f"{d}: no manifests there (run hack/fetch_crds.py and pass its output folder)")
+        for f in files:
+            rendered, missing = substitute(f.read_text(), values)
+            if missing:
+                raise InventoryError(f"{f}: no value for {', '.join(sorted(set(missing)))} in bundle.lock "
+                                     "clusterAPI.variables")
             for ref in from_manifest_text(rendered):
                 add(ref, f"{f.parent.name}/{f.name}")
     for f in extras:
+        if not f.is_file():
+            raise InventoryError(f"{f}: no such file")
         for ref in from_manifest_text(f.read_text()):
             add(ref, f.name)
     for item in singles or []:
@@ -108,7 +132,11 @@ def main(argv=None) -> int:
     args = p.parse_args(argv)
 
     lock = yaml.safe_load((ROOT / "bundle.lock").read_text())
-    found = inventory(lock, args.manifests, args.extra, args.kubeadm_images, args.image)
+    try:
+        found = inventory(lock, args.manifests, args.extra, args.kubeadm_images, args.image)
+    except InventoryError as exc:
+        print(f"inventory: {exc}", file=sys.stderr)
+        return 1
     if args.format == "yaml":
         out = [{"image": ref, "digest": "pinned" if DIGEST.search(ref) else "resolve",
                 "sources": sorted(src)} for ref, src in sorted(found.items())]

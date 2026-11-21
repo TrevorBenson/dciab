@@ -46,3 +46,26 @@ def test_inventory_records_sources(tmp_path):
     assert found["docker.io/kindest/node:v1.37.0"] == {"kind"}
     assert any(ref.startswith("quay.io/cilium/cilium") for ref in found)
     assert any(src == {"bundle.lock images.kubeVip"} for src in found.values())
+
+
+def test_every_digest_pinned_image_in_bundle_lock_is_listed():
+    lock = yaml.safe_load((ROOT / "bundle.lock").read_text())
+    found = inventory(lock, [], [], None)
+    assert any("kindest/node" in ref for ref in found)
+    assert any("bootc-image-builder" in ref for ref in found)
+    assert all("@sha256:" in ref for ref in found)
+
+
+def test_unresolved_variables_and_empty_folders_are_errors(tmp_path):
+    import pytest
+
+    from inventory import InventoryError
+
+    lock = yaml.safe_load((ROOT / "bundle.lock").read_text())
+    with pytest.raises(InventoryError, match="no manifests"):
+        inventory(lock, [tmp_path / "missing"], [], None)
+    d = tmp_path / "p"
+    d.mkdir()
+    (d / "c.yaml").write_text("image: registry.k8s.io/x:${NOT_IN_LOCK}\n")
+    with pytest.raises(InventoryError, match="NOT_IN_LOCK"):
+        inventory(lock, [d], [], None)

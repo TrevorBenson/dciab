@@ -19,16 +19,20 @@ DCiaB ships as one archive that a site unpacks on the bootstrap host and runs of
 $ crds="$(python3 hack/fetch_crds.py)"
 $ addons/cilium/install.sh charts/capi-cluster/ci/proxmox-values.yaml --template > cilium.yaml
 $ kubeadm config images list --kubernetes-version v1.36.6 > kubeadm.txt
-$ python3 build/inventory.py --manifests "$crds" --extra cilium.yaml --kubeadm-images kubeadm.txt \
-    --image "$(kind create cluster --help | sed -n 's/.*default "\(kindest[^"]*\)".*/\1/p')=kind node image"
+$ python3 build/inventory.py --manifests "$crds" --extra cilium.yaml --kubeadm-images kubeadm.txt
 ```
 
 The sources are:
-- **`bundle.lock`:** kube-vip and the Day 0 service images, already pinned by digest.
+- **`bundle.lock`:** every image it pins by digest: kube-vip, the kind node image, the Day 0 services, bootc-image-builder, and so on.
 - **The Cluster API, provider and cert-manager manifests**, rendered with the provider variables DCiaB installs them with.
 - **Rendered add-ons:** Cilium.
 - **The Kubernetes control plane images** kubeadm pulls for the bundle's version.
-- **The kind node image** the bootstrap cluster boots.
+
+Not covered yet:
+- **Images DCiaB builds itself:** the chrony image from `images/day0-chrony` and the bootc node image. The archive build makes these instead of pulling them.
+- **Charts other than Cilium**, such as Longhorn. They get rendered once chart vendoring lands.
+
+A manifest that needs a provider variable `bundle.lock` doesn't set is an error, and so is a manifests folder with nothing in it.
 
 Images marked `*` have no digest in their source manifest. The pull step resolves each one and records its digest.
 
