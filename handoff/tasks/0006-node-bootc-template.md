@@ -40,7 +40,7 @@ See `images/node-bootc/README.md`.
      - the node image size `build.sh` prints, and the disk's partition layout (`qemu-img info` and `virt-filesystems -l --long -a output/qcow2/disk.qcow2`, or `fdisk -l` on the raw disk)
      - each disk's virtual size and the space it actually uses
      - the lint warnings (fewer than task 0004's four is expected: `zstd` is now installed)
-3. **Publish the template.** Use the steps in the 0004 report's "Publishing a template" section, with the new VMID: check that it's free, create the VM, import the disk, attach it and convert it to a template. **Skip the resize:** the template keeps the size it was built with. Record the template disk's virtual size and the space it uses on `pool0` (`zfs list -o name,volsize,used,refreservation` for its zvol), so we know whether the pool keeps it thin.
+3. **Publish the template.** Use the steps in the 0004 report's "Publishing a template" section, with the new VMID: check that it's free, create the VM, import the disk, attach it and convert it to a template. **Skip the resize:** the template keeps the size it was built with. Record the template disk's virtual size and the space it uses on `pool0` (`zfs list -o name,volsize,used,refreservation` for its zvol), so we know whether the pool keeps it thin. If the zvol reserves its full size (`refreservation` equal to `volsize`), tell Trevor: thin provisioning (`sparse`) is a storage setting on `pool0`.
 4. **Growth test.**
    1. Full-clone the template to the test VMID, and resize the clone's disk to **25G** before the first boot, the size task 0003's nodes use.
    2. Give it a cloud-init drive and boot it.

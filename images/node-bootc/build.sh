@@ -63,9 +63,21 @@ node_cmd=(podman build -f "$HERE/Containerfile" -t "$tag"
 disk_cmd=(podman run --rm --privileged --security-opt label=type:unconfined_t
   -v "$OUT:/output" -v /var/lib/containers/storage:/var/lib/containers/storage
   -v "$HERE/config.toml:/config.toml:ro"
-  "$bib" "${types[@]}" --rootfs xfs "$tag")
-# config.toml sizes the root for an image up to this size; past it, raise the root to 5 GiB.
-max_image_bytes=$((18 * 1024 * 1024 * 1024 / 10))   # 1.8 GiB
+  "$bib" --config /config.toml "${types[@]}" --rootfs xfs "$tag")
+# The node image may use up to 90% of the root size set in config.toml (2 GiB -> 1.8 GiB).
+max_image_bytes="$(python3 - "$HERE/config.toml" <<'PY'
+import re, sys
+import tomllib
+
+cfg = tomllib.load(open(sys.argv[1], "rb"))
+root = next(f for f in cfg["customizations"]["filesystem"] if f["mountpoint"] == "/")
+m = re.fullmatch(r"\s*(\d+(?:\.\d+)?)\s*(MiB|GiB)\s*", root["minsize"])
+if not m:
+    sys.exit(f"build.sh: config.toml root minsize {root['minsize']!r} must be like '2 GiB' or '512 MiB'")
+size = float(m.group(1)) * (1024**3 if m.group(2) == "GiB" else 1024**2)
+print(int(size * 0.9))
+PY
+)"
 
 if [[ "$print_only" == true ]]; then
   echo "kubernetes $k8s (series $series), cri-o $crio"
@@ -107,10 +119,10 @@ fi
 echo "== node: $tag"
 "${node_cmd[@]}"
 size="$(podman image inspect --format '{{.Size}}' "$tag")"
-echo "== node image: $((size / 1024 / 1024)) MiB (limit for the 2 GiB root: $((max_image_bytes / 1024 / 1024)) MiB)"
+echo "== node image: $((size / 1024 / 1024)) MiB (limit for the configured root: $((max_image_bytes / 1024 / 1024)) MiB)"
 if (( size > max_image_bytes )); then
-  echo "build.sh: the node image no longer fits the template's 2 GiB root with headroom;" >&2
-  echo "          raise the root in images/node-bootc/config.toml to \"5 GiB\" (see README)" >&2
+  echo "build.sh: the node image no longer fits the template's root with headroom;" >&2
+  echo "          raise the root in images/node-bootc/config.toml (to \"5 GiB\"; see README)" >&2
   exit 1
 fi
 echo "== disks: ${types[*]}"
