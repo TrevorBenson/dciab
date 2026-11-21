@@ -26,6 +26,7 @@ Each phase ends in a gate that must pass on both a vSphere lab and a Proxmox lab
 - [x] Cilium install for any cluster (`addons/cilium`), with kube-proxy replaced
 - [ ] Real-cluster spike on Proxmox from the template
 - [ ] Archive build pipeline
+- [x] `dciab cluster-values`: capi-cluster values for MGMT, INFRA and workload clusters, generated from the site config
 - [ ] `dciab seed`
 - [ ] `dciab mgmt`
 

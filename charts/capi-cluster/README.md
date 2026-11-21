@@ -1,6 +1,10 @@
 # capi-cluster
 
-One cluster per release, installed into the cluster's namespace on the management cluster. It renders:
+One cluster per release, installed into the cluster's namespace on the management cluster.
+
+Values come from the site config: `dciab cluster-values <config> <cluster>` prints them for MGMT, INFRA or a workload cluster (`--list` names them). Don't write them by hand.
+
+The chart renders:
 
 - a `Cluster` whose topology uses `dciab-<class>-<classRevision>` from [capi-clusterclasses](../capi-clusterclasses),
 - for `vsphere`: an `InClusterIPPool` named `<cluster>-nodes`,
