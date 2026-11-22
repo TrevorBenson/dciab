@@ -32,4 +32,4 @@ DCiaB is built by a **planner** (Claude in a cloud session: writes the code and 
 | `images/node/` | Older node template recipe (image-builder, containerd); removed once a cluster passes on bootc |
 | `hack/` | Checks and the kind e2e test (`hack/e2e/run.sh`) |
 | `handoff/` | Planner ↔ runner tasks and reports |
-| `docs/` | Roadmap, versioning |
+| `docs/` | Components (what a site runs), roadmap, versioning, ADRs |
