@@ -389,3 +389,21 @@ def test_e2e_verifier_accepts_the_class_audit_settings():
         v.check_audit({}, {}, {})
         assert any("audit policy file" in m for m in v.failures)
         assert any("audit-log-path" in m for m in v.failures)
+
+
+def test_proxmox_kubelet_sets_provider_id():
+    """Without it, Nodes have no spec.providerID and Machines never reach Running (task 0003 run 3)."""
+    docs = list(yaml.safe_load_all((CLASSES / "r1" / "proxmox.yaml").read_text()))
+    want = {"name": "provider-id", "value": "proxmox://{{ ds.meta_data.instance_id }}"}
+    regs = []
+    for d in docs:
+        if not d:
+            continue
+        if d["kind"] == "KubeadmControlPlaneTemplate":
+            spec = d["spec"]["template"]["spec"]["kubeadmConfigSpec"]
+            regs += [spec["initConfiguration"]["nodeRegistration"], spec["joinConfiguration"]["nodeRegistration"]]
+        elif d["kind"] == "KubeadmConfigTemplate":
+            regs.append(d["spec"]["template"]["spec"]["joinConfiguration"]["nodeRegistration"])
+    assert len(regs) == 3
+    for r in regs:
+        assert want in r.get("kubeletExtraArgs", [])
