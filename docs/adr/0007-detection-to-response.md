@@ -22,7 +22,7 @@ This ADR describes how these connect, which actions automated response may take,
 | Kubernetes audit logs | Every cluster's API servers, with an audit policy and log backend | Who did what through the API |
 | Service audit logs | Authentik, OpenBao (a file audit device, enabled by the platform step), Argo CD, Forgejo, Terrakube | Logins, secret access, deployments, applies |
 
-Kubernetes doesn't audit unless the API server is given a policy; the `r1` ClusterClasses don't set one, so this needs a new class revision ([VERSIONING.md](../VERSIONING.md)).
+Kubernetes doesn't audit unless the API server is given a policy. The `r1` ClusterClasses, still a draft ([VERSIONING.md](../VERSIONING.md)), set one: Metadata by default, request and response bodies for RBAC changes, never the bodies of Secrets, ConfigMaps or token reviews, and no health checks, events or system leases. The API servers write it to `/var/log/kubernetes/audit/` on each control plane node, where the log collector picks it up.
 
 The per-node IDS sees what crosses the node's interface: traffic between nodes and in and out of the cluster. Pod-to-pod traffic on the same node stays in Cilium's eBPF datapath and never reaches that interface; Tetragon's network events and Cilium's flow logs cover it.
 

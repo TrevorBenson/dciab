@@ -275,11 +275,11 @@ def test_dns_answer_parsing():
 
 
 def bare_site(tmp_path):
-    from conftest import SECRET_FILES
+    from conftest import SECRET_FILES, intermediate_pem
     for rel in SECRET_FILES:
         p = tmp_path / "secrets" / rel
         p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text("x\n")
+        p.write_text(intermediate_pem() if rel == "pki/intermediate.crt" else "x\n")
         p.chmod(0o600)
     cfg = tmp_path / "dciab.yaml"
     cfg.write_text((ROOT / "examples" / "proxmox-bare.yaml").read_text())
