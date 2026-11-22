@@ -53,3 +53,28 @@ def test_mgmt_rejects_an_unknown_step(tmp_path):
     kubeconfig.write_text("x")
     r = run_mgmt(str(config), "--bootstrap-kubeconfig", str(kubeconfig), "--until", "bogus")
     assert r.returncode == 1 and "preflight values cluster" in r.stderr
+
+
+def test_mgmt_defaults_to_seeds_kubeconfig(tmp_path):
+    config = tmp_path / "dciab.yaml"
+    config.write_text("x")
+    r = run_mgmt(str(config), "--state", str(tmp_path / "state"))
+    assert r.returncode == 1 and "bootstrap.kubeconfig" in r.stderr and "dciab seed" in r.stderr
+
+
+def test_mgmt_rejects_a_folder_that_isnt_a_payload(tmp_path):
+    config = tmp_path / "dciab.yaml"
+    config.write_text("x")
+    kubeconfig = tmp_path / "kubeconfig"
+    kubeconfig.write_text("x")
+    r = run_mgmt(str(config), "--bootstrap-kubeconfig", str(kubeconfig), "--payload", str(tmp_path))
+    assert r.returncode == 1 and "not an archive payload" in r.stderr
+
+
+def test_cilium_uses_the_payload_chart(tmp_path):
+    values = tmp_path / "values.yaml"
+    values.write_text("name: mgmt\napiVIP: 10.0.0.10\n")
+    (tmp_path / "charts").mkdir()
+    r = subprocess.run([str(ROOT / "addons" / "cilium" / "install.sh"), str(values), "--template"],
+                       capture_output=True, text=True, env={"PATH": "/usr/bin:/bin", "DCIAB_PAYLOAD": str(tmp_path)})
+    assert r.returncode == 1 and "no such file in the payload" in r.stderr

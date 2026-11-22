@@ -358,6 +358,18 @@ jobs:
           grep -q "pki: unchanged" "$RUNNER_TEMP/rerun.txt"
           grep -q "registry: already serving" "$RUNNER_TEMP/rerun.txt"
           grep -q "kind: cluster dciab-bootstrap exists" "$RUNNER_TEMP/rerun.txt"
+      - name: dciab mgmt from seed's outputs, offline from the payload (up to the Cluster)
+        env:
+          DCIAB_PVE_TOKEN: ci-not-a-secret
+        run: |
+          set -euo pipefail
+          state="$RUNNER_TEMP/state"
+          bin="$RUNNER_TEMP/payload/bin"
+          # No --bootstrap-kubeconfig or --trust-bundle: they default to what seed wrote.
+          sudo env "PATH=$bin:$PATH" "DCIAB_PVE_TOKEN=$DCIAB_PVE_TOKEN" ./dciab mgmt "$RUNNER_TEMP/site/dciab.yaml" \
+            --state "$state" --payload "$RUNNER_TEMP/payload" --until cluster
+          sudo grep -q "BEGIN CERTIFICATE" "$state/mgmt-values.yaml"   # seed's platform CA reaches the nodes
+          sudo "$bin/kubectl" --kubeconfig "$state/bootstrap.kubeconfig" -n cluster-mgmt get cluster mgmt
 
   frozen-classes:
     # A class revision freezes when a DCiaB release tag first contains it; drafts may change (docs/VERSIONING.md).
