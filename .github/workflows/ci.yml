@@ -371,6 +371,16 @@ jobs:
             --state "$state" --payload "$RUNNER_TEMP/payload" --until cluster
           sudo grep -q "BEGIN CERTIFICATE" "$state/mgmt-values.yaml"   # seed's platform CA reaches the nodes
           sudo "$bin/kubectl" --kubeconfig "$state/bootstrap.kubeconfig" -n cluster-mgmt get cluster mgmt
+      - name: dciab status (read-only) reports where the bootstrap stands
+        run: |
+          set -euo pipefail
+          out="$(sudo env "PATH=$RUNNER_TEMP/payload/bin:$PATH" ./dciab status "$RUNNER_TEMP/site/dciab.yaml" \
+            --state "$RUNNER_TEMP/state" || true)"
+          echo "$out"
+          for check in pki registry bootstrap; do
+            grep -Eq "^$check +ok " <<<"$out" || { echo "$check should be ok"; exit 1; }
+          done
+          grep -Eq "^mgmt +down .*not moved" <<<"$out"
 
   frozen-classes:
     # A class revision freezes when a DCiaB release tag first contains it; drafts may change (docs/VERSIONING.md).
