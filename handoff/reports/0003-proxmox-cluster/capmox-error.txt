@@ -1,0 +1,4 @@
+# CAPMOX controller: repeated error (trimmed, 3 of many identical lines)
+E1122 04:22:17.532627       1 proxmoxmachine_controller.go:226] "error reconciling VM" err="unable to get cloud-init status: no pid returned from agent exec command" controller="proxmoxmachine" controllerGroup="infrastructure.cluster.x-k8s.io" controllerKind="
+E1122 04:22:17.545653       1 controller.go:474] "Reconciler error" err="failed to reconcile VM: unable to get cloud-init status: no pid returned from agent exec command" controller="proxmoxmachine" controllerGroup="infrastructure.cluster.x-k8s.io" controllerK
+E1122 04:22:18.234369       1 proxmoxmachine_controller.go:226] "error reconciling VM" err="unable to get cloud-init status: no pid returned from agent exec command" controller="proxmoxmachine" controllerGroup="infrastructure.cluster.x-k8s.io" controllerKind="

@@ -1,0 +1,34 @@
+# CAPMOX cloud-init ISO (user-data omitted: it carries cluster PKI)
+## network-config
+network:
+  version: 2
+  renderer: networkd
+  ethernets:
+    eth0:
+      match:
+        macaddress: BC:24:11:B3:C7:A8
+      dhcp4: false
+      dhcp6: false
+      addresses:
+        - '192.168.186.200/24'
+      routes:
+        - { "to": "0.0.0.0/0",  "via": "192.168.186.1",  "metric": 100, }
+      nameservers:
+        addresses:
+          - '192.168.186.1'
+## meta-data
+instance-id: ba30fd34-a735-4eb1-a771-a136f3544404
+local-hostname: lab01-vwblq-rpmnx
+hostname: lab01-vwblq-rpmnx
+provider-id: proxmox://ba30fd34-a735-4eb1-a771-a136f3544404
+kubernetes-version: v1.36.6
+
+## Proxmox ide2 cloud-init drive (qm cloudinit dump 110 network), before removal:
+version: 1; config: nameserver only (no IP, no gateway)
+
+# serial console, first boot after removing ide2 (cloud-init lines)
+[    1.825431] sr 0:0:0:0: [sr0] scsi3-mmc drive: 4x/4x cd/rw xa/form2 tray
+[    1.845422] sr 2:0:0:0: [sr1] scsi3-mmc drive: 4x/4x cd/rw xa/form2 tray
+[    5.699094] cloud-init[811]: ci-info: | ens18  | True |       192.168.186.161        | 255.255.255.0 | global | bc:24:11:b3:c7:a8 |
+[    5.700971] cloud-init[811]: ci-info: | ens18  | True | fe80::be24:11ff:feb3:c7a8/64 |       .       |  link  | bc:24:11:b3:c7:a8 |
+[    6.770618] cloud-init[873]: Cloud-init v. 24.4-7.el10_2.1.rocky.0.1 finished at Sun, 22 Nov 2026 05:07:56 +0000. Datasource DataSourceNoCloud [seed=/dev/sr1].  Up 6.75 seconds

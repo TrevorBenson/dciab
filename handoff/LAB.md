@@ -24,7 +24,7 @@ Never put secrets here: no token secrets, passwords or keys.
 - The workstation is on 192.168.186.0/24. Its firewalld already allows TCP 1025–65535.
 - Bootc node template: `rocky10-bootc-thin-kube-v1.36.6`, **VMID 124** on `pve1`, storage `pool0` (task 0006 rerun, built from `main` at `366b7bc`): Rocky 10.3, CRI-O 1.36.9, Kubernetes 1.36.6, a 10 GiB disk (8.5 GiB root; `config.toml`'s `minsize = "2 GiB"` did not shrink it), SeaBIOS, a cloud-init drive. The zvol is thin (`refreservation` none, about 1 GiB used). Its root grows to fill a larger disk at boot (a 25G clone gets a 23.5 GiB root). VMID 123, the first-run template with a 20G disk, still exists until Trevor deletes it; VMID 122 is gone. Use 124.
 - Importing a disk image: `local` has no `import` content type, so copy the qcow2 to the node (`scp` to `/var/tmp`) and run `qm importdisk <vmid> <file> pool0` over SSH as root, using the diagnostic key.
-- On `pve1`, `qm guest exec` is disabled, so a guest-agent command cannot run inside a VM; use SSH.
+- `qm guest exec` fails on the bootc nodes (`Command guest-exec has been disabled: the command is not allowed`): the node image's `qemu-ga` runs with an allow-list that leaves out `guest-exec` and `guest-exec-status`, so it is the image, not Proxmox. Use SSH for in-VM checks. CAPMOX needs `guest-exec` to read cloud-init's status, so no node bootstraps until the image allows it (0003 report).
 - `sudo` on the workstation needs a password, so the runner cannot run root builds. The bootc image stages build rootless; only the bootc-image-builder disk step needs root, which Trevor runs.
 - A test clone uses a free VMID of its own (the runner may pick one) and is deleted afterwards.
 
@@ -34,3 +34,11 @@ Never put secrets here: no token secrets, passwords or keys.
 - A Ventoy stick image booted under that Secure Boot VM first shows `Verification failed: (0x1A) Security Violation`. Press OK, choose *Enroll key from disk*, pick `ENROLL_THIS_KEY_IN_MOKMANAGER.cer` on VTOYEFI, confirm, reboot. It needs someone at the Proxmox console.
 - The Proxmox console scales poorly under Ventoy's grub2 mode (a thin black bar); pressing Enter still starts the installer.
 - A large raw image can go straight into a VM's zvol without staging on `local` (about 38 GB free there): `zstd -c image | ssh root@pve1 'zstd -d | dd of=/dev/zvol/pool0/vm-<id>-disk-<n> bs=4M'`; 42 GiB took 1m 38s. Check with `head -c <bytes> /dev/zvol/... | sha256sum`.
+
+
+## CAPMOX on this Proxmox (task 0003)
+
+- The node network for a cluster is untagged `vmbr0`: nodes `192.168.186.200-.209/24`, gateway `.1`, API VIP `.199`, DNS `192.168.186.1`, pod CIDR `10.250.0.0/16`, service CIDR `10.251.0.0/16`. The workstation reaches all of it.
+- The CAPMOX credentials Secret (`<cluster>-proxmox-credentials`: keys `url`, `token`, `secret`) is built from `~/.dciab-e2e/proxmox.env` (`PVE_URL`, `PVE_TOKEN_ID`, `PVE_TOKEN_SECRET`); the URL host is `pve1`'s Tailscale name.
+- CAPMOX 0.9.2 uploads its own cloud-init ISO (`local:iso/user-data-<vmid>.iso`, label `cidata`) and attaches it at `ide0`. A node template that also carries Proxmox's cloud-init drive on `ide2` makes the guest read `ide2` instead, so the node gets DHCP and never gets its bootstrap data.
+- A management cluster kept for days goes stale against `main`'s classes, and `helm upgrade classes` can fail on immutable machine templates; start the management cluster fresh for each run.
