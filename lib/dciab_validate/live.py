@@ -25,6 +25,13 @@ NTP_OFFSET_WARN = 1.0  # seconds; certificates and etcd care about clock skew
 MAX_WORKERS = 16
 ARP_WORKERS = 32
 VSPHERE_PORT = 443
+MAX_PROBES_PER_RANGE = 256
+
+
+def clean(value) -> str:
+    """A server-supplied value made safe to print: no control characters, bounded length."""
+    text = "".join(ch if ch.isprintable() else "?" for ch in str(value))
+    return text[:120]
 
 
 class Results:
@@ -82,7 +89,7 @@ def check_proxmox(spec: dict, config_dir: FsPath, timeout: float) -> Results:
     if status != 200:
         r.error(base + ("url",), f"GET /api2/json/version answered HTTP {status}", "check that the URL is the Proxmox API")
         return r
-    r.note(f"Proxmox VE {version.get('version', '?') if isinstance(version, dict) else '?'} at {client.where} "
+    r.note(f"Proxmox VE {clean(version.get('version', '?')) if isinstance(version, dict) else '?'} at {client.where} "
            f"accepted token {creds['tokenID']}")
 
     try:
@@ -95,7 +102,7 @@ def check_proxmox(spec: dict, config_dir: FsPath, timeout: float) -> Results:
         for i, node in enumerate(px["nodes"]):
             if node not in online:
                 r.error(base + ("nodes", i), f"{node}: not a node of this Proxmox cluster",
-                        "use node names from the cluster: " + ", ".join(sorted(online)))
+                        "use node names from the cluster: " + ", ".join(clean(n) for n in sorted(online)))
             elif online[node] != "online":
                 r.warn(base + ("nodes", i), f"{node} is {online[node]}", "bring the node online before the seed step")
         tnode = px["templateNode"]
@@ -111,24 +118,31 @@ def check_proxmox(spec: dict, config_dir: FsPath, timeout: float) -> Results:
             elif not match[0].get("template"):
                 r.error(base + ("templateID",), f"{px['templateID']} on {tnode} is a VM, not a template",
                         "convert it to a template (qm template) or use the template's ID")
-        no_storage, no_bridge, bridges_seen = [], [], set()
+        no_storage, no_bridge, bridges_seen, unreadable = [], [], set(), []
         for node in px["nodes"]:
             if online.get(node) != "online":
                 continue
             status, stores = get(f"/nodes/{quote(node)}/storage")
-            if status == 200 and px["storage"] not in {s.get("storage") for s in stores or []}:
+            if status != 200:
+                unreadable.append(f"/nodes/{node}/storage (HTTP {status})")
+            elif px["storage"] not in {s.get("storage") for s in stores or []}:
                 no_storage.append(node)
             status, nets = get(f"/nodes/{quote(node)}/network")
             bridges = {n.get("iface") for n in nets or [] if "bridge" in str(n.get("type", "")) and n.get("iface")}
             bridges_seen |= bridges
-            if status == 200 and px["bridge"] not in bridges:
+            if status != 200:
+                unreadable.append(f"/nodes/{node}/network (HTTP {status})")
+            elif px["bridge"] not in bridges:
                 no_bridge.append(node)
+        if unreadable:
+            r.error(base + ("credentials", "tokenID"), "the token can't read " + ", ".join(unreadable),
+                    "give the token Sys.Audit and Datastore.Audit so DCiaB can check storage and bridges")
         if no_storage:
             r.error(base + ("storage",), f"{px['storage']}: no such storage on " + ", ".join(no_storage),
                     "use a storage every node in spec.platform.proxmox.nodes has")
         if no_bridge:
             r.error(base + ("bridge",), f"{px['bridge']}: no such bridge on " + ", ".join(no_bridge),
-                    "use a bridge every node has; bridges seen: " + (", ".join(sorted(bridges_seen)) or "(none)"))
+                    "use a bridge every node has; bridges seen: " + (", ".join(clean(b) for b in sorted(bridges_seen)) or "(none)"))
     except ProbeError as exc:
         r.error(base + ("url",), str(exc), "check the network path to the Proxmox API")
     return r
@@ -183,17 +197,23 @@ def check_vsphere(spec: dict, config_dir: FsPath, timeout: float) -> Results:
             return r
         dc = dcs[0]["datacenter"]
         leaf = lambda p: p.rstrip("/").rsplit("/", 1)[-1]  # noqa: E731 - the REST filters match names only
+        clusters = find("cluster", vs["cluster"], datacenters=dc)
+        if clusters is not None and not clusters:
+            r.error(base + ("cluster",), f"{vs['cluster']}: no cluster named {vs['cluster']} in {vs['datacenter']}",
+                    "use the name of an existing cluster")
         wanted = [
-            ("cluster", "cluster", vs["cluster"], {}),
-            ("datastore", "datastore", vs["datastore"], {}),
-            ("network", "network", vs["network"], {}),
-            ("folder", "folder", leaf(vs["folder"]), {"type": "VIRTUAL_MACHINE"}),
-            ("resourcePool", "resource-pool", leaf(vs["resourcePool"]), {}),
+            ("datastore", "datastore", vs["datastore"], {"datacenters": dc}),
+            ("network", "network", vs["network"], {"datacenters": dc}),
+            ("folder", "folder", leaf(vs["folder"]), {"datacenters": dc, "type": "VIRTUAL_MACHINE"}),
         ]
+        if clusters:
+            wanted.append(("resourcePool", "resource-pool", leaf(vs["resourcePool"]),
+                           {"clusters": str(clusters[0].get("cluster", ""))}))
         for field, kind, name, extra in wanted:
-            found = find(kind, name, datacenters=dc, **extra)
+            found = find(kind, name, **extra)
             if found is not None and not found:
-                r.error(base + (field,), f"{vs[field]}: no {kind.replace('-', ' ')} named {name} in {vs['datacenter']}",
+                where = vs["cluster"] if field == "resourcePool" else vs["datacenter"]
+                r.error(base + (field,), f"{vs[field]}: no {kind.replace('-', ' ')} named {name} in {where}",
                         f"create it, or use the name of an existing {kind.replace('-', ' ')}")
         found = find("vm", vs["template"], datacenters=dc)
         if found is not None and not found:
@@ -235,8 +255,8 @@ def check_redfish(path: Path, host: dict, config_dir: FsPath, timeout: float) ->
     client = HttpsClient(f"https://{parts.netloc}", _redfish_trust(bmc, config_dir), timeout)
     name = host["name"]
     try:
-        root = client.request("GET", "/redfish/v1/")
-        if root.status != 200:
+        root = client.request("GET", "/redfish/v1/", auth)  # some BMCs want credentials even here
+        if root.status not in (200, 401, 403):
             r.error(path + ("address",), f"{name}: GET /redfish/v1/ answered HTTP {root.status}",
                     "check that the address is the BMC and Redfish is enabled")
             return r
@@ -253,7 +273,7 @@ def check_redfish(path: Path, host: dict, config_dir: FsPath, timeout: float) ->
         members = [m.get("@odata.id", "").rstrip("/") for m in systems.json().get("Members", [])]
         if system_path not in members:
             r.error(path + ("address",), f"{name}: no system {system_path} on this BMC",
-                    "use one of: " + (", ".join(members) or "(none listed)"))
+                    "use one of: " + (", ".join(clean(m) for m in members) or "(none listed)"))
             return r
         sys_resp = client.request("GET", system_path, auth)
         if sys_resp.status != 200:
@@ -269,7 +289,7 @@ def check_redfish(path: Path, host: dict, config_dir: FsPath, timeout: float) ->
             r.error(path + ("address",), f"{name}: the BMC's virtual media takes no CD or DVD images",
                     "enable CD/DVD virtual media on the BMC")
         else:
-            r.note(f"{name}: BMC {client.where} accepted {creds['username']}; virtual media {media[0]}")
+            r.note(f"{name}: BMC {client.where} accepted {creds['username']}; virtual media {clean(media[0])}")
     except ProbeError as exc:
         r.error(path + ("address",), f"{name}: {exc}",
                 "check the route from this host to the BMC network, the BMC address and its TLS trust")
@@ -340,6 +360,7 @@ def dns_names(spec: dict) -> List[str]:
     host = target.split("://", 1)[1].split("@", 1)[-1].split(":", 1)[0].split("/", 1)[0]
     names.append(host)
     names.extend(spec["network"]["ntpServers"])
+    names.extend(spec["bootstrap"].get("ntp", {}).get("upstream", []))
     out = []
     for n in names:
         if not n or _is_ip(n) or n == domain or n.endswith("." + domain) or n in out:
@@ -383,9 +404,11 @@ def check_dns(path: Path, server: str, names: List[str], timeout: float) -> Resu
 
 # -- unused-address probes ------------------------------------------------------------------
 
-def claimed_addresses(spec: dict) -> List[Tuple[Path, str]]:
-    """Node-network addresses DCiaB will take that nothing may be using yet."""
+def claimed_addresses(spec: dict) -> Tuple[List[Tuple[Path, str]], List[str]]:
+    """Node-network addresses DCiaB will take that nothing may be using yet, and notes about ranges
+    too large to probe whole (only their first MAX_PROBES_PER_RANGE addresses are probed)."""
     out: List[Tuple[Path, str]] = [(("spec", "bootstrap", "address"), spec["bootstrap"]["address"])]
+    notes: List[str] = []
     for i, a in enumerate(spec["network"]["dnsServiceIPs"]):
         out.append((("spec", "network", "dnsServiceIPs", i), a))
     clusters = [(("spec", "clusters", n), spec["clusters"][n]) for n in ("mgmt", "infra")]
@@ -395,40 +418,73 @@ def claimed_addresses(spec: dict) -> List[Tuple[Path, str]]:
             continue  # on a bare-metal network this host may not be on
         out.append((cpath + ("apiVIP",), c["apiVIP"]))
         lo, hi = nu.span_of_range(c["nodeIPRange"])
+        if hi - lo + 1 > MAX_PROBES_PER_RANGE:
+            notes.append(f"{c['nodeIPRange']}: only the first {MAX_PROBES_PER_RANGE} addresses were probed")
+            hi = lo + MAX_PROBES_PER_RANGE - 1
         for v in range(lo, hi + 1):
             out.append((cpath + ("nodeIPRange",), str(ipaddress.IPv4Address(v))))
-    return out
+    return out, notes
+
+
+def probe_interface(spec: dict) -> Optional[str]:
+    """The interface on the node network: the bootstrap NIC, or its VLAN interface when tagged."""
+    iface = probes.find_interface(spec["bootstrap"]["interface"])
+    if iface and spec["bootstrap"].get("managementVLAN") == "tagged":
+        sub = probes.find_interface(f"{iface}.{spec['network']['nodes']['vlan']}")
+        if sub:
+            return sub
+    return iface
 
 
 def check_addresses(spec: dict, timeout: float) -> Results:
     r = Results()
     want = spec["bootstrap"]["interface"]
-    iface = probes.find_interface(want)
+    ipath: Path = ("spec", "bootstrap", "interface")
+    iface = probe_interface(spec)
     if iface is None:
         r.note(f"unused-address probes skipped: the bootstrap interface {want} isn't on this host "
                "(run --live on the bootstrap host to probe the node network)")
+        return r
+    if not probes.interface_up(iface):
+        r.warn(ipath, f"{iface} is down, so unused addresses were not probed",
+               "connect the interface to the node network and rerun --live")
         return r
     method = probes.probe_method()
     if method is None:
         r.note("unused-address probes skipped: neither arping (iputils) nor ping is installed")
         return r
-    local = set(probes.local_ipv4_addresses())
-    targets = [(p, a) for p, a in claimed_addresses(spec) if a not in local]
+    word = "ARP" if method == probes.ARPING else "ping"
+    gateway = spec["network"]["nodes"]["gateway"]
+    # A known-present host first: if the gateway is silent, silence proves nothing about the rest.
+    if probes.address_in_use(method, iface, gateway, timeout) is not True:
+        r.warn(ipath, f"the node network gateway {gateway} doesn't answer {word} on {iface}, so unused "
+               "addresses were not probed",
+               "check that this interface is on the node network (and VLAN), and that the probe can run (root)")
+        return r
+    local_list = probes.local_ipv4_addresses()
+    local = set(local_list or [])
+    claimed, range_notes = claimed_addresses(spec)
+    targets = [(p, a) for p, a in claimed if a not in local]
+    if local_list is None:
+        targets = [(p, a) for p, a in targets if p != ("spec", "bootstrap", "address")]
+        r.note("couldn't list this host's addresses (`ip` failed), so the bootstrap address was not probed")
     with ThreadPoolExecutor(max_workers=ARP_WORKERS) as pool:
         results = list(pool.map(lambda t: probes.address_in_use(method, iface, t[1], timeout), targets))
     failed = 0
-    reported = set()
     for (path, addr), used in zip(targets, results):
         if used is None:
             failed += 1
-        elif used and (path, addr) not in reported:
-            reported.add((path, addr))
-            r.error(path, f"{addr} answers {'ARP' if method == probes.ARPING else 'ping'} on {iface}: it is in use",
+        elif used:
+            r.error(path, f"{addr} answers {word} on {iface}: it is in use",
                     "free the address, or choose addresses nothing on the node network uses")
+    if failed:
+        r.warn(ipath, f"{failed} of {len(targets)} address probes on {iface} failed to run",
+               "run --live as root (arping needs CAP_NET_RAW) so every address is probed")
     how = ("arping -D (ARP duplicate address detection)" if method == probes.ARPING
            else "ping (ICMP; a host that drops ping looks unused, install iputils arping for a stronger check)")
-    r.note(f"probed {len(targets)} node-network addresses on {iface} with {how}"
-           + (f"; {failed} probe(s) failed to run (arping needs root or CAP_NET_RAW)" if failed else ""))
+    r.note(f"probed {len(targets)} node-network addresses on {iface} with {how}")
+    for n in range_notes:
+        r.note(n)
     return r
 
 

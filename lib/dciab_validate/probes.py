@@ -26,6 +26,9 @@ class ProbeError(Exception):
     pass
 
 
+MAX_BODY = 4 << 20  # bytes; no API answer DCiaB reads is near this
+
+
 # -- HTTPS --------------------------------------------------------------------
 
 @dataclass(frozen=True)
@@ -116,7 +119,9 @@ class HttpsClient:
             try:
                 conn.request(method, path, body=body, headers=all_headers)
                 resp = conn.getresponse()
-                data = resp.read()
+                data = resp.read(MAX_BODY + 1)
+                if len(data) > MAX_BODY:
+                    raise ProbeError(f"{self.where}: the answer is larger than {MAX_BODY // (1 << 20)} MiB")
             except socket.timeout:
                 raise ProbeError(f"{self.where}: no answer within {self.timeout:g}s") from None
             except (OSError, http.client.HTTPException) as exc:
@@ -151,8 +156,9 @@ def sntp_offset(server: str, timeout: float) -> Tuple[float, int]:
         t1 = time.time()
         packet = b"\x1b" + 39 * b"\0" + _to_ntp(t1)  # LI 0, version 3, mode 3 (client)
         try:
-            s.sendto(packet, addr[4])
-            data, _ = s.recvfrom(512)
+            s.connect(addr[4])  # the kernel then drops datagrams from any other address
+            s.send(packet)
+            data = s.recv(512)
         except socket.timeout:
             raise ProbeError(f"{server}: no NTP answer within {timeout:g}s") from None
         except OSError as exc:
@@ -160,15 +166,15 @@ def sntp_offset(server: str, timeout: float) -> Tuple[float, int]:
         t4 = time.time()
     if len(data) < 48:
         raise ProbeError(f"{server}: a short NTP answer ({len(data)} bytes)")
-    mode, stratum = data[0] & 0x7, data[1]
+    leap, mode, stratum = data[0] >> 6, data[0] & 0x7, data[1]
     if mode != 4:
         raise ProbeError(f"{server}: not an NTP server answer (mode {mode})")
     if data[24:32] != packet[40:48]:
         raise ProbeError(f"{server}: the NTP answer doesn't match the query")
     if stratum == 0:
         raise ProbeError(f"{server}: the server refused to serve time (kiss-o'-death {data[12:16]!r})")
-    if stratum >= 16:
-        raise ProbeError(f"{server}: the server is not synchronized (stratum {stratum})")
+    if stratum >= 16 or leap == 3:
+        raise ProbeError(f"{server}: the server is not synchronized (stratum {stratum}, leap indicator {leap})")
     t2, t3 = _from_ntp(data[32:40]), _from_ntp(data[40:48])
     return ((t2 - t1) + (t3 - t4)) / 2, stratum
 
@@ -188,17 +194,18 @@ def build_query(name: str, qtype: int, qid: int) -> bytes:
 
 
 def dns_query(server: str, name: str, qtype: int, timeout: float) -> Tuple[str, int]:
-    """Send one recursive query over UDP. Returns (rcode name, answer count)."""
+    """Send one recursive query over UDP. Returns (rcode name, number of answers of the asked type)."""
     qid = random.randint(0, 0xFFFF)
     query = build_query(name, qtype, qid)
     addr = _resolve(server, DNS_PORT, socket.SOCK_DGRAM)
     with socket.socket(addr[0], socket.SOCK_DGRAM) as s:
         s.settimeout(timeout)
         try:
-            s.sendto(query, addr[4])
+            s.connect(addr[4])
+            s.send(query)
             deadline = time.monotonic() + timeout
             while True:
-                data, _ = s.recvfrom(4096)
+                data = s.recv(4096)
                 if len(data) >= 12 and struct.unpack("!H", data[:2])[0] == qid:
                     break
                 if time.monotonic() > deadline:
@@ -207,11 +214,43 @@ def dns_query(server: str, name: str, qtype: int, timeout: float) -> Tuple[str, 
             raise ProbeError(f"{server}: no DNS answer within {timeout:g}s") from None
         except OSError as exc:
             raise ProbeError(f"{server}: {exc.strerror or exc}") from None
-    _, flags, _, ancount, _, _ = struct.unpack("!HHHHHH", data[:12])
+    _, flags, qdcount, ancount, _, _ = struct.unpack("!HHHHHH", data[:12])
     if not flags & 0x8000:
         raise ProbeError(f"{server}: the answer is not a DNS response")
     rcode = flags & 0xF
-    return RCODES.get(rcode, f"RCODE{rcode}"), ancount
+    if rcode == 0 and not flags & 0x0080:
+        raise ProbeError(f"{server}: answers without recursion (RA flag not set); it is not a recursive resolver")
+    try:
+        count = count_answers(data, qdcount, ancount, qtype)
+    except (IndexError, struct.error):
+        raise ProbeError(f"{server}: a malformed DNS answer") from None
+    return RCODES.get(rcode, f"RCODE{rcode}"), count
+
+
+def _skip_name(data: bytes, off: int) -> int:
+    while True:
+        n = data[off]
+        if n == 0:
+            return off + 1
+        if n & 0xC0 == 0xC0:  # a compression pointer ends the name
+            return off + 2
+        off += 1 + n
+
+
+def count_answers(data: bytes, qdcount: int, ancount: int, qtype: int) -> int:
+    """Answer records of the asked type (a CNAME alone doesn't count as an address)."""
+    off = 12
+    for _ in range(qdcount):
+        off = _skip_name(data, off) + 4
+    found = 0
+    for _ in range(ancount):
+        off = _skip_name(data, off)
+        rtype, _, _, rdlen = struct.unpack("!HHIH", data[off:off + 10])
+        off += 10 + rdlen
+        if off > len(data):
+            raise IndexError
+        found += rtype == qtype
+    return found
 
 
 def _resolve(host: str, port: int, socktype: int):
@@ -246,6 +285,14 @@ def find_interface(name_or_mac: str, sys_net: str = SYS_NET) -> Optional[str]:
     return None
 
 
+def interface_up(iface: str, sys_net: str = SYS_NET) -> bool:
+    try:
+        with open(os.path.join(sys_net, iface, "operstate"), encoding="ascii") as fh:
+            return fh.read().strip() in ("up", "unknown")
+    except OSError:
+        return True  # can't tell; the gateway probe decides
+
+
 def run_cmd(argv: Sequence[str], timeout: float) -> Tuple[int, str]:
     """Run a command without a shell. Returns (exit code, stdout+stderr); 124 on timeout."""
     try:
@@ -257,13 +304,13 @@ def run_cmd(argv: Sequence[str], timeout: float) -> Tuple[int, str]:
     return r.returncode, (r.stdout or "") + (r.stderr or "")
 
 
-def local_ipv4_addresses() -> List[str]:
-    """IPv4 addresses on this host's interfaces (from `ip`), or [] when that can't be read."""
+def local_ipv4_addresses() -> Optional[List[str]]:
+    """IPv4 addresses on this host's interfaces (from `ip`), or None when they can't be read."""
     if not shutil.which("ip"):
-        return []
+        return None
     code, out = run_cmd(["ip", "-o", "-4", "addr", "show"], 5)
     if code != 0:
-        return []
+        return None
     found = []
     for line in out.splitlines():
         parts = line.split()

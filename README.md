@@ -79,6 +79,8 @@ The checks:
 
 Every TLS connection is verified: against the pinned fingerprint (`tlsFingerprint`, `thumbprint`) before any credential is sent, against `caBundle` for BMCs that use one, or against the system CAs.
 
+`--live` sends the referenced credentials to the endpoints the config names, as the later steps do, so run it only on a config you trust.
+
 ## Layout
 
 ```text

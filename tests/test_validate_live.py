@@ -193,6 +193,15 @@ def test_proxmox_missing_things(cert, servers, monkeypatch, tmp_path):
     assert [f for f in r.findings if f.severity == "warning" and "offline" in f.found]
 
 
+def test_proxmox_unreadable_storage_is_an_error(cert, servers, monkeypatch, tmp_path):
+    monkeypatch.setenv("DCIAB_PVE_TOKEN", TOKEN)
+    routes = pve_routes()
+    routes[("GET", "/api2/json/nodes/pve02/storage")] = (403, {"data": None})
+    srv = servers(cert, routes, PVE_AUTH)
+    [f] = live.check_proxmox(proxmox_spec(srv.port, cert["sha256"]), tmp_path, 3).findings
+    assert "can't read /nodes/pve02/storage (HTTP 403)" in f.found
+
+
 def test_proxmox_template_id_missing(cert, servers, monkeypatch, tmp_path):
     monkeypatch.setenv("DCIAB_PVE_TOKEN", TOKEN)
     srv = servers(cert, pve_routes(), PVE_AUTH)
@@ -226,10 +235,10 @@ def vsphere_routes(template=True, datastore=True):
         ("DELETE", "/api/session"): (204, None),
         ("GET", "/api/vcenter/datacenter?names=DC1"): (200, [{"datacenter": "datacenter-1", "name": "DC1"}]),
         ("GET", "/api/vcenter/cluster?names=Cluster1" + q): (200, [{"cluster": "domain-c1"}]),
+        ("GET", "/api/vcenter/resource-pool?names=dciab&clusters=domain-c1"): (200, [{"resource_pool": "rp-1"}]),
         ("GET", "/api/vcenter/datastore?names=vsanDatastore" + q): (200, [{"datastore": "ds-1"}] if datastore else []),
         ("GET", "/api/vcenter/network?names=dciab-nodes-110" + q): (200, [{"network": "net-1"}]),
         ("GET", "/api/vcenter/folder?names=dciab" + q + "&type=VIRTUAL_MACHINE"): (200, [{"folder": "group-v1"}]),
-        ("GET", "/api/vcenter/resource-pool?names=dciab" + q): (200, [{"resource_pool": "rp-1"}]),
         ("GET", "/api/vcenter/vm?names=rocky10-kube-v1.36.6" + q): (200, [{"vm": "vm-1"}] if template else []),
     }
 
@@ -323,6 +332,12 @@ def test_redfish_all_good(cert, servers, site, media):
     assert r.findings == [] and any("virtual media /vm/1" in n for n in r.notes)
 
 
+def test_redfish_root_that_needs_credentials(cert, servers, site):
+    srv = servers(cert, redfish_routes(), BMC_AUTH)
+    srv.open_paths = set()
+    assert live.check_redfish(P, bmc_host(srv.port, cert), site.dir, 3).findings == []
+
+
 def test_redfish_ca_bundle(cert, servers, site):
     srv = servers(cert, redfish_routes(), BMC_AUTH)
     assert live.check_redfish(P, bmc_host(srv.port, cert, trust="ca"), site.dir, 3).findings == []
@@ -405,11 +420,11 @@ def udp():
         s.close()
 
 
-def ntp_reply(skew=0.0, stratum=2, mode=4):
+def ntp_reply(skew=0.0, stratum=2, mode=4, leap=0):
     def reply(data):
         now = time.time() + skew
         ts = probes._to_ntp(now)
-        return bytes([0x20 | mode, stratum, 6, 0xEC]) + b"\0" * 8 + b"LOCL" + ts + data[40:48] + ts + ts
+        return bytes([(leap << 6) | 0x20 | mode, stratum, 6, 0xEC]) + b"\0" * 8 + b"LOCL" + ts + data[40:48] + ts + ts
     return reply
 
 
@@ -428,7 +443,7 @@ def test_ntp_big_offset_is_a_warning(udp, monkeypatch):
 
 
 @pytest.mark.parametrize("kwargs,text", [({"stratum": 0}, "kiss-o'-death"), ({"stratum": 16}, "not synchronized"),
-                                         ({"mode": 3}, "mode 3")])
+                                         ({"mode": 3}, "mode 3"), ({"leap": 3}, "leap indicator 3")])
 def test_ntp_bad_answers(udp, monkeypatch, kwargs, text):
     srv = udp(ntp_reply(**kwargs))
     monkeypatch.setattr(probes, "NTP_PORT", srv.port)
@@ -452,11 +467,16 @@ def test_ntp_targets_follow_bootstrap_ntp():
     assert [p[1] for p in live.ntp_targets(plain)] == plain["network"]["ntpServers"]
 
 
-def dns_reply(rcode=0, ancount=1):
+def dns_reply(rcode=0, answers=(1,), ra=True):
+    """Answers with one record per entry in `answers` (its type: 1 = A, 5 = CNAME)."""
     def reply(data):
-        qid = data[:2]
-        body = data[12:]
-        return qid + struct.pack("!HHHHH", 0x8180 | rcode, 1, ancount, 0, 0) + body
+        qid, question = data[:2], data[12:]
+        flags = 0x8100 | (0x80 if ra else 0) | rcode
+        records = b""
+        for rtype in answers:
+            rdata = b"\x0a\x00\x00\x01" if rtype == 1 else b"\x02vc\xc0\x0c"
+            records += b"\xc0\x0c" + struct.pack("!HHIH", rtype, 1, 300, len(rdata)) + rdata
+        return qid + struct.pack("!HHHHH", flags, 1, len(answers), 0, 0) + question + records
     return reply
 
 
@@ -474,14 +494,34 @@ def test_dns_answers(udp, monkeypatch):
 
 
 def test_dns_nxdomain_is_a_warning(udp, monkeypatch):
-    srv = udp(dns_reply(rcode=3, ancount=0))
+    srv = udp(dns_reply(rcode=3, answers=()))
     monkeypatch.setattr(probes, "DNS_PORT", srv.port)
     [f] = live.check_dns(("spec", "network", "upstreamResolvers", 0), "127.0.0.1", ["vc.example.net"], 2).findings
     assert f.severity == "warning" and "NXDOMAIN" in f.found
 
 
+def test_dns_cname_only_is_a_warning(udp, monkeypatch):
+    srv = udp(dns_reply(answers=(5,)))
+    monkeypatch.setattr(probes, "DNS_PORT", srv.port)
+    [f] = live.check_dns(("spec", "network", "upstreamResolvers", 0), "127.0.0.1", ["vc.example.net"], 2).findings
+    assert f.severity == "warning" and "no address for vc.example.net" in f.found
+
+
+def test_dns_cname_then_a_counts(udp, monkeypatch):
+    srv = udp(dns_reply(answers=(5, 1)))
+    monkeypatch.setattr(probes, "DNS_PORT", srv.port)
+    assert probes.dns_query("127.0.0.1", "vc.example.net", probes.TYPE_A, 2) == ("NOERROR", 1)
+
+
+def test_dns_without_recursion_is_an_error(udp, monkeypatch):
+    srv = udp(dns_reply(ra=False))
+    monkeypatch.setattr(probes, "DNS_PORT", srv.port)
+    [f] = live.check_dns(("spec", "network", "upstreamResolvers", 0), "127.0.0.1", ["vc.example.net"], 2).findings
+    assert f.severity == "error" and "without recursion" in f.found
+
+
 def test_dns_refused_is_an_error(udp, monkeypatch):
-    srv = udp(dns_reply(rcode=5, ancount=0))
+    srv = udp(dns_reply(rcode=5, answers=()))
     monkeypatch.setattr(probes, "DNS_PORT", srv.port)
     [f] = live.check_dns(("spec", "network", "upstreamResolvers", 0), "127.0.0.1", [], 2).findings
     assert f.severity == "error" and "refused" in f.found
@@ -523,7 +563,7 @@ def test_find_interface_by_name_and_mac(tmp_path):
 @pytest.fixture
 def fake_cmds(monkeypatch):
     """Fake arping/ping/ip: addresses in `used` answer, everything else stays quiet."""
-    state = {"used": set(), "calls": [], "tools": {"arping", "ping", "ip"}, "local": "10.30.110.5",
+    state = {"used": set(), "gateway_up": True, "calls": [], "tools": {"arping", "ping", "ip"}, "local": "10.30.110.5",
              "arping_version": "arping from iputils 20240905"}
 
     def which(name):
@@ -536,13 +576,16 @@ def fake_cmds(monkeypatch):
         if argv[:2] == ["arping", "-V"]:
             return 0, state["arping_version"]
         addr = argv[-1]
+        if addr == "10.30.110.1" and state["gateway_up"]:
+            return (1 if argv[0] == "arping" else 0), ""
         if argv[0] == "arping":
             return (1 if addr in state["used"] else 0), ""
         return (0 if addr in state["used"] else 1), ""
 
     monkeypatch.setattr(probes.shutil, "which", which)
     monkeypatch.setattr(probes, "run_cmd", run_cmd)
-    monkeypatch.setattr(probes, "find_interface", lambda want: "eno1")
+    monkeypatch.setattr(probes, "find_interface", lambda want: "eno1" if ":" in want else state.get("sub"))
+    monkeypatch.setattr(probes, "interface_up", lambda iface: True)
     return state
 
 
@@ -558,6 +601,35 @@ def test_arping_finds_a_conflict(fake_cmds):
     assert "10.30.110.5" not in probed  # the bootstrap address is already on this host
     assert "10.30.110.53" in probed and "10.30.110.20" in probed and "10.30.110.49" in probed
     assert all("-I" in c and "eno1" in c for c in fake_cmds["calls"] if c[0] == "arping" and c[1] == "-D")
+
+
+def test_probes_use_the_vlan_interface_when_tagged(fake_cmds):
+    fake_cmds["sub"] = "eno1.110"
+    r = live.check_addresses(load_example("proxmox-bare")["spec"], 1)
+    assert r.findings == [] and any("on eno1.110" in n for n in r.notes)
+
+
+def test_silent_gateway_skips_the_probes(fake_cmds):
+    fake_cmds["gateway_up"] = False
+    r = live.check_addresses(load_example("proxmox-bare")["spec"], 1)
+    [f] = r.findings
+    assert f.severity == "warning" and "gateway 10.30.110.1 doesn't answer ARP" in f.found
+    assert len([c for c in fake_cmds["calls"] if c[0] == "arping" and c[1] == "-D"]) == 1
+
+
+def test_unknown_local_addresses_skip_the_bootstrap_address(fake_cmds):
+    fake_cmds["tools"] = {"arping", "ping"}
+    r = live.check_addresses(load_example("proxmox-bare")["spec"], 1)
+    probed = [c[-1] for c in fake_cmds["calls"] if c[0] == "arping" and c[1] == "-D"]
+    assert "10.30.110.5" not in probed and any("bootstrap address was not probed" in n for n in r.notes)
+
+
+def test_large_ranges_are_capped(monkeypatch):
+    monkeypatch.setattr(live, "MAX_PROBES_PER_RANGE", 4)
+    spec = load_example("proxmox-bare")["spec"]
+    claimed, notes = live.claimed_addresses(spec)
+    assert len([p for p, _ in claimed if p == ("spec", "clusters", "infra", "nodeIPRange")]) == 4
+    assert any("only the first 4" in n for n in notes)
 
 
 def test_ping_fallback_without_iputils_arping(fake_cmds):
@@ -577,15 +649,16 @@ def test_no_probe_tool(fake_cmds):
 
 def test_arping_without_permission_is_counted(fake_cmds, monkeypatch):
     real = probes.run_cmd
-    monkeypatch.setattr(probes, "run_cmd",
-                        lambda argv, timeout: (2, "permission") if argv[:2] == ["arping", "-D"] else real(argv, timeout))
+    monkeypatch.setattr(probes, "run_cmd", lambda argv, timeout: (2, "permission")
+                        if argv[:2] == ["arping", "-D"] and argv[-1] != "10.30.110.1" else real(argv, timeout))
     r = live.check_addresses(load_example("proxmox-bare")["spec"], 1)
-    assert r.findings == [] and any("failed to run" in n for n in r.notes)
+    [f] = r.findings
+    assert f.severity == "warning" and "failed to run" in f.found and "root" in f.fix
 
 
 def test_claimed_addresses_skip_metal3_clusters():
     spec = load_example("metal3-cluster")["spec"]
-    paths = {p for p, _ in live.claimed_addresses(spec)}
+    paths = {p for p, _ in live.claimed_addresses(spec)[0]}
     assert not any(p[0:2] == ("spec", "workloadClusters") and
                    spec["workloadClusters"][p[2]]["class"] == "metal3" for p in paths)
 
@@ -668,3 +741,8 @@ def test_cli_live_survives_a_crashing_check(site, monkeypatch):
 def test_cli_rejects_a_bad_timeout(site):
     with pytest.raises(SystemExit):
         _validate_live(site, load_example("proxmox"), "--timeout", "0")
+
+
+def test_server_values_are_cleaned_before_printing():
+    assert live.clean("9.1\x1b[2J\n") == "9.1?[2J?"
+    assert len(live.clean("x" * 500)) == 120
