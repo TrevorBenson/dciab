@@ -64,11 +64,14 @@ def test_bootstrap_and_mgmt_before_and_after_the_move(tmp_path):
     (tmp_path / "bootstrap.kubeconfig").write_text("x")
     up = [("/readyz", 0, "ok"), ("availableReplicas", 0, "1"), ("clusterclasses", 0, "a\nb\nc\n")]
     assert "3 ClusterClasses" in cli.check_bootstrap(tmp_path, fake(up))["detail"]
-    before = fake([("bootstrap.kubeconfig --request-timeout=10s -n cluster-mgmt", 0, "Provisioning")])
+    before = fake([("bootstrap.kubeconfig --request-timeout=10s -n cluster-mgmt", 0, "mgmt/Provisioning")])
     assert "not moved" in cli.check_mgmt(tmp_path, before)["detail"]
     (tmp_path / "mgmt.kubeconfig").write_text("x")
-    after = fake([("mgmt.kubeconfig --request-timeout=10s -n cluster-mgmt", 0, "Provisioned")])
+    after = fake([("mgmt.kubeconfig --request-timeout=10s -n cluster-mgmt", 0, "mgmt/Provisioned")])
     assert cli.check_mgmt(tmp_path, after)["status"] == "ok"
+    (tmp_path / "mgmt.kubeconfig").unlink()
+    fresh = fake([("bootstrap.kubeconfig --request-timeout=10s -n cluster-mgmt", 0, "mgmt/")])
+    assert "Pending" in cli.check_mgmt(tmp_path, fresh)["detail"]
 
 
 def test_cli_json(tmp_path, monkeypatch, capsys):

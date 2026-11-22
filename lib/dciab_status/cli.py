@@ -121,10 +121,13 @@ def check_bootstrap(state: Path, runner: Runner = run) -> Dict[str, str]:
 
 def cluster_phase(kc: Path, runner: Runner) -> Optional[str]:
     r = kubectl(kc, ["-n", MGMT_NS, "get", "cluster", "mgmt", "--ignore-not-found",
-                     "-o", "jsonpath={.status.phase}"], runner)
+                     "-o", "jsonpath={.metadata.name}/{.status.phase}"], runner)
     if r.returncode != 0:
         return None
-    return r.stdout.strip() or "absent"
+    name, _, phase = r.stdout.strip().partition("/")
+    if not name:
+        return "absent"
+    return phase or "Pending"   # just created: no phase reported yet
 
 
 def check_mgmt(state: Path, runner: Runner = run) -> Dict[str, str]:
