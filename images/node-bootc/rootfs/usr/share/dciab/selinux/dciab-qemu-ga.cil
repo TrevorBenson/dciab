@@ -1,0 +1,10 @@
+; Let the guest agent (virt_qemu_ga_t) run `cloud-init status`, which CAPMOX does through
+; guest-exec. Rocky 10's policy denies the agent executing cloud-init and reading its state
+; under /var/lib/cloud. Without this the agent either fails ("Permission denied") or, once
+; the exec is allowed, reports a wrong "status: not started". Narrow on purpose: nothing
+; here lets the agent write anything or run other programs.
+(allow virt_qemu_ga_t cloud_init_exec_t (file (getattr read open execute execute_no_trans map ioctl)))
+(allow virt_qemu_ga_t cloud_var_lib_t (dir (getattr search open read)))
+(allow virt_qemu_ga_t cloud_var_lib_t (file (getattr read open ioctl)))
+(allow virt_qemu_ga_t cloud_var_lib_t (lnk_file (getattr read)))
+(allow virt_qemu_ga_t init_t (system (status)))

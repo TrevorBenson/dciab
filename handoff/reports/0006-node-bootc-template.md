@@ -1,13 +1,26 @@
 ---
 id: "0006"
-result: blocked
-commit: 18792a8
+result: pass
+commit: HEAD_PLACEHOLDER
 date: 2026-11-22
 ---
 
 Earlier runs: run 1 (`619c9a0`) built template 123, 20G disk, growth passed. Run 2 (`366b7bc`) built template 124, thin, growth passed, disk still 10 GiB. This is run 3, against `main` at `18792a8` (#34).
 
-## Summary
+## Run 4 (same day, after run 3 blocked): PASS
+
+Trevor asked me to research the SELinux denial and, if the fix was a missing policy module with SELinux staying Enforcing, implement and document it, and to make `build.sh` give the output back to the invoking user. Both are done in this PR (outside `may_change: []`, on Trevor's explicit instruction; the planner can change them after review).
+
+- **Research on a clone (127):** the three `virt_qemu_ga_t` denials (execute, execute_no_trans, read/open of `/usr/bin/cloud-init`) were only the first layer. With the exec allowed and the domain in Enforcing, `cloud-init status` **silently returned `status: not started`** (the agent was also denied `search` of `/var/lib/cloud`), which is worse than an error. Running the domain permissive with `semodule -DB` showed the rest: `cloud_var_lib_t` search/read/getattr/ioctl on dirs, files and the `instance` link, `init_t` `system status` (cloud-init asks systemd), and cosmetic ones (`nsfs` getattr from `systemd-detect-virt`, `net_admin` from `systemctl`). The Boolean `virt_qemu_ga_run_unconfined` exists but is off, and would run every exec'd program unconfined; a narrow module is tighter.
+- **Fix:** `images/node-bootc/rootfs/usr/share/dciab/selinux/dciab-qemu-ga.cil` (5 `allow` rules: read/exec `cloud_init_exec_t`; read-only `cloud_var_lib_t`; `init_t` `system status`), loaded in the Containerfile with `semodule -i` (the store is under `/etc/selinux`, which bootc keeps; the build fails if the module is not listed). Cosmetic denials left alone. SELinux stays Enforcing.
+- **`build.sh`:** with `sudo`, an EXIT trap runs `chown -R $SUDO_UID:$SUDO_GID` on the outputs (node-bootc; also bootstrap-bootc and usb for consistency). `images/node-bootc/output/` is now owned by the runner. `shellcheck` shows only info-level SC2153.
+- **Rebuild:** 426 s, node image 1377 MiB, `disk.qcow2` 717,553,664 bytes (10 GiB virtual, 681 MiB), sha256 `7f47384f…6e16`. Lint warnings unchanged (3).
+- **Template VMID 129** `rocky10-bootc-selinux-kube-v1.36.6`: no `ide2`, thin (`pool0/base-129-disk-0` 10G, 1004M used, `refreservation` none).
+- **Growth test on a 25G clone (130), all PASS:** `dciab-growroot` ok, `/sysroot` 24G, `getenforce` Enforcing, `dciab-qemu-ga` listed by `semodule -l`, crio active, `cloud-init status --long` `degraded done`; **`qm guest exec 130 -- cloud-init status` and `-- /usr/bin/cloud-init status --wait` both return `status: done`**; only the cosmetic `nsfs` denials remain; after a reboot `growroot: … already fills the disk` and `guest-exec` still works.
+- **Risk for 0003:** CAPMOX 0.9.2 (`CloudInitStatus`) treats any non-zero exit as failed, and `cloud-init status` exits **2** for `degraded done` (the exit code here was 2, from Proxmox's `user:` deprecation notice). On a CAPMOX node that notice may not appear (the clone here used a Proxmox cloud-init drive), so 0003 should show; if not, the planner needs `cloud-init` config to avoid the degraded status.
+- **Cleanup:** test VM 130, key and temp files removed; **template 124 deleted** (Trevor), **127 deleted** (mine, superseded), 123 deleted earlier. Only **129** remains.
+
+## Run 3 summary (blocked, superseded by run 4)
 
 The template builds, publishes thin **without** a cloud-init drive, and grows its root: **VMID 127** `rocky10-bootc-guestexec-kube-v1.36.6`. Fix 1 (no `ide2`) works. Fix 2 half works: `qemu-ga` now allows `guest-exec`, but **SELinux blocks the agent from running `cloud-init`**, so `qm guest exec <vm> -- cloud-init status`, the exact check CAPMOX does, still fails with `Permission denied`. Result is `blocked` on the task's own check. Task 0003 would hit the same wall.
 

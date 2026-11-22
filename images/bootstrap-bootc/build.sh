@@ -84,6 +84,10 @@ fi
 
 rm -rf "$BUILD" "$OUT"
 mkdir -p "$BUILD/bin" "$OUT"
+# Hand the outputs back to the user who ran sudo, so they can be read and removed without root.
+if [[ -n "${SUDO_UID:-}" ]]; then
+  trap 'chown -R "$SUDO_UID:${SUDO_GID:-$SUDO_UID}" "$OUT" "$BUILD" 2>/dev/null || true' EXIT
+fi
 
 # fetch URL DEST EXPECTED_SHA256
 fetch() {

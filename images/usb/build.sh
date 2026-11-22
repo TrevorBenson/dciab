@@ -80,6 +80,7 @@ mnt="$BUILD/mnt"
 cleanup() {
   mountpoint -q "$mnt" && umount "$mnt"
   [[ -n "$loop" ]] && losetup -d "$loop"
+  [[ -n "${SUDO_UID:-}" ]] && chown -R "$SUDO_UID:${SUDO_GID:-$SUDO_UID}" "$OUT" "$BUILD" 2>/dev/null
   return 0
 }
 trap cleanup EXIT

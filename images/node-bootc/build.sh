@@ -81,6 +81,10 @@ if (( EUID != 0 )); then
   exit 2
 fi
 mkdir -p "$OUT"
+# Hand the outputs back to the user who ran sudo, so they can be read and removed without root.
+if [[ -n "${SUDO_UID:-}" ]]; then
+  trap 'chown -R "$SUDO_UID:${SUDO_GID:-$SUDO_UID}" "$OUT" 2>/dev/null || true' EXIT
+fi
 # Disks from an earlier run must never be mistaken for this one's.
 find "$OUT" -mindepth 1 -maxdepth 1 ! -name rocky-bootc -exec rm -rf {} +
 
