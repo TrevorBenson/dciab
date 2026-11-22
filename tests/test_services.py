@@ -29,9 +29,72 @@ def zone_lines(text):
     return [line for line in text.splitlines() if not line.startswith(("$", "@"))]
 
 
-def test_only_sites_with_hypervisors_run_services():
-    assert render.wanted(bare())
+def test_only_sites_with_hypervisors_run_full_services():
+    assert render.wanted(bare()) and not render.dns_only(bare())
     assert not render.wanted(load_example("proxmox"))
+    assert render.dns_only(load_example("proxmox"))
+
+
+def existing():
+    """A site whose hypervisors exist already, with NTP set: still DNS only."""
+    doc = copy.deepcopy(load_example("proxmox"))
+    doc["spec"]["bootstrap"]["ntp"] = {"upstream": [], "serveLocalClock": True}
+    return doc
+
+
+def test_dns_only_pod_is_coredns_alone():
+    files = files_for(existing())
+    assert sorted(files) == ["coredns/Corefile", "coredns/zones/db.110.30.10.in-addr.arpa",
+                             "coredns/zones/db.lab1.example.com", "pod.yaml"]
+    spec = yaml.safe_load(files["pod.yaml"])["spec"]
+    assert [c["name"] for c in spec["containers"]] == ["coredns"]
+    assert spec["containers"][0]["image"] == IMAGES["coredns"]
+    assert [v["name"] for v in spec["volumes"]] == ["coredns"]
+    assert "bind 10.30.110.53 10.30.110.54" in files["coredns/Corefile"]
+    net = render.network(existing())
+    assert net["dnsOnly"] and not net["ntp"]
+
+
+def test_dns_only_zone_has_the_registry_name():
+    z = render.zones(existing())["lab1.example.com"]
+    assert zone_lines(z) == ["dns1 IN A 10.30.110.53", "dns2 IN A 10.30.110.54",
+                             "bootstrap IN A 10.30.110.5", "registry IN A 10.30.110.5"]
+
+
+def test_full_mode_needs_coredns_caddy_and_chrony_base():
+    assert cli.pod_images(bare(), IMAGES) == [IMAGES["coredns"], IMAGES["caddy"], IMAGES["chronyBase"]]
+    no_ntp = bare()
+    del no_ntp["spec"]["bootstrap"]["ntp"]
+    assert cli.pod_images(no_ntp, IMAGES) == [IMAGES["coredns"], IMAGES["caddy"]]
+    assert cli.pod_images(existing(), IMAGES) == [IMAGES["coredns"]]
+
+
+def test_layout_names_come_from_the_payload(tmp_path):
+    d = "sha256:" + "a" * 64
+    (tmp_path / "images").mkdir()
+    (tmp_path / "images.yaml").write_text(yaml.safe_dump({"images": [
+        {"image": f"docker.io/coredns/coredns:1.14.6@{d}", "name": "docker.io_coredns_coredns_1.14.6_aaaa"}]}))
+    assert cli.layout_names(tmp_path, [f"docker.io/coredns/coredns:1.14.6@{d}"]) == \
+        ["docker.io_coredns_coredns_1.14.6_aaaa"]
+    from dciab_seed.plan import SeedError
+    with pytest.raises(SeedError, match="not in the payload"):
+        cli.layout_names(tmp_path, ["docker.io/library/caddy:2@" + d])
+
+
+def test_readiness_checks_the_registry_name_and_skips_http_in_dns_only(monkeypatch):
+    answers = {}
+    for ip in ("10.30.110.53", "10.30.110.54"):
+        answers[(ip, "bootstrap.lab1.example.com", "A")] = ["10.30.110.5"]
+        answers[(ip, "5.110.30.10.in-addr.arpa", "PTR")] = ["bootstrap.lab1.example.com"]
+    monkeypatch.setattr(probe, "dns", lambda ip, name, qtype: answers.get((ip, name, qtype), []))
+    monkeypatch.setattr(probe, "http", lambda url: pytest.fail("no HTTP in DNS-only mode"))
+    failed = cli.check(existing(), timeout=0)
+    assert failed == [f"DNS on {ip}: registry.lab1.example.com doesn't resolve to 10.30.110.5"
+                      for ip in ("10.30.110.53", "10.30.110.54")]
+    answers[("10.30.110.53", "registry.lab1.example.com", "A")] = ["10.30.110.5"]
+    assert len(cli.check(existing(), timeout=0)) == 1
+    answers[("10.30.110.54", "registry.lab1.example.com", "A")] = ["10.30.110.5"]
+    assert cli.check(existing(), timeout=0) == []
 
 
 def test_forward_zone_has_every_host():
@@ -131,6 +194,9 @@ def test_answer_files_only_for_hypervisor_hosts():
     assert "path /answers /answers/*" in c
     assert "not remote_ip 10.30.110.6 10.30.110.7 10.30.110.8" in c
     assert "respond @answers_denied 403" in c
+    # each host reads only its own answer file
+    assert "\t@answers_pve01 {\n\t\tpath /answers/pve01.toml\n\t\tnot remote_ip 10.30.110.6\n\t}" in c
+    assert "respond @answers_pve03 403" in c
 
 
 def test_invalid_upstream_resolver_is_rejected():
@@ -247,13 +313,32 @@ def test_services_needs_root(tmp_path):
     assert "must run as root" in r.stderr
 
 
-def test_site_without_hypervisors_has_nothing_to_do(tmp_path):
+def test_site_without_hypervisors_gets_dns_only(tmp_path):
     bare_site(tmp_path)
     cfg = tmp_path / "proxmox.yaml"
     cfg.write_text((ROOT / "examples" / "proxmox.yaml").read_text())
-    r = run(cfg)
-    assert r.returncode == 0
-    assert "nothing to do" in r.stdout
+    r = run(cfg, "--print")
+    assert r.returncode == 0, r.stderr
+    assert "mode:        DNS only" in r.stdout
+    assert "address:     10.30.110.53/24 (DNS)" in r.stdout
+    assert "HTTP:" not in r.stdout and "Caddyfile" not in r.stdout
+    assert "registry IN A 10.30.110.5" in r.stdout
+    assert not (tmp_path / ".dciab").exists()
+
+
+def test_payload_must_hold_the_pinned_image(tmp_path):
+    bare_site(tmp_path)
+    cfg = tmp_path / "proxmox.yaml"
+    cfg.write_text((ROOT / "examples" / "proxmox.yaml").read_text())
+    payload = tmp_path / "payload"
+    (payload / "images").mkdir(parents=True)
+    (payload / "images.yaml").write_text(yaml.safe_dump({"images": [
+        {"image": "docker.io/library/other:1@sha256:" + "b" * 64, "name": "other"}]}))
+    r = run(cfg, "--print", "--payload", payload)
+    assert r.returncode == 1
+    assert "is not in the payload" in r.stderr
+    r = run(cfg, "--print", env_extra={"DCIAB_PAYLOAD": str(tmp_path / "nope")})
+    assert r.returncode == 1 and "not an archive payload" in r.stderr
 
 
 def test_invalid_config_stops_before_anything(tmp_path):

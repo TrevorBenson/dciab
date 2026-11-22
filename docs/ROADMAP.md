@@ -29,7 +29,7 @@ What each phase builds, against the component list in [COMPONENTS.md](COMPONENTS
 - [ ] Archive build pipeline ([build/](../build/README.md)): image inventory, image pull, charts, providers, binaries, checksums, SBOMs, packaging and signing (`dciab verify-archive`) done; node images next
 - [x] `dciab cluster-values`: capi-cluster values for MGMT, INFRA and workload clusters, generated from the site config
 - [x] `dciab status`: read-only report of the Day 0 pod, the platform CA and registry certificate, the seed registry, the bootstrap cluster and where MGMT's Cluster lives
-- [x] `dciab seed`: platform CA (generated with its key age-encrypted, or imported), read-only Zot loaded from the payload, kind pulling through it, providers and ClusterClasses from the payload ([SEED.md](SEED.md)). Still to come: DNS for `registry.<domain>`
+- [x] `dciab seed`: platform CA (generated with its key age-encrypted, or imported), read-only Zot loaded from the payload, kind pulling through it, providers and ClusterClasses from the payload, DNS for `registry.<domain>` ([SEED.md](SEED.md))
 - [ ] `dciab mgmt`: builds MGMT, installs Cilium and the providers, and moves Cluster API into MGMT; picks up `dciab seed`'s kubeconfig and trust bundle and runs offline from the payload (CI runs seed then mgmt up to the Cluster; not yet proven on real infrastructure). Longhorn installer built (`addons/longhorn`, the `longhorn` step, chart and images from the payload). Still to come: MGMT's other services (Metal3, PowerDNS, Kea) and the DNS handoff
 
 ## Day 0 for bare servers
@@ -41,7 +41,8 @@ Decided in [ADR 0001](adr/0001-day0-hypervisors-and-services.md).
 - [x] Day 0 image digests pinned (CoreDNS, Caddy, chrony base)
 - [ ] ESXi build tested and pinned
 - [x] `dciab services`: CoreDNS, chrony and Caddy as one pod on the DNS service IPs
-- [ ] `dciab hypervisors` for Proxmox VE: Redfish preparation, virtual media install, API token, bridge and storage
+- [x] `dciab hypervisors` for Proxmox VE, first part: answer files, Redfish virtual media boot, wait for the install ([docs/HYPERVISORS.md](HYPERVISORS.md))
+- [ ] `dciab hypervisors` for Proxmox VE, next: answer file delivery to the installer (prepared ISO), tagged management VLAN, Redfish preparation (boot mode, Secure Boot, disk check), post-install API token, bridge and storage
 - [ ] `dciab hypervisors` for ESXi
 - [x] Live checks: BMC routes, Redfish and credentials (`dciab validate --live`)
 

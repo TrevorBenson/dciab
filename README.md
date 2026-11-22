@@ -22,8 +22,8 @@ Both run the same steps. `spec.bootstrap.workDisk` says where the payload and th
 | 0 | `./dciab validate dciab.yaml` | The config passes schema and semantic checks |
 | 0a | `./dciab media dciab.yaml --key cosign.pub` | Copy the archive to the work disk and put container storage there ([docs/MEDIA.md](docs/MEDIA.md)) |
 | 0b | `sudo ./dciab services dciab.yaml` | Bare servers only: DNS, NTP and HTTP on the bootstrap host |
-| 0c | `./dciab hypervisors` | Bare servers only (planned): Proxmox VE or ESXi installed over Redfish virtual media |
-| 1 | `./dciab seed` | Seed registry (Zot, read-only, from the payload) and KinD with all CAPI providers ([docs/SEED.md](docs/SEED.md)) |
+| 0c | `sudo ./dciab hypervisors dciab.yaml` | Bare servers only (in progress, Proxmox VE): installed over Redfish virtual media ([docs/HYPERVISORS.md](docs/HYPERVISORS.md)) |
+| 1 | `./dciab seed` | Seed DNS (`registry.<domain>` on the DNS service IPs), seed registry (Zot, read-only, from the payload) and KinD with all CAPI providers ([docs/SEED.md](docs/SEED.md)) |
 | 2 | `./dciab mgmt` | MGMT built, Cilium installed, CAPI moved into it (in progress: DNS handoff and MGMT services still to come) |
 | 3 | `./dciab infra` | INFRA built with Argo CD, Forgejo, OpenBao, CloudNativePG |
 | 4 | `./dciab platform` | Repos pushed; Argo CD and OpenTofu bring up the rest |
@@ -31,7 +31,7 @@ Both run the same steps. `spec.bootstrap.workDisk` says where the payload and th
 
 ### Starting from bare servers
 
-The config format, its checks and `services` exist; `hypervisors` doesn't yet (see the roadmap). When a site has no hypervisors yet, add `spec.hypervisors` to the config (see [examples/proxmox-bare.yaml](examples/proxmox-bare.yaml)). `services` and `hypervisors` then run before `seed`: the bootstrap host serves DNS (and NTP, with `spec.bootstrap.ntp`) on `network.dnsServiceIPs` and installs each server through its BMC. Those addresses move to MGMT later, so nothing installed on Day 0 needs reconfiguring. The site must provide:
+The config format, its checks and `services` exist; `hypervisors` is partly built for Proxmox VE ([docs/HYPERVISORS.md](docs/HYPERVISORS.md), and the roadmap). When a site has no hypervisors yet, add `spec.hypervisors` to the config (see [examples/proxmox-bare.yaml](examples/proxmox-bare.yaml)). `services` and `hypervisors` then run before `seed`: the bootstrap host serves DNS (and NTP, with `spec.bootstrap.ntp`) on `network.dnsServiceIPs` and installs each server through its BMC. Those addresses move to MGMT later, so nothing installed on Day 0 needs reconfiguring. The site must provide:
 
 - switches configured: VLANs, trunks, MTU, gateways, and BGP peers when `loadBalancer.mode: bgp`
 - a route from the node network's gateway to the BMC networks and back, with HTTPS allowed from the bootstrap host to each BMC and HTTP from each BMC to the bootstrap host
@@ -40,13 +40,13 @@ The config format, its checks and `services` exist; `hypervisors` doesn't yet (s
 
 #### `dciab services`
 
-Runs as root on the bootstrap host, only when the config has `spec.hypervisors`. It renders its configuration into `<state>/services` (root-only files; `<state>` defaults to `.dciab/state` next to the config), adds `network.dnsServiceIPs` to `spec.bootstrap.interface`, opens runtime-only firewalld ports, and runs one podman pod with host networking, from the images pinned in `bundle.lock` `day0.images`:
+Runs as root on the bootstrap host. With `spec.hypervisors` it runs everything below; without them (the servers exist already) it runs CoreDNS alone, which `dciab seed` does in its `dns` step. It renders its configuration into `<state>/services` (root-only files; `<state>` defaults to `.dciab/state` next to the config), adds `network.dnsServiceIPs` to `spec.bootstrap.interface`, opens runtime-only firewalld ports, and runs one podman pod with host networking, from the images pinned in `bundle.lock` `day0.images`:
 
 - **CoreDNS** on the DNS service IPs: authoritative for `network.domain` and the node network's reverse zones, with records for `dns1`/`dns2` (the service IPs), `bootstrap` and `registry` (`spec.bootstrap.address`) and every hypervisor host. Other names go to `network.upstreamResolvers`, or are refused when that list is empty.
 - **chrony**, only with `spec.bootstrap.ntp`: one server per DNS service IP, syncing from `bootstrap.ntp.upstream` and serving the local clock when `serveLocalClock` is true. It never sets the host clock. DCiaB builds its image from `images/day0-chrony` on the pinned base.
 - **Caddy** on `spec.bootstrap.address:80`: installer ISOs under `/isos/` (from `--isos`, default `workDisk.path/isos`, else `<state>/isos`) and answer files under `/answers/` (`<state>/answers`).
 
-`--print` shows the plan and every rendered file without changing anything; `--until STEP` stops after a step (`preflight render address firewall images pod ready`). A rerun changes nothing; a config change recreates the pod. The last step checks DNS both ways, NTP and HTTP. Teardown: `podman kube down <state>/services/pod.yaml`.
+`--print` shows the plan and every rendered file without changing anything; `--until STEP` stops after a step (`preflight render address firewall images pod ready`). With `--payload DIR` (or `DCIAB_PAYLOAD`) the pinned images are loaded from the archive payload instead of pulled. A rerun changes nothing; a config change recreates the pod. The last step checks DNS both ways and `registry.<domain>`, NTP and HTTP. Teardown: `podman kube down <state>/services/pod.yaml`.
 
 The design and its trade-offs are in [ADR 0001](docs/adr/0001-day0-hypervisors-and-services.md) (Day 0) and [ADR 0002](docs/adr/0002-bootstrap-appliance-on-ventoy.md) (the bootstrap appliance and USB).
 

@@ -391,6 +391,7 @@ def next_commands(dest: Path, config: Path, work: Path) -> List[str]:
     return [
         f"{dciab} services {q(str(config))} --state {state} --isos {q(str(work / 'isos'))}   "
         "# sites with spec.hypervisors",
+        f"{dciab} hypervisors {q(str(config))} --state {state}   # sites with spec.hypervisors",
         f"{dciab} seed {q(str(config))} --state {state}",
     ]
 

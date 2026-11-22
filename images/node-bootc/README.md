@@ -9,7 +9,7 @@ DCiaB's node image recipe. A node is an OCI image built from a Containerfile, th
 ## How it builds
 
 1. **Base:** Rocky Linux 10 bootc, built from the RESF SIG/Containers [rocky-bootc](https://git.resf.org/sig_containers/rocky-bootc) recipe (branch `r10`, commit pinned in `bundle.lock`), using the `minimal` manifest. `nodeImages.bootc.baseImage` can point at a prebuilt base, pinned by digest, instead.
-2. **Node:** `Containerfile` adds CRI-O (from its Kubernetes-minor stream), kubelet, kubeadm and kubectl at the `bundle.lock` Kubernetes version, cloud-init, both guest agents (qemu-guest-agent and open-vm-tools, each starting only on its own hypervisor) and chrony, plus `rootfs/`:
+2. **Node:** `Containerfile` adds CRI-O (from its Kubernetes-minor stream), kubelet, kubeadm and kubectl at the `bundle.lock` Kubernetes version, cloud-init, both guest agents (qemu-guest-agent and open-vm-tools, each starting only on its own hypervisor) and chrony, the iSCSI initiator and NFS client Longhorn needs, plus `rootfs/`:
    - kernel modules and sysctls for Kubernetes
    - CRI-O defaults: systemd cgroups, and CNI plugin directories under `/var`
    - the kubelet volume plugin directory under `/var`
