@@ -34,6 +34,8 @@ REPO
 # stream (the installed CRI-O version is recorded at build time). NetworkManager is
 # cloud-init's network backend on EL; the minimal manifest may not include it.
 # cloud-init: CAPMOX, CAPV and CAPM3 hand node config over as cloud-init data.
+# iscsi-initiator-utils and nfs-utils: Longhorn attaches volumes over iSCSI and backs up
+# to NFS targets (addons/longhorn).
 # Guest agents for both hypervisors: each one's unit only starts on its own platform
 # (qemu-guest-agent on its virtio port, vmtoolsd on VMware). CAPV needs VMware Tools to
 # learn a node's address, and cloud-init's VMware datasource reads guestinfo through it.
@@ -43,6 +45,7 @@ RUN dnf -y install \
       NetworkManager cloud-init qemu-guest-agent open-vm-tools chrony \
       conntrack-tools iproute iptables-nft ethtool socat \
       cloud-utils-growpart xfsprogs zstd \
+      iscsi-initiator-utils nfs-utils \
       ca-certificates openssh-server sudo \
  && dnf clean all \
  && rm -rf /var/cache/dnf /var/log/dnf*
@@ -80,7 +83,7 @@ RUN mkdir -p /usr/libexec/cni \
 RUN sed -i 's/--allow-rpcs=/--allow-rpcs=guest-exec,guest-exec-status,/' /etc/sysconfig/qemu-ga \
  && grep -q -- '--allow-rpcs=guest-exec,guest-exec-status,' /etc/sysconfig/qemu-ga
 # cloud-init's units are enabled by the package's systemd presets.
-RUN systemctl enable NetworkManager crio kubelet chronyd sshd qemu-guest-agent vmtoolsd dciab-growroot
+RUN systemctl enable NetworkManager crio kubelet chronyd sshd qemu-guest-agent vmtoolsd iscsid dciab-growroot
 
 # The base image's /usr/local is an absolute symlink to /var/usrlocal, which bootc's
 # `container lint` (runtime-deps, bootc 1.17) rejects as "a path led outside of the
