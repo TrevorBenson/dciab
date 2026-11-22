@@ -254,3 +254,21 @@ def test_checker_enforces_api_server_formats(schemas):
 ])
 def test_uri_format_matches_the_api_server(value, valid):
     assert cm._uri(value) is valid
+
+
+def test_proxmox_kubelet_sets_provider_id():
+    """Without it, Nodes have no spec.providerID and Machines never reach Running (task 0003 run 3)."""
+    docs = list(yaml.safe_load_all((CLASSES / "r1" / "proxmox.yaml").read_text()))
+    want = {"name": "provider-id", "value": "proxmox://{{ ds.meta_data.instance_id }}"}
+    regs = []
+    for d in docs:
+        if not d:
+            continue
+        if d["kind"] == "KubeadmControlPlaneTemplate":
+            spec = d["spec"]["template"]["spec"]["kubeadmConfigSpec"]
+            regs += [spec["initConfiguration"]["nodeRegistration"], spec["joinConfiguration"]["nodeRegistration"]]
+        elif d["kind"] == "KubeadmConfigTemplate":
+            regs.append(d["spec"]["template"]["spec"]["joinConfiguration"]["nodeRegistration"])
+    assert len(regs) == 3
+    for r in regs:
+        assert want in r.get("kubeletExtraArgs", [])

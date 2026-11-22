@@ -127,6 +127,13 @@ class Verifier:
         # Cilium replaces kube-proxy, so kubeadm must not install it.
         self.expect_true("kubeadm skips addon/kube-proxy",
                          "addon/kube-proxy" in cfg.get("initConfiguration", {}).get("skipPhases", []))
+        if self.v["class"] == "proxmox":
+            # Cluster API matches Machines to Nodes by spec.providerID, which the kubelet sets.
+            for part in ("initConfiguration", "joinConfiguration"):
+                kargs = {a["name"]: a["value"] for a in
+                         cfg.get(part, {}).get("nodeRegistration", {}).get("kubeletExtraArgs", [])}
+                self.expect(f"control plane {part} kubelet provider-id", kargs.get("provider-id"),
+                            "proxmox://{{ ds.meta_data.instance_id }}")
         files = self.check_node_files("control plane", cfg)
         kube_vip = files.get("/etc/kubernetes/manifests/kube-vip.yaml", "")
         self.expect_true("kube-vip manifest present", bool(kube_vip))

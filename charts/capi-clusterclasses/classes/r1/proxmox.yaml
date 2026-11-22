@@ -693,11 +693,17 @@ spec:
           skipPhases: [addon/kube-proxy]
           nodeRegistration:
             name: '{{ local_hostname }}'
-            # no kubelet extra args
+            # The Node's spec.providerID, which Cluster API matches Machines to Nodes by.
+            # CAPMOX puts the VM's instance ID in the NoCloud meta-data (providerIDInjection).
+            kubeletExtraArgs:
+              - {name: provider-id, value: "proxmox://{{ ds.meta_data.instance_id }}"}
         joinConfiguration:
           nodeRegistration:
             name: '{{ local_hostname }}'
-            # no kubelet extra args
+            # The Node's spec.providerID, which Cluster API matches Machines to Nodes by.
+            # CAPMOX puts the VM's instance ID in the NoCloud meta-data (providerIDInjection).
+            kubeletExtraArgs:
+              - {name: provider-id, value: "proxmox://{{ ds.meta_data.instance_id }}"}
         preKubeadmCommands:
           - update-ca-trust extract
           # kube-vip needs super-admin.conf while kubeadm init runs (Kubernetes 1.29+).
@@ -715,5 +721,7 @@ spec:
       joinConfiguration:
         nodeRegistration:
           name: '{{ local_hostname }}'
+          kubeletExtraArgs:
+            - {name: provider-id, value: "proxmox://{{ ds.meta_data.instance_id }}"}
       preKubeadmCommands:
         - update-ca-trust extract
