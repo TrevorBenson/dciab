@@ -313,8 +313,10 @@ jobs:
           sudo "$RUNNER_TEMP/payload/bin/kubectl" --kubeconfig "$kc" get deployments -A
           sudo "$RUNNER_TEMP/payload/bin/kubectl" --kubeconfig "$kc" get clusterclasses -A
           # The provider images came through the seed registry.
-          sudo podman logs dciab-registry 2>&1 | grep -q 'jetstack/cert-manager-controller' \
-            || { echo "the registry served no cert-manager image"; sudo podman logs dciab-registry 2>&1 | tail -50; exit 1; }
+          # (Logs to a file first: grep -q closing the pipe early would fail the step under pipefail.)
+          sudo podman logs dciab-registry > "$RUNNER_TEMP/registry.log" 2>&1
+          grep -q 'jetstack/cert-manager-controller/manifests' "$RUNNER_TEMP/registry.log" \
+            || { echo "the registry served no cert-manager image"; tail -50 "$RUNNER_TEMP/registry.log"; exit 1; }
           # Nobody can push: the registry is read-only.
           if sudo "$RUNNER_TEMP/payload/bin/oras" push --ca-file "$state/pki/trust-bundle.pem" \
                10.30.110.5/ci/test:1 /etc/hostname 2>/dev/null; then
