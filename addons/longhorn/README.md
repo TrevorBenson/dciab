@@ -41,4 +41,4 @@ The chart keeps upstream image names; nodes pull them through the site registry'
 
 ## Node requirements
 
-Longhorn's v1 data engine needs `iscsiadm` (open-iscsi) on every node, and NFS backup targets need the NFS client. The node image must carry both.
+Longhorn's v1 data engine needs `iscsiadm` (open-iscsi) on every node, and NFS backup targets need the NFS client. The bootc node image (`images/node-bootc`) carries both and enables `iscsid`.
