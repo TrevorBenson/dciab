@@ -10,6 +10,8 @@ FROM ${BASE_IMAGE}
 ARG KUBERNETES_VERSION
 ARG KUBERNETES_SERIES
 ARG CRIO_SERIES
+# vm (Proxmox, vSphere) or metal (Metal3: adds every kernel driver and firmware).
+ARG VARIANT=vm
 # Package repos for Kubernetes (pkgs.k8s.io) and CRI-O (isv:cri-o on OBS), one minor each.
 RUN cat > /etc/yum.repos.d/kubernetes.repo <<REPO
 [kubernetes]
@@ -31,16 +33,34 @@ REPO
 # kubelet/kubeadm/kubectl pinned to the bundle's Kubernetes version; CRI-O from its minor
 # stream (the installed CRI-O version is recorded at build time). NetworkManager is
 # cloud-init's network backend on EL; the minimal manifest may not include it.
-# cloud-init: CAPMOX and CAPV hand node config over as cloud-init data.
+# cloud-init: CAPMOX, CAPV and CAPM3 hand node config over as cloud-init data.
+# Guest agents for both hypervisors: each one's unit only starts on its own platform
+# (qemu-guest-agent on its virtio port, vmtoolsd on VMware). CAPV needs VMware Tools to
+# learn a node's address, and cloud-init's VMware datasource reads guestinfo through it.
 RUN dnf -y install \
       container-selinux cri-o \
       "kubelet-${KUBERNETES_VERSION}" "kubeadm-${KUBERNETES_VERSION}" "kubectl-${KUBERNETES_VERSION}" cri-tools \
-      NetworkManager cloud-init qemu-guest-agent chrony \
+      NetworkManager cloud-init qemu-guest-agent open-vm-tools chrony \
       conntrack-tools iproute iptables-nft ethtool socat \
       cloud-utils-growpart xfsprogs zstd \
       ca-certificates openssh-server sudo \
  && dnf clean all \
  && rm -rf /var/cache/dnf /var/log/dnf*
+
+# Bare metal: the rest of the kernel's drivers (NICs and storage controllers VMs never
+# see), their firmware, and an initramfs that isn't limited to the build host's hardware,
+# so the root disk is found behind any controller. The modules match the image's kernel.
+RUN case "$VARIANT" in \
+      vm) ;; \
+      metal) \
+        set -e; \
+        kver="$(ls /usr/lib/modules)"; \
+        [ "$(echo "$kver" | wc -w)" -eq 1 ] || { echo "expected one kernel, found: $kver" >&2; exit 1; }; \
+        dnf -y install "kernel-modules-core-$kver" "kernel-modules-$kver" "kernel-modules-extra-$kver" linux-firmware; \
+        env DRACUT_NO_XATTR=1 dracut --force --no-hostonly --kver "$kver" "/usr/lib/modules/$kver/initramfs.img"; \
+        dnf clean all; rm -rf /var/cache/dnf /var/log/dnf* ;; \
+      *) echo "VARIANT must be vm or metal, got '$VARIANT'" >&2; exit 1 ;; \
+    esac
 
 COPY rootfs/ /
 # /opt is read-only in image mode. CNI plugins that install themselves at runtime (Cilium)
@@ -65,7 +85,7 @@ RUN sed -i 's/--allow-rpcs=/--allow-rpcs=guest-exec,guest-exec-status,/' /etc/sy
 RUN semodule -i /usr/share/dciab/selinux/dciab-qemu-ga.cil \
  && semodule -l | grep -qx dciab-qemu-ga
 # cloud-init's units are enabled by the package's systemd presets.
-RUN systemctl enable NetworkManager crio kubelet chronyd sshd qemu-guest-agent dciab-growroot
+RUN systemctl enable NetworkManager crio kubelet chronyd sshd qemu-guest-agent vmtoolsd dciab-growroot
 
 # The base image's /usr/local is an absolute symlink to /var/usrlocal, which bootc's
 # `container lint` (runtime-deps, bootc 1.17) rejects as "a path led outside of the

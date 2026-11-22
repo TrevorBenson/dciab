@@ -15,9 +15,11 @@ Sources, each recorded next to the image:
 - --kubeadm-images: the output of `kubeadm config images list --kubernetes-version <v>`
   for the bundle's Kubernetes version: the control plane images nodes pull
 
-The archive build pulls each image by digest into the archive and the site registry
-serves them. Images without a digest are listed with "digest: resolve": the build
-resolves the tag once and records the digest it pulled.
+Images their source names by tag only (provider manifests, kubeadm) take their digest
+from bundle.lock's imageDigests. One still without a digest is listed with
+"digest: resolve"; build/archive.py digests prints the imageDigests lines to pin, and the
+archive build refuses to pull it until it is pinned. The site registry serves each image
+by digest and by its tag.
 """
 
 from __future__ import annotations
@@ -121,7 +123,21 @@ def inventory(lock: dict, manifest_dirs: List[Path], extras: List[Path], kubeadm
             if "/kube-proxy:" in line:
                 continue
             add(line.strip(), f"kubeadm {lock['kubernetes']['version']}")
-    return found
+    return pin_tags(found, lock.get("imageDigests") or {})
+
+
+def pin_tags(found: Dict[str, Set[str]], digests: Dict[str, str]) -> Dict[str, Set[str]]:
+    """Add bundle.lock imageDigests to the images their sources name by tag only."""
+    out: Dict[str, Set[str]] = {}
+    for ref, sources in found.items():
+        digest = digests.get(ref) if not DIGEST.search(ref) else None
+        if digest:
+            if not re.fullmatch(r"sha256:[0-9a-f]{64}", digest):
+                raise InventoryError(f"bundle.lock imageDigests[{ref}]: {digest!r} is not sha256:<64 hex>")
+            ref = f"{ref}@{digest}"
+            sources = sources | {"digest from bundle.lock imageDigests"}
+        out.setdefault(ref, set()).update(sources)
+    return out
 
 
 def main(argv=None) -> int:
@@ -149,7 +165,8 @@ def main(argv=None) -> int:
             mark = " " if DIGEST.search(ref) else "*"
             print(f"{mark} {ref}    ({', '.join(sorted(src))})")
         unpinned = sum(1 for ref in found if not DIGEST.search(ref))
-        print(f"\n{len(found)} images; {unpinned} marked * have no digest yet (the build resolves them)")
+        print(f"\n{len(found)} images; {unpinned} marked * have no digest yet "
+              "(pin them in bundle.lock imageDigests: build/archive.py digests)")
     return 0
 
 

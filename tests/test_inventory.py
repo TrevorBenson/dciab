@@ -32,6 +32,7 @@ def test_images_in_finds_containers_and_init_containers():
 
 def test_inventory_records_sources(tmp_path):
     lock = yaml.safe_load((ROOT / "bundle.lock").read_text())
+    lock["imageDigests"] = {}  # tag-only images stay tag-only here; pin_tags has its own test
     d = tmp_path / "provider-v1"
     d.mkdir()
     (d / "components.yaml").write_text(
@@ -70,3 +71,11 @@ def test_unresolved_variables_and_empty_folders_are_errors(tmp_path):
     (d / "c.yaml").write_text("image: registry.k8s.io/x:${NOT_IN_LOCK}\n")
     with pytest.raises(InventoryError, match="NOT_IN_LOCK"):
         inventory(lock, [d], [], None)
+
+
+def test_lock_pins_every_kubeadm_image():
+    """The bundle's control plane images (minus kube-proxy) all have imageDigests."""
+    lock = yaml.safe_load((ROOT / "bundle.lock").read_text())
+    v = lock["kubernetes"]["version"]
+    for name in ("kube-apiserver", "kube-controller-manager", "kube-scheduler"):
+        assert f"registry.k8s.io/{name}:{v}" in lock["imageDigests"], f"pin {name}:{v} in imageDigests"

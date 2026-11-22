@@ -10,11 +10,15 @@ ROOT = Path(__file__).resolve().parent.parent
 CLASSES = ROOT / "charts" / "capi-clusterclasses" / "classes"
 
 
-def _load(name):
-    spec = importlib.util.spec_from_file_location(name, ROOT / "hack" / f"{name}.py")
+def _load_path(name, path):
+    spec = importlib.util.spec_from_file_location(name, path)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return mod
+
+
+def _load(name):
+    return _load_path(name, ROOT / "hack" / f"{name}.py")
 
 
 cm = _load("check_manifests")
@@ -254,3 +258,152 @@ def test_checker_enforces_api_server_formats(schemas):
 ])
 def test_uri_format_matches_the_api_server(value, valid):
     assert cm._uri(value) is valid
+
+
+# --- API server audit logging ----------------------------------------------------------
+
+AUDIT_POLICY = "/etc/kubernetes/audit/policy.yaml"
+AUDIT_DIR = "/var/log/kubernetes/audit"
+AUDIT_ARGS = {
+    "audit-policy-file": AUDIT_POLICY,
+    "audit-log-path": f"{AUDIT_DIR}/audit.log",
+    "audit-log-maxage": "30",
+    "audit-log-maxbackup": "10",
+    "audit-log-maxsize": "100",
+}
+
+
+def _installed_class_files():
+    return [f for rev in installed_revisions() for f in sorted((CLASSES / rev).glob("*.yaml"))]
+
+
+def _audit_policy(path):
+    docs = [d for d in yaml.safe_load_all(path.read_text()) if d]
+    cc = next(d for d in docs if d["kind"] == "ClusterClass")
+    names = [p["name"] for p in cc["spec"]["patches"]]
+    # nodeBase creates the files list, so the audit file must be appended after it.
+    assert names.index("apiServerAudit") > names.index("nodeBase"), path
+    ops = cc["spec"]["patches"][names.index("apiServerAudit")]["definitions"][0]["jsonPatches"]
+    files = [op["value"] for op in ops if op["path"] == "/spec/template/spec/kubeadmConfigSpec/files/-"]
+    policy = next(f for f in files if f["path"] == AUDIT_POLICY)
+    return policy, yaml.safe_load(policy["content"])
+
+
+def _level(policy, user="alice", groups=("system:authenticated",), verb="get", group="", resource=None,
+           namespace="default", name="", url=None):
+    """The level of the first matching rule, as the API server picks it."""
+    for rule in policy["rules"]:
+        if rule.get("users") and user not in rule["users"]:
+            continue
+        if rule.get("userGroups") and not set(groups) & set(rule["userGroups"]):
+            continue
+        if rule.get("verbs") and verb not in rule["verbs"]:
+            continue
+        if url is not None:
+            if rule.get("resources") or rule.get("namespaces"):
+                continue
+            if rule.get("nonResourceURLs") and not any(
+                    url == u or (u.endswith("*") and url.startswith(u[:-1])) for u in rule["nonResourceURLs"]):
+                continue
+        else:
+            if rule.get("nonResourceURLs"):
+                continue
+            if rule.get("namespaces") and namespace not in rule["namespaces"]:
+                continue
+            if rule.get("resources") and not any(
+                    r.get("group", "") == group and (not r.get("resources") or resource in r["resources"])
+                    and (not r.get("resourceNames") or name in r["resourceNames"])
+                    for r in rule["resources"]):
+                continue
+        return rule["level"]
+    return "None"
+
+
+def test_installed_classes_set_api_server_audit_flags_and_mounts():
+    for f in _installed_class_files():
+        kcp = next(d for d in yaml.safe_load_all(f.read_text()) if d and d["kind"] == "KubeadmControlPlaneTemplate")
+        api = kcp["spec"]["template"]["spec"]["kubeadmConfigSpec"]["clusterConfiguration"]["apiServer"]
+        args = {a["name"]: a["value"] for a in api["extraArgs"]}
+        assert {k: args.get(k) for k in AUDIT_ARGS} == AUDIT_ARGS, f.name
+        vols = {v["mountPath"]: v for v in api.get("extraVolumes", [])}
+        assert vols[AUDIT_POLICY]["hostPath"] == AUDIT_POLICY and vols[AUDIT_POLICY]["readOnly"] is True, f.name
+        assert vols[AUDIT_DIR]["hostPath"] == AUDIT_DIR and vols[AUDIT_DIR]["readOnly"] is False, f.name
+
+
+def test_installed_classes_write_the_audit_policy():
+    for f in _installed_class_files():
+        file, policy = _audit_policy(f)
+        assert file["permissions"] == "0600", f.name
+        assert policy["apiVersion"] == "audit.k8s.io/v1" and policy["kind"] == "Policy", f.name
+        assert policy["omitStages"] == ["RequestReceived"], f.name
+        assert policy["rules"][-1] == {"level": "Metadata"}, f.name
+
+
+@pytest.mark.parametrize("request_, level", [
+    ({"verb": "create", "resource": "secrets"}, "Metadata"),
+    ({"verb": "update", "resource": "configmaps"}, "Metadata"),
+    ({"verb": "create", "group": "authentication.k8s.io", "resource": "tokenreviews"}, "Metadata"),
+    ({"verb": "create", "resource": "serviceaccounts/token"}, "Metadata"),
+    ({"verb": "list", "resource": "secrets", "user": "system:kube-controller-manager"}, "Metadata"),
+    ({"verb": "create", "group": "rbac.authorization.k8s.io", "resource": "clusterrolebindings"}, "RequestResponse"),
+    ({"verb": "delete", "group": "rbac.authorization.k8s.io", "resource": "roles"}, "RequestResponse"),
+    ({"verb": "get", "group": "rbac.authorization.k8s.io", "resource": "roles"}, "Metadata"),
+    ({"verb": "delete", "group": "apps", "resource": "deployments"}, "Metadata"),
+    ({"verb": "get", "resource": "pods"}, "Metadata"),
+    ({"verb": "get", "url": "/healthz"}, "None"),
+    ({"verb": "get", "url": "/readyz/etcd"}, "None"),
+    ({"verb": "get", "url": "/apis"}, "Metadata"),
+    ({"verb": "create", "resource": "events"}, "None"),
+    ({"verb": "update", "group": "coordination.k8s.io", "resource": "leases",
+      "user": "system:node:n1", "groups": ("system:nodes",), "namespace": "kube-node-lease"}, "None"),
+    ({"verb": "update", "group": "coordination.k8s.io", "resource": "leases",
+      "user": "kubernetes-admin", "namespace": "kube-system", "name": "plndr-cp-lock"}, "None"),
+    ({"verb": "update", "group": "coordination.k8s.io", "resource": "leases", "namespace": "team-a"}, "Metadata"),
+    ({"verb": "watch", "resource": "endpoints", "user": "system:kube-proxy"}, "None"),
+    ({"verb": "get", "resource": "nodes", "user": "system:node:n1", "groups": ("system:nodes",)}, "None"),
+    ({"verb": "patch", "resource": "nodes", "user": "system:node:n1", "groups": ("system:nodes",)}, "Metadata"),
+])
+def test_audit_policy_levels(request_, level):
+    for f in _installed_class_files():
+        assert _level(_audit_policy(f)[1], **request_) == level, f"{f.name}: {request_}"
+
+
+def test_audit_policy_is_the_same_in_every_class():
+    policies = {f.name: _audit_policy(f)[0]["content"] for f in _installed_class_files()}
+    assert len(set(policies.values())) == 1, sorted(policies)
+
+
+def test_e2e_verifier_accepts_the_class_audit_settings():
+    """hack/e2e/verify.py checks the same audit settings the classes set."""
+    pytest.importorskip("tomllib")  # verify.py runs on Python 3.11+
+    verify = _load_path("e2e_verify", ROOT / "hack" / "e2e" / "verify.py")
+    assert verify.AUDIT_ARGS == AUDIT_ARGS
+    for f in _installed_class_files():
+        kcp = next(d for d in yaml.safe_load_all(f.read_text()) if d and d["kind"] == "KubeadmControlPlaneTemplate")
+        api = kcp["spec"]["template"]["spec"]["kubeadmConfigSpec"]["clusterConfiguration"]["apiServer"]
+        args = {a["name"]: a["value"] for a in api["extraArgs"]}
+        file, _ = _audit_policy(f)
+        v = verify.Verifier({"name": f.stem})
+        v.check_audit({file["path"]: file["content"]}, api, args)
+        assert v.failures == [], f.name
+        v.check_audit({}, {}, {})
+        assert any("audit policy file" in m for m in v.failures)
+        assert any("audit-log-path" in m for m in v.failures)
+
+
+def test_proxmox_kubelet_sets_provider_id():
+    """Without it, Nodes have no spec.providerID and Machines never reach Running (task 0003 run 3)."""
+    docs = list(yaml.safe_load_all((CLASSES / "r1" / "proxmox.yaml").read_text()))
+    want = {"name": "provider-id", "value": "proxmox://{{ ds.meta_data.instance_id }}"}
+    regs = []
+    for d in docs:
+        if not d:
+            continue
+        if d["kind"] == "KubeadmControlPlaneTemplate":
+            spec = d["spec"]["template"]["spec"]["kubeadmConfigSpec"]
+            regs += [spec["initConfiguration"]["nodeRegistration"], spec["joinConfiguration"]["nodeRegistration"]]
+        elif d["kind"] == "KubeadmConfigTemplate":
+            regs.append(d["spec"]["template"]["spec"]["joinConfiguration"]["nodeRegistration"])
+    assert len(regs) == 3
+    for r in regs:
+        assert want in r.get("kubeletExtraArgs", [])

@@ -8,9 +8,13 @@ report: handoff/reports/0003-proxmox-cluster.md
 may_change: []
 ---
 
+## Retry 2 (2026-11-22)
+
+Run 3 was blocked by a class defect: the Proxmox class didn't pass the kubelet `provider-id`, so Nodes had no `spec.providerID` and no Machine reached Running. The `r1` draft now sets `provider-id: proxmox://{{ ds.meta_data.instance_id }}` for control plane and worker nodes. Use template 129 again, on a **fresh** `dciab-lab` management cluster (the class changed). In step 4, Cilium's `--wait` needs every node; if it times out while nodes are still joining, rerun `install.sh` once they're all Ready rather than treating the timeout as the result. Overwrite the report, keeping one-line pointers to the earlier blocked runs (`3336ef3`, and run 3's PR #45).
+
 ## Retry (2026-11-22)
 
-The last run was blocked by two template defects (see its report): a second cloud-init drive on the template, and `guest-exec` blocked in the image. Both are fixed in the image and in how task 0006 publishes the template. Use the template from 0006's second rerun (its VMID is in `LAB.md`), and create a **fresh** `dciab-lab` management cluster: installed ClusterClasses from an older copy of the `r1` draft can't be upgraded in place (`docs/VERSIONING.md`). Overwrite the report, keeping a one-line pointer to the blocked run.
+The previous run was blocked by two template defects (see its report): a second cloud-init drive on the template, and `guest-exec` blocked in the image. Both are fixed in the image and in how task 0006 publishes the template. Use the template from 0006's second rerun (its VMID is in `LAB.md`), and create a **fresh** `dciab-lab` management cluster: installed ClusterClasses from an older copy of the `r1` draft can't be upgraded in place (`docs/VERSIONING.md`). Overwrite the report, keeping a one-line pointer to the blocked run.
 
 ## Goal
 

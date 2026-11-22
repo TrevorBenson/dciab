@@ -2,7 +2,13 @@
 # dciab mgmt: build the MGMT cluster from the bootstrap (kind) cluster, then make MGMT
 # manage itself.
 #
-#   dciab mgmt <config> --bootstrap-kubeconfig FILE [--state DIR] [--trust-bundle FILE] [--until STEP]
+#   dciab mgmt <config> [--bootstrap-kubeconfig FILE] [--state DIR] [--trust-bundle FILE]
+#                       [--payload DIR] [--until STEP]
+#
+# After dciab seed with the same --state, --bootstrap-kubeconfig and --trust-bundle default
+# to the files seed wrote (<state>/bootstrap.kubeconfig, <state>/pki/trust-bundle.pem).
+# --payload DIR (the archive's payload; default <archive>/payload when it exists) makes
+# every chart and manifest come from it instead of the internet.
 #
 # Steps, in order. Each is safe to re-run, and a finished run changes nothing:
 #   preflight   tools present; the bootstrap cluster has Cluster API, the providers and the
@@ -17,38 +23,64 @@
 #   move        clusterctl move: every CAPI object, MGMT's own Cluster and the
 #               ClusterClasses, from the bootstrap cluster to MGMT
 #   adopt       the classes and mgmt Helm releases on MGMT take over the moved objects
+#   longhorn    addons/longhorn/install.sh: Longhorn, MGMT's default StorageClass, backed up
+#               to spec.storage.longhorn's target; after the move, so a storage problem
+#               never holds up the pivot, and the bootstrap cluster can go once it finishes
 #
 # --until STEP stops after STEP. <state> defaults to .dciab/state next to the config.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-STEPS=(preflight values cluster control-plane cilium providers move adopt)
+STEPS=(preflight values cluster control-plane cilium providers move adopt longhorn)
 NS=cluster-mgmt
 CLASS_NS=dciab-clusterclasses
 
 die() { echo "dciab mgmt: $*" >&2; exit 1; }
-usage() { sed -n '5p' "${BASH_SOURCE[0]}" | sed 's/^# *//' >&2; exit 2; }
+usage() { sed -n '5,6p' "${BASH_SOURCE[0]}" | sed 's/^# *//' >&2; exit 2; }
 
-config="" bootstrap="" state="" trust="" until=""
+config="" bootstrap="" state="" trust="" until="" payload=""
 while (( $# )); do
   case "$1" in
     --bootstrap-kubeconfig) bootstrap="${2:?}"; shift 2 ;;
     --state) state="${2:?}"; shift 2 ;;
     --trust-bundle) trust="${2:?}"; shift 2 ;;
+    --payload) payload="${2:?}"; shift 2 ;;
     --until) until="${2:?}"; shift 2 ;;
     -*) echo "dciab mgmt: unknown option '$1'" >&2; usage ;;
     *) [[ -z "$config" ]] || usage; config="$1"; shift ;;
   esac
 done
-[[ -n "$config" && -n "$bootstrap" ]] || usage
+[[ -n "$config" ]] || usage
 [[ -f "$config" ]] || die "no such config: $config"
-[[ -f "$bootstrap" ]] || die "no such kubeconfig: $bootstrap"
 if [[ -n "$until" ]] && ! printf '%s\n' "${STEPS[@]}" | grep -qx "$until"; then
   die "--until must be one of: ${STEPS[*]}"
 fi
 config="$(cd "$(dirname "$config")" && pwd)/$(basename "$config")"
 state="${state:-$(dirname "$config")/.dciab/state}"
 mkdir -p "$state" && chmod 700 "$state"
+# The state holds kubeconfigs, whose exec plugins kubectl runs as this user: only this user
+# may own it.
+[[ "$(stat -c %u "$state")" == "$(id -u)" ]] || die "$state is not owned by $(id -un); refusing to use its kubeconfigs"
+# dciab seed's outputs, when this run doesn't name others.
+bootstrap="${bootstrap:-$state/bootstrap.kubeconfig}"
+[[ -f "$bootstrap" ]] || die "no such kubeconfig: $bootstrap (run dciab seed, or pass --bootstrap-kubeconfig)"
+if [[ -z "$trust" && -f "$state/pki/trust-bundle.pem" ]]; then
+  trust="$state/pki/trust-bundle.pem"
+fi
+if [[ -z "$payload" && -d "$ROOT/payload/providers" ]]; then
+  payload="$ROOT/payload"
+fi
+if [[ -n "$payload" ]]; then
+  [[ -d "$payload/providers" && -d "$payload/charts" ]] || die "$payload: not an archive payload (no providers/ or charts/)"
+  payload="$(cd "$payload" && pwd)"
+  # Its binaries and manifests must match its SHA256SUMS before anything is applied from it.
+  PYTHONPATH="$ROOT/lib" python3 -c 'import sys; from pathlib import Path; from dciab_seed.cli import verify_payload_tools; from dciab_seed.plan import SeedError
+try:
+    verify_payload_tools(Path(sys.argv[1]))
+except SeedError as exc:
+    sys.exit(f"dciab mgmt: {exc}")' "$payload"
+  export DCIAB_PAYLOAD="$payload"
+fi
 values="$state/mgmt-values.yaml"
 mgmt_kubeconfig="$state/mgmt.kubeconfig"
 
@@ -85,9 +117,7 @@ want="$(python3 -c 'import sys, yaml; print(yaml.safe_load(open(sys.argv[1]))["c
 have="$(clusterctl version -o short 2>/dev/null || true)"
 [[ "$have" == "$want" ]] || die "clusterctl is ${have:-unknown}; bundle.lock pins Cluster API $want and clusterctl must match"
 if ! moved; then
-  # dciab seed will set the bootstrap cluster up; until it exists, lib/steps/capi-providers.sh
-  # --with-classes does that part.
-  seed_hint="install them with: KUBECONFIG=$bootstrap $ROOT/lib/steps/capi-providers.sh --with-classes"
+  seed_hint="run dciab seed (or: KUBECONFIG=$bootstrap $ROOT/lib/steps/capi-providers.sh --with-classes)"
   on_bootstrap kubectl -n capi-system get deployment capi-controller-manager >/dev/null 2>&1 \
     || die "the bootstrap cluster has no Cluster API; $seed_hint"
   on_bootstrap kubectl -n "$CLASS_NS" get clusterclasses -o name | grep -q "dciab-$platform-" \
@@ -131,7 +161,9 @@ step cilium
 finish_if cilium
 
 step providers
-on_mgmt "$ROOT/lib/steps/capi-providers.sh"
+providers_args=()
+[[ -n "$payload" ]] && providers_args=(--manifests "$payload/providers")
+on_mgmt "$ROOT/lib/steps/capi-providers.sh" "${providers_args[@]}"
 finish_if providers
 
 step move
@@ -156,5 +188,10 @@ apply_credentials "$mgmt_kubeconfig"
 on_mgmt helm upgrade --install classes "$ROOT/charts/capi-clusterclasses" --namespace "$CLASS_NS" --create-namespace
 on_mgmt helm upgrade --install mgmt "$ROOT/charts/capi-cluster" --namespace "$NS" --values "$values"
 on_mgmt kubectl -n "$NS" get cluster mgmt
+finish_if adopt
+
+step longhorn
+# The chart comes from $DCIAB_PAYLOAD/charts when DCIAB_PAYLOAD is set.
+"$ROOT/addons/longhorn/install.sh" "$config" "$mgmt_kubeconfig"
 echo
 echo "dciab mgmt: done. MGMT manages itself; kubeconfig: $mgmt_kubeconfig"

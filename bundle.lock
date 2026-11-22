@@ -12,6 +12,10 @@ kind: BundleLock
 kubernetes:
   # CAPI v1.14 supports v1.33-v1.37 for management and workload clusters.
   version: v1.36.6
+  # Test only, never shipped: the version the Kubernetes upgrade gate starts from. Nodes
+  # built at this version (images/node-bootc/build.sh --upgrade-from) are upgraded to
+  # `version`. One minor below it.
+  upgradeFrom: v1.35.9
 
 clusterAPI:
   contract: v1beta2
@@ -74,6 +78,8 @@ images:
   kubeVip: ghcr.io/kube-vip/kube-vip:v1.3.1@sha256:1962f9daf226503f7e6b107f595cb28b7917fd2d0113957075e19a3e5a6c1e33
   # The node image the bootstrap kind cluster boots: kind's own default for tools.kind.
   kindNode: docker.io/kindest/node:v1.37.0@sha256:a1ed56cfb0e7b93589bdf97c8cd566405a265939e3620fc4f5de89adff580ae5
+  # The seed registry dciab seed runs on the bootstrap host (Zot).
+  zot: ghcr.io/project-zot/zot-linux-amd64:v2.1.20@sha256:95a837a0afacf5b7edc0c92493f04beee6891989b8d2fd50a00cf65a1e6d4fd5
 
 # Node images: VM templates cluster nodes are cloned from, built with Kubernetes
 # image-builder (images/node/README.md). Built artifacts are never committed.
@@ -157,23 +163,69 @@ charts:
   cert-manager: v1.21.3
   longhorn: 1.13.0
 
-# Where online installs fetch the charts above. The archive build will vendor them.
+# Where the charts above come from. The archive build (build/archive.py charts) vendors
+# each chart listed here. cert-manager is installed from its release manifest instead.
 chartRepositories:
   cilium: https://helm.cilium.io
+  longhorn: https://charts.longhorn.io
 
-# sha256 of each chart .tgz, checked before install. Empty: the installer warns and
-# prints the sum to pin.
+# sha256 of each chart .tgz, checked before install and by the archive build. Empty: the
+# installer warns and prints the sum to pin; the archive build refuses the chart.
 chartDigests:
   cilium: "0c7592eb75179ecf46dd3ec22145916f0164c4401214ea15afb5b230b1d11a21"
+  longhorn: "e57f010d2a8bcf0da5b8b03ffecf49c5bc35ddc2663588ce8f22b7567b6133ed"
+
+# Digests for images their source manifests name by tag only (the Cluster API, provider
+# and cert-manager manifests, and kubeadm's control plane images). The archive pulls these
+# digests and the site registry serves them under the tag too. After a version change:
+# build/archive.py digests --inventory images.yaml, review, paste here.
+# hack/check_image_digests.py checks that each tag still points at its digest.
+imageDigests:
+  docker.io/longhornio/backing-image-manager:v1.13.0: "sha256:49779b9a8ab535f1e86d224f8e2eb5c2c3713b8f1783403fe00612a75de2b3b8"
+  docker.io/longhornio/csi-attacher:v4.13.0: "sha256:fef34c2d823b78da7d6c29fdf0f80d236293b0ac06944d14e8c366add880a4c8"
+  docker.io/longhornio/csi-node-driver-registrar:v2.18.0: "sha256:085f63e62fea391734f5668d9cbb20ac8788a8e7faea83ce2c994f0cc1834fce"
+  docker.io/longhornio/csi-provisioner:v6.3.0: "sha256:2d2694540109d2e8887f62a0bc711aca8d3033e52dddf1c39bb5c65600d9c5af"
+  docker.io/longhornio/csi-resizer:v2.2.1: "sha256:63d0aef25114d4a682b25afa6d9623a3cfcc19aca910269124408476bbe2c6fd"
+  docker.io/longhornio/csi-snapshotter:v8.6.0: "sha256:2bca9ac55170efa61dc50e5cc8d9550373db2e3e5161d82d3fdaac5c25150360"
+  docker.io/longhornio/livenessprobe:v2.20.0: "sha256:d1199b77452bfc11cfc62feb8a266758fe8d72953e97faac8065941e3767f1a3"
+  docker.io/longhornio/longhorn-engine:v1.13.0: "sha256:b0cc5090889d57705acd69c5106492992e84560170ac3bec4a1cc8dd3fe83ca6"
+  docker.io/longhornio/longhorn-instance-manager:v1.13.0: "sha256:fc9e1c15e81988b04c146866ce7010b6df3a70f88302809bf53e19b27d1658a3"
+  docker.io/longhornio/longhorn-manager:v1.13.0: "sha256:7372f3c59239e9a67c0017b3af32fabdf08c4dcc0631140161da9a47e3b142f0"
+  docker.io/longhornio/longhorn-share-manager:v1.13.0: "sha256:53950f78b7af38b8a943c298cd3020622191a4661a13036f69d83c154cc8690d"
+  docker.io/longhornio/longhorn-ui:v1.13.0: "sha256:f22fb0254ae50195c1635ce428dfae26375956b3d7bd39640fae8fe33a236023"
+  docker.io/longhornio/support-bundle-kit:v0.0.98: "sha256:e64a01db35396f967175adcfd0177d2a50e75765c51efe86e55f13f49095d1ae"
+  ghcr.io/ionos-cloud/cluster-api-provider-proxmox:v0.9.2: "sha256:682df819bb9a3b42eb12b784e47a29044555cc4d98178c71e220d97a84183252"
+  quay.io/jetstack/cert-manager-cainjector:v1.21.3: "sha256:083d0e906f8eb44e255fe4ff817ae54e49f9ed82e22f1011bb4e9e4f4b8a641f"
+  quay.io/jetstack/cert-manager-controller:v1.21.3: "sha256:9f4f96a33c7774cef24466fcd85031997531a03a8d117f151126baa8d1290dcc"
+  quay.io/jetstack/cert-manager-webhook:v1.21.3: "sha256:055ac8e9de6a0ba6763794838fe38944acc650f68ebe1b01dd8be079e580f458"
+  registry.k8s.io/capi-ipam-ic/cluster-api-ipam-in-cluster-controller:v1.1.1: "sha256:49a4cc0c5d7cd8deef20105e71ce168407ddcaab612f5819947163bd4b66ff0b"
+  registry.k8s.io/cluster-api-vsphere/cluster-api-vsphere-controller:v1.17.0: "sha256:1f5a163b32e48e1fcaeee5ddc3e3aa93dc6fcdace85501d9078f014ab516d374"
+  registry.k8s.io/cluster-api/cluster-api-controller:v1.14.4: "sha256:ee7b274a4c237d7831840c1a05a950c383f11a1755d3cca6292103cabb00bd26"
+  registry.k8s.io/cluster-api/kubeadm-bootstrap-controller:v1.14.4: "sha256:674dd5e666d209c7bdb72525dd3bb40a670c068bd12d610b596b532a84463e62"
+  registry.k8s.io/cluster-api/kubeadm-control-plane-controller:v1.14.4: "sha256:49f5cc1a0f9b3f909434e1cccf87d5d868e85e5c9ce849e8ae65ff409458befc"
+  registry.k8s.io/coredns/coredns:v1.14.2: "sha256:e7e6440cfd1e919280958f5b5a6ab2b184d385bba774c12ad2a9e1e4183f90d9"
+  registry.k8s.io/etcd:3.6.8-0: "sha256:397189418d1a00e500c0605ad18d1baf3b541a1004d768448c367e48071622e5"
+  registry.k8s.io/kube-apiserver:v1.36.6: "sha256:c627b6c01a056b30feab4f277aecc0d690afab061f935615c0d67b32e39d7823"
+  registry.k8s.io/kube-controller-manager:v1.36.6: "sha256:8548e3b0aa48070c69535a13b5728e337d99176451ddd5656a8d5203dedb937b"
+  registry.k8s.io/kube-scheduler:v1.36.6: "sha256:a3f959875bf26c1219e5aa33032c673aee9c394d4bc10a48b9b1ac5e5c819068"
+  registry.k8s.io/pause:3.10.2: "sha256:f548e0e8e3dc1896ca956272154dde3314e8cc4fde0a57577ee9fa1c63f5baf4"
 
 # sha256 of release binaries DCiaB runs, checked after download. clusterctl's version is
 # clusterAPI.core.version. Empty: the download warns and prints the sum to pin.
 binarySHA256:
   clusterctl-linux-amd64: "c7301a8515ed329562b06c958463051dd55d9649fac591393f5df54a868fa79b"
+  oras-linux-amd64.tar.gz: "66fb0ad7206f3f6fa77ed5b552049d364ccf4b50b1684554f731f76302b52ca0"   # tools.oras
+  age-linux-amd64.tar.gz: "bdc69c09cbdd6cf8b1f333d372a1f58247b3a33146406333e30c0f26e8f51377"   # tools.age
+  cosign-linux-amd64: "064954c5d8c7e3b28188eee5b1727b31c411550bc5fefd41aa672d3c761d103a"        # tools.cosign
+  syft_linux_amd64.tar.gz: "ad92bd3ec1b94a3df01d4d0aec199afa9c42b72e86da436ff5f837914d32706b"   # tools.syft (build only: build/package.py tools)
 
 tools:
   helm: v4.3.2
+  age: v1.3.1     # encrypts the generated platform CA key to spec.bootstrap.recipients
+  oras: v1.3.6    # copies images into the archive's OCI layout and into the site registry
   kind: v0.33.0   # default node image: Kubernetes v1.37.0 (CAPI v1.14 supports it as a management cluster)
+  cosign: v2.6.1  # signs the archive's MANIFEST (build) and verifies it offline (dciab verify-archive)
+  syft: v1.57.2   # SBOMs of the archive's images and binaries (build only)
 
 # sha256 of every manifest hack/fetch_crds.py downloads; it refuses a mismatch or an
 # unpinned file. After a version change: python3 hack/fetch_crds.py --print-checksums,

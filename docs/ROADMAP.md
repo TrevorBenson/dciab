@@ -15,20 +15,22 @@ What each phase builds, against the component list in [COMPONENTS.md](COMPONENTS
 
 - [x] `schema/dciab.schema.json`
 - [x] `dciab validate`: schema and offline semantic checks
-- [ ] `dciab validate`: live checks (hypervisor, BMC Redfish, NTP, upstream DNS, ARP probes for unused addresses)
+- [x] `dciab validate --live`: live checks (hypervisor, BMC Redfish, NTP, upstream DNS, ARP probes for unused addresses); not yet run against real infrastructure
 - [x] `bundle.lock` with pinned versions (digests come with the build pipeline)
 - [x] `capi-clusterclasses` chart: `r1` classes (draft until the first release; see [VERSIONING.md](VERSIONING.md)) for vSphere, Proxmox and Metal3
 - [x] `capi-cluster` chart
 - [x] ClusterClass end-to-end test: CAPI and all providers on kind, one Cluster per class, generated objects verified (no infrastructure)
 - [x] Node template recipe: image-builder with a Rocky 10 Proxmox target (`images/node/`)
 - [x] First Proxmox template built and verified
-- [ ] Node templates for vSphere and Metal3
+- [ ] Node templates for vSphere and Metal3: the bootc recipe builds them (`vmdk` with VMware Tools; a `metal` variant with drivers and firmware); not yet tested on either platform
+- [ ] Node image for the Kubernetes upgrade gate: the recipe builds it (`build.sh --upgrade-from`); not yet used in a test
 - [x] Cilium install for any cluster (`addons/cilium`), with kube-proxy replaced
 - [ ] Real-cluster spike on Proxmox from the template
-- [ ] Archive build pipeline ([build/](../build/README.md)): image inventory done; image pull, charts, binaries, SBOMs and signing next
+- [ ] Archive build pipeline ([build/](../build/README.md)): image inventory, image pull, charts, providers, binaries, checksums, SBOMs, packaging and signing (`dciab verify-archive`) done; node images next
 - [x] `dciab cluster-values`: capi-cluster values for MGMT, INFRA and workload clusters, generated from the site config
-- [ ] `dciab seed`
-- [ ] `dciab mgmt`: builds MGMT, installs Cilium and the providers, and moves Cluster API into MGMT (not yet proven on real infrastructure). Still to come: MGMT's services (Longhorn, Metal3, PowerDNS, Kea) and the DNS handoff
+- [x] `dciab status`: read-only report of the Day 0 pod, the platform CA and registry certificate, the seed registry, the bootstrap cluster and where MGMT's Cluster lives
+- [x] `dciab seed`: platform CA (generated with its key age-encrypted, or imported), read-only Zot loaded from the payload, kind pulling through it, providers and ClusterClasses from the payload ([SEED.md](SEED.md)). Still to come: DNS for `registry.<domain>`
+- [ ] `dciab mgmt`: builds MGMT, installs Cilium and the providers, and moves Cluster API into MGMT; picks up `dciab seed`'s kubeconfig and trust bundle and runs offline from the payload (CI runs seed then mgmt up to the Cluster; not yet proven on real infrastructure). Longhorn installer built (`addons/longhorn`, the `longhorn` step, chart and images from the payload). Still to come: MGMT's other services (Metal3, PowerDNS, Kea) and the DNS handoff
 
 ## Day 0 for bare servers
 
@@ -38,10 +40,11 @@ Decided in [ADR 0001](adr/0001-day0-hypervisors-and-services.md).
 - [x] `bundle.lock`: Proxmox VE installer pinned; ESXi entry (not shipped); Day 0 service images
 - [x] Day 0 image digests pinned (CoreDNS, Caddy, chrony base)
 - [ ] ESXi build tested and pinned
-- [ ] `dciab services`: CoreDNS, chrony and Caddy as one pod on the DNS service IPs
-- [ ] `dciab hypervisors` for Proxmox VE: Redfish preparation, virtual media install, API token, bridge and storage
+- [x] `dciab services`: CoreDNS, chrony and Caddy as one pod on the DNS service IPs
+- [x] `dciab hypervisors` for Proxmox VE, first part: answer files, Redfish virtual media boot, wait for the install ([docs/HYPERVISORS.md](HYPERVISORS.md))
+- [ ] `dciab hypervisors` for Proxmox VE, next: answer file delivery to the installer (prepared ISO), tagged management VLAN, Redfish preparation (boot mode, Secure Boot, disk check), post-install API token, bridge and storage
 - [ ] `dciab hypervisors` for ESXi
-- [ ] Live checks: BMC routes, Redfish and credentials
+- [x] Live checks: BMC routes, Redfish and credentials (`dciab validate --live`)
 
 ## Bootstrap appliance and USB
 
@@ -53,6 +56,15 @@ Decided in [ADR 0002](adr/0002-bootstrap-appliance-on-ventoy.md).
 - [ ] Day 0 images preloaded in the appliance
 - [ ] `dciab media`: copy the USB payload to the work disk, and run the bootstrap's heavy state from it
 - [ ] Plain (non-Ventoy) stick for strict Secure Boot sites
+
+## Platform interoperability
+
+Proposed for phases 3 and 4. Two pieces exist: `dciab cluster-values` already gives workload clusters Authentik's OIDC issuer, and the ClusterClasses already write a Kubernetes API audit log for log collection to pick up.
+
+- [ADR 0004](adr/0004-identity-and-sso.md): identity and SSO (Authentik, SPIFFE/SPIRE)
+- [ADR 0005](adr/0005-secrets.md): secrets (OpenBao, External Secrets Operator, platform PKI)
+- [ADR 0006](adr/0006-iac-path.md): the IaC path (OpenTofu, Terramate, Terratest, Terrakube with OPA)
+- [ADR 0007](adr/0007-detection-to-response.md): detection to response (Tetragon, Suricata, OpenSearch, SOAR)
 
 ## Backlog
 

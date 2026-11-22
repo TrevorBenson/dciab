@@ -12,15 +12,26 @@ usage() {
 Usage: dciab <command> [options]
 
 Commands:
-  validate <config> [--output text|json]   Check a site config; changes nothing
+  validate <config> [--output text|json] [--live [--timeout SECONDS]]
+                                           Check a site config; changes nothing. --live also asks the
+                                           hypervisor API, BMCs, NTP and DNS servers, and probes addresses
   cluster-values <config> <cluster> [--trust-bundle FILE] [-o FILE]
                                            Print a cluster's capi-cluster values (--list: cluster names)
   media                                    Copy the USB payload to the bootstrap host's work disk (not implemented yet)
-  services | hypervisors                   Day 0 for bare servers (not implemented yet)
-  mgmt <config> --bootstrap-kubeconfig FILE [--state DIR] [--trust-bundle FILE] [--until STEP]
+  services <config> [--state DIR] [--isos DIR] [--until STEP] [--print]
+                                           Day 0 DNS, NTP and HTTP on the bootstrap host (as root)
+  hypervisors <config> [--state DIR] [--host NAME ...] [--until STEP] [--iso FILE] [--print]
+                                           Day 0: install Proxmox VE on spec.hypervisors.hosts over Redfish (as root)
+  mgmt <config> [--bootstrap-kubeconfig FILE] [--state DIR] [--trust-bundle FILE] [--payload DIR] [--until STEP]
                                            Build MGMT from the bootstrap cluster and move CAPI to it
-  seed | infra | platform | finalize       Bootstrap steps (not implemented yet)
-  status | verify                          Site state (not implemented yet)
+  seed <config> [--payload DIR] [--state DIR] [--age-identity FILE] [--until STEP]
+                                           Seed registry and bootstrap (kind) cluster from the payload
+  infra | platform | finalize              Bootstrap steps (not implemented yet)
+  verify-archive (--key PUB | --checksums-only) [ARCHIVE]
+                                           Check the archive (this one by default) against its signed MANIFEST
+  status <config> [--state DIR] [--output text|json]
+                                           Where the bootstrap stands (read-only)
+  verify                                   Site checks (not implemented yet)
   help                                     Show this help
 
 Every site-specific value comes from the config. Nothing has a default.
@@ -54,11 +65,32 @@ case "$cmd" in
     require_python
     PYTHONPATH="$ROOT/lib${PYTHONPATH:+:$PYTHONPATH}" exec python3 -m dciab_cluster --root "$ROOT" "$@"
     ;;
+  seed)
+    require_python
+    PYTHONPATH="$ROOT/lib${PYTHONPATH:+:$PYTHONPATH}" exec python3 -m dciab_seed --root "$ROOT" "$@"
+    ;;
+  status)
+    require_python
+    PYTHONPATH="$ROOT/lib${PYTHONPATH:+:$PYTHONPATH}" exec python3 -m dciab_status --root "$ROOT" "$@"
+    ;;
+  verify-archive)
+    require_python
+    PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$ROOT/lib${PYTHONPATH:+:$PYTHONPATH}" \
+      exec python3 -m dciab_archive --root "$ROOT" "$@"
+    ;;
   mgmt)
     require_python
     exec "$ROOT/lib/steps/mgmt.sh" "$@"
     ;;
-  services|hypervisors|media|seed|infra|platform|finalize|status|verify)
+  services)
+    require_python
+    exec "$ROOT/lib/steps/services.sh" "$@"
+    ;;
+  hypervisors)
+    require_python
+    PYTHONPATH="$ROOT/lib${PYTHONPATH:+:$PYTHONPATH}" exec python3 -m dciab_hypervisors --root "$ROOT" "$@"
+    ;;
+  media|infra|platform|finalize|verify)
     echo "dciab $cmd: not implemented yet (see docs/ROADMAP.md)" >&2
     exit 2
     ;;
