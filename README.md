@@ -4,7 +4,7 @@ One archive and one YAML file build a data center platform from bare power and n
 
 What a site runs, by capability and cluster: [docs/COMPONENTS.md](docs/COMPONENTS.md).
 
-**Status:** Phase 1, in progress. The config schema, `dciab validate` (offline checks), the pinned `bundle.lock`, and the ClusterClass and cluster charts exist; the bootstrap steps don't yet. See [docs/ROADMAP.md](docs/ROADMAP.md).
+**Status:** Phase 1, in progress. The config schema, `dciab validate` (offline and `--live` checks), the pinned `bundle.lock`, and the ClusterClass and cluster charts exist; the bootstrap steps don't yet. See [docs/ROADMAP.md](docs/ROADMAP.md).
 
 ## The bootstrap host
 
@@ -21,7 +21,7 @@ Both run the same steps. `spec.bootstrap.workDisk` says where the payload and th
 | --- | --- | --- |
 | 0 | `./dciab validate dciab.yaml` | The config passes schema and semantic checks |
 | 0a | `./dciab media` | Bootstrap appliance (planned): copy the USB payload to the work disk |
-| 0b | `./dciab services` | Bare servers only (planned): DNS, NTP and HTTP on the bootstrap host |
+| 0b | `sudo ./dciab services dciab.yaml` | Bare servers only: DNS, NTP and HTTP on the bootstrap host |
 | 0c | `./dciab hypervisors` | Bare servers only (planned): Proxmox VE or ESXi installed over Redfish virtual media |
 | 1 | `./dciab seed` | Seed registry (Zot, read-only, from the payload) and KinD with all CAPI providers ([docs/SEED.md](docs/SEED.md)) |
 | 2 | `./dciab mgmt` | MGMT built, Cilium installed, CAPI moved into it (in progress: DNS handoff and MGMT services still to come) |
@@ -29,14 +29,24 @@ Both run the same steps. `spec.bootstrap.workDisk` says where the payload and th
 | 4 | `./dciab platform` | Repos pushed; Argo CD and OpenTofu bring up the rest |
 | 5 | `./dciab finalize` | Images moved to Artifact Keeper; seed torn down |
 
-### Starting from bare servers (planned)
+### Starting from bare servers
 
-The config format and its checks exist; the `services` and `hypervisors` steps don't yet (see the roadmap). When a site has no hypervisors yet, add `spec.hypervisors` to the config (see [examples/proxmox-bare.yaml](examples/proxmox-bare.yaml)). `services` and `hypervisors` then run before `seed`: the bootstrap host serves DNS (and NTP, with `spec.bootstrap.ntp`) on `network.dnsServiceIPs` and installs each server through its BMC. Those addresses move to MGMT later, so nothing installed on Day 0 needs reconfiguring. The site must provide:
+The config format, its checks and `services` exist; `hypervisors` doesn't yet (see the roadmap). When a site has no hypervisors yet, add `spec.hypervisors` to the config (see [examples/proxmox-bare.yaml](examples/proxmox-bare.yaml)). `services` and `hypervisors` then run before `seed`: the bootstrap host serves DNS (and NTP, with `spec.bootstrap.ntp`) on `network.dnsServiceIPs` and installs each server through its BMC. Those addresses move to MGMT later, so nothing installed on Day 0 needs reconfiguring. The site must provide:
 
 - switches configured: VLANs, trunks, MTU, gateways, and BGP peers when `loadBalancer.mode: bgp`
 - a route from the node network's gateway to the BMC networks and back, with HTTPS allowed from the bootstrap host to each BMC and HTTP from each BMC to the bootstrap host
 - BMCs with their addresses and credentials already set, and licensed for virtual media
 - for ESXi, the installer ISO of the build in `bundle.lock` (DCiaB can't ship it), and for now an existing vCenter
+
+#### `dciab services`
+
+Runs as root on the bootstrap host, only when the config has `spec.hypervisors`. It renders its configuration into `<state>/services` (root-only files; `<state>` defaults to `.dciab/state` next to the config), adds `network.dnsServiceIPs` to `spec.bootstrap.interface`, opens runtime-only firewalld ports, and runs one podman pod with host networking, from the images pinned in `bundle.lock` `day0.images`:
+
+- **CoreDNS** on the DNS service IPs: authoritative for `network.domain` and the node network's reverse zones, with records for `dns1`/`dns2` (the service IPs), `bootstrap` and `registry` (`spec.bootstrap.address`) and every hypervisor host. Other names go to `network.upstreamResolvers`, or are refused when that list is empty.
+- **chrony**, only with `spec.bootstrap.ntp`: one server per DNS service IP, syncing from `bootstrap.ntp.upstream` and serving the local clock when `serveLocalClock` is true. It never sets the host clock. DCiaB builds its image from `images/day0-chrony` on the pinned base.
+- **Caddy** on `spec.bootstrap.address:80`: installer ISOs under `/isos/` (from `--isos`, default `workDisk.path/isos`, else `<state>/isos`) and answer files under `/answers/` (`<state>/answers`).
+
+`--print` shows the plan and every rendered file without changing anything; `--until STEP` stops after a step (`preflight render address firewall images pod ready`). A rerun changes nothing; a config change recreates the pod. The last step checks DNS both ways, NTP and HTTP. Teardown: `podman kube down <state>/services/pod.yaml`.
 
 The design and its trade-offs are in [ADR 0001](docs/adr/0001-day0-hypervisors-and-services.md) (Day 0) and [ADR 0002](docs/adr/0002-bootstrap-appliance-on-ventoy.md) (the bootstrap appliance and USB).
 
@@ -67,7 +77,19 @@ The checks:
 - **Secrets**: referenced files exist, aren't empty, and aren't readable by others; referenced environment variables are set.
 - **Day 0** (`spec.hypervisors`, `spec.bootstrap.ntp`): the hypervisor type matches the platform, host addresses fit the address plan, MACs and BMCs are unique across all servers, Proxmox hosts are in `platform.proxmox.nodes`, the ESXi ISO matches `bundle.lock`, and `network.ntpServers` is exactly the DNS service IPs when the bootstrap host serves NTP.
 
-Live checks (hypervisor credentials and templates, BMC Redfish, NTP, upstream DNS, unused-address probes) come next and need the site network.
+### Live checks
+
+`./dciab validate dciab.yaml --live` also asks the site's services whether the config fits them. It is off by default so a config can be reviewed offline and in CI; run it from the bootstrap host (or another host on the site network) once the offline checks pass. Each request has a timeout (`--timeout SECONDS`, default 5) and the checks run in parallel. Secrets are read from their references, sent only in request headers, and never printed.
+
+- **Hypervisor API.** Proxmox: the API token is accepted (`/api2/json/version`), every node in `platform.proxmox.nodes` exists and is online, `templateID` is a template on `templateNode`, and `storage` and `bridge` exist on every node. vSphere: the user can log in (`/api/session`), and the datacenter, cluster, datastore, network, folder, resource pool and template exist (folder and resource pool are matched by their last path component; a missing template is a warning, since some vCenter versions leave templates out of the VM list).
+- **BMCs** (`spec.hypervisors.hosts`, `spec.baremetal.hosts`): Redfish answers, the credentials are accepted, the system in the address exists, and it has virtual media that takes CD/DVD images.
+- **NTP**: each `network.ntpServers` entry answers an SNTP query, or each `bootstrap.ntp.upstream` entry when the bootstrap host serves NTP itself. An offset of more than a second from this host's clock is a warning.
+- **Upstream DNS**: each `network.upstreamResolvers` entry answers a recursive query for the config's host names outside `network.domain`; a refusal or silence is an error, a name it can't resolve is a warning.
+- **Unused addresses**: the bootstrap address, the DNS service IPs, and every VM cluster's API VIP and node IP range must not answer on the node network. Addresses already on this host are skipped. Uses `arping -D` (iputils) when present, otherwise `ping` (weaker: a host that drops ICMP looks unused), and says which. Skipped, with a note, when `bootstrap.interface` isn't on this host. Load balancer pools are not probed. Run it before `dciab seed`: once clusters exist their addresses answer.
+
+Every TLS connection is verified: against the pinned fingerprint (`tlsFingerprint`, `thumbprint`) before any credential is sent, against `caBundle` for BMCs that use one, or against the system CAs.
+
+`--live` sends the referenced credentials to the endpoints the config names, as the later steps do, so run it only on a config you trust.
 
 ## Layout
 
@@ -77,6 +99,7 @@ VERSION                  archive version; configs must match it (spec.bundleVers
 bundle.lock              every pinned version: Kubernetes, CAPI and providers, images, charts, tools
 schema/                  JSON Schema for dciab.yaml
 lib/dciab_validate/      the validator
+lib/dciab_services/      dciab services: renders the Day 0 DNS, NTP and HTTP configs
 charts/
   capi-clusterclasses/   ClusterClasses for vSphere, Proxmox and Metal3, in frozen revisions
   capi-cluster/          one cluster: a Cluster topology plus its node IP pools

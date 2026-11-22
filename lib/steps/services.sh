@@ -1,0 +1,179 @@
+#!/usr/bin/env bash
+# dciab services: DNS, NTP and HTTP on the bootstrap host, for sites that start from bare
+# servers (docs/adr/0001-day0-hypervisors-and-services.md).
+#
+#   dciab services <config> [--state DIR] [--isos DIR] [--until STEP] [--print]
+#
+# CoreDNS, chrony (only with spec.bootstrap.ntp) and Caddy run as one podman pod with host
+# networking. CoreDNS and chrony answer only on network.dnsServiceIPs, Caddy only on
+# spec.bootstrap.address. Steps, in order; each is safe to re-run:
+#   preflight   root, tools, the config is valid and has spec.hypervisors
+#   render      Corefile, zones, chrony.conf, Caddyfile and pod.yaml -> <state>/services (mode 600)
+#   address     network.dnsServiceIPs added to spec.bootstrap.interface (runtime, like ip addr add)
+#   firewall    runtime-only firewalld ports, when firewalld runs
+#   images      the pinned images present; DCiaB's chrony image built from images/day0-chrony
+#   pod         podman kube play --replace, only when the rendered files changed or the pod isn't running
+#   ready       DNS (forward and reverse) and NTP on each service IP, HTTP on the bootstrap address
+#
+# --until STEP stops after STEP. --print shows the plan and the rendered files, and changes
+# nothing. <state> defaults to .dciab/state next to the config. ISOs are served from --isos,
+# default spec.bootstrap.workDisk.path/isos, else <state>/isos; answer files from <state>/answers.
+# Teardown: podman kube down <state>/services/pod.yaml.
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+STEPS=(preflight render address firewall images pod ready)
+
+die() { echo "dciab services: $*" >&2; exit 1; }
+usage() { sed -n '5p' "${BASH_SOURCE[0]}" | sed 's/^# *//' >&2; exit 2; }
+
+config="" state="" isos="" until="" print=0
+while (( $# )); do
+  case "$1" in
+    --state) state="${2:?}"; shift 2 ;;
+    --isos) isos="${2:?}"; shift 2 ;;
+    --until) until="${2:?}"; shift 2 ;;
+    --print) print=1; shift ;;
+    -*) echo "dciab services: unknown option '$1'" >&2; usage ;;
+    *) [[ -z "$config" ]] || usage; config="$1"; shift ;;
+  esac
+done
+[[ -n "$config" ]] || usage
+[[ -f "$config" ]] || die "no such config: $config"
+if [[ -n "$until" ]] && ! printf '%s\n' "${STEPS[@]}" | grep -qx "$until"; then
+  die "--until must be one of: ${STEPS[*]}"
+fi
+config="$(cd "$(dirname "$config")" && pwd)/$(basename "$config")"
+state="${state:-$(dirname "$config")/.dciab/state}"
+state="$(realpath -m "$state")"
+
+export PYTHONPATH="$ROOT/lib${PYTHONPATH:+:$PYTHONPATH}"
+helper() {
+  local args=(--root "$ROOT" --state "$state")
+  [[ -n "$isos" ]] && args+=(--isos "$isos")
+  python3 -m dciab_services "${args[@]}" "$config" "$@"
+}
+step() { echo; echo "== services: $1"; }
+finish_if() { if [[ "$until" == "$1" ]]; then echo "dciab services: stopped after '$1' (--until)"; exit 0; fi; }
+
+# Read the plan: shell assignments from the helper, which validates the config.
+WANTED="" INTERFACE="" PREFIX="" SERVICE_IPS="" BOOTSTRAP_ADDRESS="" NTP="" IMAGES=""
+CHRONY_IMAGE="" CHRONY_BASE="" CONF_DIR="" ISOS_DIR="" ANSWERS_DIR="" POD="" FINGERPRINT=""
+plan="$(helper env)" || exit $?
+eval "$plan"
+if [[ "$WANTED" != 1 ]]; then
+  echo "dciab services: the config has no spec.hypervisors; nothing to do (this site starts at seed)"
+  exit 0
+fi
+
+nic_name() {   # spec.bootstrap.interface is a NIC name or its MAC
+  local want="$1" dev
+  if [[ "$want" =~ ^([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}$ ]]; then
+    for dev in /sys/class/net/*; do
+      if [[ "$(cat "$dev/address" 2>/dev/null)" == "${want,,}" ]]; then
+        basename "$dev"; return 0
+      fi
+    done
+    return 1
+  fi
+  [[ -e "/sys/class/net/$want" ]] && echo "$want"
+}
+has_addr() { ip -o -4 addr show dev "$1" | awk '{print $4}' | cut -d/ -f1 | grep -qxF "$2"; }
+pod_running() {   # every container of the pod is running
+  local states
+  states="$(podman pod inspect "$POD" --format '{{range .Containers}}{{.State}} {{end}}' 2>/dev/null)" || return 1
+  [[ -n "$states" ]] && ! grep -qv '^running$' < <(tr ' ' '\n' <<<"$states" | sed '/^$/d')
+}
+applied() { [[ -f "$CONF_DIR/applied" && "$(cat "$CONF_DIR/applied")" == "$FINGERPRINT" ]]; }
+
+if (( print )); then
+  echo "dciab services plan (--print: nothing is changed)"
+  echo "  interface:   $INTERFACE ($(nic_name "$INTERFACE" || echo 'not found on this host'))"
+  for ip in $SERVICE_IPS; do echo "  address:     $ip/$PREFIX (DNS$([[ "$NTP" == 1 ]] && echo ', NTP'))"; done
+  echo "  HTTP:        http://$BOOTSTRAP_ADDRESS:80 (ISOs from $ISOS_DIR, answer files from $ANSWERS_DIR)"
+  echo "  images:      $IMAGES"
+  [[ "$NTP" == 1 ]] && echo "  chrony:      $CHRONY_IMAGE (built from images/day0-chrony on $CHRONY_BASE)"
+  if [[ $EUID -eq 0 ]] && command -v podman >/dev/null; then
+    if applied && pod_running; then echo "  pod $POD:  running with this config (no change)"
+    else echo "  pod $POD:  would be (re)created"; fi
+  fi
+  echo
+  helper show
+  exit 0
+fi
+
+step preflight
+[[ $EUID -eq 0 ]] || die "must run as root: the pod binds ports 53, 80 and 123 on the site network (try: sudo dciab services ...)"
+for tool in podman ip flock python3; do
+  command -v "$tool" >/dev/null || die "$tool is not on PATH"
+done
+nic="$(nic_name "$INTERFACE")" || die "no network interface matches spec.bootstrap.interface ($INTERFACE)"
+has_addr "$nic" "$BOOTSTRAP_ADDRESS" \
+  || die "$nic doesn't have spec.bootstrap.address $BOOTSTRAP_ADDRESS; configure the bootstrap host's network first"
+mkdir -p "$state" && chmod 700 "$state"
+# Root writes here: refuse a state folder someone else could have prepared.
+[[ "$(stat -c %u "$state")" == 0 ]] || die "$state must be owned by root"
+# One run at a time per host, whatever the state folder: there is one pod.
+exec 9>>/run/dciab-services.lock
+flock -n 9 || die "another dciab services is running on this host"
+# Commands that leave processes behind (podman's conmon) must not inherit the lock: "9>&-".
+finish_if preflight
+
+step render
+helper write
+mkdir -p "$ISOS_DIR" "$ANSWERS_DIR"
+chmod 700 "$ANSWERS_DIR"   # answer files carry password hashes
+if command -v selinuxenabled >/dev/null && selinuxenabled; then
+  chcon -R -t container_file_t "$CONF_DIR" "$ANSWERS_DIR" "$ISOS_DIR"
+fi
+finish_if render
+
+step address
+for ip in $SERVICE_IPS; do
+  if has_addr "$nic" "$ip"; then
+    echo "$ip already on $nic"
+  else
+    ip addr add "$ip/$PREFIX" dev "$nic"
+    echo "added $ip/$PREFIX to $nic"
+  fi
+done
+finish_if address
+
+step firewall
+if command -v firewall-cmd >/dev/null && firewall-cmd --state >/dev/null 2>&1; then
+  zone="$(firewall-cmd --get-zone-of-interface="$nic" 2>/dev/null || firewall-cmd --get-default-zone)"
+  ports=(53/udp 53/tcp 80/tcp)
+  [[ "$NTP" == 1 ]] && ports+=(123/udp)
+  for p in "${ports[@]}"; do
+    if ! firewall-cmd --zone="$zone" --query-port="$p" >/dev/null; then
+      firewall-cmd --zone="$zone" --add-port="$p" >/dev/null || die "firewalld refused to open $p in zone $zone"
+      echo "opened $p in zone $zone (runtime only)"
+    fi
+  done
+else
+  echo "firewalld isn't running; nothing to open"
+fi
+finish_if firewall
+
+step images
+for img in $IMAGES; do
+  podman image exists "$img" || podman pull "$img" 9>&-
+done
+if [[ "$NTP" == 1 ]] && ! podman image exists "$CHRONY_IMAGE"; then
+  podman image exists "$CHRONY_BASE" || podman pull "$CHRONY_BASE" 9>&-
+  podman build --pull=never --build-arg BASE_IMAGE="$CHRONY_BASE" -t "$CHRONY_IMAGE" "$ROOT/images/day0-chrony" 9>&-
+fi
+finish_if images
+
+step pod
+if applied && pod_running; then
+  echo "pod $POD already runs this config"
+else
+  podman kube play --replace "$CONF_DIR/pod.yaml" 9>&-
+  echo "$FINGERPRINT" > "$CONF_DIR/applied"
+  chmod 600 "$CONF_DIR/applied"
+fi
+finish_if pod
+
+step ready
+helper check

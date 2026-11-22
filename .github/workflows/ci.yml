@@ -395,11 +395,63 @@ jobs:
       - run: pip install pyyaml
       - run: python hack/check_image_digests.py
 
+  services:
+    # dciab services for real: rootful podman, the pod on a dummy interface that carries
+    # examples/proxmox-bare.yaml's bootstrap NIC (by MAC) and address.
+    name: dciab services (rootful podman pod, DNS/NTP/HTTP)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update -q && sudo apt-get install -y -q python3-yaml python3-jsonschema dnsutils
+      - name: Site and dummy interface
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/site
+          cp examples/proxmox-bare.yaml /tmp/site/dciab.yaml
+          for s in hv/root bmc/pve01 bmc/pve02 bmc/pve03 bmc/ca.pem pki/intermediate.crt pki/intermediate.key pki/chain.pem; do
+            mkdir -p "$(dirname "/tmp/site/secrets/$s")"
+            echo placeholder > "/tmp/site/secrets/$s"
+            chmod 600 "/tmp/site/secrets/$s"
+          done
+          sudo ip link add dciab0 type dummy
+          sudo ip link set dciab0 address b8:ca:3a:00:00:05 up
+          sudo ip addr add 10.30.110.5/24 dev dciab0
+          DCIAB_PVE_TOKEN=placeholder ./dciab services /tmp/site/dciab.yaml --print
+      - name: dciab services
+        run: sudo DCIAB_PVE_TOKEN=placeholder ./dciab services /tmp/site/dciab.yaml
+      - name: A rerun changes nothing
+        run: |
+          set -euo pipefail
+          out="$(sudo DCIAB_PVE_TOKEN=placeholder ./dciab services /tmp/site/dciab.yaml)"
+          echo "$out"
+          grep -q "already runs this config" <<<"$out"
+          if grep -E "^(wrote|added|opened) " <<<"$out"; then echo "the rerun changed something"; exit 1; fi
+      - name: DNS both ways, refusal outside the zones, ranged HTTP, NTP
+        run: |
+          set -euo pipefail
+          test "$(dig +short @10.30.110.53 pve01.lab1.example.com)" = 10.30.110.6
+          test "$(dig +short @10.30.110.54 registry.lab1.example.com)" = 10.30.110.5
+          test "$(dig +short @10.30.110.54 -x 10.30.110.7)" = pve02.lab1.example.com.
+          dig @10.30.110.53 example.org | grep -q 'status: REFUSED'
+          printf '0123456789' | sudo tee /tmp/site/.dciab/state/isos/test.iso >/dev/null
+          test "$(curl -sS --noproxy '*' -r 2-5 http://10.30.110.5/isos/test.iso)" = 2345
+          # answer files only for the hypervisor hosts' addresses; this runner is the bootstrap address
+          test "$(curl -sS --noproxy '*' -o /dev/null -w '%{http_code}' http://10.30.110.5/answers/pve01.toml)" = 403
+          for ip in 10.30.110.53 10.30.110.54; do
+            PYTHONPATH=lib python3 -c "import sys; from dciab_services import probe; s = probe.ntp(sys.argv[1]); print(sys.argv[1], 'stratum', s); sys.exit(0 if s and s < 16 else 1)" "$ip"
+          done
+      - name: Pod logs
+        if: failure()
+        run: |
+          sudo podman pod ps || true
+          sudo podman ps -a || true
+          for c in coredns chrony-1 chrony-2 caddy; do echo "== $c"; sudo podman logs "dciab-services-$c" 2>&1 | tail -40 || true; done
+
   shellcheck:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: shellcheck dciab hack/e2e/run.sh hack/check_frozen_classes.sh images/node/build.sh lib/steps/mgmt.sh lib/steps/capi-providers.sh images/node-bootc/build.sh images/node-bootc/rootfs/usr/libexec/dciab/growroot images/bootstrap-bootc/build.sh images/usb/build.sh addons/cilium/install.sh addons/longhorn/install.sh
+      - run: shellcheck dciab hack/e2e/run.sh hack/check_frozen_classes.sh images/node/build.sh lib/steps/mgmt.sh lib/steps/services.sh lib/steps/capi-providers.sh images/node-bootc/build.sh images/node-bootc/rootfs/usr/libexec/dciab/growroot images/bootstrap-bootc/build.sh images/usb/build.sh addons/cilium/install.sh addons/longhorn/install.sh
 
   rocky10:
     # The validator must run on the bootstrap host with distro packages only.
