@@ -143,9 +143,38 @@ def check_proxmox(spec: dict, config_dir: FsPath, timeout: float) -> Results:
         if no_bridge:
             r.error(base + ("bridge",), f"{px['bridge']}: no such bridge on " + ", ".join(no_bridge),
                     "use a bridge every node has; bridges seen: " + (", ".join(clean(b) for b in sorted(bridges_seen)) or "(none)"))
+        check_token_privileges(px, get, r, base)
     except ProbeError as exc:
         r.error(base + ("url",), str(exc), "check the network path to the Proxmox API")
     return r
+
+
+def check_token_privileges(px: dict, get, r: Results, base: Path) -> None:
+    """The token has exactly what docs/PROXMOX.md lists: nothing missing, nothing that could
+    change permissions or the hosts."""
+    from .proxmox_privs import compare, grants
+    want = grants(px)
+    user = px["credentials"]["tokenID"].split("!", 1)[0]
+    if user == "root@pam":
+        r.warn(base + ("credentials", "tokenID"), "the token belongs to root@pam",
+               "use a dedicated user with the privileges in docs/PROXMOX.md (pveum commands there)")
+    have = {}
+    for path in [g.path for g in want] + ["/"]:
+        status, data = get(f"/access/permissions?path={quote(path, safe='')}")
+        if status != 200 or not isinstance(data, dict):
+            r.error(base + ("credentials", "tokenID"), f"can't read the token's privileges on {path} (HTTP {status})",
+                    "the token must be able to read its own permissions (GET /access/permissions)")
+            return
+        have[path] = data.get(path) or {}
+    missing, broad = compare(want, {k: v for k, v in have.items() if k != "/"}, root=have.get("/"))
+    for line in missing:
+        r.error(base + ("credentials", "tokenID"), f"the token lacks {line}",
+                "grant exactly the roles and ACLs in docs/PROXMOX.md, to both the user and the token (privsep=1)")
+    for line in broad:
+        r.warn(base + ("credentials", "tokenID"), f"the token can do more than DCiaB needs: {line}",
+               "remove those privileges; docs/PROXMOX.md lists exactly what is needed")
+    if not missing:
+        r.note(f"token {px['credentials']['tokenID']} has every privilege docs/PROXMOX.md lists")
 
 
 # -- vSphere ------------------------------------------------------------------------------

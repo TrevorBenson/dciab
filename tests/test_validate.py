@@ -369,11 +369,19 @@ def test_hypervisor_not_in_proxmox_nodes_is_a_warning(site):
     assert any("pve03" in n for n in report["notes"])
 
 
-def test_hypervisor_root_password_must_exist(site):
+def test_hypervisor_root_password_is_removed(site):
+    """Root on the hypervisors logs in with SSH keys only; the old key is an error."""
     doc = load_example("proxmox-bare")
-    doc["spec"]["hypervisors"]["rootPassword"] = {"file": "./secrets/hv/missing"}
+    doc["spec"]["hypervisors"]["rootPassword"] = {"file": "./secrets/hv/root"}
     _, report = site.validate(doc)
-    assert errors(report, "spec.hypervisors.rootPassword.file")
+    assert errors(report, "spec.hypervisors.rootPassword")
+
+
+def test_proxmox_hypervisors_need_installer_locale(site):
+    doc = load_example("proxmox-bare")
+    del doc["spec"]["hypervisors"]["installer"]
+    _, report = site.validate(doc)
+    assert errors(report, "spec.hypervisors.installer")
 
 
 def test_bootstrap_ntp_needs_service_ips_as_ntp_servers(site):

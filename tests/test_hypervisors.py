@@ -9,6 +9,7 @@ import ssl
 import subprocess
 import sys
 import threading
+from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import pytest
@@ -60,14 +61,14 @@ filter-match = "all"
 
 def test_answer_file_golden():
     doc = bare()
-    assert answer.render(doc, host(doc), "pw", fake_hash) == GOLDEN
+    assert answer.render(doc, host(doc), "$6$fake$pve01") == GOLDEN
 
 
 @pytest.mark.skipif(sys.version_info < (3, 11), reason="tomllib is in Python 3.11+")
 def test_answer_file_is_valid_toml():
     import tomllib
     doc = bare()
-    parsed = tomllib.loads(answer.render(doc, host(doc, "pve02"), "pw", fake_hash))
+    parsed = tomllib.loads(answer.render(doc, host(doc, "pve02"), "$6$fake$pve02"))
     assert parsed["global"]["fqdn"] == "pve02.lab1.example.com"
     assert parsed["network"] == {"source": "from-answer", "cidr": "10.30.110.7/24", "dns": "10.30.110.53",
                                  "gateway": "10.30.110.1", "filter": {"ID_NET_NAME_MAC": "*b8ca3a010302"}}
@@ -84,10 +85,33 @@ def test_disk_hints():
             answer.disk_setup(bad)
 
 
-def test_empty_password_is_refused():
+def test_a_non_sha512_hash_is_refused():
     doc = bare()
     with pytest.raises(answer.AnswerError):
-        answer.render(doc, host(doc), "", fake_hash)
+        answer.render(doc, host(doc), "plain")
+
+
+def test_root_password_is_random_unstored_and_stable(tmp_path):
+    seen = []
+
+    def hasher(host, password):
+        seen.append(password)
+        return f"$6$x${host}{len(password)}"
+    d = tmp_path / "answers"
+    first = answer.root_hash(d, "pve01", hasher)
+    assert answer.root_hash(d, "pve01", hasher) == first and len(seen) == 1   # kept, not regenerated
+    assert (d / "pve01.root-hash").stat().st_mode & 0o777 == 0o600
+    assert seen[0] not in (d / "pve01.root-hash").read_text()             # the password itself isn't kept
+    assert len(seen[0]) >= 40
+    answer.root_hash(d, "pve02", hasher)
+    assert seen[1] != seen[0]
+
+
+def test_locale_comes_from_the_config():
+    doc = bare()
+    doc["spec"]["hypervisors"]["installer"] = {"keyboard": "de", "country": "de", "timezone": "Europe/Berlin"}
+    text = answer.render(doc, host(doc), "$6$fake$pve01")
+    assert 'keyboard = "de"' in text and 'timezone = "Europe/Berlin"' in text
 
 
 @pytest.mark.skipif(not shutil.which("openssl"), reason="openssl is needed")
@@ -132,7 +156,7 @@ def test_print_changes_nothing(tmp_path, monkeypatch, capsys):
     code = cli.main(["--root", str(ROOT), "--print", "--host", "pve02", str(cfg)])
     out = capsys.readouterr().out
     assert code == 0, out
-    assert "http://10.30.110.5/isos/proxmox-ve_9.2-1.iso" in out
+    assert "proxmox-ve_9.2-1.iso" in out and "http://10.30.110.5/host-isos/pve02.iso" in out
     assert "pve02.lab1.example.com" in out and "pve01.lab1" not in out
     assert "(hidden)" in out and "$6$" not in out
     assert not (tmp_path / ".dciab").exists()
@@ -361,3 +385,73 @@ def test_accepted_task_is_waited_for(fake_bmc, monkeypatch):
     f.bmc._call("POST", "/x", {})
     assert polls == [("POST", "/x"), ("GET", "/redfish/v1/TaskService/Tasks/7"),
                      ("GET", "/redfish/v1/TaskService/Tasks/7")]
+
+
+# --- per-host installer ISOs (iso.py) ---------------------------------------------------
+
+from dciab_hypervisors import iso  # noqa: E402
+
+
+def fake_assistant(calls):
+    def runner(cmd):
+        calls.append(list(cmd))
+        work = next(a.split(":")[0] for a in cmd if a.endswith(":/work:Z"))
+        assert "--network" in cmd and cmd[cmd.index("--network") + 1] == "none"
+        assert (Path(work) / "answer.toml").stat().st_mode & 0o777 == 0o600
+        (Path(work) / "out.iso").write_bytes(b"ISO with " + (Path(work) / "answer.toml").read_bytes())
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+    return runner
+
+
+def test_host_iso_built_private_and_only_when_inputs_change(tmp_path):
+    base = tmp_path / "pve.iso"
+    base.write_bytes(b"base")
+    out = tmp_path / "host-isos"
+    calls = []
+    assert iso.build("pve01", "a=1\n", base, "s1", out, "img", fake_assistant(calls))
+    assert (out / "pve01.iso").read_bytes() == b"ISO with a=1\n"
+    assert (out / "pve01.iso").stat().st_mode & 0o777 == 0o600 and out.stat().st_mode & 0o777 == 0o700
+    assert "prepare-iso" in calls[0] and "--fetch-from" in calls[0] and "iso" in calls[0]
+    assert not iso.build("pve01", "a=1\n", base, "s1", out, "img", fake_assistant(calls))   # unchanged
+    assert iso.build("pve01", "a=2\n", base, "s1", out, "img", fake_assistant(calls))       # answer changed
+    assert iso.build("pve01", "a=2\n", base, "s2", out, "img", fake_assistant(calls))       # base changed
+    assert len(calls) == 3
+    assert sorted(p.name for p in out.iterdir()) == ["pve01.iso", "pve01.iso.inputs"]       # no temp left
+
+
+def test_stale_host_isos_removed(tmp_path):
+    for n in ("pve01", "old"):
+        (tmp_path / f"{n}.iso").write_text("x")
+        (tmp_path / f"{n}.iso.inputs").write_text("x")
+    assert iso.remove_stale(tmp_path, ["pve01"]) == ["old.iso"]
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["pve01.iso", "pve01.iso.inputs"]
+
+
+def test_base_iso_checked_against_the_lock(tmp_path):
+    base = tmp_path / "pve.iso"
+    base.write_bytes(b"base")
+    good = hashlib.sha256(b"base").hexdigest()
+    iso.check_base(base, good, cache=tmp_path / "checked")
+    with pytest.raises(iso.IsoError, match="bundle.lock pins"):
+        iso.check_base(base, "0" * 64)
+    with pytest.raises(iso.IsoError, match="no such file"):
+        iso.check_base(tmp_path / "missing.iso", good)
+
+
+def test_bmc_ip_resolves_names():
+    assert iso.bmc_ip("redfish-virtualmedia+https://10.30.0.21/redfish/v1/Systems/1") == "10.30.0.21"
+    assert iso.bmc_ip("redfish-virtualmedia+https://bmc1.example/redfish/v1/Systems/1",
+                      resolve=lambda h: "10.0.0.9") == "10.0.0.9"
+
+    def fail(h):
+        raise OSError("nope")
+    with pytest.raises(iso.IsoError, match="resolve"):
+        iso.bmc_ip("redfish-virtualmedia+https://bmc1.example/x", resolve=fail)
+
+
+def test_assistant_image_needs_a_pin_unless_overridden(monkeypatch):
+    monkeypatch.delenv("DCIAB_PVE_ASSISTANT_IMAGE", raising=False)
+    with pytest.raises(iso.IsoError, match="pinned"):
+        cli.assistant_image(ROOT, {"images": {"pveAssistant": "ghcr.io/x/y:1"}})
+    monkeypatch.setenv("DCIAB_PVE_ASSISTANT_IMAGE", "localhost/pve-assistant:test")
+    assert cli.assistant_image(ROOT, {"images": {}}) == "localhost/pve-assistant:test"

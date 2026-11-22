@@ -87,7 +87,7 @@ def test_admins_still_planned_when_network_is_not(tmp_path, capsys):
 def test_blocking_errors_only_cover_network_and_identity(site, monkeypatch):
     monkeypatch.setenv("DCIAB_ROOT", str(ROOT))
     doc = _doc(managementVLAN="untagged")
-    doc["spec"]["hypervisors"]["rootPassword"] = {"file": "./secrets/hv/missing"}  # not blocking
+    doc["spec"]["hypervisors"]["hosts"][0]["bmc"]["credentials"]["password"] = {"file": "./secrets/bmc/missing"}  # not blocking
     path = site.dir / "dciab.yaml"
     path.write_text(yaml.safe_dump(doc))
     assert setup.blocking_errors(str(path)) == []

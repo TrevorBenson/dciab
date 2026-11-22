@@ -22,7 +22,7 @@
 # --payload DIR (default: $DCIAB_PAYLOAD, else <archive>/payload when it exists) is the archive's
 # payload; nothing is pulled from the internet then. --until STEP stops after STEP. --print shows the plan and the rendered files, and changes
 # nothing. <state> defaults to .dciab/state next to the config. ISOs are served from --isos,
-# default spec.bootstrap.workDisk.path/isos, else <state>/isos; answer files from <state>/answers.
+# default spec.bootstrap.workDisk.path/isos, else <state>/isos; per-host installer ISOs from <state>/host-isos.
 # Teardown: podman kube down <state>/services/pod.yaml.
 set -euo pipefail
 
@@ -72,7 +72,7 @@ finish_if() { if [[ "$until" == "$1" ]]; then echo "dciab services: stopped afte
 
 # Read the plan: shell assignments from the helper, which validates the config.
 MODE="" INTERFACE="" PREFIX="" SERVICE_IPS="" BOOTSTRAP_ADDRESS="" NTP="" IMAGES=""
-IMAGE_LAYOUTS="" CHRONY_IMAGE="" CHRONY_BASE="" CONF_DIR="" ISOS_DIR="" ANSWERS_DIR="" POD="" FINGERPRINT=""
+IMAGE_LAYOUTS="" CHRONY_IMAGE="" CHRONY_BASE="" CONF_DIR="" ISOS_DIR="" HOST_ISOS_DIR="" POD="" FINGERPRINT=""
 plan="$(helper env)" || exit $?
 eval "$plan"
 dns_only() { [[ "$MODE" == dns ]]; }
@@ -102,7 +102,7 @@ if (( print )); then
   dns_only && echo "  mode:        DNS only (the config has no spec.hypervisors)"
   echo "  interface:   $INTERFACE ($(nic_name "$INTERFACE" || echo 'not found on this host'))"
   for ip in $SERVICE_IPS; do echo "  address:     $ip/$PREFIX (DNS$([[ "$NTP" == 1 ]] && echo ', NTP'))"; done
-  dns_only || echo "  HTTP:        http://$BOOTSTRAP_ADDRESS:80 (ISOs from $ISOS_DIR, answer files from $ANSWERS_DIR)"
+  dns_only || echo "  HTTP:        http://$BOOTSTRAP_ADDRESS:80 (ISOs from $ISOS_DIR, per-host ISOs from $HOST_ISOS_DIR)"
   echo "  images:      $IMAGES${payload:+ (from $payload)}"
   [[ "$NTP" == 1 ]] && echo "  chrony:      $CHRONY_IMAGE (built from images/day0-chrony on $CHRONY_BASE)"
   if [[ $EUID -eq 0 ]] && command -v podman >/dev/null; then
@@ -135,9 +135,9 @@ step render
 helper write
 selinux_dirs=("$CONF_DIR")
 if ! dns_only; then
-  mkdir -p "$ISOS_DIR" "$ANSWERS_DIR"
-  chmod 700 "$ANSWERS_DIR"   # answer files carry password hashes
-  selinux_dirs+=("$ANSWERS_DIR" "$ISOS_DIR")
+  mkdir -p "$ISOS_DIR" "$HOST_ISOS_DIR"
+  chmod 700 "$HOST_ISOS_DIR"   # each host's ISO carries its root password hash
+  selinux_dirs+=("$HOST_ISOS_DIR" "$ISOS_DIR")
 fi
 if command -v selinuxenabled >/dev/null && selinuxenabled; then
   chcon -R -t container_file_t "${selinux_dirs[@]}"

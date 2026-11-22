@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-from conftest import errors, load_example, warnings
+from conftest import ROOT, errors, load_example, warnings
 from dciab_validate import live, probes
 from dciab_validate.probes import ProbeError
 
@@ -133,7 +133,19 @@ def pve_routes(template=1, storage="local-lvm", bridge="vmbr0", status3="online"
         routes[("GET", f"/api2/json/nodes/{n}/storage")] = (200, {"data": [{"storage": "local"}, {"storage": storage}]})
         routes[("GET", f"/api2/json/nodes/{n}/network")] = (200, {"data": [
             {"iface": "eno1", "type": "eth"}, {"iface": bridge, "type": "bridge"}]})
+    add_permissions(routes, load_example("proxmox-bare")["spec"]["platform"]["proxmox"])
     return routes
+
+
+def add_permissions(routes, px, drop=None, extra_root=None):
+    """GET /access/permissions?path=... answers: exactly docs/PROXMOX.md's grants."""
+    from urllib.parse import quote
+
+    from dciab_validate.proxmox_privs import grants
+    for g in grants(px):
+        privs = {p: 1 for p in g.privileges if p != drop}
+        routes[("GET", f"/api2/json/access/permissions?path={quote(g.path, safe='')}")] = (200, {"data": {g.path: privs}})
+    routes[("GET", "/api2/json/access/permissions?path=%2F")] = (200, {"data": {"/": extra_root or {}}})
 
 
 PVE_AUTH = {f"PVEAPIToken=dciab@pve!capmox={TOKEN}"}
@@ -746,3 +758,38 @@ def test_cli_rejects_a_bad_timeout(site):
 def test_server_values_are_cleaned_before_printing():
     assert live.clean("9.1\x1b[2J\n") == "9.1?[2J?"
     assert len(live.clean("x" * 500)) == 120
+
+
+def test_proxmox_token_privileges(cert, servers, monkeypatch, tmp_path):
+    monkeypatch.setenv("DCIAB_PVE_TOKEN", TOKEN)
+    px_example = load_example("proxmox-bare")["spec"]["platform"]["proxmox"]
+    routes = pve_routes()
+    add_permissions(routes, px_example, drop="VM.Clone", extra_root={"Permissions.Modify": 1})
+    srv = servers(cert, routes, PVE_AUTH)
+    spec = proxmox_spec(srv.port, cert["sha256"])
+    r = live.check_proxmox(spec, tmp_path, 5)
+    found = " | ".join(f.found for f in r.findings)
+    assert "the token lacks /vms: VM.Clone" in found
+    assert "can do more than DCiaB needs: /: Permissions.Modify" in found
+
+
+def test_pveum_commands_match_the_grants():
+    from dciab_validate import proxmox_privs
+    px = {"storage": "ceph-vm", "bridge": "vmbr0", "vlanTag": 110}
+    cmds = proxmox_privs.pveum_commands(px, "capmox@pve", "dciab")
+    assert "pveum user token add capmox@pve dciab --privsep 1" in cmds
+    assert any(c.startswith("pveum acl modify /sdn/zones/localnetwork/vmbr0/110 ") for c in cmds)
+    assert any("/storage/local " in c and "DCiaBBootstrapISO" in c for c in cmds)
+    one = {"storage": "local", "bridge": "vmbr1"}
+    assert [g.path for g in proxmox_privs.grants(one)] == ["/nodes", "/vms", "/storage/local",
+                                                            "/sdn/zones/localnetwork/vmbr1"]
+
+
+def test_proxmox_doc_matches_the_grants():
+    from dciab_validate.proxmox_privs import grants
+    doc = (ROOT / "docs" / "PROXMOX.md").read_text()
+    px = {"storage": "<storage>", "bridge": "<bridge>", "vlanTag": "<vlanTag>"}
+    for g in grants(px):
+        row = f"| `{g.role}` | `{g.path}` | {'yes' if g.propagate else 'no'} | " + \
+              ", ".join(f"`{p}`" for p in g.privileges)
+        assert row in doc, f"docs/PROXMOX.md is out of date for {g.role}"

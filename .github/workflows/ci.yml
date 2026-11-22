@@ -406,6 +406,67 @@ jobs:
           done
           grep -Eq "^mgmt +down .*not moved" <<<"$out"
 
+  pve-assistant:
+    # The image dciab hypervisors builds per-host Proxmox VE ISOs with, then a real host ISO
+    # from the pinned installer ISO and an answer file rendered from examples/proxmox-bare.yaml.
+    name: Proxmox VE per-host installer ISO
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install pyyaml jsonschema
+      - name: Build the assistant image (prints the pins it used)
+        id: build
+        run: echo "tag=$(images/pve-assistant/build.sh --print-pins)" >> "$GITHUB_OUTPUT"
+      - name: Installer ISO (pinned in bundle.lock)
+        run: |
+          set -euo pipefail
+          read -r url sha < <(python3 -c 'import yaml; p = yaml.safe_load(open("bundle.lock"))["hypervisors"]["proxmox"]; print(p["isoURL"], p["isoSHA256"])')
+          mkdir -p "$RUNNER_TEMP/isos"
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/isos/$(basename "$url")" "$url"
+          echo "$sha  $RUNNER_TEMP/isos/$(basename "$url")" | sha256sum -c -
+      - name: Build pve01's ISO and check its answer file is inside
+        env:
+          TAG: ${{ steps.build.outputs.tag }}
+        run: |
+          set -euo pipefail
+          PYTHONPATH=lib python3 - "$TAG" "$RUNNER_TEMP" <<'PY'
+          import sys, yaml
+          from pathlib import Path
+          from dciab_hypervisors import answer, iso
+          tag, tmp = sys.argv[1], Path(sys.argv[2])
+          lock = yaml.safe_load(open("bundle.lock"))["hypervisors"]["proxmox"]
+          doc = yaml.safe_load(open("examples/proxmox-bare.yaml"))
+          host = doc["spec"]["hypervisors"]["hosts"][0]
+          text = answer.render(doc, host, answer.root_hash(tmp / "answers", host["name"]))
+          base = tmp / "isos" / Path(lock["isoURL"]).name
+          iso.check_base(base, lock["isoSHA256"])
+          assert iso.build(host["name"], text, base, lock["isoSHA256"], tmp / "host-isos", tag)
+          assert not iso.build(host["name"], text, base, lock["isoSHA256"], tmp / "host-isos", tag)
+          (tmp / "expected.toml").write_text(text)
+          PY
+          podman run --rm --network none --entrypoint osirrox -v "$RUNNER_TEMP:/t:Z" "$TAG" \
+            -indev /t/host-isos/pve01.iso -extract /answer.toml /t/got.toml
+          diff "$RUNNER_TEMP/expected.toml" "$RUNNER_TEMP/got.toml"
+          ls -l "$RUNNER_TEMP/host-isos"
+      - name: Publish (main only)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          TAG: ${{ steps.build.outputs.tag }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          version="$(podman run --rm --entrypoint dpkg-query "$TAG" -W -f '${Version}' proxmox-auto-install-assistant)"
+          dest="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/dciab-pve-assistant:$version"
+          echo "$GH_TOKEN" | podman login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          podman push --digestfile "$RUNNER_TEMP/digest" "$TAG" "docker://$dest"
+          echo "published: $dest@$(cat "$RUNNER_TEMP/digest")  (pin it as bundle.lock images.pveAssistant)"
+
   frozen-classes:
     # A class revision freezes when a DCiaB release tag first contains it; drafts may change (docs/VERSIONING.md).
     name: released ClusterClasses are unchanged
@@ -469,8 +530,10 @@ jobs:
           dig @10.30.110.53 example.org | grep -q 'status: REFUSED'
           printf '0123456789' | sudo tee /tmp/site/.dciab/state/isos/test.iso >/dev/null
           test "$(curl -sS --noproxy '*' -r 2-5 http://10.30.110.5/isos/test.iso)" = 2345
-          # answer files only for the hypervisor hosts' addresses; this runner is the bootstrap address
-          test "$(curl -sS --noproxy '*' -o /dev/null -w '%{http_code}' http://10.30.110.5/answers/pve01.toml)" = 403
+          # each host's ISO (answer file inside) only for its BMC's address; this runner is the bootstrap address
+          printf 'iso' | sudo tee /tmp/site/.dciab/state/host-isos/pve01.iso >/dev/null
+          test "$(curl -sS --noproxy '*' -o /dev/null -w '%{http_code}' http://10.30.110.5/host-isos/pve01.iso)" = 403
+          test "$(curl -sS --noproxy '*' -o /dev/null -w '%{http_code}' http://10.30.110.5/answers/pve01.toml)" = 404
           for ip in 10.30.110.53 10.30.110.54; do
             PYTHONPATH=lib python3 -c "import sys; from dciab_services import probe; s = probe.ntp(sys.argv[1]); print(sys.argv[1], 'stratum', s); sys.exit(0 if s and s < 16 else 1)" "$ip"
           done

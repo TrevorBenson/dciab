@@ -1,6 +1,6 @@
 # `dciab hypervisors`
 
-Installs Proxmox VE on the servers in `spec.hypervisors.hosts` through their BMCs, as decided in [ADR 0001](adr/0001-day0-hypervisors-and-services.md). It runs as root on the bootstrap host after `dciab services`, whose Caddy serves the installer ISO and the answer files.
+Installs Proxmox VE on the servers in `spec.hypervisors.hosts` through their BMCs, as decided in [ADR 0001](adr/0001-day0-hypervisors-and-services.md). It runs as root on the bootstrap host after `dciab services`, whose Caddy serves each host's installer ISO to that host's BMC.
 
 ```console
 $ sudo ./dciab hypervisors dciab.yaml --print          # the plan and answer files; changes nothing
@@ -8,7 +8,7 @@ $ sudo ./dciab hypervisors dciab.yaml                  # every host
 $ sudo ./dciab hypervisors dciab.yaml --host pve02 --until media
 ```
 
-Options: `--state DIR` (default `.dciab/state` next to the config, the same folder `dciab services` uses), `--host NAME` (repeatable), `--until STEP`, `--iso FILE` (the file name under `/isos/`; default the file name of the Proxmox VE ISO in `bundle.lock`), `--timeout SECONDS` (per host, for `wait`; default 3600).
+Options: `--state DIR` (default `.dciab/state` next to the config, the same folder `dciab services` uses), `--host NAME` (repeatable), `--until STEP`, `--iso FILE` (the base installer ISO's file name in the ISOs folder; default the file name of the Proxmox VE ISO in `bundle.lock`), `--isos DIR` (the ISOs folder; default as for `dciab services`), `--timeout SECONDS` (per host, for `wait`; default 3600).
 
 ## Steps
 
@@ -16,8 +16,9 @@ Each step runs for every selected host and is safe to re-run.
 
 | Step | What it does |
 | --- | --- |
-| `answer` | Renders the host's `answer.toml` into `<state>/answers/<host>.toml` (folder 700, file 600, written atomically). Caddy serves it at `http://<bootstrap.address>/answers/<host>.toml` to that host's address only. Files of hosts no longer in the config are removed |
-| `media` | Skipped when the host already answers on port 8006. Otherwise, over Redfish: finds the system's CD/DVD virtual media slot (under the System or its Manager), ejects other media, attaches `http://<bootstrap.address>/isos/<iso>`, sets a one-time UEFI boot from `Cd`, and resets the server (`ForceRestart` when on, `On` when off; a server in a transitional power state is left alone). Redfish tasks a BMC accepts with HTTP 202 are waited for |
+| `answer` | Renders the host's `answer.toml` into `<state>/answers/<host>.toml` (folder 700, file 600, written atomically). Files of hosts no longer in the config are removed |
+| `iso` | Builds `<state>/host-isos/<host>.iso` (folder 700, file 600): the Proxmox VE installer ISO with that host's answer file inside (`proxmox-auto-install-assistant prepare-iso --fetch-from iso`, run with no network from the image built from `images/pve-assistant`). The base ISO is checked against `bundle.lock` first. An ISO is rebuilt only when its answer file or the base ISO changed. Caddy serves it at `http://<bootstrap.address>/host-isos/<host>.iso` to that host's BMC address only |
+| `media` | Skipped when the host already answers on port 8006. Otherwise, over Redfish: finds the system's CD/DVD virtual media slot (under the System or its Manager), ejects other media, attaches the host's ISO, sets a one-time UEFI boot from `Cd`, and resets the server (`ForceRestart` when on, `On` when off; a server in a transitional power state is left alone). Redfish tasks a BMC accepts with HTTP 202 are waited for. The installer boots its "Automated Installation" entry and reads the answer file from the ISO: no DHCP and no answer server |
 | `wait` | Waits for SSH (22) and then the Proxmox VE API (8006) on the host's address |
 
 BMC trust comes from each host's `bmc.tlsFingerprint` or `bmc.caBundle`, as for `dciab validate --live`; the certificate is checked before credentials are sent.
@@ -26,20 +27,26 @@ BMC trust comes from each host's `bmc.tlsFingerprint` or `bmc.caBundle`, as for 
 
 | Answer file key | From |
 | --- | --- |
+| `global.keyboard`, `global.country`, `global.timezone` | `spec.hypervisors.installer` |
 | `global.fqdn` | host `name` + `network.domain` |
 | `global.mailto` | the first `identity.initialAdmins` email |
-| `global.root-password-hashed` | `spec.hypervisors.rootPassword`, as a SHA-512 crypt hash (`openssl passwd -6`, password on stdin; the salt is derived from the host and password, so a rerun writes the same file) |
-| `global.root-ssh-keys` | every `identity.initialAdmins` SSH key |
+| `global.root-password-hashed` | a random 256-bit password per host, hashed at once (SHA-512 crypt) and never stored or shown: nobody knows it. Root logs in with SSH keys only. The hash is kept in `<state>/answers/<host>.root-hash` (mode 600) so reruns write the same file |
+| `global.root-ssh-keys` | every `identity.initialAdmins` SSH key: the only way to log in as root |
 | `network` | `source = "from-answer"`: the host `address` with the node network's prefix, `network.nodes.gateway`, the first DNS service IP, and the NIC matched by `bootMACAddress` |
 | `disk-setup` | `rootDeviceHints`: `deviceName` becomes `disk-list`; `serialNumber`, `wwn`, `model` and `vendor` become udev filters (`ID_SERIAL_SHORT`, `ID_WWN`, `ID_MODEL`, `ID_VENDOR`; spaces become underscores, as udev writes them) that must all match. `hctl`, `minSizeGigabytes` and `rotational` can't be expressed and are refused |
 
-Fixed values, because the installer needs them and they don't affect the platform: `keyboard = "en-us"`, `country = "us"`, `timezone = "UTC"`, and `filesystem = "ext4"`, which gives the `local` and `local-lvm` storages of a default install.
+Fixed value: `filesystem = "ext4"`, which gives the `local` and `local-lvm` storages CAPMOX expects from a default install.
+
+## Access
+
+- **People:** root over SSH, with the `identity.initialAdmins` keys. No root password is known, so there is no password login on the console or the web UI; SSO through Authentik as a Proxmox VE realm comes later ([ADR 0004](adr/0004-identity-and-sso.md)).
+- **DCiaB and CAPMOX:** the Proxmox VE API with a dedicated API token, never SSH. [PROXMOX.md](PROXMOX.md) lists its exact privileges.
 
 Keys use the installer's kebab-case format.
 
 ## Not done yet
 
-- **Getting the answer file to the installer.** The ISO must be prepared with `proxmox-auto-install-assistant`, and its HTTP fetch mode POSTs to one URL using DHCP for its own address; `dciab services` has no DHCP and Caddy's file server answers GET. Embedding each host's answer file in its own ISO (`--fetch-from iso`) avoids both but puts the password hash in a file under `/isos/`. Which way to go is still open.
+- **Publishing the assistant image**: CI builds `images/pve-assistant` and publishes it on main; `bundle.lock images.pveAssistant` must then be pinned by digest so the archive carries it.
 - **A tagged management VLAN** (`managementVLAN: tagged`): the answer file can't set a VLAN, so the installer's network only works on an untagged port until post-install configuration exists.
 - **Redfish preparation**: checking or setting UEFI boot mode, Secure Boot per `bootMode`, virtualization extensions, and that a disk matches `rootDeviceHints`.
 - **Post-install**: the CAPMOX API token (`platform.proxmox.credentials.tokenID`), the bridge and its VLAN-aware setting, and the storage, through the Proxmox VE API.

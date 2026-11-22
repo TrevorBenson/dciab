@@ -1,13 +1,16 @@
 """dciab hypervisors: install Proxmox VE on spec.hypervisors.hosts over Redfish virtual media.
 
-    dciab hypervisors <config> [--state DIR] [--host NAME ...] [--until STEP] [--iso FILE]
-                      [--timeout SECONDS] [--print]
+    dciab hypervisors <config> [--state DIR] [--isos DIR] [--host NAME ...] [--until STEP]
+                      [--iso FILE] [--timeout SECONDS] [--print]
 
 Steps, per host, in order; each is safe to re-run:
-  answer   render answer.toml -> <state>/answers/<host>.toml (dir 700, file 600), served by
-           dciab services' Caddy at http://<bootstrap.address>/answers/<host>.toml to that host only
-  media    unless the host already answers on 8006: attach http://<bootstrap.address>/isos/<iso>
-           through the BMC, set a one-time UEFI boot from Cd, and reset the server
+  answer   render answer.toml -> <state>/answers/<host>.toml (dir 700, file 600)
+  iso      build <state>/host-isos/<host>.iso: the Proxmox VE installer ISO (--iso, from the
+           ISOs folder dciab services serves; checked against bundle.lock) with that host's
+           answer file inside (iso.py). Caddy serves it to that host's BMC address only
+  media    unless the host already answers on 8006: attach
+           http://<bootstrap.address>/host-isos/<host>.iso through the BMC, set a one-time UEFI
+           boot from Cd, and reset the server
   wait     wait for SSH (22) and then the Proxmox VE API (8006) on the host's address
 
 --until STEP stops after STEP. --print shows the plan and the answer files with the password
@@ -21,6 +24,7 @@ import argparse
 import fcntl
 import os
 import socket
+import subprocess
 import sys
 import tempfile
 import time
@@ -28,7 +32,7 @@ from pathlib import Path
 from typing import Callable, Dict, List, Optional
 from urllib.parse import urlsplit
 
-STEPS = ("answer", "media", "wait")
+STEPS = ("answer", "iso", "media", "wait")
 
 
 def _answers_dir(state: Path) -> Path:
@@ -93,14 +97,37 @@ def wait_for(address: str, ports: List[int], timeout: float, interval: float = 1
     return None
 
 
-def iso_url(doc: dict, iso: str) -> str:
-    return f"http://{doc['spec']['bootstrap']['address']}/isos/{iso}"
+def host_iso_url(doc: dict, name: str) -> str:
+    return f"http://{doc['spec']['bootstrap']['address']}/host-isos/{name}.iso"
 
 
 def default_iso(root: Path) -> str:
     import yaml
     lock = yaml.safe_load((root / "bundle.lock").read_text())
     return os.path.basename(urlsplit(lock["hypervisors"]["proxmox"]["isoURL"]).path)
+
+
+def assistant_image(root: Path, lock: dict, run=None) -> str:
+    """The proxmox-auto-install-assistant image: bundle.lock images.pveAssistant, loaded from
+    the archive's payload when there is one (DCIAB_PAYLOAD or <archive>/payload), else pulled.
+    DCIAB_PVE_ASSISTANT_IMAGE names a local image instead (building and testing DCiaB)."""
+    import subprocess
+
+    from .iso import IsoError
+    run = run or (lambda cmd: subprocess.run(cmd, check=True, capture_output=True, text=True))
+    local = os.environ.get("DCIAB_PVE_ASSISTANT_IMAGE")
+    if local:
+        return local
+    ref = (lock.get("images") or {}).get("pveAssistant") or ""
+    if "@sha256:" not in ref:
+        raise IsoError("bundle.lock images.pveAssistant isn't pinned by digest yet (images/pve-assistant)")
+    payload = Path(os.environ["DCIAB_PAYLOAD"]) if os.environ.get("DCIAB_PAYLOAD") else root / "payload"
+    if (payload / "images.yaml").is_file():
+        from dciab_seed.plan import find_image, payload_images
+        name = find_image(payload_images(payload), ref)["name"]
+        return run(["podman", "pull", "-q", f"oci:{payload / 'images'}:{name}"]).stdout.strip().splitlines()[-1]
+    run(["podman", "pull", "-q", ref])
+    return ref
 
 
 def _bmc(host: dict, config_dir: Path):
@@ -118,7 +145,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument("--state")
     ap.add_argument("--host", action="append", default=[], help="only this host (repeatable)")
     ap.add_argument("--until", choices=STEPS)
-    ap.add_argument("--iso", help="installer ISO file name under /isos (default: the bundle.lock file name)")
+    ap.add_argument("--iso", help="installer ISO file name in the ISOs folder (default: the bundle.lock file name)")
+    ap.add_argument("--isos", help="the ISOs folder (default: as for dciab services)")
     ap.add_argument("--timeout", type=float, default=3600.0, help="seconds to wait for each host's install")
     ap.add_argument("--print", dest="print_only", action="store_true")
     ap.add_argument("config")
@@ -132,9 +160,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         return 2
 
     from dciab_services.cli import _load
-    from dciab_validate.live import read_secret
+    from dciab_services.cli import Paths
 
-    from . import answer, redfish
+    from . import answer, iso, redfish
 
     root = Path(args.root).resolve()
     config = Path(args.config).resolve()
@@ -156,22 +184,23 @@ def main(argv: Optional[List[str]] = None) -> int:
         hosts = [h for h in hosts if h["name"] in args.host]
     state = Path(args.state) if args.state else config.parent / ".dciab" / "state"
     answers = _answers_dir(state)
-    url = iso_url(doc, args.iso or default_iso(root))
+    host_isos = Path(os.path.abspath(state)) / "host-isos"
+    base_iso = Paths(doc, state, args.isos).isos / (args.iso or default_iso(root))
     config_dir = config.parent
 
     try:
-        password = read_secret(hv["rootPassword"], config_dir)
-        rendered: Dict[str, str] = {h["name"]: answer.render(doc, h, password) for h in hosts}
+        # Placeholder hashes: checks the config renders before anything is written.
+        rendered: Dict[str, str] = {h["name"]: answer.render(doc, h, "$6$(hidden)") for h in hosts}
     except (answer.AnswerError, OSError) as exc:
         print(f"dciab hypervisors: {exc}", file=sys.stderr)
         return 1
 
     if args.print_only:
         print("dciab hypervisors plan (--print: nothing is changed)")
-        print(f"  installer:   {url}")
+        print(f"  installer:   {base_iso}")
         for h in hosts:
             print(f"  {h['name']}: {h['address']}, BMC {urlsplit(h['bmc']['address'].split('+', 1)[1]).netloc}, "
-                  f"answer {answers / (h['name'] + '.toml')}")
+                  f"answer {answers / (h['name'] + '.toml')}, ISO {host_iso_url(doc, h['name'])}")
         for name, text in rendered.items():
             print(f"--- {answers / (name + '.toml')}")
             print(mask(text), end="")
@@ -195,6 +224,12 @@ def main(argv: Optional[List[str]] = None) -> int:
         print("dciab hypervisors: another dciab hypervisors is running with this state folder", file=sys.stderr)
         return 2
 
+    try:
+        rendered = {h["name"]: answer.render(doc, h, answer.root_hash(answers, h["name"])) for h in hosts}
+    except (answer.AnswerError, OSError) as exc:
+        print(f"dciab hypervisors: {exc}", file=sys.stderr)
+        return 1
+
     print("\n== hypervisors: answer")
     for name in remove_stale(answers, [h["name"] for h in hv["hosts"]]):
         print(f"  removed {answers / name} (no such host in the config)")
@@ -205,6 +240,30 @@ def main(argv: Optional[List[str]] = None) -> int:
         print("dciab hypervisors: stopped after 'answer' (--until)")
         return 0
 
+    print("\n== hypervisors: iso")
+    import yaml
+    lock_doc = yaml.safe_load((root / "bundle.lock").read_text())
+    try:
+        base_sha = lock_doc["hypervisors"]["proxmox"]["isoSHA256"]
+        iso.check_base(base_iso, base_sha, cache=state / "host-isos.base-checked")
+        image = assistant_image(root, lock_doc)
+        for name in iso.remove_stale(host_isos, [h["name"] for h in hv["hosts"]]):
+            print(f"  removed {host_isos / name} (no such host in the config)")
+        for name, text in rendered.items():
+            built = iso.build(name, text, base_iso, base_sha, host_isos, image)
+            print(f"  {'built' if built else 'unchanged'} {host_isos / (name + '.iso')}")
+    except (iso.IsoError, OSError) as exc:
+        print(f"dciab hypervisors: {exc}", file=sys.stderr)
+        return 1
+    except subprocess.CalledProcessError as exc:
+        print(f"dciab hypervisors: {' '.join(map(str, exc.cmd))} failed: {(exc.stderr or '').strip()}",
+              file=sys.stderr)
+        return 1
+    print("  dciab services must be running (its Caddy serves /host-isos/ to each host's BMC)")
+    if args.until == "iso":
+        print("dciab hypervisors: stopped after 'iso' (--until)")
+        return 0
+
     print("\n== hypervisors: media")
     failed = []
     for h in hosts:
@@ -212,7 +271,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             print(f"  {h['name']}: already answers on {h['address']}:8006; not reinstalling")
             continue
         try:
-            for line in _bmc(h, config_dir).install_from(url):
+            for line in _bmc(h, config_dir).install_from(host_iso_url(doc, h["name"])):
                 print(f"  {h['name']}: {line}")
         except (redfish.RedfishError, OSError) as exc:
             print(f"dciab hypervisors: {h['name']}: {exc}", file=sys.stderr)
