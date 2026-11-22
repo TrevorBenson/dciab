@@ -28,8 +28,9 @@ What each phase builds, against the component list in [COMPONENTS.md](COMPONENTS
 - [ ] Real-cluster spike on Proxmox from the template
 - [ ] Archive build pipeline ([build/](../build/README.md)): image inventory, image pull, charts, providers, binaries, checksums, SBOMs, packaging and signing (`dciab verify-archive`) done; node images next
 - [x] `dciab cluster-values`: capi-cluster values for MGMT, INFRA and workload clusters, generated from the site config
+- [x] `dciab status`: read-only report of the Day 0 pod, the platform CA and registry certificate, the seed registry, the bootstrap cluster and where MGMT's Cluster lives
 - [x] `dciab seed`: platform CA (generated with its key age-encrypted, or imported), read-only Zot loaded from the payload, kind pulling through it, providers and ClusterClasses from the payload ([SEED.md](SEED.md)). Still to come: DNS for `registry.<domain>`
-- [ ] `dciab mgmt`: builds MGMT, installs Cilium and the providers, and moves Cluster API into MGMT (not yet proven on real infrastructure). Still to come: MGMT's services (Longhorn, Metal3, PowerDNS, Kea) and the DNS handoff
+- [ ] `dciab mgmt`: builds MGMT, installs Cilium and the providers, and moves Cluster API into MGMT; picks up `dciab seed`'s kubeconfig and trust bundle and runs offline from the payload (CI runs seed then mgmt up to the Cluster; not yet proven on real infrastructure). Still to come: MGMT's services (Longhorn, Metal3, PowerDNS, Kea) and the DNS handoff
 
 ## Day 0 for bare servers
 
@@ -58,7 +59,7 @@ Decided in [ADR 0002](adr/0002-bootstrap-appliance-on-ventoy.md).
 
 ## Platform interoperability
 
-Proposed for phases 3 and 4. Only the first piece exists: `dciab cluster-values` already gives workload clusters Authentik's OIDC issuer.
+Proposed for phases 3 and 4. Two pieces exist: `dciab cluster-values` already gives workload clusters Authentik's OIDC issuer, and the ClusterClasses already write a Kubernetes API audit log for log collection to pick up.
 
 - [ADR 0004](adr/0004-identity-and-sso.md): identity and SSO (Authentik, SPIFFE/SPIRE)
 - [ADR 0005](adr/0005-secrets.md): secrets (OpenBao, External Secrets Operator, platform PKI)

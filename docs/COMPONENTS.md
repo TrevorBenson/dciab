@@ -20,7 +20,7 @@ What a DCiaB site runs, grouped by capability, and where each piece runs. Versio
 | --- | --- | --- | --- |
 | Install media | Ventoy USB, DCiaB bootstrap appliance (Rocky Linux 10, bootc) | Bootstrap | Built (under evaluation, ADR 0002) |
 | Day 0 network services | CoreDNS, chrony, Caddy; dnsmasq for PXE only | Bootstrap | Built (`dciab services`); PXE planned (ADR 0001) |
-| Bootstrap cluster and seed registry | kind, Zot | Bootstrap | Planned (`dciab seed`) |
+| Bootstrap cluster and seed registry | kind, Zot (read-only, loaded from the archive payload) | Bootstrap | Built (`dciab seed`, [SEED.md](SEED.md)) |
 | Cluster lifecycle | Cluster API with kubeadm; CAPV (vSphere), CAPMOX (Proxmox VE), CAPM3 (Metal3); in-cluster IPAM and Metal3 IPAM; DCiaB ClusterClasses | MGMT | Built |
 | Bare-metal provisioning | Metal3 Bare Metal Operator and Ironic, over Redfish virtual media | MGMT | Planned |
 | Node operating system | Rocky Linux 10 in image mode (bootc, from the RESF SIG/Containers recipe), built with bootc-image-builder | Every node | Built |
@@ -45,7 +45,7 @@ What a DCiaB site runs, grouped by capability, and where each piece runs. Versio
 | Identity and single sign-on | Authentik: OIDC for Kubernetes and the platform UIs, plus an LDAP outpost | INFRA | Planned ([ADR 0004](adr/0004-identity-and-sso.md)) |
 | Workload identity | SPIFFE/SPIRE: SPIRE server, plus the agent DaemonSet and CSI driver on every cluster | INFRA (server); every cluster (agents) | Proposed ([ADR 0004](adr/0004-identity-and-sso.md)) |
 | Secrets management | OpenBao (secret store), External Secrets Operator (syncs secrets into each cluster) | INFRA (OpenBao); every cluster (ESO) | Planned ([ADR 0005](adr/0005-secrets.md)) |
-| Certificates and PKI | cert-manager; a platform CA that DCiaB generates or imports (`spec.pki`) | Every cluster | Planned (the CA reaches nodes today; [ADR 0005](adr/0005-secrets.md)) |
+| Certificates and PKI | cert-manager; a platform CA that DCiaB generates or imports (`spec.pki`) | Every cluster | Platform CA built (`dciab seed` generates it, key age-encrypted, or imports it; it reaches nodes); cert-manager installed with the providers, platform issuers planned ([ADR 0005](adr/0005-secrets.md)) |
 
 ## Delivery and automation
 
@@ -53,7 +53,7 @@ What a DCiaB site runs, grouped by capability, and where each piece runs. Versio
 | --- | --- | --- | --- |
 | Source control and CI | Forgejo, Forgejo Actions runners | INFRA | Planned |
 | GitOps delivery | Argo CD, with ApplicationSets keyed on cluster labels | INFRA | Planned |
-| Artifact and image registry | Zot (seed), then Artifact Keeper | Bootstrap, then INFRA | Planned |
+| Artifact and image registry | Zot (seed), then Artifact Keeper | Bootstrap, then INFRA | Zot built (`dciab seed`); Artifact Keeper planned |
 | Infrastructure as code: engine | OpenTofu | INFRA (runners) | Planned ([ADR 0006](adr/0006-iac-path.md)) |
 | Infrastructure as code: authoring | Terramate: stacks, orchestration and change detection | Repos, CI | Proposed ([ADR 0006](adr/0006-iac-path.md)) |
 | Infrastructure as code: pre-merge testing | Terratest | Forgejo Actions | Proposed ([ADR 0006](adr/0006-iac-path.md)) |

@@ -29,7 +29,9 @@ Commands:
   infra | platform | finalize              Bootstrap steps (not implemented yet)
   verify-archive (--key PUB | --checksums-only) [ARCHIVE]
                                            Check the archive (this one by default) against its signed MANIFEST
-  status | verify                          Site state (not implemented yet)
+  status <config> [--state DIR] [--output text|json]
+                                           Where the bootstrap stands (read-only)
+  verify                                   Site checks (not implemented yet)
   help                                     Show this help
 
 Every site-specific value comes from the config. Nothing has a default.
@@ -67,6 +69,10 @@ case "$cmd" in
     require_python
     PYTHONPATH="$ROOT/lib${PYTHONPATH:+:$PYTHONPATH}" exec python3 -m dciab_seed --root "$ROOT" "$@"
     ;;
+  status)
+    require_python
+    PYTHONPATH="$ROOT/lib${PYTHONPATH:+:$PYTHONPATH}" exec python3 -m dciab_status --root "$ROOT" "$@"
+    ;;
   verify-archive)
     require_python
     PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$ROOT/lib${PYTHONPATH:+:$PYTHONPATH}" \
@@ -84,7 +90,7 @@ case "$cmd" in
     require_python
     PYTHONPATH="$ROOT/lib${PYTHONPATH:+:$PYTHONPATH}" exec python3 -m dciab_hypervisors --root "$ROOT" "$@"
     ;;
-  media|infra|platform|finalize|status|verify)
+  media|infra|platform|finalize|verify)
     echo "dciab $cmd: not implemented yet (see docs/ROADMAP.md)" >&2
     exit 2
     ;;
