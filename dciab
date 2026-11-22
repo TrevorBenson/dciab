@@ -17,7 +17,7 @@ Commands:
                                            hypervisor API, BMCs, NTP and DNS servers, and probes addresses
   cluster-values <config> <cluster> [--trust-bundle FILE] [-o FILE]
                                            Print a cluster's capi-cluster values (--list: cluster names)
-  media <config> [--source DIR] [--key PUB] [--until STEP] [--print]
+  media <config> (--key PUB | --checksums-only) [--source DIR] [--until STEP] [--print]
                                            Copy the archive to spec.bootstrap.workDisk and put container
                                            storage there (as root)
   services <config> [--state DIR] [--isos DIR] [--until STEP] [--print]

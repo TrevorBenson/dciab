@@ -1,6 +1,7 @@
 """dciab media: copy the archive to the work disk, and put the bootstrap's heavy state there.
 
-    dciab media <config> [--source DIR] [--key PUB] [--cosign BIN] [--until STEP] [--print]
+    dciab media <config> (--key PUB | --checksums-only) [--source DIR] [--cosign BIN]
+                [--until STEP] [--print]
 
 Run as root on the bootstrap host (--print excepted). Steps, in order; each is safe to
 re-run, and a finished run changes nothing:
@@ -9,11 +10,12 @@ re-run, and a finished run changes nothing:
              disk: WORK_DIR_APPLIANCE on the appliance, which must sit on the disk
                    matching the rootDeviceHints (the appliance installed its root there)
            and enough free space for what is left to copy, plus a margin
-  copy     the archive (--source, default the one this dciab runs from) to
+  copy     the archive (--source; default the one this dciab runs from, or on the
+           appliance the stick's USB_MOUNT/dciab-<VERSION>) to
            <work>/dciab-<VERSION>/: only the files MANIFEST lists, plus MANIFEST and its
            signature; a file already there with the right size and sha256 is skipped;
            others are written to a temporary name, checked, then renamed into place
-  verify   dciab verify-archive on the copy: checksums, and the signature with --key
+  verify   dciab verify-archive on the copy: the signature with --key, then checksums
   storage  podman's storage for root (graphroot) moved to <work>/containers with a
            drop-in in /etc/containers/storage.conf.d, unless it's there already;
            refused while containers are running
@@ -31,6 +33,7 @@ import argparse
 import fcntl
 import json
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -45,6 +48,9 @@ STEPS = ["target", "copy", "verify", "storage", "isos"]
 # On the appliance, the root filesystem is on workDisk.disk; dciab's state lives under /var.
 WORK_DIR_APPLIANCE = Path("/var/lib/dciab/work")
 STORAGE_DROPIN = Path("/etc/containers/storage.conf.d/50-dciab-media.conf")
+# The appliance mounts the stick here (images/bootstrap-bootc, var-mnt-dciab.mount).
+USB_MOUNT = Path("/var/mnt/dciab")
+HOST_LOCK = Path("/run/lock/dciab-media.lock")
 GiB = 1 << 30
 # Free space required beyond what is left to copy: 5% of the archive, at least 2 GiB.
 MARGIN_FRACTION = 0.05
@@ -87,6 +93,12 @@ def mount_of(path: Path, mounts_text: str) -> Dict[str, str]:
     return best
 
 
+def nearest_existing(path: Path) -> Path:
+    while not path.exists() and path != path.parent:
+        path = path.parent
+    return path
+
+
 def read_mounts() -> str:
     return Path("/proc/mounts").read_text()
 
@@ -112,7 +124,11 @@ def resolve_target(doc: dict, mounts_text: str, runner: Runner = run,
     except (KeyError, TypeError):
         raise MediaError("the config has no spec.bootstrap.workDisk: set path: (a directory on a host you "
                          "provide) or disk: (the disk the appliance installed onto)") from None
+    if not isinstance(work, dict):
+        raise MediaError("spec.bootstrap.workDisk must be a mapping with path: or disk: (run dciab validate)")
     if "path" in work:
+        if not isinstance(work["path"], str):
+            raise MediaError("spec.bootstrap.workDisk.path must be an absolute directory")
         path = Path(work["path"])
         if not path.is_absolute() or not path.is_dir():
             raise MediaError(f"spec.bootstrap.workDisk.path {path}: not an existing directory; create it "
@@ -133,11 +149,11 @@ def resolve_target(doc: dict, mounts_text: str, runner: Runner = run,
         if not base.is_dir():
             raise MediaError(f"{base} doesn't exist: workDisk.disk is for the DCiaB appliance, which keeps "
                              "its state there. On a host you provide, set workDisk.path instead")
-        m = mount_of(base, mounts_text)
+        m = mount_of(nearest_existing(WORK_DIR_APPLIANCE), mounts_text)
         disks = disk_of(m["source"], runner) if m["source"].startswith("/dev/") else []
         want = os.path.realpath(str(disk["path"]))
         if want not in [os.path.realpath(d) for d in disks]:
-            raise MediaError(f"{base} is on {m['source']} ({', '.join(disks) or 'no disk'}), not on "
+            raise MediaError(f"{WORK_DIR_APPLIANCE} is on {m['source']} ({', '.join(disks) or 'no disk'}), not on "
                              f"{disk['path']}, the disk matching workDisk.disk. dciab media doesn't partition "
                              "or format disks: install the appliance onto that disk first")
         return WORK_DIR_APPLIANCE
@@ -182,7 +198,10 @@ def archive_files(source: Path) -> Dict[str, str]:
 def same_file(src: Path, dst: Path, sha: str) -> bool:
     """dst is already a correct copy: same size, and the sha256 the MANIFEST lists (or src's)."""
     try:
-        if not dst.is_file() or dst.is_symlink() or dst.stat().st_size != src.stat().st_size:
+        if not dst.is_file() or dst.is_symlink():
+            return False
+        ds, ss = dst.stat(), src.stat()
+        if ds.st_size != ss.st_size or (ds.st_mode & 0o7777) != (ss.st_mode & 0o7777):
             return False
     except OSError:
         return False
@@ -222,9 +241,12 @@ def copy_one(src: Path, dst: Path, sha: str) -> None:
     """Copy to a temporary name beside dst, check the sha256, keep the mode, rename into place."""
     dst.parent.mkdir(parents=True, exist_ok=True)
     tmp = dst.with_name(dst.name + TMP_SUFFIX)
+    if tmp.is_symlink() or tmp.exists():
+        tmp.unlink()  # a leftover from an interrupted run; unlink never follows a link
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
     try:
         h = verify_mod.hashlib.sha256()
-        with src.open("rb") as fi, tmp.open("wb") as fo:
+        with src.open("rb") as fi, os.fdopen(fd, "wb") as fo:
             for chunk in iter(lambda: fi.read(1 << 20), b""):
                 h.update(chunk)
                 fo.write(chunk)
@@ -240,10 +262,22 @@ def copy_one(src: Path, dst: Path, sha: str) -> None:
             tmp.unlink()
 
 
+def check_no_links(base: Path, rel: str) -> None:
+    """No directory between base and base/rel may be a symlink: root must not write elsewhere."""
+    cur = base
+    for part in Path(rel).parts[:-1]:
+        cur = cur / part
+        if cur.is_symlink():
+            raise MediaError(f"{cur} is a symlink; remove it and run again")
+
+
 def do_copy(plan: Plan) -> int:
+    if plan.dest.is_symlink():
+        raise MediaError(f"{plan.dest} is a symlink; remove it and run again")
     plan.dest.mkdir(parents=True, exist_ok=True)
     for n, rel in enumerate(plan.to_copy, 1):
         say(f"  [{n}/{len(plan.to_copy)}] {rel}")
+        check_no_links(plan.dest, rel)
         copy_one(plan.source / rel, plan.dest / rel, plan.files[rel])
     return len(plan.to_copy)
 
@@ -254,13 +288,17 @@ def do_verify(dest: Path, key: Optional[Path], cosign: str, runner: Runner = ver
     except verify_mod.VerifyError as exc:
         raise MediaError(f"verify {dest}: {exc}") from None
     if problems:
-        raise MediaError(f"{dest} does NOT match its {verify_mod.MANIFEST}; not going on:\n  "
+        raise MediaError(f"{dest} does NOT match its {verify_mod.MANIFEST}; not going on (files left by an "
+                         f"earlier build of the same version: remove {dest} and run again):\n  "
                          + "\n  ".join(problems[:20]) + (f"\n  ... {len(problems) - 20} more" if len(problems) > 20 else ""))
 
 
 # ---------------------------------------------------------------- storage
 
 def dropin_text(graphroot: Path) -> str:
+    if any(c in str(graphroot) for c in '"\\') or any(ord(c) < 0x20 or ord(c) == 0x7f for c in str(graphroot)):
+        raise MediaError(f"{graphroot!r}: the work directory's path can't contain quotes, backslashes or "
+                         "control characters")
     return ("# Written by dciab media: root's container storage on the work disk.\n"
             f"[storage]\ngraphroot = \"{graphroot}\"\n")
 
@@ -286,18 +324,25 @@ def set_storage(graphroot: Path, runner: Runner = run, dropin: Path = STORAGE_DR
     if running:
         raise MediaError(f"{len(running)} containers are running in {before}; stop them (podman ps) and run "
                          "dciab media again, so container storage can move to the work disk")
+    dropin_text(graphroot)  # refuse an unusable path before changing anything
     graphroot.mkdir(parents=True, exist_ok=True)
     graphroot.chmod(0o700)
     if shutil.which("selinuxenabled") and subprocess.run(["selinuxenabled"]).returncode == 0:
         # A new graphroot needs the same SELinux labels as /var/lib/containers.
+        if not shutil.which("semanage"):
+            raise MediaError("SELinux is enabled but semanage is missing: install policycoreutils-python-utils, "
+                             "then run again")
         listed = runner(["semanage", "fcontext", "-l", "-C"]).stdout
         if f"{graphroot} = /var/lib/containers" not in listed:
             runner(["semanage", "fcontext", "-a", "-e", "/var/lib/containers", str(graphroot)])
         runner(["restorecon", "-R", str(graphroot)])
     dropin.parent.mkdir(parents=True, exist_ok=True)
     tmp = dropin.with_name(dropin.name + TMP_SUFFIX)
-    tmp.write_text(dropin_text(graphroot))
-    tmp.chmod(0o644)
+    if tmp.is_symlink() or tmp.exists():
+        tmp.unlink()
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644)
+    with os.fdopen(fd, "w") as f:
+        f.write(dropin_text(graphroot))
     os.replace(tmp, dropin)
     after = current_graphroot(runner)
     if os.path.realpath(after) != os.path.realpath(graphroot):
@@ -321,10 +366,13 @@ def place_isos(archive: Path, isos: Path) -> List[str]:
         dst = isos / src.name
         if dst.exists() and os.path.samefile(src, dst):
             continue
-        if dst.is_file() and same_file(src, dst, ""):
+        if dst.is_file() and verify_mod.sha256_file(dst) == verify_mod.sha256_file(src):
             continue
+        if dst.exists() or dst.is_symlink():
+            raise MediaError(f"{dst} exists and differs from the archive's {src.name}; rename or remove it "
+                             "and run again")
         tmp = dst.with_name(dst.name + TMP_SUFFIX)
-        if tmp.exists():
+        if tmp.exists() or tmp.is_symlink():
             tmp.unlink()
         try:
             os.link(src, tmp)
@@ -338,10 +386,12 @@ def place_isos(archive: Path, isos: Path) -> List[str]:
 # ---------------------------------------------------------------- main
 
 def next_commands(dest: Path, config: Path, work: Path) -> List[str]:
+    q = shlex.quote
+    dciab, state = q(str(dest / "dciab")), q(str(work / "state"))
     return [
-        f"{dest / 'dciab'} services {config} --state {work / 'state'} --isos {work / 'isos'}   "
+        f"{dciab} services {q(str(config))} --state {state} --isos {q(str(work / 'isos'))}   "
         "# sites with spec.hypervisors",
-        f"{dest / 'dciab'} seed {config} --state {work / 'state'}",
+        f"{dciab} seed {q(str(config))} --state {state}",
     ]
 
 
@@ -351,7 +401,10 @@ def main(argv: Optional[List[str]] = None) -> int:
     p.add_argument("config")
     p.add_argument("--root", required=True, help="the unpacked archive (set by the dciab entrypoint)")
     p.add_argument("--source", help="the archive to copy (default: the one this dciab runs from)")
-    p.add_argument("--key", type=Path, help="cosign public key: also check the copy's MANIFEST signature")
+    key = p.add_mutually_exclusive_group(required=True)
+    key.add_argument("--key", type=Path, help="the cosign public key the archive was signed with")
+    key.add_argument("--checksums-only", action="store_true",
+                     help="skip the signature: only compare the copy with MANIFEST (unsigned builds)")
     p.add_argument("--cosign", help="the cosign binary (default: cosign on PATH, else the copy's payload/bin/cosign)")
     p.add_argument("--until", choices=STEPS, help="stop after this step")
     p.add_argument("--print", dest="print_only", action="store_true", help="show the plan; change nothing")
@@ -371,6 +424,14 @@ def main(argv: Optional[List[str]] = None) -> int:
         print(f"dciab media: {config}: {exc}", file=sys.stderr)
         return 2
     source = Path(args.source or args.root).resolve()
+    if not args.source and not (source / verify_mod.MANIFEST).is_file():
+        # The appliance's own dciab (/usr/share/dciab) isn't a packaged archive: use the stick's.
+        try:
+            stick = USB_MOUNT / f"dciab-{archive_version(source)}"
+        except MediaError:
+            stick = None
+        if stick is not None and (stick / verify_mod.MANIFEST).is_file():
+            source = stick
 
     try:
         work = resolve_target(doc, read_mounts())
@@ -378,12 +439,12 @@ def main(argv: Optional[List[str]] = None) -> int:
         graphroot = work / "containers"
         if args.print_only:
             try:
+                if os.geteuid() != 0:
+                    raise OSError("not root")
                 change = storage_change(graphroot)
             except (OSError, subprocess.CalledProcessError):
-                change = f"podman's graphroot couldn't be read; would write {STORAGE_DROPIN}: graphroot {graphroot}"
-            near = work
-            while not near.exists():
-                near = near.parent
+                change = f"root's podman graphroot not read (run --print as root); would write {STORAGE_DROPIN}: graphroot {graphroot}"
+            near = nearest_existing(work)
             free = shutil.disk_usage(str(near)).free
             say(f"source:  {plan.source} ({plan.total_bytes / GiB:.2f} GiB)")
             say(f"target:  {plan.dest} ({free / GiB:.1f} GiB free on {work})")
@@ -392,11 +453,14 @@ def main(argv: Optional[List[str]] = None) -> int:
             say(f"isos:    {work / 'isos'}")
             return 0
         work.mkdir(parents=True, exist_ok=True)
-        with (work / ".dciab-media.lock").open("w") as lock:
+        lock_path = HOST_LOCK if HOST_LOCK.parent.is_dir() and os.access(HOST_LOCK.parent, os.W_OK) \
+            else work / ".dciab-media.lock"
+        # One run per host: the storage drop-in is host-wide.
+        with os.fdopen(os.open(lock_path, os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW, 0o600), "w") as lock:
             try:
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except OSError:
-                raise MediaError(f"another dciab media is running on {work}") from None
+                raise MediaError(f"another dciab media is running ({lock_path})") from None
             for step in STEPS:
                 say(f"==> {step}")
                 if step == "target":

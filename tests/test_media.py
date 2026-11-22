@@ -57,7 +57,7 @@ def site(tmp_path, monkeypatch):
 
 
 def args(src, cfg, *extra):
-    return [str(cfg), "--root", str(src), *extra]
+    return [str(cfg), "--root", str(src), "--checksums-only", *extra]
 
 
 def test_copy_verify_and_rerun(site, capsys):
@@ -115,7 +115,11 @@ def test_print_changes_nothing(site, capsys, monkeypatch):
     assert cli.main(args(src, cfg, "--print")) == 0
     out = capsys.readouterr().out
     assert f"source:  {src}" in out and f"target:  {work / 'dciab-1.2.3'}" in out
-    assert "copy:    7 of 7 files" in out and "storage: unchanged" in out
+    assert "copy:    7 of 7 files" in out and "run --print as root" in out
+    assert list(work.iterdir()) == []
+    monkeypatch.setattr(cli.os, "geteuid", lambda: 0)
+    assert cli.main(args(src, cfg, "--print")) == 0
+    assert "storage: unchanged" in capsys.readouterr().out
     assert list(work.iterdir()) == []
 
 
@@ -217,3 +221,52 @@ def test_mount_of_longest_prefix():
     assert cli.mount_of(Path("/data/work"), text)["source"] == "/dev/sdb1"
     assert cli.mount_of(Path("/data2"), text)["source"] == "/dev/sdc1"
     assert cli.mount_of(Path("/srv"), text)["source"] == "/dev/sda1"
+
+
+def test_key_or_checksums_only_required(site, capsys):
+    src, work, cfg = site
+    with pytest.raises(SystemExit):
+        cli.main([str(cfg), "--root", str(src)])
+    assert list(work.iterdir()) == []
+
+
+def test_mode_change_repaired(site):
+    src, work, cfg = site
+    assert cli.main(args(src, cfg)) == 0
+    (work / "dciab-1.2.3/dciab").chmod(0o644)
+    assert cli.main(args(src, cfg)) == 0
+    assert (work / "dciab-1.2.3/dciab").stat().st_mode & 0o777 == 0o755
+
+
+def test_site_iso_with_same_name_kept(site, capsys):
+    src, work, cfg = site
+    (work / "isos").mkdir()
+    (work / "isos/installer.iso").write_bytes(b"site's own")
+    assert cli.main(args(src, cfg)) == 1
+    assert "differs from the archive" in capsys.readouterr().err
+    assert (work / "isos/installer.iso").read_bytes() == b"site's own"
+
+
+def test_symlinked_dir_in_copy_refused(site, tmp_path):
+    src, work, cfg = site
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    (work / "dciab-1.2.3").mkdir()
+    (work / "dciab-1.2.3/lib").symlink_to(elsewhere)
+    assert cli.main(args(src, cfg)) == 1
+    assert list(elsewhere.iterdir()) == []
+
+
+def test_printed_commands_are_quoted(tmp_path):
+    lines = cli.next_commands(Path("/w/dciab-1"), Path("/a b/dciab.yaml"), Path("/w"))
+    assert "'/a b/dciab.yaml'" in lines[1]
+
+
+def test_unusable_graphroot_refused():
+    with pytest.raises(cli.MediaError, match="quotes"):
+        cli.dropin_text(Path('/x"\n[storage.options]'))
+
+
+def test_malformed_workdisk():
+    with pytest.raises(cli.MediaError, match="mapping"):
+        cli.resolve_target({"spec": {"bootstrap": {"workDisk": None}}}, "/dev/sda1 / xfs rw 0 0\n")

@@ -20,7 +20,7 @@ Both run the same steps. `spec.bootstrap.workDisk` says where the payload and th
 | Step | Command | Result |
 | --- | --- | --- |
 | 0 | `./dciab validate dciab.yaml` | The config passes schema and semantic checks |
-| 0a | `./dciab media` | Copy the archive to the work disk and put container storage there ([docs/MEDIA.md](docs/MEDIA.md)) |
+| 0a | `./dciab media dciab.yaml --key cosign.pub` | Copy the archive to the work disk and put container storage there ([docs/MEDIA.md](docs/MEDIA.md)) |
 | 0b | `sudo ./dciab services dciab.yaml` | Bare servers only: DNS, NTP and HTTP on the bootstrap host |
 | 0c | `./dciab hypervisors` | Bare servers only (planned): Proxmox VE or ESXi installed over Redfish virtual media |
 | 1 | `./dciab seed` | Seed registry (Zot, read-only, from the payload) and KinD with all CAPI providers ([docs/SEED.md](docs/SEED.md)) |
