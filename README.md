@@ -22,7 +22,7 @@ Both run the same steps. `spec.bootstrap.workDisk` says where the payload and th
 | 0 | `./dciab validate dciab.yaml` | The config passes schema and semantic checks |
 | 0a | `./dciab media` | Bootstrap appliance (planned): copy the USB payload to the work disk |
 | 0b | `sudo ./dciab services dciab.yaml` | Bare servers only: DNS, NTP and HTTP on the bootstrap host |
-| 0c | `./dciab hypervisors` | Bare servers only (planned): Proxmox VE or ESXi installed over Redfish virtual media |
+| 0c | `sudo ./dciab hypervisors dciab.yaml` | Bare servers only (in progress, Proxmox VE): installed over Redfish virtual media ([docs/HYPERVISORS.md](docs/HYPERVISORS.md)) |
 | 1 | `./dciab seed` | Seed registry (Zot, read-only, from the payload) and KinD with all CAPI providers ([docs/SEED.md](docs/SEED.md)) |
 | 2 | `./dciab mgmt` | MGMT built, Cilium installed, CAPI moved into it (in progress: DNS handoff and MGMT services still to come) |
 | 3 | `./dciab infra` | INFRA built with Argo CD, Forgejo, OpenBao, CloudNativePG |
@@ -31,7 +31,7 @@ Both run the same steps. `spec.bootstrap.workDisk` says where the payload and th
 
 ### Starting from bare servers
 
-The config format, its checks and `services` exist; `hypervisors` doesn't yet (see the roadmap). When a site has no hypervisors yet, add `spec.hypervisors` to the config (see [examples/proxmox-bare.yaml](examples/proxmox-bare.yaml)). `services` and `hypervisors` then run before `seed`: the bootstrap host serves DNS (and NTP, with `spec.bootstrap.ntp`) on `network.dnsServiceIPs` and installs each server through its BMC. Those addresses move to MGMT later, so nothing installed on Day 0 needs reconfiguring. The site must provide:
+The config format, its checks and `services` exist; `hypervisors` is partly built for Proxmox VE ([docs/HYPERVISORS.md](docs/HYPERVISORS.md), and the roadmap). When a site has no hypervisors yet, add `spec.hypervisors` to the config (see [examples/proxmox-bare.yaml](examples/proxmox-bare.yaml)). `services` and `hypervisors` then run before `seed`: the bootstrap host serves DNS (and NTP, with `spec.bootstrap.ntp`) on `network.dnsServiceIPs` and installs each server through its BMC. Those addresses move to MGMT later, so nothing installed on Day 0 needs reconfiguring. The site must provide:
 
 - switches configured: VLANs, trunks, MTU, gateways, and BGP peers when `loadBalancer.mode: bgp`
 - a route from the node network's gateway to the BMC networks and back, with HTTPS allowed from the bootstrap host to each BMC and HTTP from each BMC to the bootstrap host

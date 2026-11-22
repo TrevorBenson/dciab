@@ -131,6 +131,9 @@ def test_answer_files_only_for_hypervisor_hosts():
     assert "path /answers /answers/*" in c
     assert "not remote_ip 10.30.110.6 10.30.110.7 10.30.110.8" in c
     assert "respond @answers_denied 403" in c
+    # each host reads only its own answer file
+    assert "\t@answers_pve01 {\n\t\tpath /answers/pve01.toml\n\t\tnot remote_ip 10.30.110.6\n\t}" in c
+    assert "respond @answers_pve03 403" in c
 
 
 def test_invalid_upstream_resolver_is_rejected():
@@ -212,11 +215,11 @@ def test_dns_answer_parsing():
 
 
 def bare_site(tmp_path):
-    from conftest import SECRET_FILES
+    from conftest import SECRET_FILES, intermediate_pem
     for rel in SECRET_FILES:
         p = tmp_path / "secrets" / rel
         p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text("x\n")
+        p.write_text(intermediate_pem() if rel == "pki/intermediate.crt" else "x\n")
         p.chmod(0o600)
     cfg = tmp_path / "dciab.yaml"
     cfg.write_text((ROOT / "examples" / "proxmox-bare.yaml").read_text())
