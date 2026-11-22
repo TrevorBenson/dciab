@@ -207,7 +207,6 @@ def test_binaries_checked_and_helm_extracted(tmp_path):
         archive.fetch_binaries(lock, tmp_path, fetch=fetch)
 
 
-@pytest.mark.xfail(reason="age's sha256 is pinned from CI's first --print-sums run", strict=False)
 def test_lock_pins_every_binary():
     for name, url, want, _ in archive.binary_list(yaml.safe_load((ROOT / "bundle.lock").read_text())):
         assert archive.SHA256.fullmatch(want), f"{name}: pin the sha256 of {url}"

@@ -79,7 +79,7 @@ images:
   # The node image the bootstrap kind cluster boots: kind's own default for tools.kind.
   kindNode: docker.io/kindest/node:v1.37.0@sha256:a1ed56cfb0e7b93589bdf97c8cd566405a265939e3620fc4f5de89adff580ae5
   # The seed registry dciab seed runs on the bootstrap host (Zot).
-  zot: ghcr.io/project-zot/zot-linux-amd64:v2.1.20
+  zot: ghcr.io/project-zot/zot-linux-amd64:v2.1.20@sha256:95a837a0afacf5b7edc0c92493f04beee6891989b8d2fd50a00cf65a1e6d4fd5
 
 # Node images: VM templates cluster nodes are cloned from, built with Kubernetes
 # image-builder (images/node/README.md). Built artifacts are never committed.
@@ -202,7 +202,7 @@ imageDigests:
 binarySHA256:
   clusterctl-linux-amd64: "c7301a8515ed329562b06c958463051dd55d9649fac591393f5df54a868fa79b"
   oras-linux-amd64.tar.gz: "66fb0ad7206f3f6fa77ed5b552049d364ccf4b50b1684554f731f76302b52ca0"   # tools.oras
-  age-linux-amd64.tar.gz: ""   # tools.age
+  age-linux-amd64.tar.gz: "bdc69c09cbdd6cf8b1f333d372a1f58247b3a33146406333e30c0f26e8f51377"   # tools.age
 
 tools:
   helm: v4.3.2
