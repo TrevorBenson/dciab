@@ -4,7 +4,7 @@ One archive and one YAML file build a data center platform from bare power and n
 
 What a site runs, by capability and cluster: [docs/COMPONENTS.md](docs/COMPONENTS.md).
 
-**Status:** Phase 1, in progress. The config schema, `dciab validate` (offline checks), the pinned `bundle.lock`, and the ClusterClass and cluster charts exist; the bootstrap steps don't yet. See [docs/ROADMAP.md](docs/ROADMAP.md).
+**Status:** Phase 1, in progress. The config schema, `dciab validate` (offline and `--live` checks), the pinned `bundle.lock`, and the ClusterClass and cluster charts exist; the bootstrap steps don't yet. See [docs/ROADMAP.md](docs/ROADMAP.md).
 
 ## The bootstrap host
 
@@ -77,7 +77,19 @@ The checks:
 - **Secrets**: referenced files exist, aren't empty, and aren't readable by others; referenced environment variables are set.
 - **Day 0** (`spec.hypervisors`, `spec.bootstrap.ntp`): the hypervisor type matches the platform, host addresses fit the address plan, MACs and BMCs are unique across all servers, Proxmox hosts are in `platform.proxmox.nodes`, the ESXi ISO matches `bundle.lock`, and `network.ntpServers` is exactly the DNS service IPs when the bootstrap host serves NTP.
 
-Live checks (hypervisor credentials and templates, BMC Redfish, NTP, upstream DNS, unused-address probes) come next and need the site network.
+### Live checks
+
+`./dciab validate dciab.yaml --live` also asks the site's services whether the config fits them. It is off by default so a config can be reviewed offline and in CI; run it from the bootstrap host (or another host on the site network) once the offline checks pass. Each request has a timeout (`--timeout SECONDS`, default 5) and the checks run in parallel. Secrets are read from their references, sent only in request headers, and never printed.
+
+- **Hypervisor API.** Proxmox: the API token is accepted (`/api2/json/version`), every node in `platform.proxmox.nodes` exists and is online, `templateID` is a template on `templateNode`, and `storage` and `bridge` exist on every node. vSphere: the user can log in (`/api/session`), and the datacenter, cluster, datastore, network, folder, resource pool and template exist (folder and resource pool are matched by their last path component; a missing template is a warning, since some vCenter versions leave templates out of the VM list).
+- **BMCs** (`spec.hypervisors.hosts`, `spec.baremetal.hosts`): Redfish answers, the credentials are accepted, the system in the address exists, and it has virtual media that takes CD/DVD images.
+- **NTP**: each `network.ntpServers` entry answers an SNTP query, or each `bootstrap.ntp.upstream` entry when the bootstrap host serves NTP itself. An offset of more than a second from this host's clock is a warning.
+- **Upstream DNS**: each `network.upstreamResolvers` entry answers a recursive query for the config's host names outside `network.domain`; a refusal or silence is an error, a name it can't resolve is a warning.
+- **Unused addresses**: the bootstrap address, the DNS service IPs, and every VM cluster's API VIP and node IP range must not answer on the node network. Addresses already on this host are skipped. Uses `arping -D` (iputils) when present, otherwise `ping` (weaker: a host that drops ICMP looks unused), and says which. Skipped, with a note, when `bootstrap.interface` isn't on this host. Load balancer pools are not probed. Run it before `dciab seed`: once clusters exist their addresses answer.
+
+Every TLS connection is verified: against the pinned fingerprint (`tlsFingerprint`, `thumbprint`) before any credential is sent, against `caBundle` for BMCs that use one, or against the system CAs.
+
+`--live` sends the referenced credentials to the endpoints the config names, as the later steps do, so run it only on a config you trust.
 
 ## Layout
 

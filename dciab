@@ -12,7 +12,9 @@ usage() {
 Usage: dciab <command> [options]
 
 Commands:
-  validate <config> [--output text|json]   Check a site config; changes nothing
+  validate <config> [--output text|json] [--live [--timeout SECONDS]]
+                                           Check a site config; changes nothing. --live also asks the
+                                           hypervisor API, BMCs, NTP and DNS servers, and probes addresses
   cluster-values <config> <cluster> [--trust-bundle FILE] [-o FILE]
                                            Print a cluster's capi-cluster values (--list: cluster names)
   media                                    Copy the USB payload to the bootstrap host's work disk (not implemented yet)
