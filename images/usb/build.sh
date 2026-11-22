@@ -80,7 +80,10 @@ mnt="$BUILD/mnt"
 cleanup() {
   mountpoint -q "$mnt" && umount "$mnt"
   [[ -n "$loop" ]] && losetup -d "$loop"
-  [[ -n "${SUDO_UID:-}" ]] && chown -R "$SUDO_UID:${SUDO_GID:-$SUDO_UID}" "$OUT" "$BUILD" 2>/dev/null
+  if [[ -n "${SUDO_UID:-}" ]]; then
+    # shellcheck disable=SC2153  # SUDO_GID is set by sudo, alongside SUDO_UID
+    chown -R "$SUDO_UID:${SUDO_GID:-$SUDO_UID}" "$OUT" "$BUILD" 2>/dev/null || true
+  fi
   return 0
 }
 trap cleanup EXIT

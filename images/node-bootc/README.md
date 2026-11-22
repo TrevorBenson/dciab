@@ -23,9 +23,6 @@ $ sudo images/node-bootc/build.sh --variant metal --type raw  # Metal3
 $ sudo images/node-bootc/build.sh --upgrade-from             # the upgrade gate's starting image
 ```
 
-<<<<<<< HEAD
-Needs root: the base recipe composes the OS with nested containers (`--cap-add=all`, `/dev/fuse`), and bootc-image-builder reads root's container storage. Disks land in `images/node-bootc/output/`, which is never committed. When run with `sudo`, `build.sh` hands the output files back to the invoking user (`SUDO_UID`) when it exits, so you can read and remove them without root.
-=======
 Each disk gets a `<disk>.sha256sum` file next to it, the name Metal3 looks for.
 
 ## Platforms
@@ -44,8 +41,7 @@ The `metal` variant adds the rest of the kernel's drivers (`kernel-modules` and 
 
 `--upgrade-from` builds the node image at `kubernetes.upgradeFrom` in `bundle.lock`: one minor below `kubernetes.version`, with the CRI-O stream of that minor. It is the starting point for testing a Kubernetes upgrade to the bundle's version, which each roadmap phase's gate requires. It is a test image: the archive never ships it.
 
-Needs root: the base recipe composes the OS with nested containers (`--cap-add=all`, `/dev/fuse`), and bootc-image-builder reads root's container storage. Disks land in `images/node-bootc/output/`, which is never committed.
->>>>>>> origin/main
+Needs root: the base recipe composes the OS with nested containers (`--cap-add=all`, `/dev/fuse`), and bootc-image-builder reads root's container storage. Disks land in `images/node-bootc/output/`, which is never committed. When run with `sudo`, `build.sh` hands the output files back to the invoking user (`SUDO_UID`) when it exits, so you can read and remove them without root.
 
 ## Image mode details that matter for Kubernetes
 
