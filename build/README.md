@@ -29,12 +29,12 @@ $ python3 build/inventory.py --manifests "$crds" --extra cilium.yaml --kubeadm-i
 The sources are:
 - **`bundle.lock`:** every image it pins by digest: kube-vip, the kind node image, the Day 0 services, bootc-image-builder, and so on.
 - **The Cluster API, provider and cert-manager manifests**, rendered with the provider variables DCiaB installs them with.
-- **Rendered add-ons:** Cilium.
+- **Rendered add-ons:** Cilium and Longhorn. Longhorn's manager starts most of its images itself, so `addons/longhorn/install.sh <config> --images` lists them from the chart's values and CI passes each as `--image`.
 - **The Kubernetes control plane images** kubeadm pulls for the bundle's version.
 
 Not covered yet:
 - **Images DCiaB builds itself:** the chrony image from `images/day0-chrony` and the bootc node image. The archive build makes these instead of pulling them.
-- **Images of charts other than Cilium**, such as Longhorn. The archive vendors the Longhorn chart; its images join the inventory when DCiaB installs it (MGMT's services).
+- **Images of charts other than Cilium and Longhorn**, such as MGMT's other services (Metal3, PowerDNS, Kea), until DCiaB installs them.
 
 A manifest that needs a provider variable `bundle.lock` doesn't set is an error, and so is a manifests folder with nothing in it.
 
