@@ -16,7 +16,7 @@
 #
 # Everything is pinned in bundle.lock (kubernetes, nodeImages.bootc). Output: the OCI
 # image localhost/dciab-node:<k8s version>[-metal] in root's container storage, and disk
-# images under images/node-bootc/output/ (ignored by Git), each with a .sha256 file
+# images under images/node-bootc/output/ (ignored by Git), each with a .sha256sum file
 # (Metal3 checks it). --print shows the plan only.
 set -euo pipefail
 
@@ -106,8 +106,11 @@ if (( EUID != 0 )); then
   exit 2
 fi
 mkdir -p "$OUT"
+# One build at a time: every build writes its disks to the same folder.
+exec 9>"$OUT/.lock"
+flock -n 9 || { echo "build.sh: another build is using $OUT" >&2; exit 1; }
 # Disks from an earlier run must never be mistaken for this one's.
-find "$OUT" -mindepth 1 -maxdepth 1 ! -name rocky-bootc -exec rm -rf {} +
+find "$OUT" -mindepth 1 -maxdepth 1 ! -name rocky-bootc ! -name .lock -exec rm -rf {} +
 
 if [[ "$base_image" == - ]]; then
   src="$OUT/rocky-bootc"
@@ -132,7 +135,11 @@ size="$(podman image inspect --format '{{.Size}}' "$tag")"
 echo "== node image: $((size / 1024 / 1024)) MiB"
 echo "== disks: ${types[*]}"
 "${disk_cmd[@]}"
-# A checksum next to each disk: Metal3 checks the image it writes against it.
+# A checksum next to each disk (<disk>.sha256sum): Metal3 checks the image it writes
+# against it. Written to a temporary file first, so a checksum file is never partial.
 find "$OUT" -path "$OUT/rocky-bootc" -prune -o -type f \( -name '*.raw' -o -name '*.qcow2' -o -name '*.vmdk' \) -print |
-  while read -r disk; do (cd "$(dirname "$disk")" && sha256sum "$(basename "$disk")" > "$(basename "$disk").sha256"); done
+  while read -r disk; do
+    (cd "$(dirname "$disk")" && f="$(basename "$disk")" &&
+       sha256sum "$f" > ".$f.sha256sum.tmp" && mv ".$f.sha256sum.tmp" "$f.sha256sum")
+  done
 find "$OUT" -path "$OUT/rocky-bootc" -prune -o -type f -printf '%p  %s bytes\n'

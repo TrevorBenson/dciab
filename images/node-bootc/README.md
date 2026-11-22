@@ -23,7 +23,7 @@ $ sudo images/node-bootc/build.sh --variant metal --type raw  # Metal3
 $ sudo images/node-bootc/build.sh --upgrade-from             # the upgrade gate's starting image
 ```
 
-Each disk gets a `.sha256` file next to it.
+Each disk gets a `<disk>.sha256sum` file next to it, the name Metal3 looks for.
 
 ## Platforms
 
@@ -33,13 +33,13 @@ One recipe, two variants:
 | --- | --- | --- | --- |
 | Proxmox VE | `vm` (default) | `raw` for block storage (ZFS, LVM), or `qcow2` for file storage | A template the Proxmox class clones. No cloud-init drive on the template (below). |
 | vSphere | `vm` | `vmdk` (stream-optimized) | Imported as a VM's disk, then the VM is marked as a template the vSphere class clones. CAPV learns each node's address from VMware Tools, and cloud-init's VMware datasource reads the bootstrap data from guestinfo. |
-| Metal3 | `metal` | `raw` (Ironic writes it straight to disk), or `qcow2` | Served over HTTP; the Metal3 class's `image` values give its URL and the `.sha256`. Ironic hands cloud-init a config drive. |
+| Metal3 | `metal` | `raw` (Ironic writes it straight to disk) | Served by Ironic over HTTPS with its `.sha256sum`; `dciab cluster-values` points the Metal3 class's `image` values at both. Ironic hands cloud-init a config drive. |
 
-The `metal` variant adds the rest of the kernel's drivers (`kernel-modules`, matching the image's kernel), `linux-firmware`, and an initramfs built for any hardware, so servers find their NICs and the root disk behind any storage controller. VMs don't need these, so the `vm` variant stays small. Its tag is `dciab-node:<version>-metal`.
+The `metal` variant adds the rest of the kernel's drivers (`kernel-modules` and `kernel-modules-extra`, matching the image's kernel), `linux-firmware`, and an initramfs built for any hardware, so servers find their NICs and the root disk behind any storage controller. VMs don't need these, so the `vm` variant stays small. Its tag is `dciab-node:<version>-metal`.
 
 ## Upgrade gate image
 
-Each phase's gate includes a Kubernetes upgrade. `--upgrade-from` builds the node image at `kubernetes.upgradeFrom` in `bundle.lock` (one minor below `kubernetes.version`, with the CRI-O stream of that minor). A test cluster starts on it, then upgrades to the bundle's version. It is a test image only: the archive never ships it.
+`--upgrade-from` builds the node image at `kubernetes.upgradeFrom` in `bundle.lock`: one minor below `kubernetes.version`, with the CRI-O stream of that minor. It is the starting point for testing a Kubernetes upgrade to the bundle's version, which each roadmap phase's gate requires. It is a test image: the archive never ships it.
 
 Needs root: the base recipe composes the OS with nested containers (`--cap-add=all`, `/dev/fuse`), and bootc-image-builder reads root's container storage. Disks land in `images/node-bootc/output/`, which is never committed.
 

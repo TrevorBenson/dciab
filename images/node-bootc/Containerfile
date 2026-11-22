@@ -56,7 +56,7 @@ RUN case "$VARIANT" in \
         set -e; \
         kver="$(ls /usr/lib/modules)"; \
         [ "$(echo "$kver" | wc -w)" -eq 1 ] || { echo "expected one kernel, found: $kver" >&2; exit 1; }; \
-        dnf -y install "kernel-modules-core-$kver" "kernel-modules-$kver" linux-firmware; \
+        dnf -y install "kernel-modules-core-$kver" "kernel-modules-$kver" "kernel-modules-extra-$kver" linux-firmware; \
         env DRACUT_NO_XATTR=1 dracut --force --no-hostonly --kver "$kver" "/usr/lib/modules/$kver/initramfs.img"; \
         dnf clean all; rm -rf /var/cache/dnf /var/log/dnf* ;; \
       *) echo "VARIANT must be vm or metal, got '$VARIANT'" >&2; exit 1 ;; \
