@@ -46,7 +46,6 @@ Keys use the installer's kebab-case format.
 
 ## Not done yet
 
-- **Publishing the assistant image**: CI builds `images/pve-assistant` and publishes it on main; `bundle.lock images.pveAssistant` must then be pinned by digest so the archive carries it.
 - **A tagged management VLAN** (`managementVLAN: tagged`): the answer file can't set a VLAN, so the installer's network only works on an untagged port until post-install configuration exists.
 - **Redfish preparation**: checking or setting UEFI boot mode, Secure Boot per `bootMode`, virtualization extensions, and that a disk matches `rootDeviceHints`.
 - **Post-install**: the CAPMOX API token (`platform.proxmox.credentials.tokenID`), the bridge and its VLAN-aware setting, and the storage, through the Proxmox VE API.
