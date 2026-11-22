@@ -27,6 +27,7 @@ There has been no release yet, so `r1` is a draft.
 - **Time**: NTP servers (`ntpServers`).
 - **Break-glass user**: `dciab` with the given SSH keys (`sshAuthorizedKeys`).
 - **OIDC** (optional): API server flags for Authentik when `oidc` is set.
+- **API audit log**: an audit policy at `/etc/kubernetes/audit/policy.yaml` on the control plane nodes (Metadata by default; full bodies for RBAC changes; never Secret, ConfigMap or token review bodies; no health checks, events or system leases). The API server writes `/var/log/kubernetes/audit/audit.log`, kept for 30 days, rotated at 100 MB, at most 10 old files.
 
 Provider ID: vSphere nodes run with `cloud-provider: external`, so the vSphere CPI must be deployed (baseline add-ons). Proxmox uses CAPMOX's provider-ID injection. On Metal3, CAPM3 sets the provider ID on each Node itself (`cloudProviderEnabled: false`), so kubelet gets no `provider-id`. Neither Proxmox nor Metal3 needs a cloud controller.
 

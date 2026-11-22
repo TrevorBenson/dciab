@@ -503,6 +503,65 @@ spec:
               valueFrom:
                 template: |
                   name: {{ .builtin.cluster.name }}-{{ .builtin.machineDeployment.topologyName }}
+    - name: apiServerAudit
+      description: >-
+        Kubernetes API audit policy file on control plane nodes. The API server flags and
+        mounts that use it are in the KubeadmControlPlaneTemplate. This patch comes after
+        nodeBase, which creates the files list.
+      definitions:
+        - selector:
+            apiVersion: controlplane.cluster.x-k8s.io/v1beta2
+            kind: KubeadmControlPlaneTemplate
+            matchResources:
+              controlPlane: true
+          jsonPatches:
+            - op: add
+              path: /spec/template/spec/kubeadmConfigSpec/files/-
+              value:
+                path: /etc/kubernetes/audit/policy.yaml
+                owner: root:root
+                permissions: "0600"
+                content: |
+                  apiVersion: audit.k8s.io/v1
+                  kind: Policy
+                  # One event per request, when the response is ready.
+                  omitStages: [RequestReceived]
+                  rules:
+                    # First match wins. Noise first.
+                    - level: None
+                      nonResourceURLs: [/healthz*, /livez*, /readyz*, /version, /metrics]
+                    - level: None
+                      resources:
+                        - {group: "", resources: [events]}
+                        - {group: events.k8s.io, resources: [events]}
+                    # Leader election and node heartbeats.
+                    - level: None
+                      users: [system:kube-controller-manager, system:kube-scheduler, system:apiserver]
+                      resources: [{group: coordination.k8s.io, resources: [leases]}]
+                    - level: None
+                      userGroups: [system:nodes, system:serviceaccounts:kube-system]
+                      resources: [{group: coordination.k8s.io, resources: [leases]}]
+                    - level: None
+                      namespaces: [kube-system]
+                      resources:
+                        - {group: coordination.k8s.io, resources: [leases], resourceNames: [plndr-cp-lock, plndr-svcs-lock]}
+                    # Never log bodies that hold secrets or tokens.
+                    - level: Metadata
+                      resources:
+                        - {group: "", resources: [secrets, configmaps, serviceaccounts/token]}
+                        - {group: authentication.k8s.io, resources: [tokenreviews]}
+                    # Read-only traffic from system components.
+                    - level: None
+                      users: [system:kube-controller-manager, system:kube-scheduler, system:kube-proxy, system:apiserver]
+                      verbs: [get, list, watch]
+                    - level: None
+                      userGroups: [system:nodes]
+                      verbs: [get, list, watch]
+                    # Who changed RBAC, and to what.
+                    - level: RequestResponse
+                      verbs: [create, update, patch, delete, deletecollection]
+                      resources: [{group: rbac.authorization.k8s.io}]
+                    - level: Metadata
 
 ---
 apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
@@ -561,6 +620,23 @@ spec:
           apiServer:
             extraArgs:
               - {name: profiling, value: "false"}
+              # Audit policy file: written by the apiServerAudit patch.
+              - {name: audit-policy-file, value: /etc/kubernetes/audit/policy.yaml}
+              - {name: audit-log-path, value: /var/log/kubernetes/audit/audit.log}
+              - {name: audit-log-maxage, value: "30"}
+              - {name: audit-log-maxbackup, value: "10"}
+              - {name: audit-log-maxsize, value: "100"}
+            extraVolumes:
+              - name: audit-policy
+                hostPath: /etc/kubernetes/audit/policy.yaml
+                mountPath: /etc/kubernetes/audit/policy.yaml
+                readOnly: true
+                pathType: File
+              - name: audit-logs
+                hostPath: /var/log/kubernetes/audit
+                mountPath: /var/log/kubernetes/audit
+                readOnly: false
+                pathType: DirectoryOrCreate
           controllerManager:
             extraArgs:
               - {name: profiling, value: "false"}

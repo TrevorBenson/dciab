@@ -1,6 +1,9 @@
 import copy
+import functools
 import json
+import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -20,6 +23,21 @@ SECRET_FILES = [
 EXAMPLES = ["vsphere", "proxmox", "proxmox-bare", "metal3-cluster"]
 
 
+def make_cert(path: Path, *, ca: bool = True, pathlen=None, days: int = 3650) -> Path:
+    """A throwaway self-signed certificate, for checks that read certificate fields."""
+    bc = "critical,CA:FALSE" if not ca else "critical,CA:TRUE" + ("" if pathlen is None else f",pathlen:{pathlen}")
+    subprocess.run(["openssl", "req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:P-256", "-nodes",
+                    "-keyout", "/dev/null", "-subj", "/CN=dciab-test", "-days", str(days),
+                    "-addext", f"basicConstraints={bc}", "-out", str(path)], check=True, capture_output=True)
+    return path
+
+
+@functools.lru_cache(maxsize=None)
+def _intermediate_pem() -> str:
+    with tempfile.TemporaryDirectory() as d:
+        return make_cert(Path(d) / "intermediate.crt").read_text()
+
+
 def load_example(name: str) -> dict:
     return yaml.safe_load((ROOT / "examples" / f"{name}.yaml").read_text())
 
@@ -35,6 +53,8 @@ class Site:
             p.parent.mkdir(parents=True, exist_ok=True)
             p.write_text("not-a-real-secret\n")
             p.chmod(0o600)
+        # The examples import an intermediate, and validate reads its certificate.
+        (tmp_path / "secrets" / "pki" / "intermediate.crt").write_text(_intermediate_pem())
         monkeypatch.setenv("DCIAB_PVE_TOKEN", "not-a-real-token")
 
     def validate_text(self, text: str):

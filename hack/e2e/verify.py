@@ -6,7 +6,8 @@
 For every values file it waits for the Cluster's TopologyReconciled condition, then
 checks that the class patches landed with the values from that file:
   - the control plane: Kubernetes version, replicas, kube-vip (VIP and pinned image),
-    platform CA, registry mirrors, NTP, the break-glass user, OIDC flags when set;
+    platform CA, registry mirrors, NTP, the break-glass user, OIDC flags when set,
+    the API server audit policy, flags and mounts;
   - the infrastructure cluster: control plane endpoint, credentials, provider settings;
   - the control plane and worker machine templates: placement, size, addressing,
     with each worker pool's overrides;
@@ -31,6 +32,15 @@ ROOT = Path(__file__).resolve().parents[2]
 LOCK = yaml.safe_load((ROOT / "bundle.lock").read_text())
 MIRRORED = ["docker.io", "quay.io", "ghcr.io", "registry.k8s.io"]
 WAIT_SECONDS = 360
+AUDIT_POLICY = "/etc/kubernetes/audit/policy.yaml"
+AUDIT_DIR = "/var/log/kubernetes/audit"
+AUDIT_ARGS = {
+    "audit-policy-file": AUDIT_POLICY,
+    "audit-log-path": f"{AUDIT_DIR}/audit.log",
+    "audit-log-maxage": "30",
+    "audit-log-maxbackup": "10",
+    "audit-log-maxsize": "100",
+}
 
 
 def kubectl(*args: str) -> Any:
@@ -138,6 +148,7 @@ class Verifier:
         self.expect("kube-vip interface", env.get("vip_interface"), self.v["nodes"].get("vipInterface"))
         args = {a["name"]: a["value"] for a in
                 cfg.get("clusterConfiguration", {}).get("apiServer", {}).get("extraArgs", [])}
+        self.check_audit(files, cfg.get("clusterConfiguration", {}).get("apiServer", {}), args)
         oidc = self.v["nodes"].get("oidc")
         if oidc:
             self.expect("API server oidc-issuer-url", args.get("oidc-issuer-url"), oidc["issuerURL"])
@@ -147,6 +158,26 @@ class Verifier:
             self.expect("API server oidc-groups-claim", args.get("oidc-groups-claim"), oidc.get("groupsClaim", "groups"))
         else:
             self.expect_true("no OIDC flags without oidc values", "oidc-issuer-url" not in args)
+
+    def check_audit(self, files: dict, api_server: dict, args: dict) -> None:
+        """The API server gets an audit policy, writes its log to the host and rotates it."""
+        for name, value in AUDIT_ARGS.items():
+            self.expect(f"API server {name}", args.get(name), value)
+        policy_text = files.get(AUDIT_POLICY, "")
+        self.expect_true(f"audit policy file {AUDIT_POLICY} present", bool(policy_text))
+        try:
+            policy = yaml.safe_load(policy_text) if policy_text else {}
+        except yaml.YAMLError as e:
+            policy = {}
+            self.expect_true(f"audit policy is valid YAML ({e})", False)
+        self.expect("audit policy kind", (policy or {}).get("kind"), "Policy")
+        self.expect("audit policy omitStages", (policy or {}).get("omitStages"), ["RequestReceived"])
+        self.expect("audit policy default rule", ((policy or {}).get("rules") or [None])[-1], {"level": "Metadata"})
+        mounts = {v.get("mountPath"): v for v in api_server.get("extraVolumes", [])}
+        for path, read_only in ((AUDIT_POLICY, True), (AUDIT_DIR, False)):
+            vol = mounts.get(path, {})
+            self.expect(f"API server mount {path} hostPath", vol.get("hostPath"), path)
+            self.expect(f"API server mount {path} readOnly", bool(vol.get("readOnly")), read_only)
 
     def check_infra_cluster(self, obj: dict) -> None:
         spec = obj["spec"]
