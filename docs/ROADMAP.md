@@ -26,9 +26,9 @@ What each phase builds, against the component list in [COMPONENTS.md](COMPONENTS
 - [ ] Node image for the Kubernetes upgrade gate: the recipe builds it (`build.sh --upgrade-from`); not yet used in a test
 - [x] Cilium install for any cluster (`addons/cilium`), with kube-proxy replaced
 - [ ] Real-cluster spike on Proxmox from the template
-- [ ] Archive build pipeline ([build/](../build/README.md)): image inventory, image pull, charts, providers, binaries and checksums done; packaging, `dciab seed`, node images, SBOMs and signing next
+- [ ] Archive build pipeline ([build/](../build/README.md)): image inventory, image pull, charts, providers, binaries and checksums done; packaging, node images, SBOMs and signing next
 - [x] `dciab cluster-values`: capi-cluster values for MGMT, INFRA and workload clusters, generated from the site config
-- [ ] `dciab seed`
+- [x] `dciab seed`: platform CA (generated with its key age-encrypted, or imported), read-only Zot loaded from the payload, kind pulling through it, providers and ClusterClasses from the payload ([SEED.md](SEED.md)). Still to come: DNS for `registry.<domain>`
 - [ ] `dciab mgmt`: builds MGMT, installs Cilium and the providers, and moves Cluster API into MGMT (not yet proven on real infrastructure). Still to come: MGMT's services (Longhorn, Metal3, PowerDNS, Kea) and the DNS handoff
 
 ## Day 0 for bare servers

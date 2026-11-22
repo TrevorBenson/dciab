@@ -2,23 +2,27 @@
 # Install cert-manager, Cluster API and every provider pinned in bundle.lock into the
 # cluster KUBECONFIG points at. Re-running changes nothing.
 #
-#   lib/steps/capi-providers.sh [--with-classes]
+#   lib/steps/capi-providers.sh [--with-classes] [--manifests DIR]
 #
-# --with-classes also installs the capi-clusterclasses chart. Provider ${VARIABLES} come
+# --with-classes also installs the capi-clusterclasses chart. --manifests DIR uses those
+# manifests (the archive payload's providers/ folder) instead of downloading them. Provider ${VARIABLES} come
 # from bundle.lock (clusterAPI.variables); the environment overrides declared ones.
-# Manifests come from hack/fetch_crds.py, checked against bundle.lock's checksums (the
-# archive build will ship them instead of fetching).
+# Without --manifests, they come from hack/fetch_crds.py, checked against bundle.lock's
+# checksums.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 CLASS_NS=dciab-clusterclasses
 
 with_classes=false
-case "${1:-}" in
-  "") ;;
-  --with-classes) with_classes=true ;;
-  *) echo "capi-providers.sh: unknown argument '$1'" >&2; exit 2 ;;
-esac
+manifests=""
+while (( $# )); do
+  case "$1" in
+    --with-classes) with_classes=true; shift ;;
+    --manifests) manifests="${2:?--manifests needs a folder}"; shift 2 ;;
+    *) echo "capi-providers.sh: unknown argument '$1'" >&2; exit 2 ;;
+  esac
+done
 
 group() { echo "::group::$*"; }
 endgroup() { echo "::endgroup::"; }
@@ -45,7 +49,12 @@ components="$(mktemp)"
 chmod 600 "$components"
 trap 'rm -f "$components"' EXIT
 
-crds="$(python3 "$ROOT/hack/fetch_crds.py")"
+if [[ -n "$manifests" ]]; then
+  [[ -d "$manifests" ]] || { echo "capi-providers.sh: no such folder: $manifests" >&2; exit 2; }
+  crds="$manifests"
+else
+  crds="$(python3 "$ROOT/hack/fetch_crds.py")"
+fi
 
 group "cert-manager"
 kubectl apply --server-side -f "$crds"/cert-manager-*/cert-manager.yaml

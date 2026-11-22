@@ -19,7 +19,9 @@ Commands:
   services | hypervisors                   Day 0 for bare servers (not implemented yet)
   mgmt <config> --bootstrap-kubeconfig FILE [--state DIR] [--trust-bundle FILE] [--until STEP]
                                            Build MGMT from the bootstrap cluster and move CAPI to it
-  seed | infra | platform | finalize       Bootstrap steps (not implemented yet)
+  seed <config> [--payload DIR] [--state DIR] [--age-identity FILE] [--until STEP]
+                                           Seed registry and bootstrap (kind) cluster from the payload
+  infra | platform | finalize              Bootstrap steps (not implemented yet)
   status | verify                          Site state (not implemented yet)
   help                                     Show this help
 
@@ -54,11 +56,15 @@ case "$cmd" in
     require_python
     PYTHONPATH="$ROOT/lib${PYTHONPATH:+:$PYTHONPATH}" exec python3 -m dciab_cluster --root "$ROOT" "$@"
     ;;
+  seed)
+    require_python
+    PYTHONPATH="$ROOT/lib${PYTHONPATH:+:$PYTHONPATH}" exec python3 -m dciab_seed --root "$ROOT" "$@"
+    ;;
   mgmt)
     require_python
     exec "$ROOT/lib/steps/mgmt.sh" "$@"
     ;;
-  services|hypervisors|media|seed|infra|platform|finalize|status|verify)
+  services|hypervisors|media|infra|platform|finalize|status|verify)
     echo "dciab $cmd: not implemented yet (see docs/ROADMAP.md)" >&2
     exit 2
     ;;
