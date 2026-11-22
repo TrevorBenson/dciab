@@ -14,7 +14,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import pytest
 import yaml
 
-from conftest import ROOT, load_example
+from conftest import ROOT, Site, load_example
 
 from dciab_hypervisors import answer, cli, redfish
 from dciab_validate.probes import Trust
@@ -125,17 +125,7 @@ def test_wait_for_reports_the_port_that_never_opened():
 
 def test_print_changes_nothing(tmp_path, monkeypatch, capsys):
     doc = bare()
-    for rel in ("hv/root", "bmc/pve01", "bmc/pve02", "bmc/pve03", "bmc/ca.pem"):
-        p = tmp_path / "secrets" / rel
-        p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text("not-a-real-secret\n")
-        p.chmod(0o600)
-    for rel in ("pki/intermediate.crt", "pki/intermediate.key", "pki/chain.pem"):
-        p = tmp_path / "secrets" / rel
-        p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text("x\n")
-        p.chmod(0o600)
-    monkeypatch.setenv("DCIAB_PVE_TOKEN", "not-a-real-token")
+    Site(tmp_path, monkeypatch, capsys)   # writes the secret files the example refers to
     monkeypatch.setattr(answer, "hash_password", fake_hash)
     cfg = tmp_path / "dciab.yaml"
     cfg.write_text(yaml.safe_dump(doc, sort_keys=False))
