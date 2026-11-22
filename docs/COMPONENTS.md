@@ -34,18 +34,18 @@ What a DCiaB site runs, grouped by capability, and where each piece runs. Versio
 | Container networking (CNI) | Cilium, replacing kube-proxy | Every cluster | Built |
 | Load balancing and ingress | Cilium LB IPAM with BGP or L2 announcement; Cilium Gateway API | Every cluster | Planned |
 | Network policy and segmentation | Cilium network policies | Every cluster | Planned |
-| Runtime security (eBPF) | Tetragon: process, file and network observability and enforcement | Every cluster | Proposed |
-| Intrusion detection and prevention (IDS/IPS) | Suricata with AF_PACKET (eBPF load balancing and bypass) | IDS: every cluster; IPS: inline nodes | Proposed |
+| Runtime security (eBPF) | Tetragon: process, file and network observability and enforcement | Every cluster | Proposed ([ADR 0007](adr/0007-detection-to-response.md)) |
+| Intrusion detection and prevention (IDS/IPS) | Suricata with AF_PACKET (eBPF load balancing and bypass) | IDS: every cluster; IPS: inline nodes | Proposed ([ADR 0007](adr/0007-detection-to-response.md)) |
 | DNS, DHCP and IP address management | PowerDNS (authoritative and recursor), Kea DHCP; NetBox as the source of truth for addresses | MGMT (DNS, DHCP); INFRA (NetBox) | Planned |
 
 ## Identity, secrets and trust
 
 | Capability | Components | Runs on | Status |
 | --- | --- | --- | --- |
-| Identity and single sign-on | Authentik: OIDC for Kubernetes and the platform UIs, plus an LDAP outpost | INFRA | Planned |
-| Workload identity | SPIFFE/SPIRE: SPIRE server, plus the agent DaemonSet and CSI driver on every cluster | INFRA (server); every cluster (agents) | Proposed |
-| Secrets management | OpenBao (secret store), External Secrets Operator (syncs secrets into each cluster) | INFRA (OpenBao); every cluster (ESO) | Planned |
-| Certificates and PKI | cert-manager; a platform CA that DCiaB generates or imports (`spec.pki`) | Every cluster | Planned (the CA reaches nodes today) |
+| Identity and single sign-on | Authentik: OIDC for Kubernetes and the platform UIs, plus an LDAP outpost | INFRA | Planned ([ADR 0004](adr/0004-identity-and-sso.md)) |
+| Workload identity | SPIFFE/SPIRE: SPIRE server, plus the agent DaemonSet and CSI driver on every cluster | INFRA (server); every cluster (agents) | Proposed ([ADR 0004](adr/0004-identity-and-sso.md)) |
+| Secrets management | OpenBao (secret store), External Secrets Operator (syncs secrets into each cluster) | INFRA (OpenBao); every cluster (ESO) | Planned ([ADR 0005](adr/0005-secrets.md)) |
+| Certificates and PKI | cert-manager; a platform CA that DCiaB generates or imports (`spec.pki`) | Every cluster | Planned (the CA reaches nodes today; [ADR 0005](adr/0005-secrets.md)) |
 
 ## Delivery and automation
 
@@ -54,10 +54,10 @@ What a DCiaB site runs, grouped by capability, and where each piece runs. Versio
 | Source control and CI | Forgejo, Forgejo Actions runners | INFRA | Planned |
 | GitOps delivery | Argo CD, with ApplicationSets keyed on cluster labels | INFRA | Planned |
 | Artifact and image registry | Zot (seed), then Artifact Keeper | Bootstrap, then INFRA | Planned |
-| Infrastructure as code: engine | OpenTofu | INFRA (runners) | Planned |
-| Infrastructure as code: authoring | Terramate: stacks, orchestration and change detection | Repos, CI | Proposed |
-| Infrastructure as code: pre-merge testing | Terratest | Forgejo Actions | Proposed |
-| Infrastructure as code: plan, policy, apply and state | Terrakube (runs, approvals, state), with OPA policies as the gate between plan and apply | INFRA | Proposed |
+| Infrastructure as code: engine | OpenTofu | INFRA (runners) | Planned ([ADR 0006](adr/0006-iac-path.md)) |
+| Infrastructure as code: authoring | Terramate: stacks, orchestration and change detection | Repos, CI | Proposed ([ADR 0006](adr/0006-iac-path.md)) |
+| Infrastructure as code: pre-merge testing | Terratest | Forgejo Actions | Proposed ([ADR 0006](adr/0006-iac-path.md)) |
+| Infrastructure as code: plan, policy, apply and state | Terrakube (runs, approvals, state), with OPA policies as the gate between plan and apply | INFRA | Proposed ([ADR 0006](adr/0006-iac-path.md)) |
 | Enterprise policy enforcement (bare metal and VMs) | OpenVox Server and OpenVoxDB, with an external node classifier (ENC): configuration compliance, and who may reach and own each system (SSH keys and SSO access) | INFRA | Planned |
 | Ansible automation for tenants (a service offering) | AWX, installed and upgraded by the AWX Operator from its Helm chart (`awx-operator`), for tenants who provision their own systems and applications with Ansible; database on CloudNativePG; login through Authentik | INFRA | Planned |
 
@@ -78,18 +78,23 @@ What a DCiaB site runs, grouped by capability, and where each piece runs. Versio
 | --- | --- | --- | --- |
 | Metrics and alerting | Prometheus (central, plus agent mode on every cluster), Alertmanager, Grafana | INFRA; agents on every cluster | Planned |
 | Log collection | Fluent Bit | Every cluster and host | Planned |
-| Log analytics and SIEM | OpenSearch and OpenSearch Dashboards, with the Security Analytics plugin (Sigma-based detectors) | INFRA | Planned |
-| Security orchestration and response (SOAR) | Shuffle or Tracecat, one of the two; Tracecat runs its workflows on Temporal | INFRA | Proposed |
+| Log analytics and SIEM | OpenSearch and OpenSearch Dashboards, with the Security Analytics plugin (Sigma-based detectors) | INFRA | Planned ([ADR 0007](adr/0007-detection-to-response.md)) |
+| Security orchestration and response (SOAR) | Shuffle or Tracecat, one of the two; Tracecat runs its workflows on Temporal | INFRA | Proposed ([ADR 0007](adr/0007-detection-to-response.md)) |
 
 ## Decisions to make
 
 These need a decision (an ADR or a spike) before the proposed components join the plan.
 
-- **SOAR: Shuffle or Tracecat.** Both are AGPL-3.0 and self-hosted. Tracecat brings Temporal, and so a second stateful service to run and back up. Pick one.
-- **Logs: OpenSearch alone, or OpenSearch plus Loki.** OpenSearch already covers the SIEM role. Adding Grafana Loki for operational logs would mean a second log pipeline and store. The default is OpenSearch alone. Revisit only if OpenSearch's resource use for operational logs becomes the problem.
+- **SOAR: Shuffle or Tracecat.** Both are AGPL-3.0 and self-hosted. Tracecat brings Temporal, and so a second stateful service to run and back up. Pick one. The criteria are in [ADR 0007](adr/0007-detection-to-response.md).
+- **Logs: OpenSearch alone (decided).** OpenSearch covers both the SIEM role and operational logs; Grafana Loki is left out, so there is one log pipeline and one store. Revisit only if OpenSearch's resource use for operational logs becomes the problem ([ADR 0007](adr/0007-detection-to-response.md)).
 - **Suricata placement.** Suricata's AF_PACKET IPS mode needs two dedicated interfaces per sensor. So a per-node DaemonSet is passive detection (IDS), and prevention (IPS) needs inline sensors where traffic converges: dedicated nodes or appliances with two NICs. Decide where those sit.
-- **IaC run platform.** Terrakube takes on plan, apply, state and the OPA gate. It must work with Forgejo (webhooks and status checks), Authentik (login), CloudNativePG or S3 (state), and OpenBao (provider credentials).
+- **IaC run platform.** Terrakube takes on plan, apply, state and the OPA gate. It must work with Forgejo (webhooks and status checks), Authentik (login), CloudNativePG (its database) and S3 (state), and OpenBao (provider credentials). [ADR 0006](adr/0006-iac-path.md) describes the path; a spike on the Forgejo integration settles it.
 - **Object storage and COSI.** SeaweedFS gives the site an S3 endpoint. Decide which services use it (Longhorn and CloudNativePG backups, OpenSearch snapshots, Terrakube state, registry storage), and which backups must also leave the site, since a copy on the same hardware is not a disaster-recovery copy. COSI's API is still `v1alpha1`, so pin the controller and driver together and treat bucket requests as alpha.
-- **Workload identity.** Decide where SPIFFE/SPIRE IDs are consumed. Candidates: OpenBao authentication for workloads, Cilium mutual authentication, and service-to-service mTLS. Also decide how the trust domain relates to the platform CA.
+- **Workload identity.** Decide where SPIFFE/SPIRE IDs are consumed and how the trust domain relates to the platform CA. [ADR 0004](adr/0004-identity-and-sso.md) proposes one trust domain per site, nested SPIRE with its root on INFRA under an OpenBao intermediate of the platform CA, and OpenBao workload login as the first consumer.
 
-The next step is to describe how these components work together: identity and SSO, secrets, the IaC path, and the detection-to-response path.
+## How the components work together
+
+- [ADR 0004](adr/0004-identity-and-sso.md): identity and SSO. Authentik for people, SPIFFE/SPIRE for workloads, break-glass access, and how SSO access on hosts relates to OpenVox.
+- [ADR 0005](adr/0005-secrets.md): secrets. OpenBao, External Secrets Operator, the PKI under the platform CA, and how bootstrap secrets move into OpenBao.
+- [ADR 0006](adr/0006-iac-path.md): the IaC path. OpenTofu and Terramate, Terratest in Forgejo Actions, Terrakube with OPA for plan, policy, apply and state.
+- [ADR 0007](adr/0007-detection-to-response.md): detection to response. Sensors, OpenSearch Security Analytics, the SOAR and the guardrails on its actions.

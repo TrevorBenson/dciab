@@ -273,7 +273,7 @@ def test_entrypoint_requires_a_config():
 
 
 def test_entrypoint_unimplemented_step():
-    r = _run("seed")
+    r = _run("infra")
     assert r.returncode == 2
     assert "not implemented yet" in r.stderr
 

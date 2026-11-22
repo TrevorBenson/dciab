@@ -23,7 +23,7 @@ Both run the same steps. `spec.bootstrap.workDisk` says where the payload and th
 | 0a | `./dciab media` | Bootstrap appliance (planned): copy the USB payload to the work disk |
 | 0b | `sudo ./dciab services dciab.yaml` | Bare servers only: DNS, NTP and HTTP on the bootstrap host |
 | 0c | `./dciab hypervisors` | Bare servers only (planned): Proxmox VE or ESXi installed over Redfish virtual media |
-| 1 | `./dciab seed` | Local registry, seed DNS and KinD with all CAPI providers |
+| 1 | `./dciab seed` | Seed registry (Zot, read-only, from the payload) and KinD with all CAPI providers ([docs/SEED.md](docs/SEED.md)) |
 | 2 | `./dciab mgmt` | MGMT built, Cilium installed, CAPI moved into it (in progress: DNS handoff and MGMT services still to come) |
 | 3 | `./dciab infra` | INFRA built with Argo CD, Forgejo, OpenBao, CloudNativePG |
 | 4 | `./dciab platform` | Repos pushed; Argo CD and OpenTofu bring up the rest |
