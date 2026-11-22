@@ -1,6 +1,6 @@
 # Roadmap
 
-Each phase ends in a gate that must pass on both a vSphere lab and a Proxmox lab.
+What each phase builds, against the component list in [COMPONENTS.md](COMPONENTS.md). Each phase ends in a gate that must pass on both a vSphere lab and a Proxmox lab.
 
 | Phase | Scope | Gate |
 | --- | --- | --- |
