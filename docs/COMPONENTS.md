@@ -67,8 +67,8 @@ What a DCiaB site runs, grouped by capability, and where each piece runs. Versio
 | --- | --- | --- | --- |
 | Block storage (CSI) | Longhorn, backed up to S3 (SeaweedFS or the site's own) or NFS | Every cluster | Planned |
 | Object storage (S3) | SeaweedFS: S3 API for platform services (backups, snapshots, IaC state, artifacts) | INFRA | Proposed |
-| Bucket provisioning (COSI) | Container Object Storage Interface: the COSI controller, plus the SeaweedFS COSI driver, so workloads request buckets and credentials with BucketClaim and BucketAccess | INFRA (driver); every cluster that requests buckets (controller) | Proposed |
-| Databases | CloudNativePG (Postgres for Forgejo, Authentik, NetBox, Artifact Keeper, OpenVoxDB, Terrakube, AWX) | INFRA | Planned |
+| Bucket provisioning (COSI) | Container Object Storage Interface: the COSI controller and the SeaweedFS COSI driver, so workloads request buckets and credentials with BucketClaim and BucketAccess. Each requesting cluster runs both, and its driver calls INFRA's SeaweedFS over the network | INFRA (SeaweedFS); every cluster that requests buckets (controller and driver) | Proposed |
+| Databases | CloudNativePG (Postgres for Forgejo, Authentik, NetBox, Artifact Keeper, OpenVoxDB, Terrakube; AWX too if adopted) | INFRA | Planned |
 
 ## Observability and security operations
 
