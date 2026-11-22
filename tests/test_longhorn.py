@@ -47,6 +47,7 @@ def test_s3_target_is_translated_and_names_the_secret():
 @pytest.mark.parametrize("target,want", [
     ("s3://bkp@s3.example.net:8333", "s3://bkp@us-east-1/"),
     ("s3://bkp@s3.example.net/a/b", "s3://bkp@us-east-1/a/b"),
+    ("s3://bkp@s3.eu-west-2.amazonaws.com/x", "s3://bkp@eu-west-2/x"),
     ("nfs://nas:/x", "nfs://nas:/x"),
 ])
 def test_backup_target(target, want):
@@ -68,7 +69,8 @@ def test_s3_secret_from_an_environment_variable(monkeypatch, tmp_path):
     site = load_example("vsphere")
     site["spec"]["storage"]["longhorn"]["backupCredentials"] = {"env": "LH_S3"}
     monkeypatch.setenv("LH_S3", "AWS_ACCESS_KEY_ID=a\nAWS_SECRET_ACCESS_KEY=b\nAWS_ENDPOINTS=http://s3:8333\n")
-    assert decoded(lv.secret(site, "ns", tmp_path))["AWS_ENDPOINTS"] == "http://s3:8333"
+    assert decoded(lv.secret(site, "ns", tmp_path)) == {
+        "AWS_ACCESS_KEY_ID": "a", "AWS_SECRET_ACCESS_KEY": "b", "AWS_ENDPOINTS": "http://s3:8333"}
 
 
 def test_s3_secret_needs_both_keys(tmp_path):
@@ -99,7 +101,7 @@ def test_images_reads_the_image_tree():
     assert lv.images(chart) == ["longhornio/csi-attacher:v4", "longhornio/longhorn-engine:v1",
                                 "longhornio/longhorn-manager:v1"]
     chart["global"] = {"imageRegistry": "docker.io"}
-    assert lv.images(chart)[0] == "docker.io/longhornio/csi-attacher:v4"
+    assert all(ref.startswith("docker.io/longhornio/") for ref in lv.images(chart))
 
 
 def run(*args, env=None):
@@ -148,3 +150,15 @@ def test_mgmt_header_lists_every_step():
     header = re.findall(r"^#   ([a-z-]+)(?:\s|$)", listed, re.M)
     assert header == steps
     assert steps.index("longhorn") > steps.index("adopt")
+    assert text.index("step adopt") < text.index("step longhorn")
+
+
+def test_no_worker_pools_tolerates_the_control_plane_taint():
+    site = load_example("vsphere")   # MGMT has workerPools: []
+    v = lv.site_values(site)
+    assert v["defaultSettings"]["taintToleration"] == "node-role.kubernetes.io/control-plane:NoSchedule"
+    for part in ("longhornManager", "longhornDriver", "longhornUI"):
+        assert v[part]["tolerations"][0]["key"] == "node-role.kubernetes.io/control-plane"
+    site["spec"]["clusters"]["mgmt"]["workerPools"] = [{"name": "w", "replicas": 3}]
+    v = lv.site_values(site)
+    assert "taintToleration" not in v["defaultSettings"] and "longhornManager" not in v

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Longhorn's per-site values, backup credentials Secret and image list, from the site config.
 
-    longhorn_values.py values <config>                 # Helm values from spec.storage.longhorn
+    longhorn_values.py values <config> [<cluster>]     # Helm values from spec.storage.longhorn
     longhorn_values.py secret <config> <namespace>     # backup credentials Secret YAML (S3 only)
     longhorn_values.py images <chart values> <values>  # every image the release runs, one per line
 
@@ -10,7 +10,8 @@ land on disk or in a process's arguments. `secret` prints nothing for an NFS tar
 
 backupTarget is DCiaB's form: s3://<bucket>@<endpoint>[/<path>] or nfs://<server>:/<export>.
 Longhorn wants s3://<bucket>@<region>/<path> and the endpoint in the Secret's AWS_ENDPOINTS,
-so an S3 target is translated. backupCredentials ({file: ...} or {env: ...}) holds KEY=VALUE
+so an S3 target is translated (the region is read from an AWS endpoint, s3.<region>.amazonaws.com,
+and is otherwise us-east-1, which S3-compatible stores ignore). backupCredentials ({file: ...} or {env: ...}) holds KEY=VALUE
 lines with at least AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY.
 """
 
@@ -31,6 +32,8 @@ from dciab_cluster.credentials import resolve  # noqa: E402
 SECRET_NAME = "longhorn-backup-credentials"
 # Longhorn's S3 URL needs a region; S3-compatible endpoints (SeaweedFS, MinIO) ignore it.
 S3_REGION = "us-east-1"
+AWS_ENDPOINT = re.compile(r"^s3[.-](?P<region>[a-z0-9-]+)\.amazonaws\.com(:\d+)?$")
+CONTROL_PLANE_TAINT = "node-role.kubernetes.io/control-plane"
 S3_TARGET = re.compile(r"^s3://(?P<bucket>[^@/]+)@(?P<endpoint>[^/]+)(?P<path>/.*)?$")
 REQUIRED_KEYS = ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY")
 
@@ -45,23 +48,39 @@ def backup_target(target: str) -> str:
     if target.startswith("s3://"):
         if not m:
             raise ValueError(f"backupTarget {target!r}: use s3://<bucket>@<endpoint>[/<path>]")
-        return f"s3://{m['bucket']}@{S3_REGION}{m['path'] or '/'}"
+        aws = AWS_ENDPOINT.match(m["endpoint"])
+        region = aws["region"] if aws else S3_REGION
+        return f"s3://{m['bucket']}@{region}{m['path'] or '/'}"
     if target.startswith("nfs://"):
         return target
     raise ValueError(f"backupTarget {target!r}: use s3:// or nfs://")
 
 
-def site_values(site: dict) -> dict:
+def has_workers(site: dict, cluster: str) -> bool:
+    pools = site["spec"]["clusters"].get(cluster, {}).get("workerPools")
+    if pools is None:
+        return True   # bare-metal or unknown layout: leave scheduling to the cluster
+    return any(p.get("replicas", 0) > 0 for p in pools)
+
+
+def site_values(site: dict, cluster: str = "mgmt") -> dict:
     lh = longhorn(site)
     count = lh["replicaCount"]
     store = {"backupTarget": backup_target(lh["backupTarget"])}
     if lh["backupTarget"].startswith("s3://"):
         store["backupTargetCredentialSecret"] = SECRET_NAME
-    return {
+    values = {
         "persistence": {"defaultClassReplicaCount": count},
         "defaultSettings": {"defaultReplicaCount": count},
         "defaultBackupStore": store,
     }
+    if not has_workers(site, cluster):
+        # No worker pools: the control plane nodes run workloads, so Longhorn runs there too.
+        tol = [{"key": CONTROL_PLANE_TAINT, "operator": "Exists", "effect": "NoSchedule"}]
+        values["defaultSettings"]["taintToleration"] = f"{CONTROL_PLANE_TAINT}:NoSchedule"
+        for part in ("longhornManager", "longhornDriver", "longhornUI"):
+            values[part] = {"tolerations": tol}
+    return values
 
 
 def parse_env(text: str) -> Dict[str, str]:
@@ -135,8 +154,9 @@ def images(values: dict) -> List[str]:
 def main(argv=None) -> int:
     argv = sys.argv[1:] if argv is None else argv
     try:
-        if len(argv) == 2 and argv[0] == "values":
-            yaml.safe_dump(site_values(yaml.safe_load(open(argv[1]))), sys.stdout, sort_keys=False)
+        if len(argv) in (2, 3) and argv[0] == "values":
+            cluster = argv[2] if len(argv) == 3 else "mgmt"
+            yaml.safe_dump(site_values(yaml.safe_load(open(argv[1])), cluster), sys.stdout, sort_keys=False)
         elif len(argv) == 3 and argv[0] == "secret":
             path = Path(argv[1]).resolve()
             manifest = secret(yaml.safe_load(path.read_text()), argv[2], path.parent)

@@ -238,7 +238,9 @@ jobs:
           addons/cilium/install.sh charts/capi-cluster/ci/proxmox-values.yaml --template > "$RUNNER_TEMP/cilium.yaml"
           # Longhorn's manager starts most of its images itself: list them from the chart values too.
           addons/longhorn/install.sh examples/proxmox.yaml --template > "$RUNNER_TEMP/longhorn.yaml"
-          mapfile -t longhorn < <(addons/longhorn/install.sh examples/proxmox.yaml --images)
+          addons/longhorn/install.sh examples/proxmox.yaml --images > "$RUNNER_TEMP/longhorn-images.txt"
+          mapfile -t longhorn < "$RUNNER_TEMP/longhorn-images.txt"
+          (( ${#longhorn[@]} > 0 )) || { echo "no Longhorn images listed" >&2; exit 1; }
           "$RUNNER_TEMP/kubeadm" config images list --kubernetes-version "$K8S" > "$RUNNER_TEMP/kubeadm.txt"
           args=(--manifests "$crds" --extra "$RUNNER_TEMP/cilium.yaml" --extra "$RUNNER_TEMP/longhorn.yaml"
                 --kubeadm-images "$RUNNER_TEMP/kubeadm.txt")

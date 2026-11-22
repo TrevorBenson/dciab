@@ -6,7 +6,8 @@
 #   addons/longhorn/install.sh <config> --images [--chart TGZ]        every image the release runs, one per line
 #   addons/longhorn/install.sh <config> --print-values                print the per-site values
 #
-# <config> is the site config (spec.storage.longhorn). The chart comes from --chart, else from
+# <config> is the site config (spec.storage.longhorn; MGMT's worker pools decide whether
+# Longhorn tolerates the control plane taint). The chart comes from --chart, else from
 # $DCIAB_PAYLOAD/charts when DCIAB_PAYLOAD is set, else from the pinned repository; its sha256
 # is checked against bundle.lock chartDigests.longhorn. DCiaB's defaults: values.yaml here.
 set -euo pipefail
@@ -16,7 +17,7 @@ ROOT="$(cd "$HERE/../.." && pwd)"
 NS=longhorn-system
 
 usage() {
-  sed -n '3,12p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2
+  sed -n '3,13p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2
   exit 2
 }
 [[ $# -eq 2 || $# -eq 4 ]] || usage
@@ -99,6 +100,8 @@ case "$mode" in
     # (pipefail stops the install on a bad credentials file). NFS targets take none.
     if grep -q backupTargetCredentialSecret "$overrides"; then
       python3 "$HERE/longhorn_values.py" secret "$config" "$NS" | kubectl apply -f -
+    else
+      kubectl -n "$NS" delete secret longhorn-backup-credentials --ignore-not-found   # left from an S3 target
     fi
     helm upgrade --install longhorn "$tgz" "${values[@]}" --wait --timeout 15m
     echo "== waiting for the Longhorn manager on every node and the default StorageClass"
