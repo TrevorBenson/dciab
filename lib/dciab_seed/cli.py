@@ -263,6 +263,10 @@ def main(argv: Optional[List[str]] = None) -> int:
     state = Path(args.state).resolve() if args.state else config.parent / ".dciab" / "state"
     state.mkdir(parents=True, exist_ok=True)
     state.chmod(0o700)
+    if os.geteuid() != 0:
+        print("dciab seed: run as root: the registry binds port 443 and kind runs on rootful podman",
+              file=sys.stderr)
+        return 1
     # One seed per host: the registry container and the kind cluster have fixed names.
     # O_NOFOLLOW: a planted symlink can't make root truncate another file.
     lock_dir = Path("/run/lock") if os.access("/run/lock", os.W_OK) else state
