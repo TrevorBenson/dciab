@@ -22,7 +22,11 @@ import time
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from . import probe, render
+try:
+    from . import probe, render
+except ImportError:  # PyYAML missing: main() says what to install
+    probe = render = None  # type: ignore[assignment]
+
 
 
 def _load(config: Path, root: Path) -> dict:
@@ -49,12 +53,13 @@ def _load(config: Path, root: Path) -> dict:
 
 class Paths:
     def __init__(self, doc: dict, state: Path, isos: Optional[str]):
+        state = Path(os.path.abspath(state))   # the pod's hostPath volumes must be absolute
         self.conf = state / "services"
         self.answers = state / "answers"
         work = doc["spec"]["bootstrap"].get("workDisk", {}).get("path")
         # ISOs live with the payload dciab media copies; on the appliance /var (the state) is
         # on the work disk already.
-        self.isos = Path(isos) if isos else (Path(work) / "isos" if work else state / "isos")
+        self.isos = Path(os.path.abspath(isos)) if isos else (Path(work) / "isos" if work else state / "isos")
 
 
 def _inputs(root: Path, doc: dict):
@@ -83,7 +88,9 @@ def write(files: Dict[str, str], conf: Path) -> List[str]:
         if p.is_file() and p.read_text() == text and (p.stat().st_mode & 0o777) == 0o600:
             continue
         tmp = p.with_name("." + p.name + ".tmp")
-        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        if tmp.is_symlink() or tmp.exists():
+            tmp.unlink()
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
         with os.fdopen(fd, "w") as fh:
             fh.write(text)
         os.chmod(tmp, 0o600)
@@ -111,8 +118,10 @@ def check(doc: dict, timeout: float = 60.0) -> List[str]:
             ptr = probe.dns(ip, probe.reverse_name(boot), "PTR")
             if ptr != [f"bootstrap.{domain}"]:
                 failed.append(f"DNS on {ip}: {boot} doesn't resolve back to bootstrap.{domain} (got {ptr})")
-            if net["ntp"] and probe.ntp(ip) is None:
-                failed.append(f"NTP on {ip}: no answer")
+            stratum = probe.ntp(ip) if net["ntp"] else 1
+            if stratum is None or not 1 <= stratum <= 15:
+                failed.append(f"NTP on {ip}: " + ("no answer" if stratum is None else
+                                                  f"not synchronised (stratum {stratum})"))
         if not probe.http(f"http://{boot}/healthz"):
             failed.append(f"HTTP on {boot}:80: no answer")
         if not failed or time.monotonic() > deadline:

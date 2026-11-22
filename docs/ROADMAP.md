@@ -39,7 +39,7 @@ Decided in [ADR 0001](adr/0001-day0-hypervisors-and-services.md).
 - [x] `bundle.lock`: Proxmox VE installer pinned; ESXi entry (not shipped); Day 0 service images
 - [x] Day 0 image digests pinned (CoreDNS, Caddy, chrony base)
 - [ ] ESXi build tested and pinned
-- [x] `dciab services`: CoreDNS, chrony and Caddy as one pod on the DNS service IPs (tested in CI on a dummy interface; not yet on a lab)
+- [x] `dciab services`: CoreDNS, chrony and Caddy as one pod on the DNS service IPs
 - [ ] `dciab hypervisors` for Proxmox VE: Redfish preparation, virtual media install, API token, bridge and storage
 - [ ] `dciab hypervisors` for ESXi
 - [ ] Live checks: BMC routes, Redfish and credentials

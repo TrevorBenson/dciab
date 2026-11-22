@@ -313,6 +313,8 @@ jobs:
           dig @10.30.110.53 example.org | grep -q 'status: REFUSED'
           printf '0123456789' | sudo tee /tmp/site/.dciab/state/isos/test.iso >/dev/null
           test "$(curl -sS --noproxy '*' -r 2-5 http://10.30.110.5/isos/test.iso)" = 2345
+          # answer files only for the hypervisor hosts' addresses; this runner is the bootstrap address
+          test "$(curl -sS --noproxy '*' -o /dev/null -w '%{http_code}' http://10.30.110.5/answers/pve01.toml)" = 403
           for ip in 10.30.110.53 10.30.110.54; do
             PYTHONPATH=lib python3 -c "import sys; from dciab_services import probe; s = probe.ntp(sys.argv[1]); print(sys.argv[1], 'stratum', s); sys.exit(0 if s and s < 16 else 1)" "$ip"
           done

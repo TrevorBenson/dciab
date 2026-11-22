@@ -126,6 +126,20 @@ def test_caddy_listens_on_the_bootstrap_address_only():
     assert "admin off" in c
 
 
+def test_answer_files_only_for_hypervisor_hosts():
+    c = render.caddyfile(bare())
+    assert "path /answers /answers/*" in c
+    assert "not remote_ip 10.30.110.6 10.30.110.7 10.30.110.8" in c
+    assert "respond @answers_denied 403" in c
+
+
+def test_invalid_upstream_resolver_is_rejected():
+    doc = bare()
+    doc["spec"]["network"]["upstreamResolvers"] = ["999.1.1.1"]
+    with pytest.raises(render.ServicesError, match="not an IPv4 address"):
+        render.corefile(doc)
+
+
 def test_pod_uses_pinned_images_and_host_network():
     pod = yaml.safe_load(files_for(bare())["pod.yaml"])
     spec = pod["spec"]
@@ -158,8 +172,15 @@ def test_rendering_is_idempotent_and_changes_follow_config(tmp_path):
     doc["spec"]["hypervisors"]["hosts"].pop()
     changed = files_for(doc)
     assert render.fingerprint(changed) != render.fingerprint(files)
-    assert cli.write(changed, conf) == ["coredns/zones/db.110.30.10.in-addr.arpa",
+    assert cli.write(changed, conf) == ["Caddyfile", "coredns/zones/db.110.30.10.in-addr.arpa",
                                         "coredns/zones/db.lab1.example.com"]
+
+
+def test_relative_state_and_isos_become_absolute(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    paths = cli.Paths(bare(), cli.Path("st"), "isos")
+    assert paths.conf == tmp_path / "st" / "services"
+    assert paths.isos == tmp_path / "isos"
 
 
 def test_dropped_ntp_removes_chrony_configs(tmp_path):

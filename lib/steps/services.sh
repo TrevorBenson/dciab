@@ -45,6 +45,7 @@ if [[ -n "$until" ]] && ! printf '%s\n' "${STEPS[@]}" | grep -qx "$until"; then
 fi
 config="$(cd "$(dirname "$config")" && pwd)/$(basename "$config")"
 state="${state:-$(dirname "$config")/.dciab/state}"
+state="$(realpath -m "$state")"
 
 export PYTHONPATH="$ROOT/lib${PYTHONPATH:+:$PYTHONPATH}"
 helper() {
@@ -110,8 +111,11 @@ nic="$(nic_name "$INTERFACE")" || die "no network interface matches spec.bootstr
 has_addr "$nic" "$BOOTSTRAP_ADDRESS" \
   || die "$nic doesn't have spec.bootstrap.address $BOOTSTRAP_ADDRESS; configure the bootstrap host's network first"
 mkdir -p "$state" && chmod 700 "$state"
-exec 9>"$state/.services.lock"
-flock -n 9 || die "another dciab services is running with state $state"
+# Root writes here: refuse a state folder someone else could have prepared.
+[[ "$(stat -c %u "$state")" == 0 ]] || die "$state must be owned by root"
+# One run at a time per host, whatever the state folder: there is one pod.
+exec 9>>/run/dciab-services.lock
+flock -n 9 || die "another dciab services is running on this host"
 # Commands that leave processes behind (podman's conmon) must not inherit the lock: "9>&-".
 finish_if preflight
 
@@ -137,10 +141,14 @@ finish_if address
 
 step firewall
 if command -v firewall-cmd >/dev/null && firewall-cmd --state >/dev/null 2>&1; then
+  zone="$(firewall-cmd --get-zone-of-interface="$nic" 2>/dev/null || firewall-cmd --get-default-zone)"
   ports=(53/udp 53/tcp 80/tcp)
   [[ "$NTP" == 1 ]] && ports+=(123/udp)
   for p in "${ports[@]}"; do
-    firewall-cmd --query-port="$p" >/dev/null || { firewall-cmd --add-port="$p" >/dev/null; echo "opened $p (runtime only)"; }
+    if ! firewall-cmd --zone="$zone" --query-port="$p" >/dev/null; then
+      firewall-cmd --zone="$zone" --add-port="$p" >/dev/null || die "firewalld refused to open $p in zone $zone"
+      echo "opened $p in zone $zone (runtime only)"
+    fi
   done
 else
   echo "firewalld isn't running; nothing to open"

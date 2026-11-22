@@ -119,6 +119,11 @@ def corefile(doc: dict) -> str:
         blocks.append(f"{zname} {{\n    bind {bind}\n    file {COREDNS_DIR}/zones/db.{zname}\n"
                       f"    errors\n    log\n}}\n")
     upstream = net["upstreamResolvers"]
+    for u in upstream:
+        try:
+            ipaddress.IPv4Address(u)
+        except ValueError:
+            raise ServicesError(f"network.upstreamResolvers: '{u}' is not an IPv4 address") from None
     if upstream:
         blocks.append(f". {{\n    bind {bind}\n    forward . {' '.join(upstream)}\n    cache {TTL}\n"
                       f"    errors\n    log\n}}\n")
@@ -149,21 +154,30 @@ def chrony_confs(doc: dict) -> Dict[str, str]:
 
 
 def caddyfile(doc: dict) -> str:
-    addr = doc["spec"]["bootstrap"]["address"]
+    """ISOs for anyone who can reach the bootstrap address (BMCs on their own networks);
+    answer files, which carry password hashes, only for the hypervisor hosts' addresses."""
+    spec = doc["spec"]
+    addr = spec["bootstrap"]["address"]
+    hosts = " ".join(h["address"] for h in spec.get("hypervisors", {}).get("hosts", []))
     return f"""# Rendered by dciab services from dciab.yaml. Changes are overwritten.
 {{
-	admin off
-	auto_https off
+\tadmin off
+\tauto_https off
 }}
 
 http://{addr}:80 {{
-	bind {addr}
-	respond /healthz "ok" 200
-	root * {HTTP_ROOT}
-	file_server
-	log {{
-		output stdout
-	}}
+\tbind {addr}
+\trespond /healthz "ok" 200
+\t@answers_denied {{
+\t\tpath /answers /answers/*
+\t\tnot remote_ip {hosts}
+\t}}
+\trespond @answers_denied 403
+\troot * {HTTP_ROOT}
+\tfile_server
+\tlog {{
+\t\toutput stdout
+\t}}
 }}
 """
 
