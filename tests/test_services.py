@@ -86,15 +86,39 @@ def test_readiness_checks_the_registry_name_and_skips_http_in_dns_only(monkeypat
     for ip in ("10.30.110.53", "10.30.110.54"):
         answers[(ip, "bootstrap.lab1.example.com", "A")] = ["10.30.110.5"]
         answers[(ip, "5.110.30.10.in-addr.arpa", "PTR")] = ["bootstrap.lab1.example.com"]
-    monkeypatch.setattr(probe, "dns", lambda ip, name, qtype: answers.get((ip, name, qtype), []))
+    queries = []
+
+    def fake_dns(ip, name, qtype):
+        queries.append((ip, name, qtype))
+        return answers.get((ip, name, qtype), [])
+    monkeypatch.setattr(probe, "dns", fake_dns)
     monkeypatch.setattr(probe, "http", lambda url: pytest.fail("no HTTP in DNS-only mode"))
     failed = cli.check(existing(), timeout=0)
     assert failed == [f"DNS on {ip}: registry.lab1.example.com doesn't resolve to 10.30.110.5"
                       for ip in ("10.30.110.53", "10.30.110.54")]
+    assert queries == [q for ip in ("10.30.110.53", "10.30.110.54") for q in (
+        (ip, "bootstrap.lab1.example.com", "A"), (ip, "5.110.30.10.in-addr.arpa", "PTR"),
+        (ip, "registry.lab1.example.com", "A"))]
     answers[("10.30.110.53", "registry.lab1.example.com", "A")] = ["10.30.110.5"]
     assert len(cli.check(existing(), timeout=0)) == 1
     answers[("10.30.110.54", "registry.lab1.example.com", "A")] = ["10.30.110.5"]
     assert cli.check(existing(), timeout=0) == []
+
+
+def test_readiness_retries_with_backoff_and_gives_up_at_the_deadline(monkeypatch):
+    clock = [0.0]
+    sleeps = []
+
+    def sleep(s):
+        sleeps.append(s)
+        clock[0] += s
+    monkeypatch.setattr("time.monotonic", lambda: clock[0])
+    monkeypatch.setattr("time.sleep", sleep)
+    monkeypatch.setattr(probe, "dns", lambda ip, name, qtype: None)   # no answer at all
+    failed = cli.check(existing(), timeout=10)
+    assert len(failed) == 6
+    assert sleeps == [0.5, 1.0, 2.0, 4.0, 2.5]   # the last sleep stops at the deadline
+    assert clock[0] == 10
 
 
 def test_forward_zone_has_every_host():

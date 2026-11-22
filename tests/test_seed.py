@@ -229,12 +229,40 @@ def test_dns_step_with_hypervisors_needs_services_answering(tmp_path, monkeypatc
     cfg.write_text((ROOT / "examples" / "proxmox-bare.yaml").read_text())
     s = plan.load_settings(cfg)
     monkeypatch.setattr(cli.subprocess, "run", lambda *a, **k: pytest.fail("services must not run"))
+    # Answers keyed by (server, name, type): a query to another server or of another type gets nothing.
     good = {("10.30.110.54", "registry.lab1.example.com", "A")}
-    monkeypatch.setattr(probe, "dns", lambda ip, name, qtype: ["10.30.110.5"] if (ip, name, qtype) in good else [])
+    queries = []
+
+    def fake_dns(ip, name, qtype):
+        queries.append((ip, name, qtype))
+        return ["10.30.110.5"] if (ip, name, qtype) in good else []
+    monkeypatch.setattr(probe, "dns", fake_dns)
     with pytest.raises(plan.SeedError, match="10.30.110.53 doesn't resolve.*run dciab services"):
         cli.step_dns(ROOT, cfg, tmp_path, tmp_path, s, timeout=0)
+    assert queries == [("10.30.110.53", "registry.lab1.example.com", "A"),
+                       ("10.30.110.54", "registry.lab1.example.com", "A")]
     good.add(("10.30.110.53", "registry.lab1.example.com", "A"))
+    queries.clear()
     cli.step_dns(ROOT, cfg, tmp_path, tmp_path, s, timeout=0)
+    assert queries == [("10.30.110.53", "registry.lab1.example.com", "A"),
+                       ("10.30.110.54", "registry.lab1.example.com", "A")]
+
+
+def test_dns_step_retries_with_backoff_until_services_answers(tmp_path, monkeypatch):
+    from dciab_services import probe
+    cfg = tmp_path / "dciab.yaml"
+    cfg.write_text((ROOT / "examples" / "proxmox-bare.yaml").read_text())
+    s = plan.load_settings(cfg)
+    rounds, sleeps = [], []
+    monkeypatch.setattr(probe, "dns", lambda ip, name, qtype:
+                        ["10.30.110.5"] if len(rounds) >= 6 or rounds.append(1) else [])
+    monkeypatch.setattr("time.sleep", sleeps.append)
+    cli.step_dns(ROOT, cfg, tmp_path, tmp_path, s)   # the pod answers on the fourth try
+    assert sleeps == [0.5, 1.0, 2.0]
+    # A ready pod is checked once, without sleeping.
+    sleeps.clear()
+    cli.step_dns(ROOT, cfg, tmp_path, tmp_path, s)
+    assert sleeps == []
 
 
 def test_dns_step_without_hypervisors_runs_dns_only_services(tmp_path, monkeypatch, capsys):
