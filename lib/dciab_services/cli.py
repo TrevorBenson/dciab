@@ -123,11 +123,13 @@ def write(files: Dict[str, str], conf: Path) -> List[str]:
 
 
 def check(doc: dict, timeout: float = 60.0) -> List[str]:
-    """Readiness, retried until timeout. Returns the checks that still fail."""
+    """Readiness, retried with backoff until timeout (a pod that is starting or recovering
+    gets time; a ready one is checked once). Returns the checks that still fail."""
     net = render.network(doc)
     domain = doc["spec"]["network"]["domain"].rstrip(".")
     boot = str(net["bootstrapAddress"])
     deadline = time.monotonic() + timeout
+    delays = probe.backoff()
     while True:
         failed = []
         for ip in net["serviceIPs"]:
@@ -144,9 +146,8 @@ def check(doc: dict, timeout: float = 60.0) -> List[str]:
                                                   f"not synchronised (stratum {stratum})"))
         if not net["dnsOnly"] and not probe.http(f"http://{boot}/healthz"):
             failed.append(f"HTTP on {boot}:80: no answer")
-        if not failed or time.monotonic() > deadline:
+        if not failed or not probe.wait(deadline, delays):
             return failed
-        time.sleep(2)
 
 
 def main(argv: Optional[List[str]] = None) -> int:
