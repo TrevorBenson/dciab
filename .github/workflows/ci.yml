@@ -443,7 +443,7 @@ jobs:
           lock = yaml.safe_load(open("bundle.lock"))["hypervisors"]["proxmox"]
           doc = yaml.safe_load(open("examples/proxmox-bare.yaml"))
           host = doc["spec"]["hypervisors"]["hosts"][0]
-          text = answer.render(doc, host, answer.root_hash(tmp / "answers", host["name"]))
+          text = answer.render(doc, host, answer.root_hash(tmp / "answers", host["name"], "ci-not-a-secret", []))
           base = tmp / "isos" / Path(lock["isoURL"]).name
           iso.check_base(base, lock["isoSHA256"])
           assert iso.build(host["name"], text, base, lock["isoSHA256"], tmp / "host-isos", tag)

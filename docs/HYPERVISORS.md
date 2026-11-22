@@ -30,8 +30,8 @@ BMC trust comes from each host's `bmc.tlsFingerprint` or `bmc.caBundle`, as for 
 | `global.keyboard`, `global.country`, `global.timezone` | `spec.hypervisors.installer` |
 | `global.fqdn` | host `name` + `network.domain` |
 | `global.mailto` | the first `identity.initialAdmins` email |
-| `global.root-password-hashed` | a random 256-bit password per host, hashed at once (SHA-512 crypt) and never stored or shown: nobody knows it. Root logs in with SSH keys only. The hash is kept in `<state>/answers/<host>.root-hash` (mode 600) so reruns write the same file |
-| `global.root-ssh-keys` | every `identity.initialAdmins` SSH key: the only way to log in as root |
+| `global.root-password-hashed` | `spec.hypervisors.rootPassword` when set (one for every host), else a random 256-bit password per host, encrypted at once to `spec.bootstrap.recipients` (`<state>/answers/<host>.root-password.age`; open it with `age -d -i <identity>`) and never written in plain text. Only its SHA-512 crypt hash is kept (`<state>/answers/<host>.root-hash`, mode 600), so reruns write the same file |
+| `global.root-ssh-keys` | every `identity.initialAdmins` SSH key |
 | `network` | `source = "from-answer"`: the host `address` with the node network's prefix, `network.nodes.gateway`, the first DNS service IP, and the NIC matched by `bootMACAddress` |
 | `disk-setup` | `rootDeviceHints`: `deviceName` becomes `disk-list`; `serialNumber`, `wwn`, `model` and `vendor` become udev filters (`ID_SERIAL_SHORT`, `ID_WWN`, `ID_MODEL`, `ID_VENDOR`; spaces become underscores, as udev writes them) that must all match. `hctl`, `minSizeGigabytes` and `rotational` can't be expressed and are refused |
 
@@ -39,10 +39,9 @@ Fixed value: `filesystem = "ext4"`, which gives the `local` and `local-lvm` stor
 
 ## Access
 
-- **People:** root over SSH, with the `identity.initialAdmins` keys. No root password is known, so there is no password login on the console or the web UI; SSO through Authentik as a Proxmox VE realm comes later ([ADR 0004](adr/0004-identity-and-sso.md)).
-- **DCiaB and CAPMOX:** the Proxmox VE API with a dedicated API token, never SSH. [PROXMOX.md](PROXMOX.md) lists its exact privileges.
-
-Keys use the installer's kebab-case format.
+- **People:** root over SSH with the `identity.initialAdmins` keys. The root password is for joining the host to a cluster or manager (a Proxmox VE cluster, vCenter, Proxmox Datacenter Manager), for post-install setup through the API, and for break-glass console access; SSO through Authentik as a Proxmox VE realm comes later ([ADR 0004](adr/0004-identity-and-sso.md)).
+- **DCiaB and CAPMOX** at run time: the Proxmox VE API with a dedicated API token, never SSH. [PROXMOX.md](PROXMOX.md) lists its exact privileges.
+- **Existing hypervisors** (a site that already runs Proxmox VE or vSphere): DCiaB never touches root; it uses only the API token or vCenter account in the config.
 
 ## Not done yet
 

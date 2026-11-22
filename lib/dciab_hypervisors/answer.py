@@ -15,7 +15,7 @@ import secrets
 import subprocess
 import tempfile
 from pathlib import Path
-from typing import Callable, Dict, List
+from typing import Callable, Dict, List, Optional
 
 # A fresh ext4 install gives local (directory) and local-lvm (LVM-thin), what CAPMOX expects.
 FILESYSTEM = "ext4"
@@ -78,22 +78,51 @@ def hash_password(host: str, password: str) -> str:
     return out.stdout.strip()
 
 
-def root_hash(answers: Path, name: str, hasher: Callable[[str, str], str] = hash_password) -> str:
+def seal_with_age(recipients: List[str], plaintext: str, dest: Path) -> None:
+    """Encrypt to every recipient with age; the plaintext goes on stdin, never to disk or argv."""
+    if not recipients:
+        raise AnswerError("spec.bootstrap.recipients is empty: nobody could open the root password")
+    tmp = dest.with_name(f".{dest.name}.tmp")
+    args = ["age", "-o", str(tmp)]
+    for r in recipients:
+        args += ["-r", r]
+    try:
+        subprocess.run(args, input=plaintext, capture_output=True, text=True, timeout=30, check=True)
+    except FileNotFoundError:
+        raise AnswerError("age is needed to store the generated root password (the payload's bin/ has it)") from None
+    except subprocess.CalledProcessError as exc:
+        raise AnswerError(f"age could not encrypt the root password: {exc.stderr.strip()}") from None
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, dest)
+
+
+def root_hash(answers: Path, name: str, site_password: Optional[str], recipients: List[str],
+              hasher: Callable[[str, str], str] = hash_password,
+              sealer: Callable[[List[str], str, Path], None] = seal_with_age) -> str:
     """The root password hash for one host's answer file.
 
-    Root logs in with the identity.initialAdmins SSH keys only. The installer still requires
-    a root password, so each host gets a random one (256 bits) that is hashed at once and
-    never stored or shown: nobody knows it. The hash is kept (<answers>/<host>.root-hash,
-    mode 600) so reruns render the same answer file and don't rebuild the host's ISO.
+    Root has a password: adding a host to vCenter, joining a Proxmox VE cluster and the
+    post-install API setup need it. People still log in with the identity.initialAdmins SSH
+    keys. The password is either:
+      - spec.hypervisors.rootPassword, the site's own, when set (one for every host); or
+      - generated per host (256 bits). It never touches the disk in plain text: it is
+        encrypted at once to spec.bootstrap.recipients (<answers>/<host>.root-password.age;
+        open it with `age -d -i <identity>`), and only its hash is kept
+        (<answers>/<host>.root-hash), so reruns render the same answer file.
     """
+    if site_password:
+        return hasher(name, site_password)
+    sealed = answers / f"{name}.root-password.age"
     path = answers / f"{name}.root-hash"
-    if path.is_file():
+    if path.is_file() and sealed.is_file():
         stored = path.read_text().strip()
         if stored.startswith("$6$"):
             return stored
     answers.mkdir(parents=True, exist_ok=True)
     os.chmod(answers, 0o700)
-    digest = hasher(name, secrets.token_urlsafe(32))
+    password = secrets.token_urlsafe(32)
+    sealer(recipients, password + "\n", sealed)        # sealed first: no hash without a way back in
+    digest = hasher(name, password)
     fd, tmp = tempfile.mkstemp(dir=answers, prefix=f".{name}.", suffix=".tmp")   # mode 600
     with os.fdopen(fd, "w") as f:
         f.write(digest + "\n")

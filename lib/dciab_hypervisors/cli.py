@@ -161,6 +161,7 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     from dciab_services.cli import _load
     from dciab_services.cli import Paths
+    from dciab_validate.live import read_secret
 
     from . import answer, iso, redfish
 
@@ -225,7 +226,11 @@ def main(argv: Optional[List[str]] = None) -> int:
         return 2
 
     try:
-        rendered = {h["name"]: answer.render(doc, h, answer.root_hash(answers, h["name"])) for h in hosts}
+        site_password = (read_secret(hv["rootPassword"], config_dir).strip()
+                         if hv.get("rootPassword") else None)
+        recipients = doc["spec"]["bootstrap"]["recipients"]
+        rendered = {h["name"]: answer.render(doc, h, answer.root_hash(answers, h["name"], site_password, recipients))
+                    for h in hosts}
     except (answer.AnswerError, OSError) as exc:
         print(f"dciab hypervisors: {exc}", file=sys.stderr)
         return 1

@@ -100,6 +100,7 @@ spec:
     method: virtualmedia
     bootMode: UEFISecureBoot             # UEFI | UEFISecureBoot
     managementVLAN: tagged               # the management NIC tags network.nodes.vlan (110)
+    # rootPassword: {file: ./secrets/hv/root}   # [opt] unset: one generated per host, sealed with age
     installer:                           # what the Proxmox VE installer asks for
       keyboard: en-us
       country: us
