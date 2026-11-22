@@ -17,7 +17,7 @@ The first run (report at commit `619c9a0`) built template 123 before the small, 
 Rebuild the bootc node template with the fixes from the task-0004 review, and confirm a clone grows its root filesystem to fill its disk. Task 0003 (the first real cluster) then uses this template.
 
 What changed since 0004:
-- The disk is built small: `config.toml` gives the root 2 GiB (the image is about 1.3 GiB), and `build.sh` stops if the node image passes 1.8 GiB.
+- The disk is bootc-image-builder's default, 10 GiB with an 8.5 GiB root (the rerun found a `config.toml` root size can't lower it; it has since been removed), published thin at that size.
 - `dciab-growroot.service` grows the partition behind `/sysroot` and its XFS filesystem at boot.
 - cloud-init's own growpart and resize are turned off.
 - `zstd`, `xfsprogs` and `cloud-utils-growpart` are installed.
