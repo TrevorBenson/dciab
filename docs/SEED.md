@@ -9,7 +9,7 @@
 # ./dciab seed dciab.yaml [--payload DIR] [--state DIR] [--age-identity FILE] [--until STEP]
 ```
 
-It runs as root. Steps: `preflight`, `pki`, `registry`, `kind`, `providers`. Each one is safe to rerun, and a finished run changes nothing. When it's done, run `dciab mgmt` with `--bootstrap-kubeconfig <state>/bootstrap.kubeconfig --trust-bundle <state>/pki/trust-bundle.pem`.
+It runs as root. Steps: `preflight`, `pki`, `registry`, `kind`, `providers`. Each one is safe to rerun, and a finished run changes nothing. Then run `dciab mgmt` with the same `--state`: it picks up `<state>/bootstrap.kubeconfig` and `<state>/pki/trust-bundle.pem` by itself, and takes Cilium's chart and the provider manifests from the payload.
 
 ## The platform CA
 
