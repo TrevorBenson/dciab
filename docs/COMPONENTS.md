@@ -59,13 +59,16 @@ What a DCiaB site runs, grouped by capability, and where each piece runs. Versio
 | Infrastructure as code: pre-merge testing | Terratest | Forgejo Actions | Proposed |
 | Infrastructure as code: plan, policy, apply and state | Terrakube (runs, approvals, state), with OPA policies as the gate between plan and apply | INFRA | Proposed |
 | Configuration management (hosts outside Kubernetes) | OpenVox Server, OpenVoxDB | INFRA | Planned |
+| Automation platform (Ansible) | AWX, installed and upgraded by the AWX Operator from its Helm chart (`awx-operator`); database on CloudNativePG; login through Authentik | INFRA | Proposed |
 
 ## Data and storage
 
 | Capability | Components | Runs on | Status |
 | --- | --- | --- | --- |
-| Block storage (CSI) | Longhorn, backed up to the site's S3 or NFS | Every cluster | Planned |
-| Databases | CloudNativePG (Postgres for Forgejo, Authentik, NetBox, Artifact Keeper, OpenVoxDB, Terrakube) | INFRA | Planned |
+| Block storage (CSI) | Longhorn, backed up to S3 (SeaweedFS or the site's own) or NFS | Every cluster | Planned |
+| Object storage (S3) | SeaweedFS: S3 API for platform services (backups, snapshots, IaC state, artifacts) | INFRA | Proposed |
+| Bucket provisioning (COSI) | Container Object Storage Interface: the COSI controller, plus the SeaweedFS COSI driver, so workloads request buckets and credentials with BucketClaim and BucketAccess | INFRA (driver); every cluster that requests buckets (controller) | Proposed |
+| Databases | CloudNativePG (Postgres for Forgejo, Authentik, NetBox, Artifact Keeper, OpenVoxDB, Terrakube, AWX) | INFRA | Planned |
 
 ## Observability and security operations
 
@@ -84,6 +87,8 @@ These need a decision (an ADR or a spike) before the proposed components join th
 - **Logs: OpenSearch alone, or OpenSearch plus Loki.** OpenSearch already covers the SIEM role. Adding Grafana Loki for operational logs would mean a second log pipeline and store. The default is OpenSearch alone. Revisit only if OpenSearch's resource use for operational logs becomes the problem.
 - **Suricata placement.** Suricata's AF_PACKET IPS mode needs two dedicated interfaces per sensor. So a per-node DaemonSet is passive detection (IDS), and prevention (IPS) needs inline sensors where traffic converges: dedicated nodes or appliances with two NICs. Decide where those sit.
 - **IaC run platform.** Terrakube takes on plan, apply, state and the OPA gate. It must work with Forgejo (webhooks and status checks), Authentik (login), CloudNativePG or S3 (state), and OpenBao (provider credentials).
+- **Object storage and COSI.** SeaweedFS gives the site an S3 endpoint. Decide which services use it (Longhorn and CloudNativePG backups, OpenSearch snapshots, Terrakube state, registry storage), and which backups must also leave the site, since a copy on the same hardware is not a disaster-recovery copy. COSI's API is still `v1alpha1`, so pin the controller and driver together and treat bucket requests as alpha.
+- **AWX and OpenVox.** Both manage hosts outside Kubernetes. Decide each one's role (for example, OpenVox for continuous configuration, AWX for on-demand and scheduled runs), so the same setting isn't owned twice.
 - **Workload identity.** Decide where SPIFFE/SPIRE IDs are consumed. Candidates: OpenBao authentication for workloads, Cilium mutual authentication, and service-to-service mTLS. Also decide how the trust domain relates to the platform CA.
 
 The next step is to describe how these components work together: identity and SSO, secrets, the IaC path, and the detection-to-response path.
