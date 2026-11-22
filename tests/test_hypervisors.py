@@ -91,20 +91,48 @@ def test_a_non_sha512_hash_is_refused():
         answer.render(doc, host(doc), "plain")
 
 
-def test_root_password_is_random_unstored_and_stable(tmp_path):
-    seen = []
+def test_generated_root_password_is_sealed_and_stable(tmp_path):
+    seen, sealed = [], {}
 
     def hasher(host, password):
         seen.append(password)
         return f"$6$x${host}{len(password)}"
+
+    def sealer(recipients, plaintext, dest):
+        assert recipients == ["age1abc"]
+        sealed[dest.name] = plaintext
+        dest.write_text("sealed")
     d = tmp_path / "answers"
-    first = answer.root_hash(d, "pve01", hasher)
-    assert answer.root_hash(d, "pve01", hasher) == first and len(seen) == 1   # kept, not regenerated
+    first = answer.root_hash(d, "pve01", None, ["age1abc"], hasher, sealer)
+    assert answer.root_hash(d, "pve01", None, ["age1abc"], hasher, sealer) == first and len(seen) == 1
+    assert sealed["pve01.root-password.age"].strip() == seen[0] and len(seen[0]) >= 40
     assert (d / "pve01.root-hash").stat().st_mode & 0o777 == 0o600
-    assert seen[0] not in (d / "pve01.root-hash").read_text()             # the password itself isn't kept
-    assert len(seen[0]) >= 40
-    answer.root_hash(d, "pve02", hasher)
+    for f in d.iterdir():                                   # the password is never on disk in plain text
+        assert seen[0] not in f.read_text()
+    answer.root_hash(d, "pve02", None, ["age1abc"], hasher, sealer)
     assert seen[1] != seen[0]
+
+
+def test_site_root_password_is_used_as_is(tmp_path):
+    got = answer.root_hash(tmp_path / "a", "pve01", "s3cret", [], lambda h, p: f"$6$x${h}:{p}",
+                           lambda *a: pytest.fail("nothing to seal"))
+    assert got == "$6$x$pve01:s3cret" and not (tmp_path / "a").exists()
+
+
+def test_no_recipients_no_generated_password(tmp_path):
+    with pytest.raises(answer.AnswerError, match="recipients"):
+        answer.seal_with_age([], "x", tmp_path / "p.age")
+
+
+@pytest.mark.skipif(not (shutil.which("age") and shutil.which("age-keygen")), reason="needs age")
+def test_sealed_root_password_opens_with_a_recipient_identity(tmp_path):
+    ident = tmp_path / "id.txt"
+    subprocess.run(["age-keygen", "-o", str(ident)], check=True, capture_output=True)
+    pub = subprocess.run(["age-keygen", "-y", str(ident)], check=True, capture_output=True, text=True).stdout.strip()
+    answer.seal_with_age([pub], "hunter2\n", tmp_path / "p.age")
+    out = subprocess.run(["age", "-d", "-i", str(ident), str(tmp_path / "p.age")],
+                         check=True, capture_output=True, text=True).stdout
+    assert out == "hunter2\n" and (tmp_path / "p.age").stat().st_mode & 0o777 == 0o600
 
 
 def test_locale_comes_from_the_config():
