@@ -1,0 +1,10 @@
+# 0003 run 3, ~30 min after helm install (lab01 on template 129)
+KCP condition: Available=Unknown "Failed to get etcd members"; EtcdMemberHealthy: "Waiting for a Node with spec.providerID proxmox://46908869-db68-43c2-9b7e-1c8ac2ad3c5f to exist"
+ProxmoxMachine lab01-dmrxl-qqkf7: spec.providerID proxmox://46908869-... , VirtualMachineProvisioned True
+Workload nodes (lab01.kubeconfig): spec.providerID <none> on both nodes
+Worker taint: node.cluster.x-k8s.io/uninitialized:NoSchedule (CAPI removes it after matching Machine and Node)
+Bootstrap data (KubeadmConfig lab01-dmrxl-qqkf7): InitConfiguration.nodeRegistration has only name '{{ local_hostname }}' and taints null; no kubeletExtraArgs provider-id
+CAPMOX 0.9.2 metadata (pkg/cloudinit/metadata.go) with providerIDInjection: true writes "provider-id: proxmox://<instance-id>" to the NoCloud meta-data
+CAPMOX's own ClusterClass (templates/cluster-class.yaml) sets, in init and join nodeRegistration:
+  kubeletExtraArgs: [{name: provider-id, value: "proxmox://'{{ ds.meta_data.instance_id }}'"}]
+charts/capi-clusterclasses/classes/r1/proxmox.yaml: providerIDInjection: true (lines ~643, 665), no kubeletExtraArgs provider-id
