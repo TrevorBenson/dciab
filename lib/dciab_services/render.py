@@ -164,10 +164,18 @@ def chrony_confs(doc: dict) -> Dict[str, str]:
 
 def caddyfile(doc: dict) -> str:
     """ISOs for anyone who can reach the bootstrap address (BMCs on their own networks);
-    answer files, which carry password hashes, only for the hypervisor hosts' addresses."""
+    answer files, which carry password hashes, only for the hypervisor hosts' addresses, and
+    each host's own file (/answers/<name>.toml, written by dciab hypervisors) only for that host."""
     spec = doc["spec"]
     addr = spec["bootstrap"]["address"]
-    hosts = " ".join(h["address"] for h in spec.get("hypervisors", {}).get("hosts", []))
+    entries = spec.get("hypervisors", {}).get("hosts", [])
+    hosts = " ".join(h["address"] for h in entries)
+    own = "".join(f"""\t@answers_{h['name']} {{
+\t\tpath /answers/{h['name']}.toml
+\t\tnot remote_ip {h['address']}
+\t}}
+\trespond @answers_{h['name']} 403
+""" for h in entries)
     return f"""# Rendered by dciab services from dciab.yaml. Changes are overwritten.
 {{
 \tadmin off
@@ -182,7 +190,7 @@ http://{addr}:80 {{
 \t\tnot remote_ip {hosts}
 \t}}
 \trespond @answers_denied 403
-\troot * {HTTP_ROOT}
+{own}\troot * {HTTP_ROOT}
 \tfile_server
 \tlog {{
 \t\toutput stdout

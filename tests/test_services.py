@@ -194,6 +194,9 @@ def test_answer_files_only_for_hypervisor_hosts():
     assert "path /answers /answers/*" in c
     assert "not remote_ip 10.30.110.6 10.30.110.7 10.30.110.8" in c
     assert "respond @answers_denied 403" in c
+    # each host reads only its own answer file
+    assert "\t@answers_pve01 {\n\t\tpath /answers/pve01.toml\n\t\tnot remote_ip 10.30.110.6\n\t}" in c
+    assert "respond @answers_pve03 403" in c
 
 
 def test_invalid_upstream_resolver_is_rejected():
