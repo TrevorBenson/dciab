@@ -19,7 +19,7 @@ What a DCiaB site runs, grouped by capability, and where each piece runs. Versio
 | Capability | Components | Runs on | Status |
 | --- | --- | --- | --- |
 | Install media | Ventoy USB, DCiaB bootstrap appliance (Rocky Linux 10, bootc) | Bootstrap | Built (under evaluation, ADR 0002) |
-| Day 0 network services | CoreDNS, chrony, Caddy; dnsmasq for PXE only | Bootstrap | Planned (ADR 0001) |
+| Day 0 network services | CoreDNS, chrony, Caddy; dnsmasq for PXE only | Bootstrap | Built (`dciab services`); PXE planned (ADR 0001) |
 | Bootstrap cluster and seed registry | kind, Zot | Bootstrap | Planned (`dciab seed`) |
 | Cluster lifecycle | Cluster API with kubeadm; CAPV (vSphere), CAPMOX (Proxmox VE), CAPM3 (Metal3); in-cluster IPAM and Metal3 IPAM; DCiaB ClusterClasses | MGMT | Built |
 | Bare-metal provisioning | Metal3 Bare Metal Operator and Ironic, over Redfish virtual media | MGMT | Planned |

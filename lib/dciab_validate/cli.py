@@ -13,7 +13,7 @@ from typing import List, Optional
 from .findings import ERROR, Finding, attach_lines, render_json, render_text
 
 LIVE_NOTE = ("live checks (hypervisor credentials and templates, BMC Redfish, NTP, upstream DNS, "
-             "unused-address ARP probes) are not implemented yet; this run checked the file only")
+             "unused-address probes) were not run; this run checked the file only (add --live on the site network)")
 
 
 def main(argv: Optional[List[str]] = None) -> int:
@@ -21,7 +21,14 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("config", help="path to the site config, for example ./dciab.yaml")
     parser.add_argument("--root", required=True, help="the unpacked archive (set by the dciab entrypoint)")
     parser.add_argument("--output", choices=["text", "json"], default="text", help="report format")
+    parser.add_argument("--live", action="store_true",
+                        help="also check the site's services over the network (hypervisor API, BMCs, NTP, DNS, "
+                             "unused addresses); off by default so review works offline")
+    parser.add_argument("--timeout", type=float, default=5.0, metavar="SECONDS",
+                        help="timeout for each live request (default 5)")
     args = parser.parse_args(argv)
+    if args.timeout <= 0:
+        parser.error("--timeout must be more than 0")
 
     try:
         import jsonschema  # noqa: F401
@@ -57,7 +64,16 @@ def main(argv: Optional[List[str]] = None) -> int:
         more, check_notes = checks.run(doc, config_path, root)
         findings.extend(more)
         notes.extend(check_notes)
-    notes.append(LIVE_NOTE)
+    if not args.live:
+        notes.append(LIVE_NOTE)
+    elif any(f.severity == ERROR for f in findings):
+        notes.append("live checks run once the errors above are fixed")
+    else:
+        from . import live
+
+        more, live_notes = live.run(doc, config_path, args.timeout)
+        findings.extend(more)
+        notes.extend(live_notes)
 
     findings = attach_lines(findings, lines)
     print(_render(args.output, str(config_path), findings, notes))

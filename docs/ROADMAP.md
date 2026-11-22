@@ -15,7 +15,7 @@ What each phase builds, against the component list in [COMPONENTS.md](COMPONENTS
 
 - [x] `schema/dciab.schema.json`
 - [x] `dciab validate`: schema and offline semantic checks
-- [ ] `dciab validate`: live checks (hypervisor, BMC Redfish, NTP, upstream DNS, ARP probes for unused addresses)
+- [x] `dciab validate --live`: live checks (hypervisor, BMC Redfish, NTP, upstream DNS, ARP probes for unused addresses); not yet run against real infrastructure
 - [x] `bundle.lock` with pinned versions (digests come with the build pipeline)
 - [x] `capi-clusterclasses` chart: `r1` classes (draft until the first release; see [VERSIONING.md](VERSIONING.md)) for vSphere, Proxmox and Metal3
 - [x] `capi-cluster` chart
@@ -39,10 +39,10 @@ Decided in [ADR 0001](adr/0001-day0-hypervisors-and-services.md).
 - [x] `bundle.lock`: Proxmox VE installer pinned; ESXi entry (not shipped); Day 0 service images
 - [x] Day 0 image digests pinned (CoreDNS, Caddy, chrony base)
 - [ ] ESXi build tested and pinned
-- [ ] `dciab services`: CoreDNS, chrony and Caddy as one pod on the DNS service IPs
+- [x] `dciab services`: CoreDNS, chrony and Caddy as one pod on the DNS service IPs
 - [ ] `dciab hypervisors` for Proxmox VE: Redfish preparation, virtual media install, API token, bridge and storage
 - [ ] `dciab hypervisors` for ESXi
-- [ ] Live checks: BMC routes, Redfish and credentials
+- [x] Live checks: BMC routes, Redfish and credentials (`dciab validate --live`)
 
 ## Bootstrap appliance and USB
 
