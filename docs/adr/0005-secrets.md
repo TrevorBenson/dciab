@@ -7,7 +7,7 @@
 
 Secrets enter a DCiaB site at two times:
 
-- **During the bootstrap**, before any platform service exists. The site config refers to them as `{file: ...}` or `{env: ...}` (never inline), and `dciab validate` checks they exist and aren't readable by others. DCiaB also creates some itself: when `spec.pki.mode` is `generate-root`, `dciab seed` generates the platform CA and keeps its key only age-encrypted to `spec.bootstrap.recipients` (at least two age keys, so recovery never depends on one person).
+- **During the bootstrap**, before any platform service exists. The site config refers to them as `{file: ...}` or `{env: ...}` (never inline), and `dciab validate` fails when one is missing and warns when a secret file is readable by others. DCiaB also creates some itself: when `spec.pki.mode` is `generate-root`, `dciab seed` generates the platform CA and keeps its key only age-encrypted to `spec.bootstrap.recipients` (at least two age keys, so recovery never depends on one person).
 - **At run time**, for platform services, tenants, the IaC path ([ADR 0006](0006-iac-path.md)) and response actions ([ADR 0007](0007-detection-to-response.md)).
 
 [COMPONENTS.md](../COMPONENTS.md) names OpenBao as the store and External Secrets Operator (ESO) to sync secrets into each cluster. People log in through Authentik and workloads have SPIFFE IDs ([ADR 0004](0004-identity-and-sso.md)).
@@ -35,31 +35,32 @@ No long-lived OpenBao tokens are handed out, and AppRole isn't used for anything
 
 ### 3. External Secrets Operator in every cluster
 
-Every cluster runs ESO (a baseline add-on delivered by Argo CD) with a `ClusterSecretStore` per KV mount it needs, authenticated by that cluster's Kubernetes auth mount. Applications declare `ExternalSecret` objects in Git; the values stay in OpenBao. Tenants get namespaced `SecretStore`s limited to their own mount, not the cluster-wide stores.
+Every cluster runs ESO (a baseline add-on delivered by Argo CD) with a `ClusterSecretStore` per KV mount it needs, authenticated by that cluster's Kubernetes auth mount. Applications declare `ExternalSecret` objects in Git; the values stay in OpenBao. Tenants get namespaced `SecretStore`s limited to their own mount, not the cluster-wide stores. A tenant could still name a `ClusterSecretStore` in an `ExternalSecret`, so two controls stop that: every `ClusterSecretStore` lists the namespaces allowed to use it (`spec.conditions`), and a ValidatingAdmissionPolicy rejects `ExternalSecret`s in tenant namespaces that reference any `ClusterSecretStore`. The OpenBao role behind each store reads only that store's paths, so a mistake in either control doesn't widen it.
 
 ### 4. PKI: OpenBao issues under the platform CA
 
 The platform CA (`spec.pki`) stays the trust anchor that nodes already trust. OpenBao's PKI engine holds intermediates signed by it, and its key never enters OpenBao:
 
 - `generate-root`: the platform step signs OpenBao's intermediate CSR with the DCiaB root, decrypted in memory for that step only. The root key then exists only age-encrypted, offline.
-- `import-intermediate`: the site's intermediate signs OpenBao's intermediate, so it must allow a CA below it (path length). If the site can't issue that, a later option is to import the site's intermediate into OpenBao as the issuer.
+- `import-intermediate`: the site's intermediate signs OpenBao's intermediates, so its path length must allow the deepest chain below it. That is the SPIFFE chain (OpenBao intermediate, SPIRE root, child SPIRE CA: three CAs, [ADR 0004](0004-identity-and-sso.md)); cert-manager's chain needs one. If the site can't issue that, SPIRE uses its own root and a later option is to import the site's intermediate into OpenBao as the issuer.
 
 Separate PKI mounts per use: one for cert-manager (an issuer per cluster, through OpenBao's Kubernetes auth), and one for SPIRE's upstream authority ([ADR 0004](0004-identity-and-sso.md)). Each has its own roles, allowed names and maximum TTLs.
 
 ### 5. Bootstrap secrets move into OpenBao at the platform step
 
-The platform step initializes OpenBao and then, once:
+The platform step, in this order:
 
-1. reads the secrets the config refers to (hypervisor and BMC credentials, the registry's credentials, the PKI material for `import-intermediate`), and the ones DCiaB generated (MGMT and INFRA admin kubeconfigs, initial service admin passwords), and writes them to KV under the platform mount;
-2. issues OpenBao's intermediates (decision 4);
-3. records in OpenBao what it wrote, so a rerun skips what is already there and changes nothing.
+1. **Initializes OpenBao, and immediately writes and verifies the recovery material** (decision 6) on the bootstrap host's work disk: each share is decrypted back once to check it before anything else runs. Initialization is the one step that can't be repeated, so a rerun that finds OpenBao initialized never initializes again, and refuses to continue if the recovery material isn't on disk.
+2. **Writes bootstrap secrets to KV** under the platform mount: the ones the config refers to (hypervisor and BMC credentials, the registry's credentials, the PKI material for `import-intermediate`) and the ones DCiaB generated (MGMT and INFRA admin kubeconfigs, initial service admin passwords). Each write is checked against what is already there, so a rerun changes nothing.
+3. **Issues OpenBao's intermediates** (decision 4), one named issuer per use. Before issuing, it looks for that named issuer and a valid certificate; a rerun finds them and skips, so an interrupted run never leaves two issuers for one use.
 
 Decrypting the age-encrypted material needs one recipient's age identity, given by the operator at that step and never stored. After the platform step, the bootstrap host's copies are no longer the source of truth, and `finalize` deletes the plaintext ones. The age-encrypted copies (the root key, the recovery keys, the break-glass kubeconfigs) are kept by the site offline as recovery material.
 
 ### 6. Unseal and recovery
 
-- **Default: Shamir unseal keys,** split among the people who hold the bootstrap age identities. The platform step writes the key shares and the initial root token age-encrypted to `spec.bootstrap.recipients`, then revokes the root token. Every OpenBao restart then needs a quorum of key holders, so the default suits sites that accept that.
-- **Auto-unseal, when the site has one:** an HSM (OpenBao's PKCS#11 seal), a cloud KMS, or another OpenBao's transit engine. With auto-unseal, the key shares become recovery keys, kept the same way. The choice is a config option, added with the platform step.
+- **Default: Shamir unseal keys,** one share per bootstrap recipient, each encrypted to **that holder's age key only**, so no single person can decrypt a quorum. The threshold is a majority of the recipients (at least two). The initial root token is used for the platform step and then revoked, not stored. Every OpenBao restart then needs a quorum of key holders, so the default suits sites that accept that.
+- **Auto-unseal, when the site has one:** an HSM (OpenBao's PKCS#11 seal), a cloud KMS, or another OpenBao's transit engine. The key shares become recovery keys, kept the same way. The seal key itself is then a hard recovery dependency: recovery keys can't replace it, and without it no snapshot can be restored. The site backs it up and documents its recovery under its own HSM or KMS procedures. The choice is a config option, added with the platform step.
+- **Material any one recipient can open.** The generated root CA key and the break-glass kubeconfigs are encrypted to all recipients, as the schema intends, so break-glass never depends on one person. That makes every recipient a holder of the site's highest-value secrets; sites keep the recipient list to the few people who need that.
 - A new root token is only generated from the recovery or unseal keys, for a recorded break-glass reason, and revoked after use.
 
 ## Consequences

@@ -42,6 +42,8 @@ Client secrets live in OpenBao and reach each service through External Secrets O
 
 An Authentik LDAP outpost serves the few consumers that need LDAP. The main one is hosts managed by OpenVox: SSSD resolves users and groups from the outpost, so a person has the same name, UID and groups on every server. Services that speak OIDC don't use LDAP.
 
+POSIX IDs must be stable across hosts. Authentik's LDAP provider derives `uidNumber` and `gidNumber` from a configured start number plus the user's or group's internal ID, which doesn't change while the Authentik database exists (it is backed up with CloudNativePG). Where a site's own directory already assigns POSIX IDs, Authentik passes those through instead. The start numbers are chosen above every local and system ID range on the hosts.
+
 ### 3. Groups grant roles; Authentik doesn't
 
 Authentik is the source of group membership. Each service maps groups to its own roles:
@@ -50,6 +52,8 @@ Authentik is the source of group membership. Each service maps groups to its own
 - Further groups (tenants, read-only, security operations) are added through Git like any other platform configuration, never through a service's own user screens.
 
 The group-to-role bindings live in each service's Helm values or Kubernetes objects, delivered by Argo CD.
+
+Group claims are only as fresh as the token. Authentik issues short-lived ID and access tokens (minutes, not hours) and refresh tokens that re-check the user, so removing someone from a group, or deactivating them, takes effect at the next refresh. Services that keep their own sessions are set to session lifetimes no longer than a working day.
 
 ### 4. MGMT and INFRA don't depend on Authentik
 
@@ -70,12 +74,12 @@ How user SSH keys reach hosts (an attribute served through the LDAP outpost and 
 
 ### 7. SPIFFE/SPIRE for workloads
 
-SPIRE comes from the SPIFFE project's hardened Helm charts (`spire-crds` first, then `spire-nested` for this layout), pinned in `bundle.lock`.
+SPIRE comes from the SPIFFE project's hardened Helm charts (`spire-crds` first, then `spire-nested` for this layout). Both charts and their images are pinned in `bundle.lock` when SPIRE is built; they aren't there yet.
 
 - **Trust domain:** one per site, named after the site's domain: `spiffe://<network.domain>`. IDs carry the cluster: `spiffe://<network.domain>/k8s/<cluster>/ns/<namespace>/sa/<service account>`.
-- **Topology:** nested SPIRE. The root SPIRE server runs on INFRA. Every cluster, MGMT included, runs a child SPIRE server that the root signs, plus the agent DaemonSet and the SPIFFE CSI driver, which mounts the Workload API socket into pods. A child keeps issuing SVIDs while INFRA is unreachable, until its intermediate CA expires, so the root CA TTL is set to outlast an INFRA outage.
+- **Topology:** nested SPIRE. The root SPIRE server runs on INFRA. Every cluster, MGMT included, runs a child SPIRE server that the root signs, plus the agent DaemonSet and the SPIFFE CSI driver, which mounts the Workload API socket into pods. A child keeps issuing SVIDs while INFRA is unreachable, until its own intermediate CA expires. So each child's CA TTL is set to outlast the INFRA outage the site plans for, and the root's CA TTL, which caps it, is longer still.
 - **Federation** is for other trust domains (another site, a partner), not for clusters within a site.
-- **Relation to the platform CA (`spec.pki`):** the root SPIRE server's UpstreamAuthority is a dedicated intermediate under the platform CA, issued by OpenBao's PKI engine ([ADR 0005](0005-secrets.md)) and restricted to SPIFFE use. SVIDs therefore chain to the platform CA, but SPIFFE consumers validate against the SPIRE trust bundle and the SPIFFE ID, not the platform root alone. Until OpenBao is up, SPIRE isn't installed; nothing in the bootstrap needs it.
+- **Relation to the platform CA (`spec.pki`):** the root SPIRE server's UpstreamAuthority is a dedicated intermediate under the platform CA, issued by OpenBao's PKI engine ([ADR 0005](0005-secrets.md)) and restricted to SPIFFE use. SVIDs therefore chain to the platform CA (platform CA → OpenBao SPIFFE intermediate → SPIRE root CA → child SPIRE CA → SVID), but SPIFFE consumers validate against the SPIRE trust bundle and the SPIFFE ID, not the platform root alone. Until OpenBao is up, SPIRE isn't installed; nothing in the bootstrap needs it.
 - **OIDC discovery:** the SPIFFE OIDC discovery provider publishes the JWT-SVID signing keys, so services outside the SPIRE agents' reach can verify JWT-SVIDs.
 
 First consumers, in order:
@@ -89,6 +93,6 @@ First consumers, in order:
 - Every platform service needs an Authentik application, a client secret in OpenBao and a group mapping. That's configuration in Git, created by the platform step and delivered by Argo CD.
 - Authentik is on the login path for people. It runs with more than one replica and its database is backed up with the rest of CloudNativePG, but an outage only blocks new logins; break-glass covers the rest.
 - MGMT and INFRA admins use certificates, so those kubeconfigs are high-value secrets with short-lived copies handed out from OpenBao, not long-lived files on laptops.
-- With `spec.pki.mode: import-intermediate`, the imported intermediate must allow at least one more CA below it (path length), since OpenBao issues intermediates under it. `dciab validate` should check this.
+- The SPIFFE chain puts three CAs below the platform CA. With `spec.pki.mode: import-intermediate`, the imported intermediate must therefore have no path length limit, or one of at least 3; with less, SPIRE can't use it and needs its own root instead. `dciab validate` should check this.
 - SPIRE adds a server per cluster and an agent per node. Workloads that don't use SPIFFE are unaffected.
 - Still open: the SSH key delivery path (decision 6) and which platform services take SPIFFE mTLS first.

@@ -24,6 +24,10 @@ Kubernetes objects reach clusters through Argo CD. Everything else that has an A
 
 Merging to the default branch is required before an apply. Branch protection in Forgejo requires the test and the Terrakube plan/policy checks.
 
+**The pull request plan is for review only.** After merge, Terrakube plans again from the merged commit against the current state, runs OPA on that new plan, and applies only that plan (after approval where policy asks for one). If it differs from what was reviewed, policy can require an approval, but nothing that wasn't in the merged tree is applied.
+
+**Pull request runs are untrusted.** A pull request can change providers and data sources, and plans run that code. So pull request plans get read-only credentials (OpenBao roles that can read but not change the provider's backend), providers come only from the site's provider mirror, and the executor's egress is limited to the providers' APIs. Apply credentials are only issued to runs of the default branch.
+
 ### 2. Terramate authors; Terrakube runs
 
 Terramate owns the repository layout, stack metadata, ordering and change detection. It doesn't hold state or run applies. Terrakube owns runs, approvals, state and the run history. One Terrakube workspace maps to one Terramate stack, created from the stack's metadata, so adding a stack in Git adds its workspace.
@@ -35,7 +39,8 @@ Policies are Rego, kept in their own Forgejo repo and versioned like code. They 
 ### 4. Storage
 
 - Terrakube's own database runs on CloudNativePG.
-- State and run outputs go to Terrakube's storage backend, S3-compatible: SeaweedFS on INFRA by default, or the site's own S3. Versioning is on, and the bucket is in the backup set that leaves the site.
+- State and run outputs go to Terrakube's storage backend, S3-compatible: SeaweedFS on INFRA by default, or the site's own S3. Versioning and encryption at rest are on, only Terrakube's own credential can read the bucket, and the bucket is in the backup set that leaves the site (encrypted).
+- State can hold secret values, even ones marked sensitive. Modules prefer ephemeral values and write-only attributes where providers support them, and outputs never carry secrets. Run logs and state are visible only to the workspace's team in Terrakube.
 
 ### 5. Credentials
 
