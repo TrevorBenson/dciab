@@ -7,9 +7,27 @@ import os
 import socket
 import struct
 import urllib.request
-from typing import List, Optional, Tuple
+from typing import Iterator, List, Optional, Tuple
 
 TYPES = {"A": 1, "PTR": 12}
+
+
+def backoff(start: float = 0.5, cap: float = 5.0) -> Iterator[float]:
+    """Delays between readiness retries: 0.5, 1, 2, 4, 5, 5, ... seconds."""
+    delay = start
+    while True:
+        yield delay
+        delay = min(delay * 2, cap)
+
+
+def wait(deadline: float, delays: Iterator[float]) -> bool:
+    """Sleep for the next delay, never past deadline (time.monotonic()); False when it has passed."""
+    import time
+    left = deadline - time.monotonic()
+    if left <= 0:
+        return False
+    time.sleep(min(next(delays), left))
+    return True
 
 
 def reverse_name(ip: str) -> str:
