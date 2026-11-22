@@ -93,6 +93,6 @@ First consumers, in order:
 - Every platform service needs an Authentik application, a client secret in OpenBao and a group mapping. That's configuration in Git, created by the platform step and delivered by Argo CD.
 - Authentik is on the login path for people. It runs with more than one replica and its database is backed up with the rest of CloudNativePG, but an outage only blocks new logins; break-glass covers the rest.
 - MGMT and INFRA admins use certificates, so those kubeconfigs are high-value secrets with short-lived copies handed out from OpenBao, not long-lived files on laptops.
-- The SPIFFE chain puts three CAs below the platform CA. With `spec.pki.mode: import-intermediate`, the imported intermediate must therefore have no path length limit, or one of at least 3; with less, SPIRE can't use it and needs its own root instead. `dciab validate` should check this.
+- The SPIFFE chain puts three CAs below the platform CA. With `spec.pki.mode: import-intermediate`, the imported intermediate must therefore have no path length limit, or one of at least 3; with less, SPIRE can't use it and needs its own root instead. `dciab validate` checks this, and warns when the intermediate expires within a year.
 - SPIRE adds a server per cluster and an agent per node. Workloads that don't use SPIFFE are unaffected.
 - Still open: the SSH key delivery path (decision 6) and which platform services take SPIFFE mTLS first.
