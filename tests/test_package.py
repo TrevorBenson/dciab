@@ -158,6 +158,8 @@ def test_sign_then_verify_tar_and_unpacked(tree, monkeypatch):
     assert verify.verify(site, pub, runner=fake_cosign()) == []
     (site / ".dciab").mkdir()  # dciab's state next to the archive is ignored
     (site / ".dciab" / "s").write_text("")
+    (site / "lib" / "dciab_x" / "__pycache__").mkdir()  # written when dciab runs
+    (site / "lib" / "dciab_x" / "__pycache__" / "x.pyc").write_text("")
     assert verify.verify(site, pub, runner=fake_cosign()) == []
     (site / "docs" / "d.md").write_text("tampered")
     (site / "docs" / "new.md").write_text("")

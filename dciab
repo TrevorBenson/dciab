@@ -58,7 +58,8 @@ case "$cmd" in
     ;;
   verify-archive)
     require_python
-    PYTHONPATH="$ROOT/lib${PYTHONPATH:+:$PYTHONPATH}" exec python3 -m dciab_archive --root "$ROOT" "$@"
+    PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$ROOT/lib${PYTHONPATH:+:$PYTHONPATH}" \
+      exec python3 -m dciab_archive --root "$ROOT" "$@"
     ;;
   mgmt)
     require_python

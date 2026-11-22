@@ -114,7 +114,8 @@ def verify_dir(root: Path, key: Optional[Path], cosign: str = "cosign", runner: 
         if rel_dir == Path("."):
             # dciab's own state next to the archive (.dciab/) isn't part of it.
             dirnames[:] = [d for d in dirnames if not d.startswith(".")]
-        dirnames.sort()
+        # Python writes its bytecode cache when dciab runs; the archive never ships one.
+        dirnames[:] = sorted(d for d in dirnames if d != "__pycache__")
         for name in sorted(filenames):
             path = Path(dirpath) / name
             rel = (rel_dir / name).as_posix()
