@@ -20,6 +20,8 @@ Commands:
   mgmt <config> --bootstrap-kubeconfig FILE [--state DIR] [--trust-bundle FILE] [--until STEP]
                                            Build MGMT from the bootstrap cluster and move CAPI to it
   seed | infra | platform | finalize       Bootstrap steps (not implemented yet)
+  verify-archive (--key PUB | --checksums-only) [ARCHIVE]
+                                           Check the archive (this one by default) against its signed MANIFEST
   status | verify                          Site state (not implemented yet)
   help                                     Show this help
 
@@ -53,6 +55,11 @@ case "$cmd" in
   cluster-values)
     require_python
     PYTHONPATH="$ROOT/lib${PYTHONPATH:+:$PYTHONPATH}" exec python3 -m dciab_cluster --root "$ROOT" "$@"
+    ;;
+  verify-archive)
+    require_python
+    PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$ROOT/lib${PYTHONPATH:+:$PYTHONPATH}" \
+      exec python3 -m dciab_archive --root "$ROOT" "$@"
     ;;
   mgmt)
     require_python
