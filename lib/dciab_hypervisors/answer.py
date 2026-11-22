@@ -1,7 +1,7 @@
 """Render the Proxmox VE automated-installer answer file (answer.toml) for one host.
 
 Pure functions except hash_password, which runs `openssl passwd -6` with the password on stdin.
-Keys follow the kebab-case format of Proxmox VE 8.4 and later (snake_case is deprecated in 9.0).
+Keys use the installer's kebab-case format (the older snake_case keys are deprecated).
 """
 
 from __future__ import annotations
@@ -49,7 +49,10 @@ def disk_setup(hints: Dict[str, object]) -> List[str]:
     if "deviceName" in hints:
         if len(hints) > 1:
             raise AnswerError("rootDeviceHints: deviceName can't be combined with other hints for Proxmox VE")
-        lines.append(f"disk-list = {_list([str(hints['deviceName'])[len('/dev/'):]])}")
+        disk = str(hints["deviceName"])[len("/dev/"):]
+        if not disk:
+            raise AnswerError("rootDeviceHints.deviceName must name a disk, like /dev/sda")
+        lines.append(f"disk-list = {_list([disk])}")
         return lines
     # udev replaces spaces in these properties with underscores.
     for key in sorted(hints):

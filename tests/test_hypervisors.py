@@ -229,6 +229,8 @@ class FakeBMC:
                 body = self._body()
                 fake.calls.append(("POST", self.path, body))
                 if actions and self.path == slot_path + "/Actions/VirtualMedia.InsertMedia":
+                    if fake.slot["Inserted"]:
+                        return self._send(409)   # like real BMCs: eject first
                     fake.slot = {"Inserted": True, "Image": body["Image"]}
                 elif actions and self.path == slot_path + "/Actions/VirtualMedia.EjectMedia":
                     fake.slot = {"Inserted": False, "Image": None}
@@ -244,6 +246,8 @@ class FakeBMC:
                 if self.path == SYS:
                     fake.boot = dict(fake.boot, **body["Boot"])
                 elif self.path == slot_path and not actions:
+                    if body["Inserted"] and fake.slot["Inserted"]:
+                        return self._send(409)
                     fake.slot = {"Inserted": body["Inserted"], "Image": body["Image"]}
                 else:
                     return self._send(405)
@@ -289,6 +293,8 @@ def test_install_from_ejects_inserts_boots_and_restarts(fake_bmc, media, actions
     assert done == ["ejected the attached media", f"attached {ISO}", "one-time boot from Cd (UEFI)",
                     "reset (ForceRestart)"]
     assert f.slot == {"Inserted": True, "Image": ISO}
+    media_calls = [c for c in f.calls if "VirtualMedia" in c[1]]
+    assert len(media_calls) == 2 and media_calls[0][2] in ({}, {"Image": None, "Inserted": False})
     assert f.bmc.state() == {"PowerState": "On", "BootSourceOverrideTarget": "Cd",
                              "BootSourceOverrideEnabled": "Once"}
     assert f.calls[-1] == ("POST", SYS + "/Actions/ComputerSystem.Reset", {"ResetType": "ForceRestart"})
@@ -320,3 +326,48 @@ def test_wrong_pin_sends_nothing(fake_bmc):
     with pytest.raises(redfish.RedfishError, match="fingerprint"):
         bad.install_from(ISO)
     assert f.calls == []
+
+
+def test_disk_name_must_not_be_empty():
+    with pytest.raises(answer.AnswerError):
+        answer.disk_setup({"deviceName": "/dev/"})
+
+
+def test_stale_answer_files_are_removed(tmp_path):
+    d = tmp_path / "answers"
+    cli.write_answer(d, "pve01", "x\n")
+    cli.write_answer(d, "old", "x\n")
+    assert cli.remove_stale(d, ["pve01"]) == ["old.toml"]
+    assert [p.name for p in d.iterdir()] == ["pve01.toml"]
+
+
+def test_transitional_power_state_is_refused(fake_bmc):
+    f = fake_bmc(power="PoweringOn")
+    with pytest.raises(redfish.RedfishError, match="PoweringOn"):
+        f.bmc.reset()
+    assert f.calls == []
+
+
+def test_accepted_task_is_waited_for(fake_bmc, monkeypatch):
+    f = fake_bmc()
+    polls = []
+
+    class R:
+        def __init__(self, status, body, headers):
+            self.status, self.body, self.headers = status, body, headers
+
+        def json(self):
+            return json.loads(self.body)
+
+    answers = [R(202, b"{}", {"location": "https://bmc/redfish/v1/TaskService/Tasks/7"}),
+               R(202, b'{"TaskState": "Running"}', {}), R(200, b'{"TaskState": "Completed"}', {})]
+
+    def request(method, path, headers=None, body=None):
+        polls.append((method, path))
+        return answers.pop(0)
+
+    monkeypatch.setattr(f.bmc.client, "request", request)
+    f.bmc.poll = 0
+    f.bmc._call("POST", "/x", {})
+    assert polls == [("POST", "/x"), ("GET", "/redfish/v1/TaskService/Tasks/7"),
+                     ("GET", "/redfish/v1/TaskService/Tasks/7")]

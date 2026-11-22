@@ -18,9 +18,11 @@ dciab services. Exit codes: 0 done, 1 a step failed, 2 could not run.
 from __future__ import annotations
 
 import argparse
+import fcntl
 import os
 import socket
 import sys
+import tempfile
 import time
 from pathlib import Path
 from typing import Callable, Dict, List, Optional
@@ -42,14 +44,27 @@ def write_answer(answers: Path, name: str, text: str) -> bool:
     if target.is_file() and not target.is_symlink() and target.read_text() == text \
             and (target.stat().st_mode & 0o777) == 0o600:
         return False
-    tmp = answers / f".{name}.toml.tmp"
-    if tmp.is_symlink() or tmp.exists():
-        tmp.unlink()
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
-    with os.fdopen(fd, "w") as fh:
-        fh.write(text)
-    os.replace(tmp, target)
+    fd, tmp = tempfile.mkstemp(dir=answers, prefix=f".{name}.", suffix=".tmp")   # mode 600
+    try:
+        with os.fdopen(fd, "w") as fh:
+            fh.write(text)
+        os.replace(tmp, target)
+    except BaseException:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+        raise
     return True
+
+
+def remove_stale(answers: Path, names: List[str]) -> List[str]:
+    """Remove answer files of hosts no longer in the config. Returns the removed file names."""
+    removed = []
+    if answers.is_dir():
+        for p in sorted(answers.glob("*.toml")):
+            if p.stem not in names:
+                p.unlink()
+                removed.append(p.name)
+    return removed
 
 
 def mask(text: str) -> str:
@@ -172,7 +187,17 @@ def main(argv: Optional[List[str]] = None) -> int:
         print(f"dciab hypervisors: {state} must be owned by root", file=sys.stderr)
         return 2
 
+    # One run at a time per state folder: two runs would reset each other's installs.
+    lock = open(state / "hypervisors.lock", "a")
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        print("dciab hypervisors: another dciab hypervisors is running with this state folder", file=sys.stderr)
+        return 2
+
     print("\n== hypervisors: answer")
+    for name in remove_stale(answers, [h["name"] for h in hv["hosts"]]):
+        print(f"  removed {answers / name} (no such host in the config)")
     for name, text in rendered.items():
         changed = write_answer(answers, name, text)
         print(f"  {'wrote' if changed else 'unchanged'} {answers / (name + '.toml')}")

@@ -16,8 +16,8 @@ Each step runs for every selected host and is safe to re-run.
 
 | Step | What it does |
 | --- | --- |
-| `answer` | Renders the host's `answer.toml` into `<state>/answers/<host>.toml` (folder 700, file 600, written atomically). Caddy serves it at `http://<bootstrap.address>/answers/<host>.toml`, to the hypervisor hosts' addresses only |
-| `media` | Skipped when the host already answers on port 8006. Otherwise, over Redfish: finds the system's CD/DVD virtual media slot (under the System or its Manager), ejects other media, attaches `http://<bootstrap.address>/isos/<iso>`, sets a one-time UEFI boot from `Cd`, and resets the server (`ForceRestart` when on, `On` when off) |
+| `answer` | Renders the host's `answer.toml` into `<state>/answers/<host>.toml` (folder 700, file 600, written atomically). Caddy serves it at `http://<bootstrap.address>/answers/<host>.toml` to that host's address only. Files of hosts no longer in the config are removed |
+| `media` | Skipped when the host already answers on port 8006. Otherwise, over Redfish: finds the system's CD/DVD virtual media slot (under the System or its Manager), ejects other media, attaches `http://<bootstrap.address>/isos/<iso>`, sets a one-time UEFI boot from `Cd`, and resets the server (`ForceRestart` when on, `On` when off; a server in a transitional power state is left alone). Redfish tasks a BMC accepts with HTTP 202 are waited for |
 | `wait` | Waits for SSH (22) and then the Proxmox VE API (8006) on the host's address |
 
 BMC trust comes from each host's `bmc.tlsFingerprint` or `bmc.caBundle`, as for `dciab validate --live`; the certificate is checked before credentials are sent.
@@ -35,7 +35,7 @@ BMC trust comes from each host's `bmc.tlsFingerprint` or `bmc.caBundle`, as for 
 
 Fixed values, because the installer needs them and they don't affect the platform: `keyboard = "en-us"`, `country = "us"`, `timezone = "UTC"`, and `filesystem = "ext4"`, which gives the `local` and `local-lvm` storages of a default install.
 
-Keys use the kebab-case format of Proxmox VE 8.4 and later.
+Keys use the installer's kebab-case format.
 
 ## Not done yet
 
@@ -43,4 +43,5 @@ Keys use the kebab-case format of Proxmox VE 8.4 and later.
 - **A tagged management VLAN** (`managementVLAN: tagged`): the answer file can't set a VLAN, so the installer's network only works on an untagged port until post-install configuration exists.
 - **Redfish preparation**: checking or setting UEFI boot mode, Secure Boot per `bootMode`, virtualization extensions, and that a disk matches `rootDeviceHints`.
 - **Post-install**: the CAPMOX API token (`platform.proxmox.credentials.tokenID`), the bridge and its VLAN-aware setting, and the storage, through the Proxmox VE API.
+- **Stronger install checks**: `media` and `wait` treat an open TCP port 8006 (and 22) as an installed host; checking the Proxmox VE API answer is next. The ISO and the answer files travel over plain HTTP from the bootstrap host, as ADR 0001 decided.
 - **ESXi.**
