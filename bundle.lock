@@ -167,6 +167,7 @@ chartRepositories:
 # installer warns and prints the sum to pin; the archive build refuses the chart.
 chartDigests:
   cilium: "0c7592eb75179ecf46dd3ec22145916f0164c4401214ea15afb5b230b1d11a21"
+  longhorn: "e57f010d2a8bcf0da5b8b03ffecf49c5bc35ddc2663588ce8f22b7567b6133ed"
 
 # Digests for images their source manifests name by tag only (the Cluster API, provider
 # and cert-manager manifests, and kubeadm's control plane images). The archive pulls these
