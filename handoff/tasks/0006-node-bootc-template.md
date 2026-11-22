@@ -1,12 +1,16 @@
 ---
 id: "0006"
 title: Rebuild the bootc node template with root filesystem growth
-status: done
+status: open
 runner: workstation
 depends: ["0004"]
 report: handoff/reports/0006-node-bootc-template.md
 may_change: []
 ---
+
+## Rerun 2 (2026-11-22)
+
+Task 0003 found two defects that stop CAPMOX on templates 123 and 124 (`handoff/reports/0003-proxmox-cluster.md`): the template's own cloud-init drive (`ide2`) hides CAPMOX's cloud-init ISO, and the image's guest agent blocked `guest-exec`. The image now allows `guest-exec` and `guest-exec-status`, and the template is published **without** a cloud-init drive. Rebuild and republish with a new VMID (step 3), and check both fixes (step 4). Overwrite the report, keeping one line per earlier run. Ask Trevor whether to delete 123 and 124 once the new template passes.
 
 ## Rerun (2026-11-21)
 
@@ -44,15 +48,16 @@ See `images/node-bootc/README.md`.
      - the node image size `build.sh` prints, and the disk's partition layout (`qemu-img info` and `virt-filesystems -l --long -a output/qcow2/disk.qcow2`, or `fdisk -l` on the raw disk)
      - each disk's virtual size and the space it actually uses
      - the lint warnings (fewer than task 0004's four is expected: `zstd` is now installed)
-3. **Publish the template.** Use the steps in the 0004 report's "Publishing a template" section, with the new VMID: check that it's free, create the VM, import the disk, attach it and convert it to a template. **Skip the resize:** the template keeps the size it was built with. Record the template disk's virtual size and the space it uses on `pool0` (`zfs list -o name,volsize,used,refreservation` for its zvol), so we know whether the pool keeps it thin. If the zvol reserves its full size (`refreservation` equal to `volsize`), tell Trevor: thin provisioning (`sparse`) is a storage setting on `pool0`.
+3. **Publish the template.** Use the steps in the 0004 report's "Publishing a template" section, with the new VMID: check that it's free, create the VM, import the disk, attach it and convert it to a template. **Don't add a cloud-init drive:** leave out the report's `--ide2 pool0:cloudinit`, because CAPMOX attaches its own ISO and a second NoCloud source wins over it. `qm config <vmid>` must show no `ide2`. **Skip the resize:** the template keeps the size it was built with. Record the template disk's virtual size and the space it uses on `pool0` (`zfs list -o name,volsize,used,refreservation` for its zvol), so we know whether the pool keeps it thin. If the zvol reserves its full size (`refreservation` equal to `volsize`), tell Trevor: thin provisioning (`sparse`) is a storage setting on `pool0`.
 4. **Growth test.**
    1. Full-clone the template to the test VMID, and resize the clone's disk to **25G** before the first boot, the size task 0003's nodes use.
-   2. Give it a cloud-init drive and boot it.
+   2. Add a cloud-init drive **to the clone** (`qm set <clone> --ide2 pool0:cloudinit`, then the IP, key and DNS), and boot it. The template itself has none.
    3. Check on the VM:
       - `systemctl status dciab-growroot` succeeded
       - `df -h /sysroot /var` shows about 25G
       - `lsblk` shows the root partition filling the disk
-      - `cloud-init status --long` is `done`, not `degraded`
+      - `cloud-init status --long` is `done` (`degraded done` from Proxmox's `user:` deprecation notice alone is fine)
+      - from `pve1`, `qm guest exec <clone> -- cloud-init status` returns its output (this is how CAPMOX reads it), and `/etc/sysconfig/qemu-ga` lists `guest-exec,guest-exec-status`
       - `bootc status`, `getenforce`, and `systemctl is-active crio`, as in task 0004
    4. Reboot once. `dciab-growroot` should report that the partition already fills the disk.
    5. Delete the test VM.

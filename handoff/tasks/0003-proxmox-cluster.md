@@ -1,12 +1,16 @@
 ---
 id: "0003"
 title: First real cluster on Proxmox (r1 class, bootc Rocky 10 template with CRI-O, Cilium)
-status: blocked
+status: open
 runner: workstation
 depends: ["0006"]
 report: handoff/reports/0003-proxmox-cluster.md
 may_change: []
 ---
+
+## Retry (2026-11-22)
+
+The last run was blocked by two template defects (see its report): a second cloud-init drive on the template, and `guest-exec` blocked in the image. Both are fixed in the image and in how task 0006 publishes the template. Use the template from 0006's second rerun (its VMID is in `LAB.md`), and create a **fresh** `dciab-lab` management cluster: installed ClusterClasses from an older copy of the `r1` draft can't be upgraded in place (`docs/VERSIONING.md`). Overwrite the report, keeping a one-line pointer to the blocked run.
 
 ## Goal
 

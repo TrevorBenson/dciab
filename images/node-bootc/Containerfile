@@ -52,6 +52,13 @@ RUN mkdir -p /usr/libexec/cni \
  && mv /opt/cni/bin/* /usr/libexec/cni/ \
  && rm -rf /opt/cni/bin \
  && ln -s /var/lib/cni/bin /opt/cni/bin
+# CAPMOX learns that a node finished cloud-init through the guest agent: it runs
+# `cloud-init status` with guest-exec and polls guest-exec-status. Rocky's qemu-ga config
+# allows only a fixed list of agent commands, without those two, so CAPMOX would wait
+# forever. Add them to the allow-list (and fail the build if the file's shape changes).
+# Trade-off: anyone with Proxmox API access to a node VM can run commands in it.
+RUN sed -i 's/--allow-rpcs=/--allow-rpcs=guest-exec,guest-exec-status,/' /etc/sysconfig/qemu-ga \
+ && grep -q -- '--allow-rpcs=guest-exec,guest-exec-status,' /etc/sysconfig/qemu-ga
 # cloud-init's units are enabled by the package's systemd presets.
 RUN systemctl enable NetworkManager crio kubelet chronyd sshd qemu-guest-agent dciab-growroot
 
