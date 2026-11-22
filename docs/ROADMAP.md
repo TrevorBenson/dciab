@@ -55,6 +55,15 @@ Decided in [ADR 0002](adr/0002-bootstrap-appliance-on-ventoy.md).
 - [ ] `dciab media`: copy the USB payload to the work disk, and run the bootstrap's heavy state from it
 - [ ] Plain (non-Ventoy) stick for strict Secure Boot sites
 
+## Platform interoperability
+
+Proposed for phases 3 and 4. Only the first piece exists: `dciab cluster-values` already gives workload clusters Authentik's OIDC issuer.
+
+- [ADR 0004](adr/0004-identity-and-sso.md): identity and SSO (Authentik, SPIFFE/SPIRE)
+- [ADR 0005](adr/0005-secrets.md): secrets (OpenBao, External Secrets Operator, platform PKI)
+- [ADR 0006](adr/0006-iac-path.md): the IaC path (OpenTofu, Terramate, Terratest, Terrakube with OPA)
+- [ADR 0007](adr/0007-detection-to-response.md): detection to response (Tetragon, Suricata, OpenSearch, SOAR)
+
 ## Backlog
 
 - **vCenter deployment** on the first ESXi host (datacenter, cluster, networks). Until then, ESXi sites need an existing vCenter.
