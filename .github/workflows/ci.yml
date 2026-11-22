@@ -240,7 +240,8 @@ jobs:
         run: |
           python3 build/archive.py digests --inventory images.yaml
           python3 build/archive.py binaries --out "$RUNNER_TEMP/sums" --print-sums
-      - name: Archive payload (two small images, every chart, provider manifests, binaries)
+          python3 build/package.py tools --out "$RUNNER_TEMP/sums" --print-sums
+      - name: Archive payload (two small images, every chart, provider manifests, binaries, SBOMs)
         run: |
           set -euo pipefail
           out="$RUNNER_TEMP/payload"
@@ -249,8 +250,37 @@ jobs:
             --only registry.k8s.io/pause --only ghcr.io/kube-vip/kube-vip
           python3 build/archive.py charts --out "$out"
           python3 build/archive.py providers --out "$out" --manifests "$(python3 hack/fetch_crds.py)"
+          python3 build/package.py tools --out "$RUNNER_TEMP/build"
+          python3 build/package.py sboms --payload "$out" --syft "$RUNNER_TEMP/build/tools/syft"
           python3 build/archive.py sums --out "$out"
           du -sh "$out"/*
+      - name: Package, sign with a throwaway key, verify
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/payload" cosign="$RUNNER_TEMP/payload/bin/cosign" keys="$RUNNER_TEMP/keys"
+          mkdir -p "$keys"
+          COSIGN_PASSWORD="$(openssl rand -hex 16)"
+          export COSIGN_PASSWORD
+          (cd "$keys" && "$cosign" generate-key-pair)
+          python3 build/package.py package --payload "$out" --out "$RUNNER_TEMP/dist" \
+            --signing-key "$keys/cosign.key" --cosign "$cosign"
+          tar="$(ls "$RUNNER_TEMP"/dist/dciab-*.tar)"
+          ls -l "$tar"; du -h "$tar"
+          ./dciab verify-archive --key "$keys/cosign.pub" --cosign "$cosign" "$tar"
+          mkdir "$RUNNER_TEMP/site" && tar -C "$RUNNER_TEMP/site" -xf "$tar"
+          site="$(ls -d "$RUNNER_TEMP"/site/dciab-*)"
+          "$site/dciab" verify-archive --key "$keys/cosign.pub" --cosign "$cosign"
+          (cd "$site" && sha256sum --quiet -c MANIFEST)
+          # A changed file fails the check.
+          echo tampered >> "$site/README.md"
+          if "$site/dciab" verify-archive --key "$keys/cosign.pub" --cosign "$cosign"; then
+            echo "FAIL: a tampered archive verified" >&2; exit 1
+          fi
+          # Unsigned, the same inputs give the same tar byte for byte.
+          export SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)"
+          python3 build/package.py package --payload "$out" --out "$RUNNER_TEMP/r1"
+          python3 build/package.py package --payload "$out" --out "$RUNNER_TEMP/r2"
+          cmp "$RUNNER_TEMP"/r1/dciab-*.tar "$RUNNER_TEMP"/r2/dciab-*.tar
 
   frozen-classes:
     # A class revision freezes when a DCiaB release tag first contains it; drafts may change (docs/VERSIONING.md).
