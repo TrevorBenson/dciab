@@ -79,6 +79,14 @@ jobs:
             addons/cilium/install.sh "$values" --template > /dev/null
             echo "ok: cilium renders for $values"
           done
+      - name: Render Longhorn for every example config
+        run: |
+          set -euo pipefail
+          for config in examples/*.yaml; do
+            addons/longhorn/install.sh "$config" --template > /dev/null
+            echo "ok: longhorn renders for $config"
+          done
+          addons/longhorn/install.sh examples/proxmox.yaml --images
       - name: Bad values fail the render, with the expected message
         run: |
           set -uo pipefail
@@ -174,8 +182,9 @@ jobs:
           for s in vsphere.pw longhorn-s3.env pki/intermediate.key; do
             mkdir -p "$(dirname "$site/secrets/$s")"; echo placeholder > "$site/secrets/$s"
           done
-          printf -- '-----BEGIN CERTIFICATE-----\nMIIBe2eCertificateOnly\n-----END CERTIFICATE-----\n' \
-            | tee "$site/secrets/pki/chain.pem" > "$site/secrets/pki/intermediate.crt"
+          printf -- '-----BEGIN CERTIFICATE-----\nMIIBe2eCertificateOnly\n-----END CERTIFICATE-----\n' > "$site/secrets/pki/chain.pem"
+          # validate reads the imported intermediate, so it must be a real CA certificate.
+          openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -keyout /dev/null -subj /CN=dciab-ci -days 3650 -addext basicConstraints=critical,CA:TRUE -out "$site/secrets/pki/intermediate.crt" 2>/dev/null
           chmod -R go-rwx "$site/secrets"
           kind get kubeconfig --name dciab-e2e > "$site/bootstrap.kubeconfig"
           export DCIAB_PVE_TOKEN=placeholder
@@ -228,8 +237,15 @@ jobs:
           set -euo pipefail
           crds="$(python3 hack/fetch_crds.py)"
           addons/cilium/install.sh charts/capi-cluster/ci/proxmox-values.yaml --template > "$RUNNER_TEMP/cilium.yaml"
+          # Longhorn's manager starts most of its images itself: list them from the chart values too.
+          addons/longhorn/install.sh examples/proxmox.yaml --template > "$RUNNER_TEMP/longhorn.yaml"
+          addons/longhorn/install.sh examples/proxmox.yaml --images > "$RUNNER_TEMP/longhorn-images.txt"
+          mapfile -t longhorn < "$RUNNER_TEMP/longhorn-images.txt"
+          (( ${#longhorn[@]} > 0 )) || { echo "no Longhorn images listed" >&2; exit 1; }
           "$RUNNER_TEMP/kubeadm" config images list --kubernetes-version "$K8S" > "$RUNNER_TEMP/kubeadm.txt"
-          args=(--manifests "$crds" --extra "$RUNNER_TEMP/cilium.yaml" --kubeadm-images "$RUNNER_TEMP/kubeadm.txt")
+          args=(--manifests "$crds" --extra "$RUNNER_TEMP/cilium.yaml" --extra "$RUNNER_TEMP/longhorn.yaml"
+                --kubeadm-images "$RUNNER_TEMP/kubeadm.txt")
+          for ref in "${longhorn[@]}"; do args+=(--image "$ref=longhorn chart values"); done
           python3 build/inventory.py "${args[@]}"
           python3 build/inventory.py "${args[@]}" --format yaml > images.yaml
       - uses: actions/upload-artifact@v4
@@ -371,6 +387,16 @@ jobs:
             --state "$state" --payload "$RUNNER_TEMP/payload" --until cluster
           sudo grep -q "BEGIN CERTIFICATE" "$state/mgmt-values.yaml"   # seed's platform CA reaches the nodes
           sudo "$bin/kubectl" --kubeconfig "$state/bootstrap.kubeconfig" -n cluster-mgmt get cluster mgmt
+      - name: dciab status (read-only) reports where the bootstrap stands
+        run: |
+          set -euo pipefail
+          out="$(sudo env "PATH=$RUNNER_TEMP/payload/bin:$PATH" ./dciab status "$RUNNER_TEMP/site/dciab.yaml" \
+            --state "$RUNNER_TEMP/state" || true)"
+          echo "$out"
+          for check in pki registry bootstrap; do
+            grep -Eq "^$check +ok " <<<"$out" || { echo "$check should be ok"; exit 1; }
+          done
+          grep -Eq "^mgmt +down .*not moved" <<<"$out"
 
   frozen-classes:
     # A class revision freezes when a DCiaB release tag first contains it; drafts may change (docs/VERSIONING.md).
@@ -411,6 +437,8 @@ jobs:
             echo placeholder > "/tmp/site/secrets/$s"
             chmod 600 "/tmp/site/secrets/$s"
           done
+          # validate reads the imported intermediate, so it must be a real CA certificate.
+          openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -keyout /dev/null -subj /CN=dciab-ci -days 3650 -addext basicConstraints=critical,CA:TRUE -out /tmp/site/secrets/pki/intermediate.crt 2>/dev/null
           sudo ip link add dciab0 type dummy
           sudo ip link set dciab0 address b8:ca:3a:00:00:05 up
           sudo ip addr add 10.30.110.5/24 dev dciab0
@@ -449,7 +477,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: shellcheck dciab hack/e2e/run.sh hack/check_frozen_classes.sh images/node/build.sh lib/steps/mgmt.sh lib/steps/services.sh lib/steps/capi-providers.sh images/node-bootc/build.sh images/node-bootc/rootfs/usr/libexec/dciab/growroot images/bootstrap-bootc/build.sh images/usb/build.sh addons/cilium/install.sh
+      - run: shellcheck dciab hack/e2e/run.sh hack/check_frozen_classes.sh images/node/build.sh lib/steps/mgmt.sh lib/steps/services.sh lib/steps/capi-providers.sh images/node-bootc/build.sh images/node-bootc/rootfs/usr/libexec/dciab/growroot images/bootstrap-bootc/build.sh images/usb/build.sh addons/cilium/install.sh addons/longhorn/install.sh
 
   rocky10:
     # The validator must run on the bootstrap host with distro packages only.

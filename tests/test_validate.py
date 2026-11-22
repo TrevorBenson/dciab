@@ -508,3 +508,111 @@ def test_missing_workdisk_is_noted(site):
     del doc["spec"]["bootstrap"]["workDisk"]
     _, report = site.validate(doc)
     assert any("workDisk" in n for n in report["notes"])
+
+
+# --- the imported intermediate CA ------------------------------------------------------
+
+def _pki_site(site, **cert):
+    from conftest import make_cert
+    make_cert(site.dir / "secrets" / "pki" / "intermediate.crt", **cert)
+    return site.validate(load_example("proxmox"))
+
+
+def test_intermediate_without_path_length_limit_is_valid(site):
+    code, report = _pki_site(site)
+    assert code == 0 and not errors(report, "spec.pki.certificate") and not warnings(report, "spec.pki.certificate")
+
+
+def test_intermediate_with_path_length_3_is_valid(site):
+    _, report = _pki_site(site, pathlen=3)
+    assert not errors(report, "spec.pki.certificate")
+
+
+def test_intermediate_with_short_path_length_is_an_error(site):
+    code, report = _pki_site(site, pathlen=2)
+    assert code == 1
+    [f] = errors(report, "spec.pki.certificate")
+    assert "path length is 2" in f["found"] and "generate-root" in f["fix"]
+
+
+def test_leaf_certificate_is_not_an_intermediate(site):
+    _, report = _pki_site(site, ca=False)
+    [f] = errors(report, "spec.pki.certificate")
+    assert "not a CA" in f["found"]
+
+
+def test_intermediate_expiring_within_a_year_is_a_warning(site):
+    code, report = _pki_site(site, days=90)
+    assert code == 0
+    [f] = warnings(report, "spec.pki.certificate")
+    assert "within a year" in f["found"]
+
+
+def test_unreadable_certificate_is_an_error(site):
+    (site.dir / "secrets" / "pki" / "intermediate.crt").write_text("not-a-certificate\n")
+    _, report = site.validate(load_example("proxmox"))
+    [f] = errors(report, "spec.pki.certificate")
+    assert "not a PEM certificate" in f["found"]
+
+
+def test_intermediate_from_env(site, monkeypatch):
+    from conftest import make_cert
+    pem = make_cert(site.dir / "env.crt", pathlen=0).read_text()
+    monkeypatch.setenv("DCIAB_TEST_INTERMEDIATE", pem)
+    doc = load_example("proxmox")
+    doc["spec"]["pki"]["certificate"] = {"env": "DCIAB_TEST_INTERMEDIATE"}
+    _, report = site.validate(doc)
+    assert "path length is 0" in errors(report, "spec.pki.certificate")[0]["found"]
+
+
+def test_without_openssl_the_path_length_is_noted(site, monkeypatch):
+    import dciab_validate.checks as checks
+    monkeypatch.setattr(checks.shutil, "which", lambda name: None)
+    code, report = site.validate(load_example("proxmox"))
+    assert code == 0 and any("openssl is not installed" in n for n in report["notes"])
+
+
+def test_generate_root_does_not_read_a_certificate(site):
+    (site.dir / "secrets" / "pki" / "intermediate.crt").write_text("not-a-certificate\n")
+    _, report = site.validate(load_example("vsphere"))
+    assert not errors(report, "spec.pki.certificate")
+
+
+def test_intermediate_without_cert_sign_usage_is_an_error(site):
+    _, report = _pki_site(site, key_usage="critical,digitalSignature")
+    [f] = errors(report, "spec.pki.certificate")
+    assert "keyCertSign" in f["found"]
+
+
+def test_intermediate_with_cert_sign_usage_is_valid(site):
+    _, report = _pki_site(site, key_usage="critical,keyCertSign,cRLSign")
+    assert not errors(report, "spec.pki.certificate")
+
+
+def test_not_yet_valid_intermediate_is_an_error(site, monkeypatch):
+    import datetime as dt
+    import dciab_validate.checks as checks
+
+    class Past(dt.datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return dt.datetime(2000, 1, 1, tzinfo=tz)
+    monkeypatch.setattr(checks, "datetime", Past)
+    _, report = _pki_site(site)
+    assert "not valid until" in errors(report, "spec.pki.certificate")[0]["found"]
+
+
+def test_openssl_timeout_is_noted(site, monkeypatch):
+    import subprocess as sp
+    import dciab_validate.checks as checks
+    real = sp.run
+
+    def slow(cmd, *a, **kw):
+        if cmd[0] == "openssl":
+            raise sp.TimeoutExpired(cmd, 30)
+        return real(cmd, *a, **kw)
+    from conftest import make_cert
+    make_cert(site.dir / "secrets" / "pki" / "intermediate.crt")
+    monkeypatch.setattr(checks.subprocess, "run", slow)
+    code, report = site.validate(load_example("proxmox"))
+    assert code == 0 and any("openssl timed out" in n for n in report["notes"])
