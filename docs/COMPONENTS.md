@@ -58,8 +58,10 @@ What a DCiaB site runs, grouped by capability, and where each piece runs. Versio
 | Infrastructure as code: authoring | Terramate: stacks, orchestration and change detection | Repos, CI | Proposed |
 | Infrastructure as code: pre-merge testing | Terratest | Forgejo Actions | Proposed |
 | Infrastructure as code: plan, policy, apply and state | Terrakube (runs, approvals, state), with OPA policies as the gate between plan and apply | INFRA | Proposed |
-| Configuration management (hosts outside Kubernetes) | OpenVox Server, OpenVoxDB | INFRA | Planned |
-| Automation platform (Ansible) | AWX, installed and upgraded by the AWX Operator from its Helm chart (`awx-operator`); database on CloudNativePG; login through Authentik | INFRA | Proposed |
+| Enterprise policy enforcement (bare metal and VMs) | OpenVox Server and OpenVoxDB, with an external node classifier (ENC): configuration compliance, and who may reach and own each system (SSH keys and SSO access) | INFRA | Planned |
+| Ansible automation for tenants (a service offering) | AWX, installed and upgraded by the AWX Operator from its Helm chart (`awx-operator`), for tenants who provision their own systems and applications with Ansible; database on CloudNativePG; login through Authentik | INFRA | Planned |
+
+**OpenVox and AWX don't overlap.** OpenVox is the enterprise's policy enforcement for every bare-metal server and VM: configuration compliance, and system access and ownership (who gets SSH or SSO access), assigned through its ENC. AWX is a service offered to the datacenter's tenants, who run their own Ansible to provision their systems and applications. Tenant automation works within the policy OpenVox enforces and doesn't manage the settings OpenVox owns.
 
 ## Data and storage
 
@@ -68,7 +70,7 @@ What a DCiaB site runs, grouped by capability, and where each piece runs. Versio
 | Block storage (CSI) | Longhorn, backed up to S3 (SeaweedFS or the site's own) or NFS | Every cluster | Planned |
 | Object storage (S3) | SeaweedFS: S3 API for platform services (backups, snapshots, IaC state, artifacts) | INFRA | Proposed |
 | Bucket provisioning (COSI) | Container Object Storage Interface: the COSI controller and the SeaweedFS COSI driver, so workloads request buckets and credentials with BucketClaim and BucketAccess. Each requesting cluster runs both, and its driver calls INFRA's SeaweedFS over the network | INFRA (SeaweedFS); every cluster that requests buckets (controller and driver) | Proposed |
-| Databases | CloudNativePG (Postgres for Forgejo, Authentik, NetBox, Artifact Keeper, OpenVoxDB, Terrakube; AWX too if adopted) | INFRA | Planned |
+| Databases | CloudNativePG (Postgres for Forgejo, Authentik, NetBox, Artifact Keeper, OpenVoxDB, Terrakube, AWX) | INFRA | Planned |
 
 ## Observability and security operations
 
@@ -88,7 +90,6 @@ These need a decision (an ADR or a spike) before the proposed components join th
 - **Suricata placement.** Suricata's AF_PACKET IPS mode needs two dedicated interfaces per sensor. So a per-node DaemonSet is passive detection (IDS), and prevention (IPS) needs inline sensors where traffic converges: dedicated nodes or appliances with two NICs. Decide where those sit.
 - **IaC run platform.** Terrakube takes on plan, apply, state and the OPA gate. It must work with Forgejo (webhooks and status checks), Authentik (login), CloudNativePG or S3 (state), and OpenBao (provider credentials).
 - **Object storage and COSI.** SeaweedFS gives the site an S3 endpoint. Decide which services use it (Longhorn and CloudNativePG backups, OpenSearch snapshots, Terrakube state, registry storage), and which backups must also leave the site, since a copy on the same hardware is not a disaster-recovery copy. COSI's API is still `v1alpha1`, so pin the controller and driver together and treat bucket requests as alpha.
-- **AWX and OpenVox.** Both manage hosts outside Kubernetes. Decide each one's role (for example, OpenVox for continuous configuration, AWX for on-demand and scheduled runs), so the same setting isn't owned twice.
 - **Workload identity.** Decide where SPIFFE/SPIRE IDs are consumed. Candidates: OpenBao authentication for workloads, Cilium mutual authentication, and service-to-service mTLS. Also decide how the trust domain relates to the platform CA.
 
 The next step is to describe how these components work together: identity and SSO, secrets, the IaC path, and the detection-to-response path.
