@@ -236,18 +236,19 @@ jobs:
         with:
           name: image-inventory
           path: images.yaml
-      - name: Image digests to pin (prints bundle.lock imageDigests lines for any unpinned image)
-        run: python3 build/archive.py digests --inventory images.yaml
+      - name: Pins to review (imageDigests lines for unpinned images; every binary's sha256)
+        run: |
+          python3 build/archive.py digests --inventory images.yaml
+          python3 build/archive.py binaries --out "$RUNNER_TEMP/sums" --print-sums
       - name: Archive payload (two small images, every chart, provider manifests, binaries)
         run: |
           set -euo pipefail
-          skopeo --version
           out="$RUNNER_TEMP/payload"
-          python3 build/archive.py images --inventory images.yaml --out "$out" \
+          python3 build/archive.py binaries --out "$out"
+          python3 build/archive.py images --inventory images.yaml --out "$out" --oras "$out/bin/oras" \
             --only registry.k8s.io/pause --only ghcr.io/kube-vip/kube-vip
           python3 build/archive.py charts --out "$out"
           python3 build/archive.py providers --out "$out" --manifests "$(python3 hack/fetch_crds.py)"
-          python3 build/archive.py binaries --out "$out"
           python3 build/archive.py sums --out "$out"
           du -sh "$out"/*
 

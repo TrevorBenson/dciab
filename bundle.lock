@@ -194,9 +194,11 @@ imageDigests:
 # clusterAPI.core.version. Empty: the download warns and prints the sum to pin.
 binarySHA256:
   clusterctl-linux-amd64: "c7301a8515ed329562b06c958463051dd55d9649fac591393f5df54a868fa79b"
+  oras-linux-amd64.tar.gz: ""   # tools.oras; build/archive.py binaries --print-sums
 
 tools:
   helm: v4.3.2
+  oras: v1.3.6    # copies images into the archive's OCI layout and into the site registry
   kind: v0.33.0   # default node image: Kubernetes v1.37.0 (CAPI v1.14 supports it as a management cluster)
 
 # sha256 of every manifest hack/fetch_crds.py downloads; it refuses a mismatch or an

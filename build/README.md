@@ -9,7 +9,7 @@ DCiaB ships as one archive that a site unpacks on the bootstrap host and runs of
 | Image inventory (`inventory.py`) | done | Every container image a site needs, and where each comes from |
 | Image pull (`archive.py images`) | done | Each image copied by digest, every platform, into one OCI layout; tag-only images pinned in `bundle.lock` (`imageDigests`) |
 | Charts and providers (`archive.py charts`, `providers`) | done | Third-party charts as `.tgz`, checked against `bundle.lock` (`chartDigests`); CAPI provider manifests from `hack/fetch_crds.py` (`checksums`) |
-| Binaries (`archive.py binaries`) | done | kind, kubectl, helm and clusterctl, checked by sha256 |
+| Binaries (`archive.py binaries`) | done | kind, kubectl, helm, clusterctl and oras, checked by sha256 |
 | Checksums (`archive.py sums`) | done | `SHA256SUMS` over the whole payload, the file signing will sign |
 | Packaging | next | The payload, `dciab` and its libraries as one archive, and `dciab seed` loading the images into the site registry |
 | Node images | later | The bootc node image as an OCI image, plus disks per platform where a platform needs one |
@@ -42,24 +42,24 @@ Images marked `*` have no digest yet: their source names them by tag only, and `
 
 ```console
 $ python3 build/archive.py digests  --inventory images.yaml      # imageDigests lines to pin, if any
-$ python3 build/archive.py images   --inventory images.yaml --out payload
+$ python3 build/archive.py binaries --out payload                # first: images uses its oras
+$ python3 build/archive.py images   --inventory images.yaml --out payload --oras payload/bin/oras
 $ python3 build/archive.py charts   --out payload
 $ python3 build/archive.py providers --out payload --manifests "$crds"
-$ python3 build/archive.py binaries --out payload
 $ python3 build/archive.py sums     --out payload
 ```
 
 ```text
 payload/
-  images/        one OCI layout; each image named <repository>:<tag>
-  images.yaml    source reference, layout name, tag and digest of each image
+  images/        one OCI layout holding every image
+  images.yaml    each image's source reference, tag, digest and name in the layout
   charts/        <chart>-<version>.tgz
   providers/     Cluster API, provider and cert-manager manifests
-  bin/           kind, kubectl, helm, clusterctl (linux-amd64)
+  bin/           kind, kubectl, helm, clusterctl, oras (linux-amd64)
   SHA256SUMS
 ```
 
-**Why every platform.** The provider manifests and `bundle.lock` name multi-platform images by their index digest, and nodes pull that digest from the site registry. A registry only serves an index whose images it holds, so the layout keeps the exact index and every image in it (`skopeo copy --all --preserve-digests`). Trimming to one platform would change the digest. That costs space; a later change can filter platforms if the site registry learns to serve a trimmed index under a new digest that DCiaB rewrites into the manifests.
+**Why every platform.** The provider manifests and `bundle.lock` name multi-platform images by their index digest, and nodes pull that digest from the site registry. A registry only serves an index whose images it holds, so the layout keeps the exact index and every image in it. `oras cp` copies the graph byte for byte; skopeo can't write a Docker manifest list into an OCI layout without converting it, which changes its digest. Trimming to one platform would change the digest. That costs space; a later change can filter platforms if the site registry learns to serve a trimmed index under a new digest that DCiaB rewrites into the manifests.
 
 **Pinning.** Every input is checked: images by digest (and checked again in the layout after the copy), charts against `chartDigests`, binaries against `bootstrapAppliance.toolChecksums` and `binarySHA256`, and provider manifests against `checksums`. A missing pin is an error. Each step can be rerun; what is already there and correct is kept.
 

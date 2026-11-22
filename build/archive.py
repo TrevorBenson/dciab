@@ -10,19 +10,21 @@
 
 - digests: for each image the inventory lists without a digest, resolves its tag at the
   registry and prints the bundle.lock imageDigests line to pin. Review, then paste.
-- images: copies every image by digest, all platforms, into one OCI layout (DIR/images),
-  named <repository>:<tag> so the site registry can serve it by tag and by digest, then
-  checks each digest in the layout. Writes DIR/images.yaml. Refuses unpinned images.
+- images: copies every image by digest, all platforms, byte for byte, into one OCI layout
+  (DIR/images), then checks each digest in the layout. DIR/images.yaml maps each image to
+  its name in the layout, so the site registry can serve it by tag and by digest.
+  Refuses unpinned images.
 - charts: pulls each chart in bundle.lock that has a chartRepositories entry into
   DIR/charts and checks its sha256 against chartDigests.
 - providers: copies the Cluster API, provider and cert-manager manifests that
   hack/fetch_crds.py downloaded and checked (its output folder) into DIR/providers.
-- binaries: downloads kind, kubectl, helm and clusterctl into DIR/bin and checks each
-  against bundle.lock.
+- binaries: downloads kind, kubectl, helm, clusterctl and oras into DIR/bin and checks
+  each against bundle.lock.
 - sums: writes DIR/SHA256SUMS for every file in DIR. Signing will sign this file.
 
 Every step is safe to rerun: what is already there and correct is kept. Needs network
-access, skopeo (images, digests) and helm (charts); CI runs it.
+access, oras (images: run binaries first and pass --oras DIR/bin/oras), skopeo (digests)
+and helm (charts); CI runs it.
 """
 
 from __future__ import annotations
@@ -88,11 +90,18 @@ def split_ref(ref: str):
 
 
 def layout_name(ref: str) -> str:
-    """The name an image gets in the OCI layout: <repo>:<tag>, or <repo>:sha256-<hex>."""
+    """The image's tag in the OCI layout: its repository and tag, as one valid tag.
+
+    images.yaml maps each name back to the source reference; the name only has to be
+    unique and readable. Too long for a tag: the end is replaced by a hash.
+    """
     repo, tag, digest = split_ref(ref)
     if not digest:
         raise ArchiveError(f"{ref}: not pinned by digest")
-    return f"{repo}:{tag or digest.replace(':', '-')}"
+    name = re.sub(r"[^A-Za-z0-9._-]", "_", f"{repo}_{tag or digest.replace(':', '-')}")
+    if len(name) > 128:
+        name = name[:111] + "_" + hashlib.sha256(name.encode()).hexdigest()[:16]
+    return name
 
 
 def read_inventory(path: Path) -> List[dict]:
@@ -130,7 +139,7 @@ def resolve_digests(entries: List[dict], runner: Runner = run_bytes) -> List[str
 
 
 def copy_images(entries: List[dict], out: Path, only: Optional[List[str]] = None,
-                runner: Runner = run) -> List[dict]:
+                runner: Runner = run, oras: str = "oras") -> List[dict]:
     unpinned = [e["image"] for e in entries if e.get("digest") != "pinned"]
     if unpinned:
         raise ArchiveError("not pinned by digest (pin them in bundle.lock imageDigests; "
@@ -151,10 +160,16 @@ def copy_images(entries: List[dict], out: Path, only: Optional[List[str]] = None
         else:
             print(f"copy  {ref}")
             # All platforms, byte for byte: the site pulls the same index digest the
-            # manifests name, so the layout must hold that exact index and every image in it.
-            # skopeo refuses a reference with both a tag and a digest; the digest decides.
-            runner(["skopeo", "copy", "--all", "--preserve-digests", "--retry-times", "3",
-                    f"docker://{repo}@{digest}", f"oci:{layout}:{name}"])
+            # manifests name, so the layout must hold that exact index and every image in
+            # it. oras copies the graph as is; skopeo can't write a Docker manifest list
+            # into an OCI layout without converting it, which changes the digest.
+            for attempt in range(3):
+                try:
+                    runner([oras, "cp", "--to-oci-layout", f"{repo}@{digest}", f"{layout}:{name}"])
+                    break
+                except subprocess.CalledProcessError:
+                    if attempt == 2:
+                        raise
             got = layout_digests(layout).get(name)
             if got != digest:
                 raise ArchiveError(f"{ref}: the layout holds {got} under {name}, not {digest}")
@@ -243,6 +258,10 @@ def binary_list(lock: dict) -> List[tuple]:
          "linux-amd64/helm"),
         ("clusterctl", f"https://github.com/kubernetes-sigs/cluster-api/releases/download/{capi}/clusterctl-linux-amd64",
          b.get("clusterctl-linux-amd64", ""), None),
+        # Copies images into the archive's OCI layout, and from it into the site registry.
+        ("oras", f"https://github.com/oras-project/oras/releases/download/{tools['oras']}/"
+                 f"oras_{tools['oras'].lstrip('v')}_linux_amd64.tar.gz",
+         b.get("oras-linux-amd64.tar.gz", ""), "oras"),
     ]
 
 
@@ -252,16 +271,22 @@ def download(url: str, dest: Path) -> None:
         shutil.copyfileobj(resp, f)
 
 
-def fetch_binaries(lock: dict, out: Path, fetch: Callable[[str, Path], None] = download) -> None:
+def fetch_binaries(lock: dict, out: Path, fetch: Callable[[str, Path], None] = download,
+                   print_sums: bool = False) -> List[str]:
     dest = out / "bin"
     dest.mkdir(parents=True, exist_ok=True)
+    lines = []
     for name, url, want, member in binary_list(lock):
-        if not SHA256.fullmatch(want or ""):
-            raise ArchiveError(f"{name}: no sha256 pinned in bundle.lock for {url}")
+        if not print_sums and not SHA256.fullmatch(want or ""):
+            raise ArchiveError(f"{name}: no sha256 pinned in bundle.lock for {url} (run with --print-sums, review, pin)")
         with tempfile.TemporaryDirectory() as tmp:
             got_file = Path(tmp) / "download"
             fetch(url, got_file)
             got = sha256_file(got_file)
+            lines.append(f"{name}: {got}  {url}")
+            if print_sums:
+                print(lines[-1])
+                continue
             if got != want:
                 raise ArchiveError(f"{name}: {url} has sha256 {got}, bundle.lock says {want}")
             if member:
@@ -276,6 +301,7 @@ def fetch_binaries(lock: dict, out: Path, fetch: Callable[[str, Path], None] = d
             shutil.move(str(got_file), target)
             target.chmod(0o755)
             print(f"bin   {name} {want}")
+    return lines
 
 
 # ---------------------------------------------------------------- sums
@@ -303,6 +329,7 @@ def main(argv=None) -> int:
     i.add_argument("--inventory", type=Path, required=True)
     i.add_argument("--out", type=Path, required=True)
     i.add_argument("--only", action="append", help="copy only images whose reference contains this text")
+    i.add_argument("--oras", default="oras", help="the oras binary (archive.py binaries puts one in DIR/bin)")
     c = sub.add_parser("charts", help="pull charts into DIR/charts")
     c.add_argument("--out", type=Path, required=True)
     c.add_argument("--print-digests", action="store_true", help="print chartDigests lines instead of failing")
@@ -311,6 +338,7 @@ def main(argv=None) -> int:
     v.add_argument("--manifests", type=Path, required=True, help="hack/fetch_crds.py's output folder")
     b = sub.add_parser("binaries", help="download pinned binaries into DIR/bin")
     b.add_argument("--out", type=Path, required=True)
+    b.add_argument("--print-sums", action="store_true", help="print each download's sha256 instead of checking")
     s = sub.add_parser("sums", help="write DIR/SHA256SUMS")
     s.add_argument("--out", type=Path, required=True)
     args = p.parse_args(argv)
@@ -320,13 +348,13 @@ def main(argv=None) -> int:
             lines = resolve_digests(read_inventory(args.inventory))
             print("imageDigests:\n" + "\n".join(lines) if lines else "every image is pinned")
         elif args.cmd == "images":
-            copy_images(read_inventory(args.inventory), args.out, args.only)
+            copy_images(read_inventory(args.inventory), args.out, args.only, oras=args.oras)
         elif args.cmd == "charts":
             pull_charts(load_lock(), args.out, args.print_digests)
         elif args.cmd == "providers":
             copy_providers(args.manifests, args.out)
         elif args.cmd == "binaries":
-            fetch_binaries(load_lock(), args.out)
+            fetch_binaries(load_lock(), args.out, print_sums=args.print_sums)
         elif args.cmd == "sums":
             write_sums(args.out)
     except (ArchiveError, subprocess.CalledProcessError) as exc:

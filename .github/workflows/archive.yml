@@ -52,10 +52,10 @@ jobs:
           python3 build/inventory.py --manifests "$crds" --extra "$RUNNER_TEMP/cilium.yaml" \
             --kubeadm-images "$RUNNER_TEMP/kubeadm.txt" --format yaml > images.yaml
           out="$RUNNER_TEMP/payload"
-          python3 build/archive.py images --inventory images.yaml --out "$out"
+          python3 build/archive.py binaries --out "$out"
+          python3 build/archive.py images --inventory images.yaml --out "$out" --oras "$out/bin/oras"
           python3 build/archive.py charts --out "$out"
           python3 build/archive.py providers --out "$out" --manifests "$crds"
-          python3 build/archive.py binaries --out "$out"
           python3 build/archive.py sums --out "$out"
           du -sh "$out"/* "$out"
       - uses: actions/upload-artifact@v4
