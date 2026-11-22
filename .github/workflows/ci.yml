@@ -174,8 +174,9 @@ jobs:
           for s in vsphere.pw longhorn-s3.env pki/intermediate.key; do
             mkdir -p "$(dirname "$site/secrets/$s")"; echo placeholder > "$site/secrets/$s"
           done
-          printf -- '-----BEGIN CERTIFICATE-----\nMIIBe2eCertificateOnly\n-----END CERTIFICATE-----\n' \
-            | tee "$site/secrets/pki/chain.pem" > "$site/secrets/pki/intermediate.crt"
+          printf -- '-----BEGIN CERTIFICATE-----\nMIIBe2eCertificateOnly\n-----END CERTIFICATE-----\n' > "$site/secrets/pki/chain.pem"
+          # validate reads the imported intermediate, so it must be a real CA certificate.
+          openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -keyout /dev/null -subj /CN=dciab-ci -days 3650 -addext basicConstraints=critical,CA:TRUE -out "$site/secrets/pki/intermediate.crt" 2>/dev/null
           chmod -R go-rwx "$site/secrets"
           kind get kubeconfig --name dciab-e2e > "$site/bootstrap.kubeconfig"
           export DCIAB_PVE_TOKEN=placeholder
@@ -398,6 +399,8 @@ jobs:
             echo placeholder > "/tmp/site/secrets/$s"
             chmod 600 "/tmp/site/secrets/$s"
           done
+          # validate reads the imported intermediate, so it must be a real CA certificate.
+          openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -keyout /dev/null -subj /CN=dciab-ci -days 3650 -addext basicConstraints=critical,CA:TRUE -out /tmp/site/secrets/pki/intermediate.crt 2>/dev/null
           sudo ip link add dciab0 type dummy
           sudo ip link set dciab0 address b8:ca:3a:00:00:05 up
           sudo ip addr add 10.30.110.5/24 dev dciab0

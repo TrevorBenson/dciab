@@ -33,7 +33,8 @@ def make_cert(path: Path, *, ca: bool = True, pathlen=None, days: int = 3650) ->
 
 
 @functools.lru_cache(maxsize=None)
-def _intermediate_pem() -> str:
+def intermediate_pem() -> str:
+    """A CA certificate with no path length limit, for secrets/pki/intermediate.crt."""
     with tempfile.TemporaryDirectory() as d:
         return make_cert(Path(d) / "intermediate.crt").read_text()
 
@@ -54,7 +55,7 @@ class Site:
             p.write_text("not-a-real-secret\n")
             p.chmod(0o600)
         # The examples import an intermediate, and validate reads its certificate.
-        (tmp_path / "secrets" / "pki" / "intermediate.crt").write_text(_intermediate_pem())
+        (tmp_path / "secrets" / "pki" / "intermediate.crt").write_text(intermediate_pem())
         monkeypatch.setenv("DCIAB_PVE_TOKEN", "not-a-real-token")
 
     def validate_text(self, text: str):
