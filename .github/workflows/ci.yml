@@ -301,7 +301,7 @@ jobs:
         env:
           DCIAB_PVE_TOKEN: ci-not-a-secret
         run: |
-          sudo -E env "PATH=$PATH" ./dciab seed "$RUNNER_TEMP/site/dciab.yaml" \
+          sudo env "PATH=$PATH" "DCIAB_PVE_TOKEN=$DCIAB_PVE_TOKEN" ./dciab seed "$RUNNER_TEMP/site/dciab.yaml" \
             --payload "$RUNNER_TEMP/payload" --state "$RUNNER_TEMP/state"
       - name: Check the result, then rerun (must change nothing)
         env:
@@ -320,7 +320,7 @@ jobs:
                10.30.110.5/ci/test:1 /etc/hostname 2>/dev/null; then
             echo "pushing to the seed registry should fail"; exit 1
           fi
-          sudo -E env "PATH=$PATH" ./dciab seed "$RUNNER_TEMP/site/dciab.yaml" \
+          sudo env "PATH=$PATH" "DCIAB_PVE_TOKEN=$DCIAB_PVE_TOKEN" ./dciab seed "$RUNNER_TEMP/site/dciab.yaml" \
             --payload "$RUNNER_TEMP/payload" --state "$RUNNER_TEMP/state" --until kind | tee "$RUNNER_TEMP/rerun.txt"
           grep -q "pki: unchanged" "$RUNNER_TEMP/rerun.txt"
           grep -q "registry: already serving" "$RUNNER_TEMP/rerun.txt"
