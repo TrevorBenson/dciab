@@ -40,7 +40,7 @@ The suffix is `r` (revision), not `v`, so it is not read as a Kubernetes API ver
 
 ### Draft and released
 
-- A revision is a **draft** until a DCiaB release tag contains it. Drafts change in place, as often as needed: every PR before the release edits the same draft.
+- A revision is a **draft** until a DCiaB release tag contains it. Drafts change in place, as often as needed: every PR before the release edits the same draft. A management cluster that installed an older copy of the draft can't always be upgraded to the new one (Cluster API machine templates are immutable), so a management cluster with an older copy of the draft installed must be recreated to use the new one.
 - A revision is **released** once the latest `vX.Y.Z` tag reachable from `HEAD` contains it. From then on its files never change.
 - There is **at most one draft** at a time.
 
