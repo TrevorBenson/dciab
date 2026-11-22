@@ -9,7 +9,7 @@ DCiaB's node image recipe. A node is an OCI image built from a Containerfile, th
 ## How it builds
 
 1. **Base:** Rocky Linux 10 bootc, built from the RESF SIG/Containers [rocky-bootc](https://git.resf.org/sig_containers/rocky-bootc) recipe (branch `r10`, commit pinned in `bundle.lock`), using the `minimal` manifest. `nodeImages.bootc.baseImage` can point at a prebuilt base, pinned by digest, instead.
-2. **Node:** `Containerfile` adds CRI-O (from its Kubernetes-minor stream), kubelet, kubeadm and kubectl at the `bundle.lock` Kubernetes version, cloud-init, qemu-guest-agent and chrony, plus `rootfs/`:
+2. **Node:** `Containerfile` adds CRI-O (from its Kubernetes-minor stream), kubelet, kubeadm and kubectl at the `bundle.lock` Kubernetes version, cloud-init, both guest agents (qemu-guest-agent and open-vm-tools, each starting only on its own hypervisor) and chrony, plus `rootfs/`:
    - kernel modules and sysctls for Kubernetes
    - CRI-O defaults: systemd cgroups, and CNI plugin directories under `/var`
    - the kubelet volume plugin directory under `/var`
@@ -19,7 +19,27 @@ DCiaB's node image recipe. A node is an OCI image built from a Containerfile, th
 ```console
 $ images/node-bootc/build.sh --print                         # pins and commands; builds nothing
 $ sudo images/node-bootc/build.sh --type raw --type qcow2
+$ sudo images/node-bootc/build.sh --variant metal --type raw  # Metal3
+$ sudo images/node-bootc/build.sh --upgrade-from             # the upgrade gate's starting image
 ```
+
+Each disk gets a `.sha256` file next to it.
+
+## Platforms
+
+One recipe, two variants:
+
+| Platform | Variant | Disk | How it's used |
+| --- | --- | --- | --- |
+| Proxmox VE | `vm` (default) | `raw` for block storage (ZFS, LVM), or `qcow2` for file storage | A template the Proxmox class clones. No cloud-init drive on the template (below). |
+| vSphere | `vm` | `vmdk` (stream-optimized) | Imported as a VM's disk, then the VM is marked as a template the vSphere class clones. CAPV learns each node's address from VMware Tools, and cloud-init's VMware datasource reads the bootstrap data from guestinfo. |
+| Metal3 | `metal` | `raw` (Ironic writes it straight to disk), or `qcow2` | Served over HTTP; the Metal3 class's `image` values give its URL and the `.sha256`. Ironic hands cloud-init a config drive. |
+
+The `metal` variant adds the rest of the kernel's drivers (`kernel-modules`, matching the image's kernel), `linux-firmware`, and an initramfs built for any hardware, so servers find their NICs and the root disk behind any storage controller. VMs don't need these, so the `vm` variant stays small. Its tag is `dciab-node:<version>-metal`.
+
+## Upgrade gate image
+
+Each phase's gate includes a Kubernetes upgrade. `--upgrade-from` builds the node image at `kubernetes.upgradeFrom` in `bundle.lock` (one minor below `kubernetes.version`, with the CRI-O stream of that minor). A test cluster starts on it, then upgrades to the bundle's version. It is a test image only: the archive never ships it.
 
 Needs root: the base recipe composes the OS with nested containers (`--cap-add=all`, `/dev/fuse`), and bootc-image-builder reads root's container storage. Disks land in `images/node-bootc/output/`, which is never committed.
 
