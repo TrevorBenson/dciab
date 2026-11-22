@@ -36,11 +36,23 @@ def run(cmd: Sequence[str], **kw) -> subprocess.CompletedProcess:
     return subprocess.run(list(cmd), check=True, capture_output=True, text=True, **kw)
 
 
+def tmpfs_dir(mounts: str = "/proc/mounts") -> str:
+    """A writable tmpfs mount for plain-text keys, so they never reach a disk."""
+    try:
+        lines = Path(mounts).read_text().splitlines()
+    except OSError:
+        lines = []
+    tmpfs = {f[1] for f in (line.split() for line in lines) if len(f) > 2 and f[2] == "tmpfs"}
+    for candidate in ("/dev/shm", "/run/user/0", "/run"):
+        if candidate in tmpfs and os.access(candidate, os.W_OK):
+            return candidate
+    raise SeedError("no writable tmpfs (/dev/shm or /run) for the CA key; it must never be written to disk")
+
+
 @contextmanager
 def private_dir() -> Iterator[Path]:
-    """A mode-700 folder for plain-text keys, on tmpfs when there is one; removed on exit."""
-    base = "/dev/shm" if os.path.isdir("/dev/shm") and os.access("/dev/shm", os.W_OK) else None
-    path = Path(tempfile.mkdtemp(prefix="dciab-seed-", dir=base))
+    """A mode-700 folder on tmpfs for plain-text keys; removed on exit."""
+    path = Path(tempfile.mkdtemp(prefix="dciab-seed-", dir=tmpfs_dir()))
     try:
         path.chmod(0o700)
         yield path
@@ -98,6 +110,10 @@ def registry_cert_ok(pki: Path, s: Settings, runner: Runner = run) -> bool:
     if not (crt.is_file() and key.is_file()):
         return False
     try:
+        cert_pub = runner(["openssl", "x509", "-in", str(crt), "-noout", "-pubkey"]).stdout
+        key_pub = runner(["openssl", "pkey", "-in", str(key), "-pubout"]).stdout
+        if cert_pub != key_pub:
+            return False
         verify = ["openssl", "verify", "-CAfile", str(pki / "trust-bundle.pem")]
         if s.pki["mode"] == "import-intermediate":
             verify += ["-untrusted", str(pki / "ca.crt")]
@@ -137,11 +153,29 @@ def ensure(pki: Path, s: Settings, identity: Optional[Path], runner: Runner = ru
     with private_dir() as tmp:
         ca_key: Optional[Path] = None
         if mode == "generate-root":
+            recipients_file = pki / "ca.key.recipients"
+            wanted = "\n".join(sorted(s.recipients)) + "\n"
             if not ((pki / "ca.crt").is_file() and (pki / "ca.key.age").is_file()):
                 ca_key, crt = new_root_ca(s.pki["commonName"], tmp, runner)
+                # The key first, the certificate last: a run stopped in between leaves no
+                # ca.crt, so the next run starts over instead of pairing a cert with another key.
+                (pki / "ca.crt").unlink(missing_ok=True)
                 encrypt_to(s.recipients, ca_key, pki / "ca.key.age", runner)
-                shutil.copyfile(crt, pki / "ca.crt")
+                recipients_file.write_text(wanted)
+                tmp_crt = pki / ".ca.crt.tmp"
+                shutil.copyfile(crt, tmp_crt)
+                os.replace(tmp_crt, pki / "ca.crt")
                 changed.append("generated the platform root CA (key encrypted to spec.bootstrap.recipients)")
+            elif not recipients_file.is_file() or recipients_file.read_text() != wanted:
+                # Re-encrypt to the configured recipients, so each of them can open it.
+                if identity is None:
+                    raise SeedError("spec.bootstrap.recipients changed: re-encrypting the CA key needs "
+                                    "--age-identity FILE with the identity of one of the previous recipients")
+                ca_key = tmp / "ca.key"
+                decrypt(identity, pki / "ca.key.age", ca_key, runner)
+                encrypt_to(s.recipients, ca_key, pki / "ca.key.age", runner)
+                recipients_file.write_text(wanted)
+                changed.append("re-encrypted the CA key to the configured recipients")
             bundle = (pki / "ca.crt").read_text()
         elif mode == "import-intermediate":
             cert = resolve_secret(s.pki["certificate"], s.config_dir)

@@ -158,11 +158,54 @@ def test_import_intermediate(tmp_path):
     assert pki.ensure(d, s, identity=None) == []
 
 
+@need_tools
+def test_recipient_change_reencrypts(tmp_path):
+    i1, r1 = keypair(tmp_path, "a")
+    i3, r3 = keypair(tmp_path, "c")
+    d = tmp_path / "pki"
+    pki.ensure(d, settings(tmp_path, recipients=[r1]), identity=None)
+    s2 = settings(tmp_path, recipients=[r3])
+    with pytest.raises(plan.SeedError, match="recipients changed"):
+        pki.ensure(d, s2, identity=None)
+    assert any("re-encrypted" in c for c in pki.ensure(d, s2, identity=i1))
+    subprocess.run(["age", "-d", "-i", str(i3), "-o", str(tmp_path / "k"), str(d / "ca.key.age")], check=True)
+
+
+@need_tools
+def test_mismatched_registry_key_reissues(tmp_path):
+    i1, r1 = keypair(tmp_path, "a")
+    d = tmp_path / "pki"
+    s = settings(tmp_path, recipients=[r1])
+    pki.ensure(d, s, identity=None)
+    subprocess.run(["openssl", "genpkey", "-algorithm", "EC", "-pkeyopt", "ec_paramgen_curve:P-256",
+                    "-out", str(d / "registry.key")], check=True)
+    assert not pki.registry_cert_ok(d, s)
+
+
+def test_tmpfs_required(tmp_path):
+    mounts = tmp_path / "mounts"
+    mounts.write_text("/dev/sda1 / ext4 rw 0 0\n")
+    with pytest.raises(plan.SeedError, match="tmpfs"):
+        pki.tmpfs_dir(str(mounts))
+
+
+def test_payload_tools_checked_against_sums(tmp_path):
+    (tmp_path / "bin").mkdir()
+    (tmp_path / "bin" / "oras").write_bytes(b"real")
+    import hashlib
+    (tmp_path / "SHA256SUMS").write_text(f"{hashlib.sha256(b'real').hexdigest()}  bin/oras\n")
+    cli.verify_payload_tools(tmp_path)
+    (tmp_path / "bin" / "oras").write_bytes(b"evil")
+    with pytest.raises(plan.SeedError, match="SHA256SUMS"):
+        cli.verify_payload_tools(tmp_path)
+
+
 def test_cli_refuses_non_root(tmp_path, monkeypatch, capsys):
     cfg = tmp_path / "dciab.yaml"
     cfg.write_text(yaml.safe_dump({"spec": {"bootstrap": {"address": "10.0.0.5", "recipients": []},
                                             "network": {"domain": "x.example"}, "pki": {"mode": "generate-root"}}}))
     monkeypatch.setattr(cli.os, "geteuid", lambda: 1000)
+    monkeypatch.setattr(cli, "verify_payload_tools", lambda p: None)
     rc = cli.main([str(cfg), "--root", str(ROOT), "--payload", str(tmp_path), "--state", str(tmp_path / "s")])
     assert rc == 1 and "run as root" in capsys.readouterr().err
 

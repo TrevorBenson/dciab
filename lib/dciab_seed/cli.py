@@ -60,6 +60,28 @@ def run_live(cmd, **kw) -> None:
     subprocess.run([str(c) for c in cmd], check=True, **kw)
 
 
+def verify_payload_tools(payload: Path) -> None:
+    """Check the payload's binaries and provider manifests against its SHA256SUMS before
+    running anything from it as root. (The archive's signature covers SHA256SUMS.)"""
+    sums = payload / "SHA256SUMS"
+    if not sums.is_file():
+        raise SeedError(f"{sums}: no such file (build the payload with build/archive.py, ending with sums)")
+    listed = {}
+    for line in sums.read_text().splitlines():
+        digest, _, name = line.partition("  ")
+        listed[name] = digest
+    import hashlib
+    for sub in ("bin", "providers"):
+        files = sorted(f for f in (payload / sub).rglob("*") if f.is_file()) if (payload / sub).is_dir() else []
+        if sub == "bin" and not files:
+            raise SeedError(f"{payload / 'bin'}: no binaries")
+        for f in files:
+            rel = f.relative_to(payload).as_posix()
+            h = hashlib.sha256(f.read_bytes()).hexdigest()
+            if listed.get(rel) != h:
+                raise SeedError(f"{rel} doesn't match the payload's SHA256SUMS; refusing to run it")
+
+
 def step_preflight(root: Path, config: Path, payload: Path) -> None:
     if os.geteuid() != 0:
         raise SeedError("run as root: the registry binds port 443 and kind runs on rootful podman")
@@ -157,6 +179,11 @@ def step_kind(root: Path, payload: Path, state: Path, s) -> None:
     kubeconfig = state / "bootstrap.kubeconfig"
     clusters = run(["kind", "get", "clusters"], env=env).stdout.split()
     if KIND_CLUSTER in clusters:
+        node = f"{KIND_CLUSTER}-control-plane"
+        status = run(["podman", "ps", "-a", "--filter", f"name=^{node}$", "--format", "{{.State}}"]).stdout.strip()
+        if status != "running":
+            say(f"kind: starting the stopped node {node}")   # after a host restart
+            run(["podman", "start", node])
         say(f"kind: cluster {KIND_CLUSTER} exists")
     else:
         node = find_image(images, lock["images"]["kindNode"])
@@ -173,6 +200,7 @@ def step_kind(root: Path, payload: Path, state: Path, s) -> None:
                   "--wait", "5m"], env=env)
     text = run(["kind", "get", "kubeconfig", "--name", KIND_CLUSTER], env=env).stdout
     pki.write_private(kubeconfig, text)
+    run(["kubectl", "--kubeconfig", kubeconfig, "wait", "--for=condition=Ready", "nodes", "--all", "--timeout=3m"])
     say(f"kind: kubeconfig in {kubeconfig}")
 
 
@@ -203,15 +231,24 @@ def main(argv: Optional[List[str]] = None) -> int:
     state = Path(args.state).resolve() if args.state else config.parent / ".dciab" / "state"
     state.mkdir(parents=True, exist_ok=True)
     state.chmod(0o700)
-    if (payload / "bin").is_dir():
-        os.environ["PATH"] = f"{payload / 'bin'}{os.pathsep}{os.environ.get('PATH', '')}"
-
-    lock_file = (state / ".seed.lock").open("w")
+    # One seed per host: the registry container and the kind cluster have fixed names.
+    # O_NOFOLLOW: a planted symlink can't make root truncate another file.
+    lock_dir = Path("/run/lock") if os.access("/run/lock", os.W_OK) else state
     try:
-        fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        fd = os.open(lock_dir / "dciab-seed.lock", os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except BlockingIOError:
-        print(f"dciab seed: another dciab seed is running with state {state}", file=sys.stderr)
+        print("dciab seed: another dciab seed is running on this host", file=sys.stderr)
         return 1
+    except OSError as exc:
+        print(f"dciab seed: can't take the lock in {lock_dir}: {exc}", file=sys.stderr)
+        return 2
+    try:
+        verify_payload_tools(payload)
+    except SeedError as exc:
+        print(f"dciab seed: {exc}", file=sys.stderr)
+        return 1
+    os.environ["PATH"] = f"{payload / 'bin'}{os.pathsep}{os.environ.get('PATH', '')}"
 
     try:
         s = load_settings(config)
