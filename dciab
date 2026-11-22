@@ -17,7 +17,9 @@ Commands:
                                            hypervisor API, BMCs, NTP and DNS servers, and probes addresses
   cluster-values <config> <cluster> [--trust-bundle FILE] [-o FILE]
                                            Print a cluster's capi-cluster values (--list: cluster names)
-  media                                    Copy the USB payload to the bootstrap host's work disk (not implemented yet)
+  media <config> (--key PUB | --checksums-only) [--source DIR] [--until STEP] [--print]
+                                           Copy the archive to spec.bootstrap.workDisk and put container
+                                           storage there (as root)
   services <config> [--state DIR] [--isos DIR] [--until STEP] [--print]
                                            Day 0 DNS, NTP and HTTP on the bootstrap host (as root)
   hypervisors <config> [--state DIR] [--host NAME ...] [--until STEP] [--iso FILE] [--print]
@@ -69,6 +71,11 @@ case "$cmd" in
     require_python
     PYTHONPATH="$ROOT/lib${PYTHONPATH:+:$PYTHONPATH}" exec python3 -m dciab_seed --root "$ROOT" "$@"
     ;;
+  media)
+    require_python
+    PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$ROOT/lib${PYTHONPATH:+:$PYTHONPATH}" \
+      exec python3 -m dciab_media --root "$ROOT" "$@"
+    ;;
   status)
     require_python
     PYTHONPATH="$ROOT/lib${PYTHONPATH:+:$PYTHONPATH}" exec python3 -m dciab_status --root "$ROOT" "$@"
@@ -90,7 +97,7 @@ case "$cmd" in
     require_python
     PYTHONPATH="$ROOT/lib${PYTHONPATH:+:$PYTHONPATH}" exec python3 -m dciab_hypervisors --root "$ROOT" "$@"
     ;;
-  media|infra|platform|finalize|verify)
+  infra|platform|finalize|verify)
     echo "dciab $cmd: not implemented yet (see docs/ROADMAP.md)" >&2
     exit 2
     ;;

@@ -54,7 +54,7 @@ Decided in [ADR 0002](adr/0002-bootstrap-appliance-on-ventoy.md).
 - [x] Recipes under evaluation: `images/bootstrap-bootc/` (appliance installer ISO), `images/usb/` (Ventoy stick)
 - [ ] Spike (task 0005): unattended install of server zero from the stick with Secure Boot on, first boot from `dciab.yaml`, a short end-to-end check, installers from the same stick
 - [ ] Day 0 images preloaded in the appliance
-- [ ] `dciab media`: copy the USB payload to the work disk, and run the bootstrap's heavy state from it
+- [x] `dciab media`: copy the USB payload to the work disk, and run the bootstrap's heavy state from it ([MEDIA.md](MEDIA.md))
 - [ ] Plain (non-Ventoy) stick for strict Secure Boot sites
 
 ## Platform interoperability
