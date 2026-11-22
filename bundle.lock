@@ -200,11 +200,15 @@ imageDigests:
 binarySHA256:
   clusterctl-linux-amd64: "c7301a8515ed329562b06c958463051dd55d9649fac591393f5df54a868fa79b"
   oras-linux-amd64.tar.gz: "66fb0ad7206f3f6fa77ed5b552049d364ccf4b50b1684554f731f76302b52ca0"   # tools.oras
+  cosign-linux-amd64: "064954c5d8c7e3b28188eee5b1727b31c411550bc5fefd41aa672d3c761d103a"        # tools.cosign
+  syft_linux_amd64.tar.gz: "ad92bd3ec1b94a3df01d4d0aec199afa9c42b72e86da436ff5f837914d32706b"   # tools.syft (build only: build/package.py tools)
 
 tools:
   helm: v4.3.2
   oras: v1.3.6    # copies images into the archive's OCI layout and into the site registry
   kind: v0.33.0   # default node image: Kubernetes v1.37.0 (CAPI v1.14 supports it as a management cluster)
+  cosign: v2.6.1  # signs the archive's MANIFEST (build) and verifies it offline (dciab verify-archive)
+  syft: v1.57.2   # SBOMs of the archive's images and binaries (build only)
 
 # sha256 of every manifest hack/fetch_crds.py downloads; it refuses a mismatch or an
 # unpinned file. After a version change: python3 hack/fetch_crds.py --print-checksums,
