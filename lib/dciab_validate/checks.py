@@ -13,6 +13,7 @@ import shutil
 import stat
 import subprocess
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path as FsPath
 from typing import Dict, List, Optional, Tuple
 
@@ -587,6 +588,12 @@ class Checker:
             return subprocess.run(["openssl", "x509", "-noout", *args], input=pem, capture_output=True,
                                   text=True, timeout=30, env={**os.environ, "LC_ALL": "C"})
 
+        try:
+            self._check_intermediate_cert(path, openssl)
+        except subprocess.TimeoutExpired:
+            self.notes.append("openssl timed out reading spec.pki.certificate, so it was not checked")
+
+    def _check_intermediate_cert(self, path: Path, openssl) -> None:
         text = openssl("-text")
         if text.returncode != 0:
             self.error(path, "is not a PEM certificate (openssl x509 can't read it)",
@@ -598,13 +605,26 @@ class Checker:
             self.error(path, "the certificate is not a CA (basic constraints lack CA:TRUE)",
                        "import the site's intermediate CA certificate, not a leaf certificate")
             return
+        usage = re.search(r"X509v3 Key Usage:[^\n]*\n\s*([^\n]*)", text.stdout)
+        if usage and "Certificate Sign" not in usage.group(1):
+            self.error(path, "the certificate's key usage lacks keyCertSign, so it can't sign CAs below it",
+                       "have the site issue an intermediate with keyUsage keyCertSign (and cRLSign)")
         pathlen = re.search(r"pathlen:(\d+)", constraints)
         if pathlen and int(pathlen.group(1)) < PKI_MIN_PATH_LEN:
             self.error(path, f"the intermediate's path length is {pathlen.group(1)}; DCiaB puts "
                              f"{PKI_MIN_PATH_LEN} CAs below it (OpenBao, SPIRE root, child SPIRE)",
                        f"have the site issue an intermediate with no path length limit or pathlen >= "
                        f"{PKI_MIN_PATH_LEN}, or use mode: generate-root")
-        if openssl("-checkend", "0").returncode != 0:
+        start = re.search(r"Not Before\s*:\s*(.+?)\s*$", text.stdout, re.M)
+        try:
+            not_before = (datetime.strptime(start.group(1), "%b %d %H:%M:%S %Y GMT").replace(tzinfo=timezone.utc)
+                          if start else None)
+        except ValueError:
+            not_before = None
+        if not_before and not_before > datetime.now(timezone.utc):
+            self.error(path, f"the certificate is not valid until {start.group(1)}",
+                       "import a certificate that is valid now, or check this host's clock")
+        elif openssl("-checkend", "0").returncode != 0:
             self.error(path, "the certificate has expired", "import a current intermediate CA certificate")
         elif openssl("-checkend", str(ONE_YEAR_SECONDS)).returncode != 0:
             self.warn(path, "the certificate expires within a year",

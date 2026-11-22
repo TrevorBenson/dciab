@@ -23,12 +23,14 @@ SECRET_FILES = [
 EXAMPLES = ["vsphere", "proxmox", "proxmox-bare", "metal3-cluster"]
 
 
-def make_cert(path: Path, *, ca: bool = True, pathlen=None, days: int = 3650) -> Path:
+def make_cert(path: Path, *, ca: bool = True, pathlen=None, days: int = 3650, key_usage=None) -> Path:
     """A throwaway self-signed certificate, for checks that read certificate fields."""
     bc = "critical,CA:FALSE" if not ca else "critical,CA:TRUE" + ("" if pathlen is None else f",pathlen:{pathlen}")
     subprocess.run(["openssl", "req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:P-256", "-nodes",
                     "-keyout", "/dev/null", "-subj", "/CN=dciab-test", "-days", str(days),
-                    "-addext", f"basicConstraints={bc}", "-out", str(path)], check=True, capture_output=True)
+                    "-addext", f"basicConstraints={bc}",
+                    *(["-addext", f"keyUsage={key_usage}"] if key_usage else []),
+                    "-out", str(path)], check=True, capture_output=True)
     return path
 
 

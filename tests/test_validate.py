@@ -576,3 +576,43 @@ def test_generate_root_does_not_read_a_certificate(site):
     (site.dir / "secrets" / "pki" / "intermediate.crt").write_text("not-a-certificate\n")
     _, report = site.validate(load_example("vsphere"))
     assert not errors(report, "spec.pki.certificate")
+
+
+def test_intermediate_without_cert_sign_usage_is_an_error(site):
+    _, report = _pki_site(site, key_usage="critical,digitalSignature")
+    [f] = errors(report, "spec.pki.certificate")
+    assert "keyCertSign" in f["found"]
+
+
+def test_intermediate_with_cert_sign_usage_is_valid(site):
+    _, report = _pki_site(site, key_usage="critical,keyCertSign,cRLSign")
+    assert not errors(report, "spec.pki.certificate")
+
+
+def test_not_yet_valid_intermediate_is_an_error(site, monkeypatch):
+    import datetime as dt
+    import dciab_validate.checks as checks
+
+    class Past(dt.datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return dt.datetime(2000, 1, 1, tzinfo=tz)
+    monkeypatch.setattr(checks, "datetime", Past)
+    _, report = _pki_site(site)
+    assert "not valid until" in errors(report, "spec.pki.certificate")[0]["found"]
+
+
+def test_openssl_timeout_is_noted(site, monkeypatch):
+    import subprocess as sp
+    import dciab_validate.checks as checks
+    real = sp.run
+
+    def slow(cmd, *a, **kw):
+        if cmd[0] == "openssl":
+            raise sp.TimeoutExpired(cmd, 30)
+        return real(cmd, *a, **kw)
+    from conftest import make_cert
+    make_cert(site.dir / "secrets" / "pki" / "intermediate.crt")
+    monkeypatch.setattr(checks.subprocess, "run", slow)
+    code, report = site.validate(load_example("proxmox"))
+    assert code == 0 and any("openssl timed out" in n for n in report["notes"])
