@@ -299,9 +299,9 @@ jobs:
           cmp "$RUNNER_TEMP"/r1/dciab-*.tar "$RUNNER_TEMP"/r2/dciab-*.tar
 
   seed-e2e:
-    # dciab seed for real: a payload (Zot, the kind node image, the provider images and
-    # manifests, the binaries), then the seed registry and kind cluster built from it alone.
-    name: dciab seed (Zot + kind from a payload)
+    # dciab seed for real: a payload (CoreDNS, Zot, the kind node image, the provider images and
+    # manifests, the binaries), then seed DNS, the seed registry and kind built from it alone.
+    name: dciab seed (DNS + Zot + kind from a payload)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -309,6 +309,7 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install pyyaml jsonschema
+      - run: sudo apt-get update -q && sudo apt-get install -y -q dnsutils
       - name: Payload
         run: |
           set -euo pipefail
@@ -317,7 +318,7 @@ jobs:
           python3 build/inventory.py --manifests "$crds" --format yaml > "$RUNNER_TEMP/images.yaml"
           python3 build/archive.py binaries --out "$out"
           python3 build/archive.py images --inventory "$RUNNER_TEMP/images.yaml" --out "$out" --oras "$out/bin/oras" \
-            --only project-zot --only kindest/node --only jetstack --only registry.k8s.io/cluster-api \
+            --only coredns/coredns --only project-zot --only kindest/node --only jetstack --only registry.k8s.io/cluster-api \
             --only capi-ipam --only ionos-cloud --only metal3-io
           python3 build/archive.py providers --out "$out" --manifests "$crds"
           python3 build/archive.py charts --out "$out"
@@ -343,6 +344,7 @@ jobs:
               subprocess.run([keygen, "-y", f"{site}/id{i}.txt"], check=True, capture_output=True, text=True).stdout.strip()
               for i in (1, 2)]
           cfg["spec"]["pki"] = {"mode": "generate-root", "commonName": "CI Platform Root CA"}
+          cfg["spec"]["bootstrap"]["interface"] = "dciab0"   # seed's dns step adds the DNS service IPs to it
           yaml.safe_dump(cfg, open(f"{site}/dciab.yaml", "w"), sort_keys=False)
           PY
       - name: dciab seed
@@ -360,6 +362,10 @@ jobs:
           kc="$state/bootstrap.kubeconfig"
           sudo "$RUNNER_TEMP/payload/bin/kubectl" --kubeconfig "$kc" get deployments -A
           sudo "$RUNNER_TEMP/payload/bin/kubectl" --kubeconfig "$kc" get clusterclasses -A
+          # Seed DNS: the registry name on both DNS service IPs, CoreDNS loaded from the payload.
+          for ip in 10.30.110.53 10.30.110.54; do
+            test "$(dig +short @"$ip" registry.lab1.example.com)" = 10.30.110.5
+          done
           # The provider images came through the seed registry.
           # (Logs to a file first: grep -q closing the pipe early would fail the step under pipefail.)
           sudo podman logs dciab-registry > "$RUNNER_TEMP/registry.log" 2>&1
@@ -373,6 +379,8 @@ jobs:
           sudo env "PATH=$PATH" "DCIAB_PVE_TOKEN=$DCIAB_PVE_TOKEN" ./dciab seed "$RUNNER_TEMP/site/dciab.yaml" \
             --payload "$RUNNER_TEMP/payload" --state "$RUNNER_TEMP/state" --until kind | tee "$RUNNER_TEMP/rerun.txt"
           grep -q "pki: unchanged" "$RUNNER_TEMP/rerun.txt"
+          grep -q "dns: pod dciab-services already runs this config" "$RUNNER_TEMP/rerun.txt"
+          if grep -E "^dns: (wrote|added|opened|loaded) " "$RUNNER_TEMP/rerun.txt"; then echo "the dns rerun changed something"; exit 1; fi
           grep -q "registry: already serving" "$RUNNER_TEMP/rerun.txt"
           grep -q "kind: cluster dciab-bootstrap exists" "$RUNNER_TEMP/rerun.txt"
       - name: dciab mgmt from seed's outputs, offline from the payload (up to the Cluster)

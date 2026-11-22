@@ -11,6 +11,10 @@ must serve:
 - NTP (chrony): only when spec.bootstrap.ntp is set (the site has no NTP of its own). One
   chronyd per DNS service IP, because chrony binds to one IPv4 address only.
 - HTTP (Caddy): installer ISOs and per-host answer files, on spec.bootstrap.address:80.
+
+A site without spec.hypervisors gets DNS only (dns_only): CoreDNS alone in the pod, so that
+registry.<network.domain> resolves during bootstrap. Its servers exist already, so there is
+nothing to install over HTTP, and network.ntpServers is the site's own NTP.
 """
 
 from __future__ import annotations
@@ -37,8 +41,13 @@ class ServicesError(Exception):
 
 
 def wanted(doc: dict) -> bool:
-    """dciab services runs only for sites that start from bare servers (spec.hypervisors)."""
+    """The full services (DNS, NTP, HTTP) are for sites that start from bare servers (spec.hypervisors)."""
     return bool(doc["spec"].get("hypervisors"))
+
+
+def dns_only(doc: dict) -> bool:
+    """Sites whose hypervisors exist already get CoreDNS alone."""
+    return not wanted(doc)
 
 
 def records(doc: dict) -> List[Tuple[str, str, bool]]:
@@ -137,7 +146,7 @@ def chrony_confs(doc: dict) -> Dict[str, str]:
     """{service IP: chrony.conf}, or {} when the site has its own NTP."""
     spec = doc["spec"]
     ntp = spec["bootstrap"].get("ntp")
-    if not ntp:
+    if not ntp or dns_only(doc):
         return {}
     net = spec["network"]
     out = {}
@@ -223,20 +232,8 @@ def pod(doc: dict, images: Dict[str, str], chrony: Optional[str], conf_dir: str,
             "volumeMounts": [{"name": f"chrony-{i}", "mountPath": CHRONY_CONF, "readOnly": True}],
         })
         volumes.append(host(f"chrony-{i}", f"{conf_dir}/chrony-{i}.conf", "File"))
-    containers.append({
-        "name": "caddy",
-        "image": images["caddy"],
-        "args": ["caddy", "run", "--config", CADDYFILE, "--adapter", "caddyfile"],
-        "securityContext": dict(root),
-        "volumeMounts": [
-            {"name": "caddyfile", "mountPath": CADDYFILE, "readOnly": True},
-            {"name": "isos", "mountPath": f"{HTTP_ROOT}/isos", "readOnly": True},
-            {"name": "answers", "mountPath": f"{HTTP_ROOT}/answers", "readOnly": True},
-        ],
-    })
-    volumes += [host("caddyfile", f"{conf_dir}/Caddyfile", "File"),
-                host("isos", isos_dir, "Directory"),
-                host("answers", answers_dir, "Directory")]
+    if not dns_only(doc):
+        _add_caddy(containers, volumes, images, conf_dir, isos_dir, answers_dir)
     manifest = {
         "apiVersion": "v1",
         "kind": "Pod",
@@ -248,6 +245,27 @@ def pod(doc: dict, images: Dict[str, str], chrony: Optional[str], conf_dir: str,
         yaml.safe_dump(manifest, sort_keys=False)
 
 
+def _add_caddy(containers: list, volumes: list, images: Dict[str, str], conf_dir: str,
+               isos_dir: str, answers_dir: str) -> None:
+    def host(name: str, path: str, kind: str) -> dict:
+        return {"name": name, "hostPath": {"path": path, "type": kind}}
+
+    containers.append({
+        "name": "caddy",
+        "image": images["caddy"],
+        "args": ["caddy", "run", "--config", CADDYFILE, "--adapter", "caddyfile"],
+        "securityContext": {"runAsUser": 0, "runAsGroup": 0},
+        "volumeMounts": [
+            {"name": "caddyfile", "mountPath": CADDYFILE, "readOnly": True},
+            {"name": "isos", "mountPath": f"{HTTP_ROOT}/isos", "readOnly": True},
+            {"name": "answers", "mountPath": f"{HTTP_ROOT}/answers", "readOnly": True},
+        ],
+    })
+    volumes += [host("caddyfile", f"{conf_dir}/Caddyfile", "File"),
+                host("isos", isos_dir, "Directory"),
+                host("answers", answers_dir, "Directory")]
+
+
 def render(doc: dict, images: Dict[str, str], chrony: Optional[str], conf_dir: str,
            isos_dir: str, answers_dir: str) -> Dict[str, str]:
     """{path relative to conf_dir: content}: everything dciab services writes."""
@@ -256,7 +274,8 @@ def render(doc: dict, images: Dict[str, str], chrony: Optional[str], conf_dir: s
         files[f"coredns/zones/db.{zname}"] = text
     for i, text in enumerate(chrony_confs(doc).values(), start=1):
         files[f"chrony-{i}.conf"] = text
-    files["Caddyfile"] = caddyfile(doc)
+    if not dns_only(doc):
+        files["Caddyfile"] = caddyfile(doc)
     files["pod.yaml"] = pod(doc, images, chrony, conf_dir, isos_dir, answers_dir)
     return files
 
@@ -279,5 +298,6 @@ def network(doc: dict) -> Dict[str, object]:
         "prefix": prefix,
         "serviceIPs": list(net["dnsServiceIPs"]),
         "bootstrapAddress": spec["bootstrap"]["address"],
-        "ntp": bool(spec["bootstrap"].get("ntp")),
+        "ntp": bool(chrony_confs(doc)),
+        "dnsOnly": dns_only(doc),
     }

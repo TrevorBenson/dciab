@@ -214,3 +214,38 @@ def test_capi_providers_takes_a_manifests_folder(tmp_path):
     r = subprocess.run([str(ROOT / "lib" / "steps" / "capi-providers.sh"), "--manifests", str(tmp_path / "nope")],
                        capture_output=True, text=True)
     assert r.returncode == 2 and "no such folder" in r.stderr
+
+
+def test_dns_step_runs_between_pki_and_registry():
+    assert cli.STEPS[cli.STEPS.index("pki") + 1] == "dns"
+    assert cli.STEPS[cli.STEPS.index("dns") + 1] == "registry"
+    for step in cli.STEPS:
+        assert f"  {step} " in cli.__doc__
+
+
+def test_dns_step_with_hypervisors_needs_services_answering(tmp_path, monkeypatch):
+    from dciab_services import probe
+    cfg = tmp_path / "dciab.yaml"
+    cfg.write_text((ROOT / "examples" / "proxmox-bare.yaml").read_text())
+    s = plan.load_settings(cfg)
+    monkeypatch.setattr(cli.subprocess, "run", lambda *a, **k: pytest.fail("services must not run"))
+    good = {("10.30.110.54", "registry.lab1.example.com", "A")}
+    monkeypatch.setattr(probe, "dns", lambda ip, name, qtype: ["10.30.110.5"] if (ip, name, qtype) in good else [])
+    with pytest.raises(plan.SeedError, match="10.30.110.53 doesn't resolve.*run dciab services"):
+        cli.step_dns(ROOT, cfg, tmp_path, tmp_path, s, timeout=0)
+    good.add(("10.30.110.53", "registry.lab1.example.com", "A"))
+    cli.step_dns(ROOT, cfg, tmp_path, tmp_path, s, timeout=0)
+
+
+def test_dns_step_without_hypervisors_runs_dns_only_services(tmp_path, monkeypatch, capsys):
+    cfg = tmp_path / "dciab.yaml"
+    cfg.write_text((ROOT / "examples" / "proxmox.yaml").read_text())
+    calls = []
+
+    def fake(cmd, **kw):
+        calls.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0, stdout="\n== services: pod\npod dciab-services already runs this config\n")
+    monkeypatch.setattr(cli.subprocess, "run", fake)
+    cli.step_dns(ROOT, cfg, tmp_path / "p", tmp_path / "s", plan.load_settings(cfg))
+    assert calls[0][1:] == ["services", str(cfg), "--state", str(tmp_path / "s"), "--payload", str(tmp_path / "p")]
+    assert capsys.readouterr().out == "dns: pod dciab-services already runs this config\n"
