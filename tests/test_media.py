@@ -50,6 +50,7 @@ def site(tmp_path, monkeypatch):
     work.mkdir()
     cfg = write_config(tmp_path, work)
     monkeypatch.setattr(cli.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(cli, "HOST_LOCK", tmp_path / "lock" / "dciab-media.lock")
     monkeypatch.setattr(cli, "read_mounts", lambda: "/dev/sda1 / xfs rw 0 0\n")
     # podman already on the work disk: the storage step changes nothing.
     monkeypatch.setattr(cli, "current_graphroot", lambda runner=None: str(work / "containers"))
