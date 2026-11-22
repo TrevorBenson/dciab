@@ -163,19 +163,21 @@ def chrony_confs(doc: dict) -> Dict[str, str]:
 
 
 def caddyfile(doc: dict) -> str:
-    """ISOs for anyone who can reach the bootstrap address (BMCs on their own networks);
-    answer files, which carry password hashes, only for the hypervisor hosts' addresses, and
-    each host's own file (/answers/<name>.toml, written by dciab hypervisors) only for that host."""
+    """The base installer ISOs for anyone who can reach the bootstrap address; each
+    hypervisor's own ISO (/host-isos/<name>.iso, built by dciab hypervisors with its answer
+    file and root password hash inside) only for that host's BMC address."""
+    from dciab_hypervisors.iso import bmc_ip
     spec = doc["spec"]
     addr = spec["bootstrap"]["address"]
     entries = spec.get("hypervisors", {}).get("hosts", [])
-    hosts = " ".join(h["address"] for h in entries)
-    own = "".join(f"""\t@answers_{h['name']} {{
-\t\tpath /answers/{h['name']}.toml
-\t\tnot remote_ip {h['address']}
+    bmcs = {h["name"]: bmc_ip(h["bmc"]["address"]) for h in entries}
+    own = "".join(f"""\t@hostiso_{name.replace('-', '_')} {{
+\t\tpath /host-isos/{name}.iso
+\t\tnot remote_ip {ip}
 \t}}
-\trespond @answers_{h['name']} 403
-""" for h in entries)
+\trespond @hostiso_{name.replace('-', '_')} 403
+""" for name, ip in bmcs.items())
+    allowed = " ".join(sorted(set(bmcs.values()))) or "127.0.0.1/32"
     return f"""# Rendered by dciab services from dciab.yaml. Changes are overwritten.
 {{
 \tadmin off
@@ -185,11 +187,11 @@ def caddyfile(doc: dict) -> str:
 http://{addr}:80 {{
 \tbind {addr}
 \trespond /healthz "ok" 200
-\t@answers_denied {{
-\t\tpath /answers /answers/*
-\t\tnot remote_ip {hosts}
+\t@hostisos_denied {{
+\t\tpath /host-isos /host-isos/*
+\t\tnot remote_ip {allowed}
 \t}}
-\trespond @answers_denied 403
+\trespond @hostisos_denied 403
 {own}\troot * {HTTP_ROOT}
 \tfile_server
 \tlog {{
@@ -206,7 +208,7 @@ def chrony_image(containerfile: str, base: str) -> str:
 
 
 def pod(doc: dict, images: Dict[str, str], chrony: Optional[str], conf_dir: str,
-        isos_dir: str, answers_dir: str) -> str:
+        isos_dir: str, host_isos_dir: str) -> str:
     """The Kubernetes-style Pod for `podman kube play`: host networking, root in the containers
     (the files they read are root-only)."""
     root = {"runAsUser": 0, "runAsGroup": 0}
@@ -233,7 +235,7 @@ def pod(doc: dict, images: Dict[str, str], chrony: Optional[str], conf_dir: str,
         })
         volumes.append(host(f"chrony-{i}", f"{conf_dir}/chrony-{i}.conf", "File"))
     if not dns_only(doc):
-        _add_caddy(containers, volumes, images, conf_dir, isos_dir, answers_dir)
+        _add_caddy(containers, volumes, images, conf_dir, isos_dir, host_isos_dir)
     manifest = {
         "apiVersion": "v1",
         "kind": "Pod",
@@ -246,7 +248,7 @@ def pod(doc: dict, images: Dict[str, str], chrony: Optional[str], conf_dir: str,
 
 
 def _add_caddy(containers: list, volumes: list, images: Dict[str, str], conf_dir: str,
-               isos_dir: str, answers_dir: str) -> None:
+               isos_dir: str, host_isos_dir: str) -> None:
     def host(name: str, path: str, kind: str) -> dict:
         return {"name": name, "hostPath": {"path": path, "type": kind}}
 
@@ -258,16 +260,16 @@ def _add_caddy(containers: list, volumes: list, images: Dict[str, str], conf_dir
         "volumeMounts": [
             {"name": "caddyfile", "mountPath": CADDYFILE, "readOnly": True},
             {"name": "isos", "mountPath": f"{HTTP_ROOT}/isos", "readOnly": True},
-            {"name": "answers", "mountPath": f"{HTTP_ROOT}/answers", "readOnly": True},
+            {"name": "host-isos", "mountPath": f"{HTTP_ROOT}/host-isos", "readOnly": True},
         ],
     })
     volumes += [host("caddyfile", f"{conf_dir}/Caddyfile", "File"),
                 host("isos", isos_dir, "Directory"),
-                host("answers", answers_dir, "Directory")]
+                host("host-isos", host_isos_dir, "Directory")]
 
 
 def render(doc: dict, images: Dict[str, str], chrony: Optional[str], conf_dir: str,
-           isos_dir: str, answers_dir: str) -> Dict[str, str]:
+           isos_dir: str, host_isos_dir: str) -> Dict[str, str]:
     """{path relative to conf_dir: content}: everything dciab services writes."""
     files = {"coredns/Corefile": corefile(doc)}
     for zname, text in zones(doc).items():
@@ -276,7 +278,7 @@ def render(doc: dict, images: Dict[str, str], chrony: Optional[str], conf_dir: s
         files[f"chrony-{i}.conf"] = text
     if not dns_only(doc):
         files["Caddyfile"] = caddyfile(doc)
-    files["pod.yaml"] = pod(doc, images, chrony, conf_dir, isos_dir, answers_dir)
+    files["pod.yaml"] = pod(doc, images, chrony, conf_dir, isos_dir, host_isos_dir)
     return files
 
 

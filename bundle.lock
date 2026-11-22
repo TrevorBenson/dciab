@@ -80,6 +80,9 @@ images:
   kindNode: docker.io/kindest/node:v1.37.0@sha256:a1ed56cfb0e7b93589bdf97c8cd566405a265939e3620fc4f5de89adff580ae5
   # The seed registry dciab seed runs on the bootstrap host (Zot).
   zot: ghcr.io/project-zot/zot-linux-amd64:v2.1.20@sha256:95a837a0afacf5b7edc0c92493f04beee6891989b8d2fd50a00cf65a1e6d4fd5
+  # Built from images/pve-assistant and published by CI on main; pinned by digest once
+  # published (dciab hypervisors refuses an unpinned one).
+  pveAssistant: ""
 
 # Node images: VM templates cluster nodes are cloned from, built with Kubernetes
 # image-builder (images/node/README.md). Built artifacts are never committed.
@@ -112,6 +115,16 @@ nodeImages:
 # Day 0, for sites that start from bare servers (docs/adr/0001-day0-hypervisors-and-services.md).
 # Hypervisor installers DCiaB has tested. bundle.lock pins a version whether or not the
 # archive carries the file: "shipped" says which.
+
+# proxmox-auto-install-assistant, which builds each hypervisor's installer ISO with its answer
+# file inside (images/pve-assistant, lib/dciab_hypervisors/iso.py). Empty pins are filled from
+# a first build: images/pve-assistant/build.sh prints them.
+pveAssistant:
+  baseImage: docker.io/library/debian:trixie-slim
+  keyringURL: https://enterprise.proxmox.com/debian/proxmox-archive-keyring-trixie.gpg
+  keyringSHA256: ""
+  repository: http://download.proxmox.com/debian/pve trixie pve-no-subscription
+  version: ""
 hypervisors:
   proxmox:
     version: "9.2-1"

@@ -10,14 +10,13 @@ import base64
 import hashlib
 import ipaddress
 import json
+import os
+import secrets
 import subprocess
+import tempfile
+from pathlib import Path
 from typing import Callable, Dict, List
 
-# The installer requires these, but they don't affect the platform: DCiaB documents them
-# instead of adding config keys (docs/HYPERVISORS.md).
-KEYBOARD = "en-us"
-COUNTRY = "us"
-TIMEZONE = "UTC"
 # A fresh ext4 install gives local (directory) and local-lvm (LVM-thin), what CAPMOX expects.
 FILESYSTEM = "ext4"
 
@@ -79,26 +78,49 @@ def hash_password(host: str, password: str) -> str:
     return out.stdout.strip()
 
 
-def render(doc: dict, host: dict, password: str,
-           hasher: Callable[[str, str], str] = hash_password) -> str:
+def root_hash(answers: Path, name: str, hasher: Callable[[str, str], str] = hash_password) -> str:
+    """The root password hash for one host's answer file.
+
+    Root logs in with the identity.initialAdmins SSH keys only. The installer still requires
+    a root password, so each host gets a random one (256 bits) that is hashed at once and
+    never stored or shown: nobody knows it. The hash is kept (<answers>/<host>.root-hash,
+    mode 600) so reruns render the same answer file and don't rebuild the host's ISO.
+    """
+    path = answers / f"{name}.root-hash"
+    if path.is_file():
+        stored = path.read_text().strip()
+        if stored.startswith("$6$"):
+            return stored
+    answers.mkdir(parents=True, exist_ok=True)
+    os.chmod(answers, 0o700)
+    digest = hasher(name, secrets.token_urlsafe(32))
+    fd, tmp = tempfile.mkstemp(dir=answers, prefix=f".{name}.", suffix=".tmp")   # mode 600
+    with os.fdopen(fd, "w") as f:
+        f.write(digest + "\n")
+    os.replace(tmp, path)
+    return digest
+
+
+def render(doc: dict, host: dict, root_password_hash: str) -> str:
     """answer.toml for one entry of spec.hypervisors.hosts."""
     spec = doc["spec"]
     net = spec["network"]
     domain = net["domain"].rstrip(".")
     prefix = ipaddress.ip_network(net["nodes"]["cidr"], strict=False).prefixlen
     admins = spec["identity"]["initialAdmins"]
-    if not password:
-        raise AnswerError("spec.hypervisors.rootPassword is empty")
+    if not root_password_hash.startswith("$6$"):
+        raise AnswerError(f"{host['name']}: the root password hash isn't a SHA-512 crypt hash")
     mac = host["bootMACAddress"].replace(":", "").lower()
+    locale = spec["hypervisors"]["installer"]   # keyboard, country, timezone
     lines = [
         "# Rendered by dciab hypervisors from dciab.yaml. Changes are overwritten.",
         "[global]",
-        f"keyboard = {_q(KEYBOARD)}",
-        f"country = {_q(COUNTRY)}",
+        f"keyboard = {_q(locale['keyboard'])}",
+        f"country = {_q(locale['country'])}",
         f"fqdn = {_q(host['name'] + '.' + domain)}",
         f"mailto = {_q(admins[0]['email'])}",
-        f"timezone = {_q(TIMEZONE)}",
-        f"root-password-hashed = {_q(hasher(host['name'], password))}",
+        f"timezone = {_q(locale['timezone'])}",
+        f"root-password-hashed = {_q(root_password_hash)}",
         f"root-ssh-keys = {_list([a['sshPublicKey'] for a in admins])}",
         "",
         "[network]",

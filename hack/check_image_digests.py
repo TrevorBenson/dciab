@@ -33,6 +33,10 @@ def main() -> int:
     images = dict(lock["images"])
     images.update({f"day0.{k}": v for k, v in lock.get("day0", {}).get("images", {}).items()})
     for name, ref in images.items():
+        if not ref:
+            # Published by DCiaB's own CI, then pinned (e.g. images.pveAssistant).
+            print(f"{name}: not published yet; pin it once CI has published it")
+            continue
         tagged, _, pinned = ref.partition("@")
         actual = registry_digest(tagged)
         if not pinned:

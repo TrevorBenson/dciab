@@ -59,7 +59,7 @@ class Paths:
     def __init__(self, doc: dict, state: Path, isos: Optional[str]):
         state = Path(os.path.abspath(state))   # the pod's hostPath volumes must be absolute
         self.conf = state / "services"
-        self.answers = state / "answers"
+        self.host_isos = state / "host-isos"   # dciab hypervisors builds one ISO per host here
         work = doc["spec"]["bootstrap"].get("workDisk", {}).get("path")
         # ISOs live with the payload dciab media copies; on the appliance /var (the state) is
         # on the work disk already.
@@ -91,7 +91,7 @@ def layout_names(payload: Path, refs: List[str]) -> List[str]:
 
 def _files(doc: dict, root: Path, paths: Paths) -> Dict[str, str]:
     images, chrony = _inputs(root, doc)
-    return render.render(doc, images, chrony, str(paths.conf), str(paths.isos), str(paths.answers))
+    return render.render(doc, images, chrony, str(paths.conf), str(paths.isos), str(paths.host_isos))
 
 
 def write(files: Dict[str, str], conf: Path) -> List[str]:
@@ -201,7 +201,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             "CHRONY_BASE": images["chronyBase"],
             "CONF_DIR": str(paths.conf),
             "ISOS_DIR": str(paths.isos),
-            "ANSWERS_DIR": str(paths.answers),
+            "HOST_ISOS_DIR": str(paths.host_isos),
             "POD": render.POD,
             "FINGERPRINT": render.fingerprint(files),
         }

@@ -1,0 +1,27 @@
+# proxmox-auto-install-assistant and xorriso, for `dciab hypervisors` to build each host's
+# Proxmox VE installer ISO with its answer file inside (lib/dciab_hypervisors/iso.py).
+# Every input is pinned in bundle.lock (pveAssistant); build with images/pve-assistant/build.sh.
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE}
+
+ARG KEYRING_URL
+ARG KEYRING_SHA256
+ARG REPOSITORY
+ARG ASSISTANT_VERSION
+
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends ca-certificates curl; \
+    curl -fsSL --retry 3 -o /usr/share/keyrings/proxmox-archive-keyring.gpg "$KEYRING_URL"; \
+    if [ -n "$KEYRING_SHA256" ]; then \
+      echo "$KEYRING_SHA256  /usr/share/keyrings/proxmox-archive-keyring.gpg" | sha256sum -c -; \
+    fi; \
+    echo "deb [signed-by=/usr/share/keyrings/proxmox-archive-keyring.gpg] $REPOSITORY" > /etc/apt/sources.list.d/pve.list; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends \
+      "proxmox-auto-install-assistant${ASSISTANT_VERSION:+=$ASSISTANT_VERSION}" xorriso; \
+    apt-get purge -y curl; apt-get autoremove -y; \
+    rm -rf /var/lib/apt/lists/*; \
+    proxmox-auto-install-assistant --version
+
+ENTRYPOINT ["proxmox-auto-install-assistant"]

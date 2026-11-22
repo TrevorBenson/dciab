@@ -22,7 +22,7 @@ def bare():
 
 def files_for(doc):
     return render.render(doc, IMAGES, "localhost/dciab/day0-chrony:x", "/state/services",
-                         "/state/isos", "/state/answers")
+                         "/state/isos", "/state/host-isos")
 
 
 def zone_lines(text):
@@ -213,14 +213,15 @@ def test_caddy_listens_on_the_bootstrap_address_only():
     assert "admin off" in c
 
 
-def test_answer_files_only_for_hypervisor_hosts():
+def test_host_isos_only_for_each_hosts_bmc():
     c = render.caddyfile(bare())
-    assert "path /answers /answers/*" in c
-    assert "not remote_ip 10.30.110.6 10.30.110.7 10.30.110.8" in c
-    assert "respond @answers_denied 403" in c
-    # each host reads only its own answer file
-    assert "\t@answers_pve01 {\n\t\tpath /answers/pve01.toml\n\t\tnot remote_ip 10.30.110.6\n\t}" in c
-    assert "respond @answers_pve03 403" in c
+    assert "path /host-isos /host-isos/*" in c
+    assert "not remote_ip 10.30.0.21 10.30.0.22 10.30.0.23" in c          # BMCs, not the hosts
+    assert "respond @hostisos_denied 403" in c
+    # each BMC reads only its own host's ISO (answer file and root hash inside)
+    assert "\t@hostiso_pve01 {\n\t\tpath /host-isos/pve01.iso\n\t\tnot remote_ip 10.30.0.21\n\t}" in c
+    assert "respond @hostiso_pve03 403" in c
+    assert "/answers" not in c
 
 
 def test_invalid_upstream_resolver_is_rejected():
@@ -238,7 +239,7 @@ def test_pod_uses_pinned_images_and_host_network():
     assert images == {"coredns": IMAGES["coredns"], "chrony-1": "localhost/dciab/day0-chrony:x",
                       "chrony-2": "localhost/dciab/day0-chrony:x", "caddy": IMAGES["caddy"]}
     paths = {v["name"]: v["hostPath"]["path"] for v in spec["volumes"]}
-    assert paths["isos"] == "/state/isos" and paths["answers"] == "/state/answers"
+    assert paths["isos"] == "/state/isos" and paths["host-isos"] == "/state/host-isos"
     assert "&id" not in files_for(bare())["pod.yaml"]
 
 
