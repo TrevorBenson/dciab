@@ -319,7 +319,7 @@ jobs:
       - name: Pod logs
         if: failure()
         run: |
-          sudo podman pod ps -a || true
+          sudo podman pod ps || true
           sudo podman ps -a || true
           for c in coredns chrony-1 chrony-2 caddy; do echo "== $c"; sudo podman logs "dciab-services-$c" 2>&1 | tail -40 || true; done
 

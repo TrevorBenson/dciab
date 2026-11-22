@@ -152,18 +152,18 @@ def caddyfile(doc: dict) -> str:
     addr = doc["spec"]["bootstrap"]["address"]
     return f"""# Rendered by dciab services from dciab.yaml. Changes are overwritten.
 {{
-    admin off
-    auto_https off
+	admin off
+	auto_https off
 }}
 
 http://{addr}:80 {{
-    bind {addr}
-    respond /healthz "ok" 200
-    root * {HTTP_ROOT}
-    file_server
-    log {{
-        output stdout
-    }}
+	bind {addr}
+	respond /healthz "ok" 200
+	root * {HTTP_ROOT}
+	file_server
+	log {{
+		output stdout
+	}}
 }}
 """
 

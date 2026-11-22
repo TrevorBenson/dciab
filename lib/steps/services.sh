@@ -112,6 +112,7 @@ has_addr "$nic" "$BOOTSTRAP_ADDRESS" \
 mkdir -p "$state" && chmod 700 "$state"
 exec 9>"$state/.services.lock"
 flock -n 9 || die "another dciab services is running with state $state"
+# Commands that leave processes behind (podman's conmon) must not inherit the lock: "9>&-".
 finish_if preflight
 
 step render
@@ -148,11 +149,11 @@ finish_if firewall
 
 step images
 for img in $IMAGES; do
-  podman image exists "$img" || podman pull "$img"
+  podman image exists "$img" || podman pull "$img" 9>&-
 done
 if [[ "$NTP" == 1 ]] && ! podman image exists "$CHRONY_IMAGE"; then
-  podman image exists "$CHRONY_BASE" || podman pull "$CHRONY_BASE"
-  podman build --pull=never --build-arg BASE_IMAGE="$CHRONY_BASE" -t "$CHRONY_IMAGE" "$ROOT/images/day0-chrony"
+  podman image exists "$CHRONY_BASE" || podman pull "$CHRONY_BASE" 9>&-
+  podman build --pull=never --build-arg BASE_IMAGE="$CHRONY_BASE" -t "$CHRONY_IMAGE" "$ROOT/images/day0-chrony" 9>&-
 fi
 finish_if images
 
@@ -160,7 +161,7 @@ step pod
 if applied && pod_running; then
   echo "pod $POD already runs this config"
 else
-  podman kube play --replace "$CONF_DIR/pod.yaml"
+  podman kube play --replace "$CONF_DIR/pod.yaml" 9>&-
   echo "$FINGERPRINT" > "$CONF_DIR/applied"
   chmod 600 "$CONF_DIR/applied"
 fi
