@@ -10,7 +10,7 @@ may_change: []
 
 ## Retry 2 (2026-11-22)
 
-Run 3 was blocked by a class defect: the Proxmox class didn't pass the kubelet `provider-id`, so Nodes had no `spec.providerID` and no Machine reached Running. The `r1` draft now sets `provider-id: proxmox://{{ ds.meta_data.instance_id }}` for control plane and worker nodes. Use template 129 again, on a **fresh** `dciab-lab` management cluster (the class changed). In step 4, Cilium's `--wait` needs every node; if it times out while nodes are still joining, rerun `install.sh` once they're all Ready rather than treating the timeout as the result. Overwrite the report, keeping one-line pointers to the earlier blocked runs (`3336ef3`, and run 3's PR #45).
+Run 3 was blocked by a class defect: the Proxmox class didn't pass the kubelet `provider-id`, so Nodes had no `spec.providerID` and no Machine reached Running. The `r1` draft now sets `provider-id: proxmox://{{ ds.meta_data.instance_id }}` for control plane and worker nodes. Use the template from task 0006 run 5 (its VMID is in `LAB.md`; it replaces 129), on a **fresh** `dciab-lab` management cluster (the class changed). In step 4, Cilium's `--wait` needs every node; if it times out while nodes are still joining, rerun `install.sh` once they're all Ready rather than treating the timeout as the result. Overwrite the report, keeping one-line pointers to the earlier blocked runs (`3336ef3`, and run 3's PR #45).
 
 ## Retry (2026-11-22)
 

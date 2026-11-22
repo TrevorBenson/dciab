@@ -1,12 +1,16 @@
 ---
 id: "0006"
 title: Rebuild the bootc node template with root filesystem growth
-status: done
+status: open
 runner: workstation
 depends: ["0004"]
 report: handoff/reports/0006-node-bootc-template.md
 may_change: []
 ---
+
+## Run 5 (2026-11-22)
+
+Template 129 predates #56, which adds the iSCSI initiator and NFS client Longhorn needs (`iscsid` enabled); `dciab mgmt` now ends with a `longhorn` step (task 0007). Rebuild and republish with a new VMID, run the same checks as run 4 (including `qm guest exec <clone> -- cloud-init status`), and also check on the clone that `iscsiadm --version` works and `iscsid` is enabled. Update `LAB.md` to the new template. Delete 129 once the new one passes (Trevor agreed). Overwrite the report, keeping one line per earlier run.
 
 ## Rerun 2 (2026-11-22)
 
