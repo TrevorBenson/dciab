@@ -21,7 +21,10 @@ def backoff(start: float = 0.5, cap: float = 5.0) -> Iterator[float]:
 
 
 def wait(deadline: float, delays: Iterator[float]) -> bool:
-    """Sleep for the next delay, never past deadline (time.monotonic()); False when it has passed."""
+    """Sleep for the next delay, never past deadline (time.monotonic()); False when it has passed.
+
+    A sleep cut short by the deadline returns True on purpose: callers make one last check at
+    the deadline, so a timeout overruns by at most one round of probes (seconds)."""
     import time
     left = deadline - time.monotonic()
     if left <= 0:
