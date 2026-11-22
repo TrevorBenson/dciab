@@ -78,3 +78,17 @@ def test_cilium_uses_the_payload_chart(tmp_path):
     r = subprocess.run([str(ROOT / "addons" / "cilium" / "install.sh"), str(values), "--template"],
                        capture_output=True, text=True, env={"PATH": "/usr/bin:/bin", "DCIAB_PAYLOAD": str(tmp_path)})
     assert r.returncode == 1 and "no such file in the payload" in r.stderr
+
+
+def test_mgmt_refuses_a_tampered_payload(tmp_path):
+    config = tmp_path / "dciab.yaml"
+    config.write_text("x")
+    kubeconfig = tmp_path / "kubeconfig"
+    kubeconfig.write_text("x")
+    payload = tmp_path / "payload"
+    for d in ("providers", "charts", "bin"):
+        (payload / d).mkdir(parents=True)
+    (payload / "bin" / "kubectl").write_text("changed")
+    (payload / "SHA256SUMS").write_text("0" * 64 + "  bin/kubectl\n")
+    r = run_mgmt(str(config), "--bootstrap-kubeconfig", str(kubeconfig), "--payload", str(payload))
+    assert r.returncode == 1 and "SHA256SUMS" in r.stderr

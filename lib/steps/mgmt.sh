@@ -55,6 +55,9 @@ fi
 config="$(cd "$(dirname "$config")" && pwd)/$(basename "$config")"
 state="${state:-$(dirname "$config")/.dciab/state}"
 mkdir -p "$state" && chmod 700 "$state"
+# The state holds kubeconfigs, whose exec plugins kubectl runs as this user: only this user
+# may own it.
+[[ "$(stat -c %u "$state")" == "$(id -u)" ]] || die "$state is not owned by $(id -un); refusing to use its kubeconfigs"
 # dciab seed's outputs, when this run doesn't name others.
 bootstrap="${bootstrap:-$state/bootstrap.kubeconfig}"
 [[ -f "$bootstrap" ]] || die "no such kubeconfig: $bootstrap (run dciab seed, or pass --bootstrap-kubeconfig)"
@@ -67,6 +70,12 @@ fi
 if [[ -n "$payload" ]]; then
   [[ -d "$payload/providers" && -d "$payload/charts" ]] || die "$payload: not an archive payload (no providers/ or charts/)"
   payload="$(cd "$payload" && pwd)"
+  # Its binaries and manifests must match its SHA256SUMS before anything is applied from it.
+  PYTHONPATH="$ROOT/lib" python3 -c 'import sys; from pathlib import Path; from dciab_seed.cli import verify_payload_tools; from dciab_seed.plan import SeedError
+try:
+    verify_payload_tools(Path(sys.argv[1]))
+except SeedError as exc:
+    sys.exit(f"dciab mgmt: {exc}")' "$payload"
   export DCIAB_PAYLOAD="$payload"
 fi
 values="$state/mgmt-values.yaml"
