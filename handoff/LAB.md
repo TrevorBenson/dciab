@@ -22,11 +22,11 @@ Never put secrets here: no token secrets, passwords or keys.
   - **Untagged:** the network the other VMs use. It can reach the workstation, so use it for node image builds: Packer's kickstart server runs on the workstation.
   - **VLAN 150 (the "k8s VLAN"):** for deployed cluster nodes. DHCP and routing come from the OPNsense VM (VMID 100). It does **not** route back to the workstation, so builds on it hang at "Waiting for SSH".
 - The workstation is on 192.168.186.0/24. Its firewalld already allows TCP 1025–65535.
-- Bootc node template: `rocky10-bootc-kube-v1.36.6`, **VMID 123** on `pve1`, storage `pool0` (task 0006): Rocky 10.3, CRI-O 1.36.9, Kubernetes 1.36.6, a 20 GiB disk, SeaBIOS, a cloud-init drive. Its root filesystem grows to fill a larger disk at boot (a 40G clone gets a 38.5 GiB root). VMID 122, the task-0004 template with the same name and no growth, still exists until Trevor deletes it; use 123.
+- Bootc node template: `rocky10-bootc-thin-kube-v1.36.6`, **VMID 124** on `pve1`, storage `pool0` (task 0006 rerun, built from `main` at `366b7bc`): Rocky 10.3, CRI-O 1.36.9, Kubernetes 1.36.6, a 10 GiB disk (8.5 GiB root; `config.toml`'s `minsize = "2 GiB"` did not shrink it), SeaBIOS, a cloud-init drive. The zvol is thin (`refreservation` none, about 1 GiB used). Its root grows to fill a larger disk at boot (a 25G clone gets a 23.5 GiB root). VMID 123, the first-run template with a 20G disk, still exists until Trevor deletes it; VMID 122 is gone. Use 124.
 - Importing a disk image: `local` has no `import` content type, so copy the qcow2 to the node (`scp` to `/var/tmp`) and run `qm importdisk <vmid> <file> pool0` over SSH as root, using the diagnostic key.
 - On `pve1`, `qm guest exec` is disabled, so a guest-agent command cannot run inside a VM; use SSH.
 - `sudo` on the workstation needs a password, so the runner cannot run root builds. The bootc image stages build rootless; only the bootc-image-builder disk step needs root, which Trevor runs.
-- VMID 122 is the bootc template, so a clone for tests uses a separate VMID (0004 used 123, then deleted it).
+- A test clone uses a free VMID of its own (the runner may pick one) and is deleted afterwards.
 
 ## Bootstrap USB tests (task 0005)
 
