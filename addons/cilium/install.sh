@@ -7,6 +7,7 @@
 #
 # <capi-cluster values> is the values file the cluster was created with (charts/capi-cluster).
 # The chart version and source come from bundle.lock; DCiaB's defaults from values.yaml here.
+# With DCIAB_PAYLOAD set (an archive payload folder), the chart comes from its charts/.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -51,9 +52,15 @@ PY
 workdir="$(mktemp -d)"
 trap 'rm -f "$overrides"; rm -rf "$workdir"' EXIT
 fetch_chart() {
-  helm pull cilium --repo "$repo" --version "$version" --destination "$workdir" >/dev/null
   local tgz sum
-  tgz="$(ls "$workdir"/cilium-*.tgz)"
+  if [[ -n "${DCIAB_PAYLOAD:-}" ]]; then
+    # Offline: the chart the archive vendored (build/archive.py charts).
+    tgz="$DCIAB_PAYLOAD/charts/cilium-$version.tgz"
+    [[ -f "$tgz" ]] || { echo "install.sh: $tgz: no such file in the payload" >&2; exit 1; }
+  else
+    helm pull cilium --repo "$repo" --version "$version" --destination "$workdir" >/dev/null
+    tgz="$(ls "$workdir"/cilium-*.tgz)"
+  fi
   sum="$(sha256sum "$tgz" | cut -d' ' -f1)"
   if [[ "$digest" == - ]]; then
     echo "install.sh: warning: bundle.lock has no chartDigests.cilium; this chart's sha256 is $sum" >&2
