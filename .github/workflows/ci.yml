@@ -186,7 +186,7 @@ jobs:
           kubectl -n cluster-mgmt get cluster,kubeadmcontrolplane,secret -o wide
 
   archive-inventory:
-    # Every image a site needs: the input to the archive build, which pulls each by digest.
+    # Every image a site needs, then a small archive payload built from it (build/archive.py).
     name: archive image inventory
     runs-on: ubuntu-latest
     steps:
@@ -236,6 +236,20 @@ jobs:
         with:
           name: image-inventory
           path: images.yaml
+      - name: Image digests to pin (prints bundle.lock imageDigests lines for any unpinned image)
+        run: python3 build/archive.py digests --inventory images.yaml
+      - name: Archive payload (two small images, every chart, provider manifests, binaries)
+        run: |
+          set -euo pipefail
+          skopeo --version
+          out="$RUNNER_TEMP/payload"
+          python3 build/archive.py images --inventory images.yaml --out "$out" \
+            --only registry.k8s.io/pause --only ghcr.io/kube-vip/kube-vip
+          python3 build/archive.py charts --out "$out"
+          python3 build/archive.py providers --out "$out" --manifests "$(python3 hack/fetch_crds.py)"
+          python3 build/archive.py binaries --out "$out"
+          python3 build/archive.py sums --out "$out"
+          du -sh "$out"/*
 
   frozen-classes:
     # A class revision freezes when a DCiaB release tag first contains it; drafts may change (docs/VERSIONING.md).

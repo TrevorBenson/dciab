@@ -1,0 +1,67 @@
+name: archive payload
+
+# The full payload, every image on every platform: several GB, so on request only.
+# CI builds a small payload on every PR (job "archive image inventory").
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  payload:
+    name: full archive payload
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install pyyaml
+      - name: Read versions from bundle.lock
+        id: lock
+        run: |
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import yaml
+          lock = yaml.safe_load(open("bundle.lock"))
+          print(f"helm={lock['tools']['helm']}")
+          print(f"k8s={lock['kubernetes']['version']}")
+          PY
+      - uses: azure/setup-helm@v4
+        with:
+          version: ${{ steps.lock.outputs.helm }}
+      - name: kubeadm (checksum from dl.k8s.io; used only to list images)
+        env:
+          K8S: ${{ steps.lock.outputs.k8s }}
+        run: |
+          set -euo pipefail
+          [[ "$K8S" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "bad kubernetes.version: $K8S" >&2; exit 1; }
+          cd "$RUNNER_TEMP"
+          curl -fsSL --connect-timeout 20 --max-time 300 -O "https://dl.k8s.io/release/$K8S/bin/linux/amd64/kubeadm"
+          echo "$(curl -fsSL --connect-timeout 20 --max-time 60 "https://dl.k8s.io/release/$K8S/bin/linux/amd64/kubeadm.sha256")  kubeadm" | sha256sum -c -
+          chmod +x kubeadm
+      - name: Payload
+        env:
+          K8S: ${{ steps.lock.outputs.k8s }}
+        run: |
+          set -euo pipefail
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc   # room for every platform of every image
+          crds="$(python3 hack/fetch_crds.py)"
+          addons/cilium/install.sh charts/capi-cluster/ci/proxmox-values.yaml --template > "$RUNNER_TEMP/cilium.yaml"
+          "$RUNNER_TEMP/kubeadm" config images list --kubernetes-version "$K8S" > "$RUNNER_TEMP/kubeadm.txt"
+          python3 build/inventory.py --manifests "$crds" --extra "$RUNNER_TEMP/cilium.yaml" \
+            --kubeadm-images "$RUNNER_TEMP/kubeadm.txt" --format yaml > images.yaml
+          out="$RUNNER_TEMP/payload"
+          python3 build/archive.py images --inventory images.yaml --out "$out"
+          python3 build/archive.py charts --out "$out"
+          python3 build/archive.py providers --out "$out" --manifests "$crds"
+          python3 build/archive.py binaries --out "$out"
+          python3 build/archive.py sums --out "$out"
+          du -sh "$out"/* "$out"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: archive-manifest
+          path: |
+            images.yaml
+            ${{ runner.temp }}/payload/images.yaml
+            ${{ runner.temp }}/payload/SHA256SUMS

@@ -7,9 +7,11 @@ DCiaB ships as one archive that a site unpacks on the bootstrap host and runs of
 | Piece | Status | What |
 | --- | --- | --- |
 | Image inventory (`inventory.py`) | done | Every container image a site needs, and where each comes from |
-| Image pull | next | Each image pulled by digest into an OCI layout; tag-only images get their digest resolved once, then recorded |
-| Charts and providers | next | Third-party charts as `.tgz`, checked against `bundle.lock` (`chartDigests`); CAPI provider manifests from `hack/fetch_crds.py` (`checksums`) |
-| Binaries | next | kind, kubectl, helm and clusterctl, pinned by sha256 |
+| Image pull (`archive.py images`) | done | Each image copied by digest, every platform, into one OCI layout; tag-only images pinned in `bundle.lock` (`imageDigests`) |
+| Charts and providers (`archive.py charts`, `providers`) | done | Third-party charts as `.tgz`, checked against `bundle.lock` (`chartDigests`); CAPI provider manifests from `hack/fetch_crds.py` (`checksums`) |
+| Binaries (`archive.py binaries`) | done | kind, kubectl, helm and clusterctl, checked by sha256 |
+| Checksums (`archive.py sums`) | done | `SHA256SUMS` over the whole payload, the file signing will sign |
+| Packaging | next | The payload, `dciab` and its libraries as one archive, and `dciab seed` loading the images into the site registry |
 | Node images | later | The bootc node image as an OCI image, plus disks per platform where a platform needs one |
 | SBOM and signatures | later | An SBOM per image and binary, and a signed manifest of the archive |
 
@@ -34,6 +36,31 @@ Not covered yet:
 
 A manifest that needs a provider variable `bundle.lock` doesn't set is an error, and so is a manifests folder with nothing in it.
 
-Images marked `*` have no digest in their source manifest. The pull step resolves each one and records its digest.
+Images marked `*` have no digest yet: their source names them by tag only, and `bundle.lock` has no `imageDigests` entry for them. The archive build refuses them until they are pinned.
 
-CI runs the inventory on every PR (job `archive image inventory`) and uploads it as `images.yaml`.
+## Payload
+
+```console
+$ python3 build/archive.py digests  --inventory images.yaml      # imageDigests lines to pin, if any
+$ python3 build/archive.py images   --inventory images.yaml --out payload
+$ python3 build/archive.py charts   --out payload
+$ python3 build/archive.py providers --out payload --manifests "$crds"
+$ python3 build/archive.py binaries --out payload
+$ python3 build/archive.py sums     --out payload
+```
+
+```text
+payload/
+  images/        one OCI layout; each image named <repository>:<tag>
+  images.yaml    source reference, layout name, tag and digest of each image
+  charts/        <chart>-<version>.tgz
+  providers/     Cluster API, provider and cert-manager manifests
+  bin/           kind, kubectl, helm, clusterctl (linux-amd64)
+  SHA256SUMS
+```
+
+**Why every platform.** The provider manifests and `bundle.lock` name multi-platform images by their index digest, and nodes pull that digest from the site registry. A registry only serves an index whose images it holds, so the layout keeps the exact index and every image in it (`skopeo copy --all --preserve-digests`). Trimming to one platform would change the digest. That costs space; a later change can filter platforms if the site registry learns to serve a trimmed index under a new digest that DCiaB rewrites into the manifests.
+
+**Pinning.** Every input is checked: images by digest (and checked again in the layout after the copy), charts against `chartDigests`, binaries against `bootstrapAppliance.toolChecksums` and `binarySHA256`, and provider manifests against `checksums`. A missing pin is an error. Each step can be rerun; what is already there and correct is kept.
+
+CI runs the inventory and a small payload on every PR (job `archive image inventory`: two small images, every chart, the providers and the binaries). The `archive payload` workflow builds the full payload on request.

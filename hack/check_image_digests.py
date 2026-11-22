@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Check that every image in bundle.lock (images and day0.images) is pinned by digest,
-and that the digest is still what the registry serves for that tag.
+and that the digest is still what the registry serves for that tag. The same check
+covers imageDigests, the digests recorded for images other manifests name by tag.
 
     python3 hack/check_image_digests.py
 
@@ -43,6 +44,14 @@ def main() -> int:
             failed = True
         else:
             print(f"{name}: {ref} ok")
+    for tagged, pinned in (lock.get("imageDigests") or {}).items():
+        actual = registry_digest(tagged)
+        if pinned != actual:
+            print(f"imageDigests: {tagged} is pinned to {pinned}, but the registry now serves {actual}. "
+                  "The tag moved upstream: find out why before re-pinning.")
+            failed = True
+        else:
+            print(f"imageDigests: {tagged}@{pinned} ok")
     return 1 if failed else 0
 
 

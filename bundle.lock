@@ -157,14 +157,23 @@ charts:
   cert-manager: v1.21.3
   longhorn: 1.13.0
 
-# Where online installs fetch the charts above. The archive build will vendor them.
+# Where the charts above come from. The archive build (build/archive.py charts) vendors
+# each chart listed here. cert-manager is installed from its release manifest instead.
 chartRepositories:
   cilium: https://helm.cilium.io
+  longhorn: https://charts.longhorn.io
 
-# sha256 of each chart .tgz, checked before install. Empty: the installer warns and
-# prints the sum to pin.
+# sha256 of each chart .tgz, checked before install and by the archive build. Empty: the
+# installer warns and prints the sum to pin; the archive build refuses the chart.
 chartDigests:
   cilium: "0c7592eb75179ecf46dd3ec22145916f0164c4401214ea15afb5b230b1d11a21"
+
+# Digests for images their source manifests name by tag only (the Cluster API, provider
+# and cert-manager manifests, and kubeadm's control plane images). The archive pulls these
+# digests and the site registry serves them under the tag too. After a version change:
+# build/archive.py digests --inventory images.yaml, review, paste here.
+# hack/check_image_digests.py checks that each tag still points at its digest.
+imageDigests: {}
 
 # sha256 of release binaries DCiaB runs, checked after download. clusterctl's version is
 # clusterAPI.core.version. Empty: the download warns and prints the sum to pin.
