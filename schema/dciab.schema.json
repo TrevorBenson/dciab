@@ -588,19 +588,31 @@
     "hypervisors": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["type", "method", "bootMode", "rootPassword", "managementVLAN", "hosts"],
+      "required": ["type", "method", "bootMode", "managementVLAN", "hosts"],
       "properties": {
         "type": {"enum": ["proxmox", "esxi"], "description": "proxmox or esxi"},
         "bootMode": {"enum": ["UEFI", "UEFISecureBoot"], "description": "UEFI or UEFISecureBoot; set on each server over Redfish before installing"},
         "method": {"enum": ["virtualmedia"], "description": "virtualmedia: the installer ISO is attached through each host's BMC (Redfish)"},
         "installerFile": {"type": "string", "minLength": 1, "description": "esxi only: path to the ESXi installer ISO, which DCiaB doesn't ship; its sha256 must match bundle.lock"},
-        "rootPassword": {"$ref": "#/$defs/secretRef"},
+        "rootPassword": {"not": {}, "description": "removed: root on each hypervisor logs in with the identity.initialAdmins SSH keys only, and gets a random root password nobody knows. Delete this key"},
         "managementVLAN": {"enum": ["tagged", "untagged"], "description": "tagged: the management NIC tags network.nodes.vlan; untagged: it sits on an access port"},
+        "installer": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["keyboard", "country", "timezone"],
+          "properties": {
+            "keyboard": {"type": "string", "pattern": "^[a-z]{2}(-[a-z]{2,})?$", "description": "the installed system's keyboard layout, as the Proxmox VE installer names it (e.g. en-us, de, fr-ch)"},
+            "country": {"type": "string", "pattern": "^[a-z]{2}$", "description": "two-letter country code (e.g. us, de)"},
+            "timezone": {"type": "string", "pattern": "^[A-Za-z0-9_+-]+(/[A-Za-z0-9_+-]+)*$", "description": "IANA time zone (e.g. UTC, America/Los_Angeles)"}
+          },
+          "description": "proxmox: locale settings the Proxmox VE installer requires"
+        },
         "hosts": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/hypervisorHost"}}
       },
       "allOf": [
         {"if": {"properties": {"type": {"const": "esxi"}}, "required": ["type"]}, "then": {"required": ["installerFile"]}},
-        {"if": {"properties": {"type": {"const": "proxmox"}}, "required": ["type"]}, "then": {"not": {"required": ["installerFile"]}}}
+        {"if": {"properties": {"type": {"const": "proxmox"}}, "required": ["type"]}, "then": {"not": {"required": ["installerFile"]}}},
+        {"if": {"properties": {"type": {"const": "proxmox"}}, "required": ["type"]}, "then": {"required": ["installer"]}}
       ],
       "description": "optional; hypervisors DCiaB installs on bare servers before the seed step. Leave it out when the hypervisors already exist"
     }

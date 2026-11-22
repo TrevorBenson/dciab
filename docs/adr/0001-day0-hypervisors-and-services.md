@@ -85,6 +85,18 @@ HTTP listens on `bootstrap.address`: only installers and BMCs use it, and it goe
 - `dciab services` must handle the workstation: ports already in use (Rocky's own `chronyd` holds UDP 123, so the pod binds only to the service addresses), runtime-only firewalld rules opened for the step and closed at teardown, and a readiness check that queries DNS (both directions), NTP and ranged HTTP from the network.
 - Before a server is installed, the hypervisor step checks or sets over Redfish: UEFI boot mode, Secure Boot per `spec.hypervisors.bootMode`, virtualization extensions, and that a disk matches `rootDeviceHints`.
 
+## Amendment 1 (2026-11-22): answer files inside per-host ISOs; root by SSH key only
+
+**Context.** The Proxmox VE automated installer reads its answer file from the ISO, from a labelled partition, or over HTTP. HTTP mode POSTs system information to a URL and relies on DHCP while the installer runs, and Day 0 has no DHCP; Caddy's file server also answers only GET. A partition needs a second virtual medium, which not every BMC can attach alongside a CD.
+
+**Decisions.**
+- `dciab hypervisors` builds one ISO per host, `proxmox-auto-install-assistant prepare-iso --fetch-from iso` with that host's answer file inside. It runs the assistant from a pinned container image (`images/pve-assistant`, a Debian package), with no network. Caddy serves `/host-isos/<host>.iso` only to that host's BMC address; the answer files themselves are no longer served.
+- Root on each hypervisor logs in with the `identity.initialAdmins` SSH keys only. The installer requires a root password, so each host gets a random 256-bit one, hashed at once and never stored: nobody knows it. `spec.hypervisors.rootPassword` is removed.
+- The keyboard, country and time zone the installer requires are config keys (`spec.hypervisors.installer`), not built-in values.
+- DCiaB and CAPMOX use the Proxmox VE API with a dedicated API token with exactly the privileges [PROXMOX.md](../PROXMOX.md) lists; nothing DCiaB runs needs SSH to a hypervisor.
+
+**Consequences.** One base-ISO-sized file per host on the work disk, rebuilt only when that host's answer file or the base ISO changes. A host's ISO (with its root password hash, of a password nobody knows) is readable from its BMC's address over plain HTTP, as ISOs already were. With no root password, console and web UI password login are gone until Authentik SSO is a Proxmox VE realm (ADR 0004); break-glass is SSH with an admin key. Post-install configuration (the API token, bridge, storage) can't log in with a password, so it needs its own credential path: a first-boot hook in the answer file is the candidate.
+
 ## Not decided here (roadmap)
 
 - **vCenter deployment** on the first ESXi host, and creating its datacenter, cluster and networks. Until then, ESXi sites need an existing vCenter.

@@ -41,7 +41,8 @@ Decided in [ADR 0001](adr/0001-day0-hypervisors-and-services.md).
 - [x] Day 0 image digests pinned (CoreDNS, Caddy, chrony base)
 - [ ] ESXi build tested and pinned
 - [x] `dciab services`: CoreDNS, chrony and Caddy as one pod on the DNS service IPs
-- [x] `dciab hypervisors` for Proxmox VE, first part: answer files, Redfish virtual media boot, wait for the install ([docs/HYPERVISORS.md](HYPERVISORS.md))
+- [x] `dciab hypervisors` for Proxmox VE, first part: answer files inside per-host installer ISOs (served only to each host's BMC), root by SSH key only, Redfish virtual media boot, wait for the install ([docs/HYPERVISORS.md](HYPERVISORS.md); ADR 0001 amendment 1)
+- [x] The CAPMOX API token's exact Proxmox VE privileges, one role per path, checked by `dciab validate --live` ([docs/PROXMOX.md](PROXMOX.md))
 - [ ] `dciab hypervisors` for Proxmox VE, next: answer file delivery to the installer (prepared ISO), tagged management VLAN, Redfish preparation (boot mode, Secure Boot, disk check), post-install API token, bridge and storage
 - [ ] `dciab hypervisors` for ESXi
 - [x] Live checks: BMC routes, Redfish and credentials (`dciab validate --live`)
