@@ -186,13 +186,15 @@ def test_binaries_checked_and_helm_extracted(tmp_path):
             info.size = len(member)
             tar.addfile(info, io.BytesIO(member.encode()))
     blobs = {"kind": b"kind", "kubectl": b"kubectl", "helm": buf.getvalue(), "clusterctl": b"clusterctl",
-             "oras": obuf.getvalue(), "age": abuf.getvalue(), "age-keygen": abuf.getvalue()}
+             "oras": obuf.getvalue(), "age": abuf.getvalue(), "age-keygen": abuf.getvalue(),
+             "cosign": b"cosign"}
     sha = {k: hashlib.sha256(v).hexdigest() for k, v in blobs.items()}
     lock = lock_with(bootstrapAppliance={"toolChecksums": {"kind": sha["kind"], "kubectl": sha["kubectl"],
                                                           "helm": sha["helm"]}},
                      binarySHA256={"clusterctl-linux-amd64": sha["clusterctl"],
                                    "oras-linux-amd64.tar.gz": sha["oras"],
-                                   "age-linux-amd64.tar.gz": sha["age"]})
+                                   "age-linux-amd64.tar.gz": sha["age"],
+                                   "cosign-linux-amd64": sha["cosign"]})
     urls = {url: name for name, url, _, _ in archive.binary_list(lock)}
 
     def fetch(url, dest):
@@ -201,6 +203,7 @@ def test_binaries_checked_and_helm_extracted(tmp_path):
     assert (tmp_path / "bin" / "helm").read_bytes() == b"helm"
     assert (tmp_path / "bin" / "oras").read_bytes() == b"oras"
     assert (tmp_path / "bin" / "age-keygen").read_bytes() == b"age/age-keygen"
+    assert (tmp_path / "bin" / "cosign").read_bytes() == b"cosign"
     assert (tmp_path / "bin" / "kind").stat().st_mode & 0o111
     lock["binarySHA256"]["clusterctl-linux-amd64"] = "1" * 64
     with pytest.raises(archive.ArchiveError, match="clusterctl"):

@@ -18,7 +18,7 @@
   DIR/charts and checks its sha256 against chartDigests.
 - providers: copies the Cluster API, provider and cert-manager manifests that
   hack/fetch_crds.py downloaded and checked (its output folder) into DIR/providers.
-- binaries: downloads kind, kubectl, helm, clusterctl and oras into DIR/bin and checks
+- binaries: downloads kind, kubectl, helm, clusterctl, oras and cosign into DIR/bin and checks
   each against bundle.lock.
 - sums: writes DIR/SHA256SUMS for every file in DIR. Signing will sign this file.
 
@@ -304,6 +304,9 @@ def binary_list(lock: dict) -> List[tuple]:
          b.get("age-linux-amd64.tar.gz", ""), "age/age"),
         ("age-keygen", f"https://github.com/FiloSottile/age/releases/download/{tools['age']}/age-{tools['age']}-linux-amd64.tar.gz",
          b.get("age-linux-amd64.tar.gz", ""), "age/age-keygen"),
+        # Checks the archive's signed MANIFEST at the site (dciab verify-archive).
+        ("cosign", f"https://github.com/sigstore/cosign/releases/download/{tools['cosign']}/cosign-linux-amd64",
+         b.get("cosign-linux-amd64", ""), None),
     ]
 
 
@@ -314,10 +317,12 @@ def download(url: str, dest: Path) -> None:
 
 
 def fetch_binaries(lock: dict, out: Path, fetch: Callable[[str, Path], None] = download,
-                   print_sums: bool = False) -> List[str]:
-    dest = staging(out, "bin")
+                   print_sums: bool = False, binaries: Optional[List[tuple]] = None,
+                   folder: str = "bin") -> List[str]:
+    """Download binary_list(lock) (or the given binaries) into DIR/<folder>, each checked."""
+    dest = staging(out, folder)
     lines = []
-    for name, url, want, member in binary_list(lock):
+    for name, url, want, member in (binary_list(lock) if binaries is None else binaries):
         if not print_sums and not SHA256.fullmatch(want or ""):
             raise ArchiveError(f"{name}: no sha256 pinned in bundle.lock for {url} (run with --print-sums, review, pin)")
         with tempfile.TemporaryDirectory() as tmp:
@@ -345,7 +350,7 @@ def fetch_binaries(lock: dict, out: Path, fetch: Callable[[str, Path], None] = d
     if print_sums:
         shutil.rmtree(dest)
     else:
-        replace_dir(dest, out / "bin")  # all verified, or the old set stays
+        replace_dir(dest, out / folder)  # all verified, or the old set stays
     return lines
 
 
