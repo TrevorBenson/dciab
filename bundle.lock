@@ -200,8 +200,8 @@ imageDigests:
 binarySHA256:
   clusterctl-linux-amd64: "c7301a8515ed329562b06c958463051dd55d9649fac591393f5df54a868fa79b"
   oras-linux-amd64.tar.gz: "66fb0ad7206f3f6fa77ed5b552049d364ccf4b50b1684554f731f76302b52ca0"   # tools.oras
-  cosign-linux-amd64: ""        # tools.cosign
-  syft_linux_amd64.tar.gz: ""   # tools.syft (build only: build/package.py tools)
+  cosign-linux-amd64: "064954c5d8c7e3b28188eee5b1727b31c411550bc5fefd41aa672d3c761d103a"        # tools.cosign
+  syft_linux_amd64.tar.gz: "ad92bd3ec1b94a3df01d4d0aec199afa9c42b72e86da436ff5f837914d32706b"   # tools.syft (build only: build/package.py tools)
 
 tools:
   helm: v4.3.2
