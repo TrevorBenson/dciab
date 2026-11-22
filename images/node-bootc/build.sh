@@ -108,6 +108,7 @@ fi
 mkdir -p "$OUT"
 # Hand the outputs back to the user who ran sudo, so they can be read and removed without root.
 if [[ -n "${SUDO_UID:-}" ]]; then
+  # shellcheck disable=SC2153  # SUDO_GID is set by sudo, alongside SUDO_UID
   trap 'chown -R "$SUDO_UID:${SUDO_GID:-$SUDO_UID}" "$OUT" 2>/dev/null || true' EXIT
 fi
 # One build at a time: every build writes its disks to the same folder.
