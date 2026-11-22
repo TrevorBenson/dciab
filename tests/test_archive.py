@@ -63,6 +63,7 @@ def fake_skopeo(layout_digest=None):
         data = json.loads(index.read_text()) if index.is_file() else {"manifests": []}
         data["manifests"] = [m for m in data["manifests"]
                              if m["annotations"]["org.opencontainers.image.ref.name"] != name]
+        assert ref.startswith("docker://") and ":" not in ref.split("/")[-1].split("@")[0]  # no tag with digest
         data["manifests"].append({"digest": layout_digest or ref.rsplit("@", 1)[1],
                                   "annotations": {"org.opencontainers.image.ref.name": name}})
         Path(path).mkdir(parents=True, exist_ok=True)

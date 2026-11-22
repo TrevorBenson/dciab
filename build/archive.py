@@ -123,7 +123,7 @@ def resolve_digests(entries: List[dict], runner: Runner = run_bytes) -> List[str
         if e.get("digest") == "pinned":
             continue
         ref = e["image"]
-        raw = runner(["skopeo", "inspect", "--raw", f"docker://{ref}"]).stdout
+        raw = runner(["skopeo", "inspect", "--raw", f"docker://{ref}"]).stdout  # tag only: no digest yet
         digest = "sha256:" + hashlib.sha256(raw).hexdigest()
         lines.append(f'  {ref}: "{digest}"')
     return lines
@@ -152,8 +152,9 @@ def copy_images(entries: List[dict], out: Path, only: Optional[List[str]] = None
             print(f"copy  {ref}")
             # All platforms, byte for byte: the site pulls the same index digest the
             # manifests name, so the layout must hold that exact index and every image in it.
+            # skopeo refuses a reference with both a tag and a digest; the digest decides.
             runner(["skopeo", "copy", "--all", "--preserve-digests", "--retry-times", "3",
-                    f"docker://{ref}", f"oci:{layout}:{name}"])
+                    f"docker://{repo}@{digest}", f"oci:{layout}:{name}"])
             got = layout_digests(layout).get(name)
             if got != digest:
                 raise ArchiveError(f"{ref}: the layout holds {got} under {name}, not {digest}")
