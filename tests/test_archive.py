@@ -29,8 +29,9 @@ def done(stdout=""):
 def test_split_and_layout_names():
     assert archive.split_ref(f"registry.k8s.io/pause:3.10.2@{D1}") == ("registry.k8s.io/pause", "3.10.2", D1)
     assert archive.split_ref("localhost:5000/a/b") == ("localhost:5000/a/b", None, None)
-    assert archive.layout_name(f"registry.k8s.io/pause:3.10.2@{D1}") == "registry.k8s.io_pause_3.10.2"
-    assert archive.layout_name(f"quay.io/x/y@{D1}") == "quay.io_x_y_sha256-" + "a" * 64
+    assert archive.layout_name(f"registry.k8s.io/pause:3.10.2@{D1}") == "registry.k8s.io_pause_3.10.2_" + "a" * 12
+    assert archive.layout_name(f"quay.io/x/y@{D1}") == "quay.io_x_y_untagged_" + "a" * 12
+    assert archive.layout_name(f"a/b_c:t@{D1}") != archive.layout_name(f"a/b/c:t@{D2}")
     long = archive.layout_name(f"quay.io/cilium/cilium-envoy:{'v' * 140}@{D1}")
     assert len(long) == 128 and re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9._-]{0,127}", long)
     with pytest.raises(archive.ArchiveError):
@@ -91,7 +92,7 @@ def test_copy_images_pins_verifies_and_skips(tmp_path):
     archive.copy_images(entries, tmp_path, runner=runner)
     assert len(calls) == 2
     assert calls[0][:3] == ["oras", "cp", "--to-oci-layout"]
-    assert calls[0][-2:] == [f"registry.k8s.io/pause@{D1}", f"{tmp_path / 'images'}:registry.k8s.io_pause_3.10.2"]
+    assert calls[0][-2:] == [f"registry.k8s.io/pause@{D1}", f"{tmp_path / 'images'}:registry.k8s.io_pause_3.10.2_{D1[7:19]}"]
     record = yaml.safe_load((tmp_path / "images.yaml").read_text())["images"]
     assert {i["tag"] for i in record} == {"3.10.2", "v1.3.1"}
     # A rerun keeps what is already there.
@@ -178,13 +179,21 @@ def test_binaries_checked_and_helm_extracted(tmp_path):
         info = tarfile.TarInfo("oras")
         info.size = 4
         tar.addfile(info, io.BytesIO(b"oras"))
+    abuf = io.BytesIO()
+    with tarfile.open(fileobj=abuf, mode="w:gz") as tar:
+        for member in ("age/age", "age/age-keygen"):
+            info = tarfile.TarInfo(member)
+            info.size = len(member)
+            tar.addfile(info, io.BytesIO(member.encode()))
     blobs = {"kind": b"kind", "kubectl": b"kubectl", "helm": buf.getvalue(), "clusterctl": b"clusterctl",
-             "oras": obuf.getvalue(), "cosign": b"cosign"}
+             "oras": obuf.getvalue(), "age": abuf.getvalue(), "age-keygen": abuf.getvalue(),
+             "cosign": b"cosign"}
     sha = {k: hashlib.sha256(v).hexdigest() for k, v in blobs.items()}
     lock = lock_with(bootstrapAppliance={"toolChecksums": {"kind": sha["kind"], "kubectl": sha["kubectl"],
                                                           "helm": sha["helm"]}},
                      binarySHA256={"clusterctl-linux-amd64": sha["clusterctl"],
                                    "oras-linux-amd64.tar.gz": sha["oras"],
+                                   "age-linux-amd64.tar.gz": sha["age"],
                                    "cosign-linux-amd64": sha["cosign"]})
     urls = {url: name for name, url, _, _ in archive.binary_list(lock)}
 
@@ -193,6 +202,7 @@ def test_binaries_checked_and_helm_extracted(tmp_path):
     archive.fetch_binaries(lock, tmp_path, fetch=fetch)
     assert (tmp_path / "bin" / "helm").read_bytes() == b"helm"
     assert (tmp_path / "bin" / "oras").read_bytes() == b"oras"
+    assert (tmp_path / "bin" / "age-keygen").read_bytes() == b"age/age-keygen"
     assert (tmp_path / "bin" / "cosign").read_bytes() == b"cosign"
     assert (tmp_path / "bin" / "kind").stat().st_mode & 0o111
     lock["binarySHA256"]["clusterctl-linux-amd64"] = "1" * 64
@@ -220,7 +230,8 @@ def test_sums(tmp_path):
 def test_failed_binary_refresh_keeps_the_old_set(tmp_path):
     (tmp_path / "bin").mkdir()
     (tmp_path / "bin" / "kind").write_bytes(b"old")
-    lock = lock_with(binarySHA256={"clusterctl-linux-amd64": "1" * 64, "oras-linux-amd64.tar.gz": "2" * 64},
+    lock = lock_with(binarySHA256={"clusterctl-linux-amd64": "1" * 64, "oras-linux-amd64.tar.gz": "2" * 64,
+                                   "age-linux-amd64.tar.gz": "5" * 64},
                      bootstrapAppliance={"toolChecksums": {"kind": hashlib.sha256(b"x").hexdigest(),
                                                            "kubectl": "3" * 64, "helm": "4" * 64}})
     with pytest.raises(archive.ArchiveError):

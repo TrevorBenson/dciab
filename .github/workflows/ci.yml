@@ -282,6 +282,83 @@ jobs:
           python3 build/package.py package --payload "$out" --out "$RUNNER_TEMP/r2"
           cmp "$RUNNER_TEMP"/r1/dciab-*.tar "$RUNNER_TEMP"/r2/dciab-*.tar
 
+  seed-e2e:
+    # dciab seed for real: a payload (Zot, the kind node image, the provider images and
+    # manifests, the binaries), then the seed registry and kind cluster built from it alone.
+    name: dciab seed (Zot + kind from a payload)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install pyyaml jsonschema
+      - name: Payload
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/payload"
+          crds="$(python3 hack/fetch_crds.py)"
+          python3 build/inventory.py --manifests "$crds" --format yaml > "$RUNNER_TEMP/images.yaml"
+          python3 build/archive.py binaries --out "$out"
+          python3 build/archive.py images --inventory "$RUNNER_TEMP/images.yaml" --out "$out" --oras "$out/bin/oras" \
+            --only project-zot --only kindest/node --only jetstack --only registry.k8s.io/cluster-api \
+            --only capi-ipam --only ionos-cloud --only metal3-io
+          python3 build/archive.py providers --out "$out" --manifests "$crds"
+          python3 build/archive.py sums --out "$out"
+          du -sh "$out"/*
+      - name: Site config, age identities, and the bootstrap address on a dummy interface
+        run: |
+          set -euo pipefail
+          sudo ip link add dciab0 type dummy
+          sudo ip link set dciab0 up
+          sudo ip addr add 10.30.110.5/32 dev dciab0
+          site="$RUNNER_TEMP/site"
+          mkdir -p "$site"
+          keygen="$RUNNER_TEMP/payload/bin/age-keygen"
+          "$keygen" -o "$site/id1.txt" 2>/dev/null
+          "$keygen" -o "$site/id2.txt" 2>/dev/null
+          python3 - "$site" <<'PY'
+          import subprocess, sys, yaml
+          site = sys.argv[1]
+          keygen = site.replace("site", "payload") + "/bin/age-keygen"
+          cfg = yaml.safe_load(open("examples/proxmox.yaml"))
+          cfg["spec"]["bootstrap"]["recipients"] = [
+              subprocess.run([keygen, "-y", f"{site}/id{i}.txt"], check=True, capture_output=True, text=True).stdout.strip()
+              for i in (1, 2)]
+          cfg["spec"]["pki"] = {"mode": "generate-root", "commonName": "CI Platform Root CA"}
+          yaml.safe_dump(cfg, open(f"{site}/dciab.yaml", "w"), sort_keys=False)
+          PY
+      - name: dciab seed
+        env:
+          DCIAB_PVE_TOKEN: ci-not-a-secret
+        run: |
+          sudo env "PATH=$PATH" "DCIAB_PVE_TOKEN=$DCIAB_PVE_TOKEN" ./dciab seed "$RUNNER_TEMP/site/dciab.yaml" \
+            --payload "$RUNNER_TEMP/payload" --state "$RUNNER_TEMP/state"
+      - name: Check the result, then rerun (must change nothing)
+        env:
+          DCIAB_PVE_TOKEN: ci-not-a-secret
+        run: |
+          set -euo pipefail
+          state="$RUNNER_TEMP/state"
+          kc="$state/bootstrap.kubeconfig"
+          sudo "$RUNNER_TEMP/payload/bin/kubectl" --kubeconfig "$kc" get deployments -A
+          sudo "$RUNNER_TEMP/payload/bin/kubectl" --kubeconfig "$kc" get clusterclasses -A
+          # The provider images came through the seed registry.
+          # (Logs to a file first: grep -q closing the pipe early would fail the step under pipefail.)
+          sudo podman logs dciab-registry > "$RUNNER_TEMP/registry.log" 2>&1
+          grep -q 'jetstack/cert-manager-controller/manifests' "$RUNNER_TEMP/registry.log" \
+            || { echo "the registry served no cert-manager image"; tail -50 "$RUNNER_TEMP/registry.log"; exit 1; }
+          # Nobody can push: the registry is read-only.
+          if sudo "$RUNNER_TEMP/payload/bin/oras" push --ca-file "$state/pki/trust-bundle.pem" \
+               10.30.110.5/ci/test:1 /etc/hostname 2>/dev/null; then
+            echo "pushing to the seed registry should fail"; exit 1
+          fi
+          sudo env "PATH=$PATH" "DCIAB_PVE_TOKEN=$DCIAB_PVE_TOKEN" ./dciab seed "$RUNNER_TEMP/site/dciab.yaml" \
+            --payload "$RUNNER_TEMP/payload" --state "$RUNNER_TEMP/state" --until kind | tee "$RUNNER_TEMP/rerun.txt"
+          grep -q "pki: unchanged" "$RUNNER_TEMP/rerun.txt"
+          grep -q "registry: already serving" "$RUNNER_TEMP/rerun.txt"
+          grep -q "kind: cluster dciab-bootstrap exists" "$RUNNER_TEMP/rerun.txt"
+
   frozen-classes:
     # A class revision freezes when a DCiaB release tag first contains it; drafts may change (docs/VERSIONING.md).
     name: released ClusterClasses are unchanged
