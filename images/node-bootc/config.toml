@@ -1,9 +1,0 @@
-# bootc-image-builder settings for the node disks (mounted by build.sh).
-#
-# The template stays small and thin: its root only has to hold the OS (the node image is
-# about 1.3 GiB) with some headroom. Each node's disk is grown to the cluster's diskGiB
-# when it's created, and dciab-growroot.service grows the root filesystem at first boot.
-# build.sh stops if the node image passes 90% of this size (1.8 GiB): raise it to "5 GiB" then.
-[[customizations.filesystem]]
-mountpoint = "/"
-minsize = "2 GiB"
