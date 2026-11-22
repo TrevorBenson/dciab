@@ -76,8 +76,10 @@ def _inputs(root: Path, doc: dict):
 
 
 def pod_images(doc: dict, images: Dict[str, str]) -> List[str]:
-    """The pinned images the pod pulls (the chrony image is built locally)."""
-    return [images["coredns"]] if render.dns_only(doc) else [images["coredns"], images["caddy"]]
+    """The pinned images the step needs: the pod's, and chrony's base (DCiaB builds its image locally)."""
+    if render.dns_only(doc):
+        return [images["coredns"]]
+    return [images["coredns"], images["caddy"]] + ([images["chronyBase"]] if render.chrony_confs(doc) else [])
 
 
 def layout_names(payload: Path, refs: List[str]) -> List[str]:

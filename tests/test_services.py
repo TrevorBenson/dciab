@@ -61,8 +61,11 @@ def test_dns_only_zone_has_the_registry_name():
                              "bootstrap IN A 10.30.110.5", "registry IN A 10.30.110.5"]
 
 
-def test_full_mode_pulls_coredns_and_caddy():
-    assert cli.pod_images(bare(), IMAGES) == [IMAGES["coredns"], IMAGES["caddy"]]
+def test_full_mode_needs_coredns_caddy_and_chrony_base():
+    assert cli.pod_images(bare(), IMAGES) == [IMAGES["coredns"], IMAGES["caddy"], IMAGES["chronyBase"]]
+    no_ntp = bare()
+    del no_ntp["spec"]["bootstrap"]["ntp"]
+    assert cli.pod_images(no_ntp, IMAGES) == [IMAGES["coredns"], IMAGES["caddy"]]
     assert cli.pod_images(existing(), IMAGES) == [IMAGES["coredns"]]
 
 
@@ -79,13 +82,18 @@ def test_layout_names_come_from_the_payload(tmp_path):
 
 
 def test_readiness_checks_the_registry_name_and_skips_http_in_dns_only(monkeypatch):
-    answers = {"bootstrap.lab1.example.com": ["10.30.110.5"], "5.110.30.10.in-addr.arpa": ["bootstrap.lab1.example.com"]}
-    monkeypatch.setattr(probe, "dns", lambda ip, name, qtype: answers.get(name, []))
+    answers = {}
+    for ip in ("10.30.110.53", "10.30.110.54"):
+        answers[(ip, "bootstrap.lab1.example.com", "A")] = ["10.30.110.5"]
+        answers[(ip, "5.110.30.10.in-addr.arpa", "PTR")] = ["bootstrap.lab1.example.com"]
+    monkeypatch.setattr(probe, "dns", lambda ip, name, qtype: answers.get((ip, name, qtype), []))
     monkeypatch.setattr(probe, "http", lambda url: pytest.fail("no HTTP in DNS-only mode"))
     failed = cli.check(existing(), timeout=0)
     assert failed == [f"DNS on {ip}: registry.lab1.example.com doesn't resolve to 10.30.110.5"
                       for ip in ("10.30.110.53", "10.30.110.54")]
-    answers["registry.lab1.example.com"] = ["10.30.110.5"]
+    answers[("10.30.110.53", "registry.lab1.example.com", "A")] = ["10.30.110.5"]
+    assert len(cli.check(existing(), timeout=0)) == 1
+    answers[("10.30.110.54", "registry.lab1.example.com", "A")] = ["10.30.110.5"]
     assert cli.check(existing(), timeout=0) == []
 
 

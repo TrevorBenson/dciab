@@ -229,12 +229,12 @@ def test_dns_step_with_hypervisors_needs_services_answering(tmp_path, monkeypatc
     cfg.write_text((ROOT / "examples" / "proxmox-bare.yaml").read_text())
     s = plan.load_settings(cfg)
     monkeypatch.setattr(cli.subprocess, "run", lambda *a, **k: pytest.fail("services must not run"))
-    monkeypatch.setattr(probe, "dns", lambda ip, name, qtype: [])
-    with pytest.raises(plan.SeedError, match="run dciab services"):
-        cli.step_dns(ROOT, cfg, tmp_path, tmp_path, s)
-    monkeypatch.setattr(probe, "dns", lambda ip, name, qtype:
-                        ["10.30.110.5"] if (ip, name) == ("10.30.110.54", "registry.lab1.example.com") else [])
-    cli.step_dns(ROOT, cfg, tmp_path, tmp_path, s)
+    good = {("10.30.110.54", "registry.lab1.example.com", "A")}
+    monkeypatch.setattr(probe, "dns", lambda ip, name, qtype: ["10.30.110.5"] if (ip, name, qtype) in good else [])
+    with pytest.raises(plan.SeedError, match="10.30.110.53 doesn't resolve.*run dciab services"):
+        cli.step_dns(ROOT, cfg, tmp_path, tmp_path, s, timeout=0)
+    good.add(("10.30.110.53", "registry.lab1.example.com", "A"))
+    cli.step_dns(ROOT, cfg, tmp_path, tmp_path, s, timeout=0)
 
 
 def test_dns_step_without_hypervisors_runs_dns_only_services(tmp_path, monkeypatch, capsys):

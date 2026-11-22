@@ -103,16 +103,22 @@ def step_preflight(root: Path, config: Path, payload: Path) -> None:
     say("preflight: ok")
 
 
-def step_dns(root: Path, config: Path, payload: Path, state: Path, s) -> None:
+def step_dns(root: Path, config: Path, payload: Path, state: Path, s, timeout: float = 30) -> None:
     site = yaml.safe_load(config.read_text())
     if site["spec"].get("hypervisors"):
         from dciab_services import probe
         ips = site["spec"]["network"]["dnsServiceIPs"]
         name = f"registry.{s.domain.rstrip('.')}"
-        if not any(probe.dns(ip, name, "A") == [s.address] for ip in ips):
-            raise SeedError(f"no DNS service IP ({', '.join(ips)}) resolves {name} to {s.address}; "
-                            f"run dciab services {config} first")
-        say(f"dns: {name} resolves to {s.address} (dciab services)")
+        deadline = time.monotonic() + timeout
+        while True:
+            bad = [ip for ip in ips if probe.dns(ip, name, "A") != [s.address]]
+            if not bad:
+                break
+            if time.monotonic() > deadline:
+                raise SeedError(f"{', '.join(bad)} doesn't resolve {name} to {s.address}; "
+                                f"run dciab services {config} first")
+            time.sleep(2)
+        say(f"dns: {name} resolves to {s.address} on {', '.join(ips)} (dciab services)")
         return
     # DNS-only services, with CoreDNS from the payload. Its output, prefixed, is this step's.
     result = subprocess.run([str(root / "dciab"), "services", str(config), "--state", str(state),
