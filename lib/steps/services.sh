@@ -1,21 +1,26 @@
 #!/usr/bin/env bash
 # dciab services: DNS, NTP and HTTP on the bootstrap host, for sites that start from bare
-# servers (docs/adr/0001-day0-hypervisors-and-services.md).
+# servers (docs/adr/0001-day0-hypervisors-and-services.md); DNS only for the others.
 #
-#   dciab services <config> [--state DIR] [--isos DIR] [--until STEP] [--print]
+#   dciab services <config> [--state DIR] [--isos DIR] [--payload DIR] [--until STEP] [--print]
 #
 # CoreDNS, chrony (only with spec.bootstrap.ntp) and Caddy run as one podman pod with host
 # networking. CoreDNS and chrony answer only on network.dnsServiceIPs, Caddy only on
-# spec.bootstrap.address. Steps, in order; each is safe to re-run:
-#   preflight   root, tools, the config is valid and has spec.hypervisors
+# spec.bootstrap.address. A config without spec.hypervisors (its servers exist already) gets
+# CoreDNS alone, so registry.<network.domain> resolves to the seed registry during bootstrap;
+# dciab seed runs this mode in its dns step. Steps, in order; each is safe to re-run:
+#   preflight   root, tools, the config is valid
 #   render      Corefile, zones, chrony.conf, Caddyfile and pod.yaml -> <state>/services (mode 600)
 #   address     network.dnsServiceIPs added to spec.bootstrap.interface (runtime, like ip addr add)
 #   firewall    runtime-only firewalld ports, when firewalld runs
-#   images      the pinned images present; DCiaB's chrony image built from images/day0-chrony
+#   images      the pinned images present: loaded from the payload's OCI layout when there is
+#               one, else pulled; DCiaB's chrony image built from images/day0-chrony
 #   pod         podman kube play --replace, only when the rendered files changed or the pod isn't running
-#   ready       DNS (forward and reverse) and NTP on each service IP, HTTP on the bootstrap address
+#   ready       DNS (forward, reverse, registry.<domain>) and NTP on each service IP, HTTP on
+#               the bootstrap address
 #
-# --until STEP stops after STEP. --print shows the plan and the rendered files, and changes
+# --payload DIR (default: $DCIAB_PAYLOAD, else <archive>/payload when it exists) is the archive's
+# payload; nothing is pulled from the internet then. --until STEP stops after STEP. --print shows the plan and the rendered files, and changes
 # nothing. <state> defaults to .dciab/state next to the config. ISOs are served from --isos,
 # default spec.bootstrap.workDisk.path/isos, else <state>/isos; answer files from <state>/answers.
 # Teardown: podman kube down <state>/services/pod.yaml.
@@ -27,10 +32,11 @@ STEPS=(preflight render address firewall images pod ready)
 die() { echo "dciab services: $*" >&2; exit 1; }
 usage() { sed -n '5p' "${BASH_SOURCE[0]}" | sed 's/^# *//' >&2; exit 2; }
 
-config="" state="" isos="" until="" print=0
+config="" state="" isos="" until="" print=0 payload="${DCIAB_PAYLOAD:-}"
 while (( $# )); do
   case "$1" in
     --state) state="${2:?}"; shift 2 ;;
+    --payload) payload="${2:?}"; shift 2 ;;
     --isos) isos="${2:?}"; shift 2 ;;
     --until) until="${2:?}"; shift 2 ;;
     --print) print=1; shift ;;
@@ -46,25 +52,30 @@ fi
 config="$(cd "$(dirname "$config")" && pwd)/$(basename "$config")"
 state="${state:-$(dirname "$config")/.dciab/state}"
 state="$(realpath -m "$state")"
+if [[ -z "$payload" && -f "$ROOT/payload/images.yaml" ]]; then
+  payload="$ROOT/payload"
+fi
+if [[ -n "$payload" ]]; then
+  [[ -f "$payload/images.yaml" && -d "$payload/images" ]] || die "$payload: not an archive payload (no images.yaml or images/)"
+  payload="$(cd "$payload" && pwd)"
+fi
 
 export PYTHONPATH="$ROOT/lib${PYTHONPATH:+:$PYTHONPATH}"
 helper() {
   local args=(--root "$ROOT" --state "$state")
   [[ -n "$isos" ]] && args+=(--isos "$isos")
+  [[ -n "$payload" ]] && args+=(--payload "$payload")
   python3 -m dciab_services "${args[@]}" "$config" "$@"
 }
 step() { echo; echo "== services: $1"; }
 finish_if() { if [[ "$until" == "$1" ]]; then echo "dciab services: stopped after '$1' (--until)"; exit 0; fi; }
 
 # Read the plan: shell assignments from the helper, which validates the config.
-WANTED="" INTERFACE="" PREFIX="" SERVICE_IPS="" BOOTSTRAP_ADDRESS="" NTP="" IMAGES=""
-CHRONY_IMAGE="" CHRONY_BASE="" CONF_DIR="" ISOS_DIR="" ANSWERS_DIR="" POD="" FINGERPRINT=""
+MODE="" INTERFACE="" PREFIX="" SERVICE_IPS="" BOOTSTRAP_ADDRESS="" NTP="" IMAGES=""
+IMAGE_LAYOUTS="" CHRONY_IMAGE="" CHRONY_BASE="" CONF_DIR="" ISOS_DIR="" ANSWERS_DIR="" POD="" FINGERPRINT=""
 plan="$(helper env)" || exit $?
 eval "$plan"
-if [[ "$WANTED" != 1 ]]; then
-  echo "dciab services: the config has no spec.hypervisors; nothing to do (this site starts at seed)"
-  exit 0
-fi
+dns_only() { [[ "$MODE" == dns ]]; }
 
 nic_name() {   # spec.bootstrap.interface is a NIC name or its MAC
   local want="$1" dev
@@ -88,10 +99,11 @@ applied() { [[ -f "$CONF_DIR/applied" && "$(cat "$CONF_DIR/applied")" == "$FINGE
 
 if (( print )); then
   echo "dciab services plan (--print: nothing is changed)"
+  dns_only && echo "  mode:        DNS only (the config has no spec.hypervisors)"
   echo "  interface:   $INTERFACE ($(nic_name "$INTERFACE" || echo 'not found on this host'))"
   for ip in $SERVICE_IPS; do echo "  address:     $ip/$PREFIX (DNS$([[ "$NTP" == 1 ]] && echo ', NTP'))"; done
-  echo "  HTTP:        http://$BOOTSTRAP_ADDRESS:80 (ISOs from $ISOS_DIR, answer files from $ANSWERS_DIR)"
-  echo "  images:      $IMAGES"
+  dns_only || echo "  HTTP:        http://$BOOTSTRAP_ADDRESS:80 (ISOs from $ISOS_DIR, answer files from $ANSWERS_DIR)"
+  echo "  images:      $IMAGES${payload:+ (from $payload)}"
   [[ "$NTP" == 1 ]] && echo "  chrony:      $CHRONY_IMAGE (built from images/day0-chrony on $CHRONY_BASE)"
   if [[ $EUID -eq 0 ]] && command -v podman >/dev/null; then
     if applied && pod_running; then echo "  pod $POD:  running with this config (no change)"
@@ -121,10 +133,14 @@ finish_if preflight
 
 step render
 helper write
-mkdir -p "$ISOS_DIR" "$ANSWERS_DIR"
-chmod 700 "$ANSWERS_DIR"   # answer files carry password hashes
+selinux_dirs=("$CONF_DIR")
+if ! dns_only; then
+  mkdir -p "$ISOS_DIR" "$ANSWERS_DIR"
+  chmod 700 "$ANSWERS_DIR"   # answer files carry password hashes
+  selinux_dirs+=("$ANSWERS_DIR" "$ISOS_DIR")
+fi
 if command -v selinuxenabled >/dev/null && selinuxenabled; then
-  chcon -R -t container_file_t "$CONF_DIR" "$ANSWERS_DIR" "$ISOS_DIR"
+  chcon -R -t container_file_t "${selinux_dirs[@]}"
 fi
 finish_if render
 
@@ -142,7 +158,8 @@ finish_if address
 step firewall
 if command -v firewall-cmd >/dev/null && firewall-cmd --state >/dev/null 2>&1; then
   zone="$(firewall-cmd --get-zone-of-interface="$nic" 2>/dev/null || firewall-cmd --get-default-zone)"
-  ports=(53/udp 53/tcp 80/tcp)
+  ports=(53/udp 53/tcp)
+  dns_only || ports+=(80/tcp)
   [[ "$NTP" == 1 ]] && ports+=(123/udp)
   for p in "${ports[@]}"; do
     if ! firewall-cmd --zone="$zone" --query-port="$p" >/dev/null; then
@@ -156,8 +173,22 @@ fi
 finish_if firewall
 
 step images
-for img in $IMAGES; do
-  podman image exists "$img" || podman pull "$img" 9>&-
+read -ra refs <<<"$IMAGES"
+read -ra layouts <<<"$IMAGE_LAYOUTS"
+for i in "${!refs[@]}"; do
+  img="${refs[$i]}"
+  if podman image exists "$img"; then
+    echo "$img already present"
+  elif [[ -n "$payload" ]]; then
+    # From the payload's OCI layout, then named as bundle.lock pins it (repo:tag; the digest
+    # is the layout's own), so the pod finds it without a registry.
+    id="$(podman pull -q "oci:$payload/images:${layouts[$i]}" 9>&- | tail -n1)"
+    podman tag "$id" "${img%@*}"
+    podman image exists "$img" || die "$img: the payload's copy (${layouts[$i]}) doesn't match the pinned digest"
+    echo "loaded $img from the payload"
+  else
+    podman pull "$img" 9>&-
+  fi
 done
 if [[ "$NTP" == 1 ]] && ! podman image exists "$CHRONY_IMAGE"; then
   podman image exists "$CHRONY_BASE" || podman pull "$CHRONY_BASE" 9>&-

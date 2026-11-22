@@ -28,7 +28,7 @@ What each phase builds, against the component list in [COMPONENTS.md](COMPONENTS
 - [ ] Real-cluster spike on Proxmox from the template
 - [ ] Archive build pipeline ([build/](../build/README.md)): image inventory, image pull, charts, providers, binaries, checksums, SBOMs, packaging and signing (`dciab verify-archive`) done; node images next
 - [x] `dciab cluster-values`: capi-cluster values for MGMT, INFRA and workload clusters, generated from the site config
-- [x] `dciab seed`: platform CA (generated with its key age-encrypted, or imported), read-only Zot loaded from the payload, kind pulling through it, providers and ClusterClasses from the payload ([SEED.md](SEED.md)). Still to come: DNS for `registry.<domain>`
+- [x] `dciab seed`: platform CA (generated with its key age-encrypted, or imported), read-only Zot loaded from the payload, kind pulling through it, providers and ClusterClasses from the payload, DNS for `registry.<domain>` ([SEED.md](SEED.md))
 - [ ] `dciab mgmt`: builds MGMT, installs Cilium and the providers, and moves Cluster API into MGMT (not yet proven on real infrastructure). Still to come: MGMT's services (Longhorn, Metal3, PowerDNS, Kea) and the DNS handoff
 
 ## Day 0 for bare servers

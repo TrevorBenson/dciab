@@ -6,6 +6,10 @@ Steps, in order. Each is safe to re-run, and a finished run changes nothing:
   preflight  root; the config is valid; tools present (the payload's bin/ first in PATH)
   pki        the platform CA (generated or imported), the trust bundle, and the registry's
              TLS certificate, in <state>/pki (see pki.py)
+  dns        registry.<network.domain> resolving to spec.bootstrap.address on
+             network.dnsServiceIPs, which cluster nodes' registry mirrors use. Without
+             spec.hypervisors: `dciab services` in DNS-only mode (CoreDNS from the payload).
+             With them: checks that `dciab services` (run before the hypervisors) answers.
   registry   every payload image written into the registry's storage under its upstream
              name and tag, then Zot serving it read-only over TLS on
              spec.bootstrap.address:443 (container dciab-registry)
@@ -43,7 +47,7 @@ from .plan import (KIND_CLUSTER, REGISTRY_CONTAINER, REGISTRY_PORT, SeedError, f
                    kind_config, load_settings, missing_images, payload_images, registry_tag, spec_hash,
                    upstream, zot_config)
 
-STEPS = ["preflight", "pki", "registry", "kind", "providers"]
+STEPS = ["preflight", "pki", "dns", "registry", "kind", "providers"]
 TOOLS = ["podman", "kind", "kubectl", "helm", "oras", "openssl", "age"]
 
 
@@ -97,6 +101,28 @@ def step_preflight(root: Path, config: Path, payload: Path) -> None:
         sys.stdout.write(result.stdout)
         raise SeedError("the config is not valid; fix it first (dciab validate)")
     say("preflight: ok")
+
+
+def step_dns(root: Path, config: Path, payload: Path, state: Path, s) -> None:
+    site = yaml.safe_load(config.read_text())
+    if site["spec"].get("hypervisors"):
+        from dciab_services import probe
+        ips = site["spec"]["network"]["dnsServiceIPs"]
+        name = f"registry.{s.domain.rstrip('.')}"
+        if not any(probe.dns(ip, name, "A") == [s.address] for ip in ips):
+            raise SeedError(f"no DNS service IP ({', '.join(ips)}) resolves {name} to {s.address}; "
+                            f"run dciab services {config} first")
+        say(f"dns: {name} resolves to {s.address} (dciab services)")
+        return
+    # DNS-only services, with CoreDNS from the payload. Its output, prefixed, is this step's.
+    result = subprocess.run([str(root / "dciab"), "services", str(config), "--state", str(state),
+                             "--payload", str(payload)], text=True, stdout=subprocess.PIPE,
+                            stderr=subprocess.STDOUT)
+    for line in result.stdout.splitlines():
+        if line.strip() and not line.startswith("== services:"):
+            say(f"dns: {line}")
+    if result.returncode != 0:
+        raise SeedError(f"dciab services (DNS only) failed ({result.returncode})")
 
 
 def step_registry(root: Path, payload: Path, state: Path, s) -> None:
@@ -259,6 +285,8 @@ def main(argv: Optional[List[str]] = None) -> int:
             elif step == "pki":
                 for line in pki.ensure(state / "pki", s, args.age_identity) or ["unchanged"]:
                     say(f"pki: {line}")
+            elif step == "dns":
+                step_dns(root, config, payload, state, s)
             elif step == "registry":
                 step_registry(root, payload, state, s)
             elif step == "kind":

@@ -1,13 +1,17 @@
 """dciab services helper, called by lib/steps/services.sh.
 
-    python3 -m dciab_services --root ROOT CONFIG --state DIR [--isos DIR] ACTION
+    python3 -m dciab_services --root ROOT CONFIG --state DIR [--isos DIR] [--payload DIR] ACTION
 
 Actions:
   env     shell assignments the step reads (eval): interface, addresses, images, paths
   show    every rendered file, for --print; writes nothing
   write   write the rendered files under <state>/services (dirs 700, files 600); only
           files whose content changed are rewritten
-  check   readiness: DNS both ways and HTTP on their addresses, NTP when served
+  check   readiness: DNS both ways and registry.<domain> on each service IP; HTTP and NTP
+          when served
+
+Sites without spec.hypervisors get DNS only (render.dns_only). With --payload, env also
+gives each image's name in the payload's OCI layout (IMAGE_LAYOUTS, same order as IMAGES).
 
 Exit codes: 0 done, 1 the config can't produce the services or a check failed, 2 could not run.
 """
@@ -71,6 +75,18 @@ def _inputs(root: Path, doc: dict):
     return images, chrony
 
 
+def pod_images(doc: dict, images: Dict[str, str]) -> List[str]:
+    """The pinned images the pod pulls (the chrony image is built locally)."""
+    return [images["coredns"]] if render.dns_only(doc) else [images["coredns"], images["caddy"]]
+
+
+def layout_names(payload: Path, refs: List[str]) -> List[str]:
+    """Each reference's name in the payload's OCI layout (payload/images)."""
+    from dciab_seed.plan import find_image, payload_images
+    found = payload_images(payload)
+    return [find_image(found, ref)["name"] for ref in refs]
+
+
 def _files(doc: dict, root: Path, paths: Paths) -> Dict[str, str]:
     images, chrony = _inputs(root, doc)
     return render.render(doc, images, chrony, str(paths.conf), str(paths.isos), str(paths.answers))
@@ -118,11 +134,13 @@ def check(doc: dict, timeout: float = 60.0) -> List[str]:
             ptr = probe.dns(ip, probe.reverse_name(boot), "PTR")
             if ptr != [f"bootstrap.{domain}"]:
                 failed.append(f"DNS on {ip}: {boot} doesn't resolve back to bootstrap.{domain} (got {ptr})")
+            if probe.dns(ip, f"registry.{domain}", "A") != [boot]:
+                failed.append(f"DNS on {ip}: registry.{domain} doesn't resolve to {boot}")
             stratum = probe.ntp(ip) if net["ntp"] else 1
             if stratum is None or not 1 <= stratum <= 15:
                 failed.append(f"NTP on {ip}: " + ("no answer" if stratum is None else
                                                   f"not synchronised (stratum {stratum})"))
-        if not probe.http(f"http://{boot}/healthz"):
+        if not net["dnsOnly"] and not probe.http(f"http://{boot}/healthz"):
             failed.append(f"HTTP on {boot}:80: no answer")
         if not failed or time.monotonic() > deadline:
             return failed
@@ -134,6 +152,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument("--root", required=True)
     ap.add_argument("--state", required=True)
     ap.add_argument("--isos", help="installer ISOs to serve (default: workDisk.path/isos, else <state>/isos)")
+    ap.add_argument("--payload", help="the archive's payload: images come from its OCI layout")
     ap.add_argument("config")
     ap.add_argument("action", choices=["env", "show", "write", "check"])
     args = ap.parse_args(argv)
@@ -147,12 +166,6 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     root = Path(args.root).resolve()
     doc = _load(Path(args.config), root)
-    if not render.wanted(doc):
-        if args.action == "env":
-            print("WANTED=0")
-            return 0
-        print("dciab services: the config has no spec.hypervisors; this site starts at seed", file=sys.stderr)
-        return 0
     paths = Paths(doc, Path(args.state), args.isos)
     try:
         files = _files(doc, root, paths)
@@ -163,14 +176,24 @@ def main(argv: Optional[List[str]] = None) -> int:
     if args.action == "env":
         images, chrony = _inputs(root, doc)
         net = render.network(doc)
+        refs = pod_images(doc, images)
+        layouts: List[str] = []
+        if args.payload:
+            from dciab_seed.plan import SeedError
+            try:
+                layouts = layout_names(Path(args.payload), refs)
+            except SeedError as exc:
+                print(f"dciab services: {exc}", file=sys.stderr)
+                return 1
         env = {
-            "WANTED": "1",
+            "MODE": "dns" if net["dnsOnly"] else "full",
             "INTERFACE": net["interface"],
             "PREFIX": str(net["prefix"]),
             "SERVICE_IPS": " ".join(net["serviceIPs"]),
             "BOOTSTRAP_ADDRESS": net["bootstrapAddress"],
             "NTP": "1" if net["ntp"] else "0",
-            "IMAGES": " ".join([images["coredns"], images["caddy"]]),
+            "IMAGES": " ".join(refs),
+            "IMAGE_LAYOUTS": " ".join(layouts),
             "CHRONY_IMAGE": chrony or "",
             "CHRONY_BASE": images["chronyBase"],
             "CONF_DIR": str(paths.conf),
@@ -194,5 +217,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             print(f"dciab services: not ready: {f}", file=sys.stderr)
         if failed:
             return 1
-        print("ready: DNS (forward and reverse), HTTP" + (", NTP" if render.network(doc)["ntp"] else ""))
+        net = render.network(doc)
+        print("ready: DNS (forward, reverse, registry)" + ("" if net["dnsOnly"] else ", HTTP")
+              + (", NTP" if net["ntp"] else ""))
     return 0
