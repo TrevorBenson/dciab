@@ -22,7 +22,8 @@ What each phase builds, against the component list in [COMPONENTS.md](COMPONENTS
 - [x] ClusterClass end-to-end test: CAPI and all providers on kind, one Cluster per class, generated objects verified (no infrastructure)
 - [x] Node template recipe: image-builder with a Rocky 10 Proxmox target (`images/node/`)
 - [x] First Proxmox template built and verified
-- [ ] Node templates for vSphere and Metal3
+- [ ] Node templates for vSphere and Metal3: the bootc recipe builds them (`vmdk` with VMware Tools; a `metal` variant with drivers and firmware); not yet tested on either platform
+- [ ] Node image for the Kubernetes upgrade gate: the recipe builds it (`build.sh --upgrade-from`); not yet used in a test
 - [x] Cilium install for any cluster (`addons/cilium`), with kube-proxy replaced
 - [ ] Real-cluster spike on Proxmox from the template
 - [ ] Archive build pipeline ([build/](../build/README.md)): image inventory, image pull, charts, providers, binaries and checksums done; packaging, `dciab seed`, node images, SBOMs and signing next
