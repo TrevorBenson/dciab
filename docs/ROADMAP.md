@@ -39,7 +39,7 @@ Decided in [ADR 0001](adr/0001-day0-hypervisors-and-services.md).
 - [x] `bundle.lock`: Proxmox VE installer pinned; ESXi entry (not shipped); Day 0 service images
 - [x] Day 0 image digests pinned (CoreDNS, Caddy, chrony base)
 - [ ] ESXi build tested and pinned
-- [ ] `dciab services`: CoreDNS, chrony and Caddy as one pod on the DNS service IPs
+- [x] `dciab services`: CoreDNS, chrony and Caddy as one pod on the DNS service IPs
 - [ ] `dciab hypervisors` for Proxmox VE: Redfish preparation, virtual media install, API token, bridge and storage
 - [ ] `dciab hypervisors` for ESXi
 - [ ] Live checks: BMC routes, Redfish and credentials
@@ -54,6 +54,15 @@ Decided in [ADR 0002](adr/0002-bootstrap-appliance-on-ventoy.md).
 - [ ] Day 0 images preloaded in the appliance
 - [ ] `dciab media`: copy the USB payload to the work disk, and run the bootstrap's heavy state from it
 - [ ] Plain (non-Ventoy) stick for strict Secure Boot sites
+
+## Platform interoperability
+
+Proposed for phases 3 and 4. Only the first piece exists: `dciab cluster-values` already gives workload clusters Authentik's OIDC issuer.
+
+- [ADR 0004](adr/0004-identity-and-sso.md): identity and SSO (Authentik, SPIFFE/SPIRE)
+- [ADR 0005](adr/0005-secrets.md): secrets (OpenBao, External Secrets Operator, platform PKI)
+- [ADR 0006](adr/0006-iac-path.md): the IaC path (OpenTofu, Terramate, Terratest, Terrakube with OPA)
+- [ADR 0007](adr/0007-detection-to-response.md): detection to response (Tetragon, Suricata, OpenSearch, SOAR)
 
 ## Backlog
 
