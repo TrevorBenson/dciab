@@ -1,0 +1,29 @@
+# DCiaB defaults for Longhorn on every cluster that runs it (MGMT first).
+# Per-site values (replica count, backup target and its credentials Secret) are added by
+# install.sh from the config's spec.storage.longhorn. Version and chart source: bundle.lock.
+# Images: nodes pull every upstream image through the site registry's mirrors (the
+# ClusterClasses configure them), so the chart keeps its upstream image names.
+
+# Longhorn is the cluster's default StorageClass ("longhorn").
+persistence:
+  defaultClass: true
+  reclaimPolicy: Delete
+
+defaultSettings:
+  # Image-mode nodes have read-only /usr and /opt; replica data lives under /var.
+  defaultDataPath: /var/lib/longhorn
+  # Don't schedule replicas on a disk with less than this much free space (percent).
+  storageMinimalAvailablePercentage: 15
+  # Don't let a node drain take down the last healthy replica of a volume.
+  nodeDrainPolicy: block-if-contains-last-replica
+
+csi:
+  kubeletRootDir: /var/lib/kubelet
+
+# No ingress: the UI stays a ClusterIP Service until the platform's gateway and SSO
+# front it.
+ingress:
+  enabled: false
+
+longhornUI:
+  replicas: 1

@@ -17,12 +17,15 @@
 #   move        clusterctl move: every CAPI object, MGMT's own Cluster and the
 #               ClusterClasses, from the bootstrap cluster to MGMT
 #   adopt       the classes and mgmt Helm releases on MGMT take over the moved objects
+#   longhorn    addons/longhorn/install.sh: Longhorn, MGMT's default StorageClass, backed up
+#               to spec.storage.longhorn's target; after the move, so a storage problem
+#               never holds up the pivot, and the bootstrap cluster can go once it finishes
 #
 # --until STEP stops after STEP. <state> defaults to .dciab/state next to the config.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-STEPS=(preflight values cluster control-plane cilium providers move adopt)
+STEPS=(preflight values cluster control-plane cilium providers move adopt longhorn)
 NS=cluster-mgmt
 CLASS_NS=dciab-clusterclasses
 
@@ -156,5 +159,10 @@ apply_credentials "$mgmt_kubeconfig"
 on_mgmt helm upgrade --install classes "$ROOT/charts/capi-clusterclasses" --namespace "$CLASS_NS" --create-namespace
 on_mgmt helm upgrade --install mgmt "$ROOT/charts/capi-cluster" --namespace "$NS" --values "$values"
 on_mgmt kubectl -n "$NS" get cluster mgmt
+finish_if adopt
+
+step longhorn
+# The chart comes from $DCIAB_PAYLOAD/charts when DCIAB_PAYLOAD is set.
+"$ROOT/addons/longhorn/install.sh" "$config" "$mgmt_kubeconfig"
 echo
 echo "dciab mgmt: done. MGMT manages itself; kubeconfig: $mgmt_kubeconfig"
