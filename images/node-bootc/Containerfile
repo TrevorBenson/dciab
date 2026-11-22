@@ -82,6 +82,11 @@ RUN mkdir -p /usr/libexec/cni \
 # Trade-off: anyone with Proxmox API access to a node VM can run commands in it.
 RUN sed -i 's/--allow-rpcs=/--allow-rpcs=guest-exec,guest-exec-status,/' /etc/sysconfig/qemu-ga \
  && grep -q -- '--allow-rpcs=guest-exec,guest-exec-status,' /etc/sysconfig/qemu-ga
+# The guest agent's SELinux domain may not run cloud-init, so guest-exec of
+# `cloud-init status` gets "Permission denied". Load a narrow policy module that allows
+# exactly that (see the .cil file). The module store is under /etc/selinux, which bootc keeps.
+RUN semodule -i /usr/share/dciab/selinux/dciab-qemu-ga.cil \
+ && semodule -l | grep -qx dciab-qemu-ga
 # cloud-init's units are enabled by the package's systemd presets.
 RUN systemctl enable NetworkManager crio kubelet chronyd sshd qemu-guest-agent vmtoolsd iscsid dciab-growroot
 

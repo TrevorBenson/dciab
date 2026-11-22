@@ -109,6 +109,12 @@ mkdir -p "$OUT"
 # One build at a time: every build writes its disks to the same folder.
 exec 9>"$OUT/.lock"
 flock -n 9 || { echo "build.sh: another build is using $OUT" >&2; exit 1; }
+# After taking the lock, so a refused build never touches another build's files:
+# hand the outputs back to the user who ran sudo, so they can be read and removed without root.
+if [[ -n "${SUDO_UID:-}" ]]; then
+  # shellcheck disable=SC2153  # SUDO_GID is set by sudo, alongside SUDO_UID
+  trap 'chown -R "$SUDO_UID:${SUDO_GID:-$SUDO_UID}" "$OUT" 2>/dev/null || true' EXIT
+fi
 # Disks from an earlier run must never be mistaken for this one's.
 find "$OUT" -mindepth 1 -maxdepth 1 ! -name rocky-bootc ! -name .lock -exec rm -rf {} +
 
