@@ -56,8 +56,25 @@ jobs:
           python3 build/archive.py images --inventory images.yaml --out "$out" --oras "$out/bin/oras"
           python3 build/archive.py charts --out "$out"
           python3 build/archive.py providers --out "$out" --manifests "$crds"
+          python3 build/package.py tools --out "$RUNNER_TEMP/build"
+          python3 build/package.py sboms --payload "$out" --syft "$RUNNER_TEMP/build/tools/syft"
           python3 build/archive.py sums --out "$out"
           du -sh "$out"/* "$out"
+      - name: Package, sign with a throwaway key, verify
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/payload" cosign="$RUNNER_TEMP/payload/bin/cosign" keys="$RUNNER_TEMP/keys"
+          mkdir -p "$keys"
+          COSIGN_PASSWORD="$(openssl rand -hex 16)"
+          export COSIGN_PASSWORD
+          (cd "$keys" && "$cosign" generate-key-pair)
+          python3 build/package.py package --payload "$out" --out "$RUNNER_TEMP/dist" \
+            --signing-key "$keys/cosign.key" --cosign "$cosign"
+          rm -rf "$out/images"   # room on the runner; the tar holds them now
+          tar="$(ls "$RUNNER_TEMP"/dist/dciab-*.tar)"
+          ls -l "$tar"; du -h "$tar"
+          ./dciab verify-archive --key "$keys/cosign.pub" --cosign "$cosign" "$tar"
+          tar -xOf "$tar" --wildcards '*/MANIFEST' > "$RUNNER_TEMP/MANIFEST"
       - uses: actions/upload-artifact@v4
         with:
           name: archive-manifest
@@ -65,3 +82,5 @@ jobs:
             images.yaml
             ${{ runner.temp }}/payload/images.yaml
             ${{ runner.temp }}/payload/SHA256SUMS
+            ${{ runner.temp }}/payload/sboms
+            ${{ runner.temp }}/MANIFEST

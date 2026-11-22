@@ -18,7 +18,7 @@
   DIR/charts and checks its sha256 against chartDigests.
 - providers: copies the Cluster API, provider and cert-manager manifests that
   hack/fetch_crds.py downloaded and checked (its output folder) into DIR/providers.
-- binaries: downloads kind, kubectl, helm, clusterctl and oras into DIR/bin and checks
+- binaries: downloads kind, kubectl, helm, clusterctl, oras and cosign into DIR/bin and checks
   each against bundle.lock.
 - sums: writes DIR/SHA256SUMS for every file in DIR. Signing will sign this file.
 
@@ -117,18 +117,20 @@ def split_ref(ref: str):
 
 
 def layout_name(ref: str) -> str:
-    """The image's tag in the OCI layout: its repository and tag, as one valid tag.
+    """The image's tag in the OCI layout: its repository, tag and digest start, as one valid tag.
 
     images.yaml maps each name back to the source reference; the name only has to be
-    unique and readable. Too long for a tag: the end is replaced by a hash.
+    unique and readable. Too long for a tag: the middle is replaced by a hash.
     """
     repo, tag, digest = split_ref(ref)
     if not digest:
         raise ArchiveError(f"{ref}: not pinned by digest")
-    name = re.sub(r"[^A-Za-z0-9._-]", "_", f"{repo}_{tag or digest.replace(':', '-')}")
-    if len(name) > 128:
-        name = name[:111] + "_" + hashlib.sha256(name.encode()).hexdigest()[:16]
-    return name
+    # The digest's start keeps names unique: two references can sanitize to the same text.
+    suffix = "_" + digest.split(":", 1)[1][:12]
+    name = re.sub(r"[^A-Za-z0-9._-]", "_", f"{repo}_{tag or 'untagged'}")
+    if len(name) + len(suffix) > 128:
+        name = name[:128 - len(suffix) - 17] + "_" + hashlib.sha256(name.encode()).hexdigest()[:16]
+    return name + suffix
 
 
 def read_inventory(path: Path) -> List[dict]:
@@ -297,6 +299,14 @@ def binary_list(lock: dict) -> List[tuple]:
         ("oras", f"https://github.com/oras-project/oras/releases/download/{tools['oras']}/"
                  f"oras_{tools['oras'].lstrip('v')}_linux_amd64.tar.gz",
          b.get("oras-linux-amd64.tar.gz", ""), "oras"),
+        # dciab seed encrypts the generated platform CA key with age; age-keygen makes identities.
+        ("age", f"https://github.com/FiloSottile/age/releases/download/{tools['age']}/age-{tools['age']}-linux-amd64.tar.gz",
+         b.get("age-linux-amd64.tar.gz", ""), "age/age"),
+        ("age-keygen", f"https://github.com/FiloSottile/age/releases/download/{tools['age']}/age-{tools['age']}-linux-amd64.tar.gz",
+         b.get("age-linux-amd64.tar.gz", ""), "age/age-keygen"),
+        # Checks the archive's signed MANIFEST at the site (dciab verify-archive).
+        ("cosign", f"https://github.com/sigstore/cosign/releases/download/{tools['cosign']}/cosign-linux-amd64",
+         b.get("cosign-linux-amd64", ""), None),
     ]
 
 
@@ -307,10 +317,12 @@ def download(url: str, dest: Path) -> None:
 
 
 def fetch_binaries(lock: dict, out: Path, fetch: Callable[[str, Path], None] = download,
-                   print_sums: bool = False) -> List[str]:
-    dest = staging(out, "bin")
+                   print_sums: bool = False, binaries: Optional[List[tuple]] = None,
+                   folder: str = "bin") -> List[str]:
+    """Download binary_list(lock) (or the given binaries) into DIR/<folder>, each checked."""
+    dest = staging(out, folder)
     lines = []
-    for name, url, want, member in binary_list(lock):
+    for name, url, want, member in (binary_list(lock) if binaries is None else binaries):
         if not print_sums and not SHA256.fullmatch(want or ""):
             raise ArchiveError(f"{name}: no sha256 pinned in bundle.lock for {url} (run with --print-sums, review, pin)")
         with tempfile.TemporaryDirectory() as tmp:
@@ -338,7 +350,7 @@ def fetch_binaries(lock: dict, out: Path, fetch: Callable[[str, Path], None] = d
     if print_sums:
         shutil.rmtree(dest)
     else:
-        replace_dir(dest, out / "bin")  # all verified, or the old set stays
+        replace_dir(dest, out / folder)  # all verified, or the old set stays
     return lines
 
 

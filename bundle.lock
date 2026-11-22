@@ -78,6 +78,8 @@ images:
   kubeVip: ghcr.io/kube-vip/kube-vip:v1.3.1@sha256:1962f9daf226503f7e6b107f595cb28b7917fd2d0113957075e19a3e5a6c1e33
   # The node image the bootstrap kind cluster boots: kind's own default for tools.kind.
   kindNode: docker.io/kindest/node:v1.37.0@sha256:a1ed56cfb0e7b93589bdf97c8cd566405a265939e3620fc4f5de89adff580ae5
+  # The seed registry dciab seed runs on the bootstrap host (Zot).
+  zot: ghcr.io/project-zot/zot-linux-amd64:v2.1.20@sha256:95a837a0afacf5b7edc0c92493f04beee6891989b8d2fd50a00cf65a1e6d4fd5
 
 # Node images: VM templates cluster nodes are cloned from, built with Kubernetes
 # image-builder (images/node/README.md). Built artifacts are never committed.
@@ -200,11 +202,17 @@ imageDigests:
 binarySHA256:
   clusterctl-linux-amd64: "c7301a8515ed329562b06c958463051dd55d9649fac591393f5df54a868fa79b"
   oras-linux-amd64.tar.gz: "66fb0ad7206f3f6fa77ed5b552049d364ccf4b50b1684554f731f76302b52ca0"   # tools.oras
+  age-linux-amd64.tar.gz: "bdc69c09cbdd6cf8b1f333d372a1f58247b3a33146406333e30c0f26e8f51377"   # tools.age
+  cosign-linux-amd64: "064954c5d8c7e3b28188eee5b1727b31c411550bc5fefd41aa672d3c761d103a"        # tools.cosign
+  syft_linux_amd64.tar.gz: "ad92bd3ec1b94a3df01d4d0aec199afa9c42b72e86da436ff5f837914d32706b"   # tools.syft (build only: build/package.py tools)
 
 tools:
   helm: v4.3.2
+  age: v1.3.1     # encrypts the generated platform CA key to spec.bootstrap.recipients
   oras: v1.3.6    # copies images into the archive's OCI layout and into the site registry
   kind: v0.33.0   # default node image: Kubernetes v1.37.0 (CAPI v1.14 supports it as a management cluster)
+  cosign: v2.6.1  # signs the archive's MANIFEST (build) and verifies it offline (dciab verify-archive)
+  syft: v1.57.2   # SBOMs of the archive's images and binaries (build only)
 
 # sha256 of every manifest hack/fetch_crds.py downloads; it refuses a mismatch or an
 # unpinned file. After a version change: python3 hack/fetch_crds.py --print-checksums,
