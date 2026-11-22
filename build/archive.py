@@ -30,6 +30,7 @@ and helm (charts); CI runs it.
 from __future__ import annotations
 
 import argparse
+import fcntl
 import hashlib
 import json
 import os
@@ -75,6 +76,32 @@ def sha256_file(path: Path) -> str:
         for chunk in iter(lambda: f.read(1 << 20), b""):
             h.update(chunk)
     return h.hexdigest()
+
+
+def write_atomic(path: Path, text: str) -> None:
+    tmp = path.with_name(f".{path.name}.tmp")
+    tmp.write_text(text)
+    os.replace(tmp, path)
+
+
+def replace_dir(staged: Path, dest: Path) -> None:
+    """Swap a fully built staging folder in for dest, so dest is never half-replaced."""
+    old = dest.with_name(f".{dest.name}.old")
+    if old.exists():
+        shutil.rmtree(old)
+    if dest.exists():
+        os.replace(dest, old)
+    os.replace(staged, dest)
+    if old.exists():
+        shutil.rmtree(old)
+
+
+def staging(out: Path, name: str) -> Path:
+    path = out / f".{name}.new"
+    if path.exists():
+        shutil.rmtree(path)
+    path.mkdir(parents=True)
+    return path
 
 
 # ---------------------------------------------------------------- images
@@ -125,6 +152,12 @@ def layout_digests(layout: Path) -> Dict[str, str]:
     return out
 
 
+def blob_ok(layout: Path, digest: str) -> bool:
+    """The image's top manifest is in the layout and intact (a rerun then skips it)."""
+    blob = layout / "blobs" / "sha256" / digest.split(":", 1)[1]
+    return blob.is_file() and "sha256:" + sha256_file(blob) == digest
+
+
 def resolve_digests(entries: List[dict], runner: Runner = run_bytes) -> List[str]:
     """bundle.lock imageDigests lines for the inventory's images that have no digest."""
     lines = []
@@ -155,7 +188,7 @@ def copy_images(entries: List[dict], out: Path, only: Optional[List[str]] = None
         ref = e["image"]
         repo, tag, digest = split_ref(ref)
         name = layout_name(ref)
-        if have.get(name) == digest:
+        if have.get(name) == digest and blob_ok(layout, digest):
             print(f"have  {name}")
         else:
             print(f"copy  {ref}")
@@ -180,7 +213,7 @@ def copy_images(entries: List[dict], out: Path, only: Optional[List[str]] = None
     if images_yaml.is_file():
         old = {i["image"]: i for i in (yaml.safe_load(images_yaml.read_text()) or {}).get("images", [])}
     old.update({i["image"]: i for i in record})
-    images_yaml.write_text(yaml.safe_dump({"images": [old[k] for k in sorted(old)]}, sort_keys=False))
+    write_atomic(images_yaml, yaml.safe_dump({"images": [old[k] for k in sorted(old)]}, sort_keys=False))
     return record
 
 
@@ -195,8 +228,7 @@ def chart_list(lock: dict) -> List[tuple]:
 
 
 def pull_charts(lock: dict, out: Path, print_digests: bool = False, runner: Runner = run) -> List[str]:
-    dest = out / "charts"
-    dest.mkdir(parents=True, exist_ok=True)
+    dest = staging(out, "charts")
     unpinned = []
     lines = []
     for name, version, repo, want in chart_list(lock):
@@ -215,9 +247,13 @@ def pull_charts(lock: dict, out: Path, print_digests: bool = False, runner: Runn
             print(f"chart {pulled[0].name} {got}")
     if print_digests:
         print("chartDigests:\n" + "\n".join(lines))
+        shutil.rmtree(dest)
     elif unpinned:
+        shutil.rmtree(dest)
         raise ArchiveError(f"no bundle.lock chartDigests for {', '.join(unpinned)} "
                            "(run with --print-digests, review, pin)")
+    else:
+        replace_dir(dest, out / "charts")  # only the charts the lock lists now
     return lines
 
 
@@ -230,13 +266,12 @@ def copy_providers(manifests: Path, out: Path) -> int:
     files = sorted(f for f in manifests.rglob("*") if f.is_file() and f.name != ".complete")
     if not files:
         raise ArchiveError(f"{manifests}: no manifests there")
-    dest = out / "providers"
-    if dest.exists():
-        shutil.rmtree(dest)
+    dest = staging(out, "providers")
     for f in files:
         target = dest / f.relative_to(manifests)
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(f, target)
+    replace_dir(dest, out / "providers")
     print(f"providers {len(files)} files")
     return len(files)
 
@@ -273,8 +308,7 @@ def download(url: str, dest: Path) -> None:
 
 def fetch_binaries(lock: dict, out: Path, fetch: Callable[[str, Path], None] = download,
                    print_sums: bool = False) -> List[str]:
-    dest = out / "bin"
-    dest.mkdir(parents=True, exist_ok=True)
+    dest = staging(out, "bin")
     lines = []
     for name, url, want, member in binary_list(lock):
         if not print_sums and not SHA256.fullmatch(want or ""):
@@ -301,6 +335,10 @@ def fetch_binaries(lock: dict, out: Path, fetch: Callable[[str, Path], None] = d
             shutil.move(str(got_file), target)
             target.chmod(0o755)
             print(f"bin   {name} {want}")
+    if print_sums:
+        shutil.rmtree(dest)
+    else:
+        replace_dir(dest, out / "bin")  # all verified, or the old set stays
     return lines
 
 
@@ -309,11 +347,11 @@ def fetch_binaries(lock: dict, out: Path, fetch: Callable[[str, Path], None] = d
 def write_sums(out: Path) -> Path:
     sums = out / "SHA256SUMS"
     lines = []
-    for path in sorted(p for p in out.rglob("*") if p.is_file() and p != sums):
+    # Dot files are this tool's own work files (staging, temporary writes, the lock).
+    for path in sorted(p for p in out.rglob("*") if p.is_file() and p != sums
+                       and not any(part.startswith(".") for part in p.relative_to(out).parts)):
         lines.append(f"{sha256_file(path)}  {path.relative_to(out).as_posix()}")
-    tmp = sums.with_suffix(".tmp")
-    tmp.write_text("\n".join(lines) + "\n")
-    os.replace(tmp, sums)
+    write_atomic(sums, "\n".join(lines) + "\n")
     print(f"sums  {len(lines)} files")
     return sums
 
@@ -343,6 +381,16 @@ def main(argv=None) -> int:
     s.add_argument("--out", type=Path, required=True)
     args = p.parse_args(argv)
 
+    out = getattr(args, "out", None)
+    if out is not None:
+        out.mkdir(parents=True, exist_ok=True)
+        # One run at a time per payload: they share the layout, images.yaml and SHA256SUMS.
+        lock_file = (out / ".lock").open("w")
+        try:
+            fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            print(f"archive: another archive.py run is using {out}", file=sys.stderr)
+            return 1
     try:
         if args.cmd == "digests":
             lines = resolve_digests(read_inventory(args.inventory))

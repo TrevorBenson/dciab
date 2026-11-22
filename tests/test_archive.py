@@ -75,7 +75,16 @@ def fake_oras(layout_digest=None):
     return runner, calls
 
 
+def write_blob(layout, content):
+    digest = "sha256:" + hashlib.sha256(content).hexdigest()
+    blob = layout / "blobs" / "sha256" / digest.split(":")[1]
+    blob.parent.mkdir(parents=True, exist_ok=True)
+    blob.write_bytes(content)
+    return digest
+
+
 def test_copy_images_pins_verifies_and_skips(tmp_path):
+    D1, D2 = write_blob(tmp_path / "images", b"m1"), write_blob(tmp_path / "images", b"m2")
     entries = [{"image": f"registry.k8s.io/pause:3.10.2@{D1}", "digest": "pinned", "sources": ["kubeadm"]},
                {"image": f"ghcr.io/kube-vip/kube-vip:v1.3.1@{D2}", "digest": "pinned", "sources": ["lock"]}]
     runner, calls = fake_oras()
@@ -204,3 +213,39 @@ def test_sums(tmp_path):
         f"{hashlib.sha256(b'y').hexdigest()}  a.txt",
         f"{hashlib.sha256(b'x').hexdigest()}  bin/kind",
     ]
+
+
+def test_failed_binary_refresh_keeps_the_old_set(tmp_path):
+    (tmp_path / "bin").mkdir()
+    (tmp_path / "bin" / "kind").write_bytes(b"old")
+    lock = lock_with(binarySHA256={"clusterctl-linux-amd64": "1" * 64, "oras-linux-amd64.tar.gz": "2" * 64},
+                     bootstrapAppliance={"toolChecksums": {"kind": hashlib.sha256(b"x").hexdigest(),
+                                                           "kubectl": "3" * 64, "helm": "4" * 64}})
+    with pytest.raises(archive.ArchiveError):
+        archive.fetch_binaries(lock, tmp_path, fetch=lambda url, dest: dest.write_bytes(b"x"))
+    assert (tmp_path / "bin" / "kind").read_bytes() == b"old"
+
+
+def test_charts_folder_holds_only_current_charts(tmp_path):
+    (tmp_path / "charts").mkdir()
+    (tmp_path / "charts" / "cilium-0.9.0.tgz").write_bytes(b"stale")
+    lock = lock_with(charts={"cilium": "1.0.0"}, chartRepositories={"cilium": "https://x"},
+                     chartDigests={"cilium": hashlib.sha256(b"chart").hexdigest()})
+    archive.pull_charts(lock, tmp_path, runner=fake_helm())
+    assert sorted(p.name for p in (tmp_path / "charts").iterdir()) == ["cilium-1.0.0.tgz"]
+
+
+def test_sums_skip_work_files(tmp_path):
+    (tmp_path / ".lock").write_text("")
+    (tmp_path / ".SHA256SUMS.tmp").write_text("left over")
+    (tmp_path / "a").write_bytes(b"a")
+    assert archive.write_sums(tmp_path).read_text().split() == [hashlib.sha256(b"a").hexdigest(), "a"]
+
+
+def test_damaged_layout_image_is_copied_again(tmp_path):
+    entries = [{"image": f"registry.k8s.io/pause:3.10.2@{D1}", "digest": "pinned"}]
+    runner, calls = fake_oras()
+    archive.copy_images(entries, tmp_path, runner=runner)  # the fake writes no blobs
+    runner2, calls2 = fake_oras()
+    archive.copy_images(entries, tmp_path, runner=runner2)
+    assert len(calls2) == 1
