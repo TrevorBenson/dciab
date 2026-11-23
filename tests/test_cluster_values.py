@@ -1,6 +1,8 @@
 """dciab cluster-values: every example cluster renders values the capi-cluster chart accepts."""
 
 import json
+import shutil
+import subprocess
 
 import jsonschema
 import pytest
@@ -54,6 +56,22 @@ def test_values_match_the_chart_ci_values(example_name, cluster, ci_file):
                     assert got["nodes"][k] == ci["nodes"][k], f"nodes.{k}"
             continue
         assert got[key] == ci[key], key
+
+
+@pytest.mark.skipif(not shutil.which("helm"), reason="needs helm")
+@pytest.mark.parametrize("ci_file,kinds", [
+    ("vsphere-values.yaml", {"Cluster", "InClusterIPPool"}),
+    ("proxmox-values.yaml", {"Cluster"}),
+    ("metal3-values.yaml", {"Cluster", "IPPool", "Metal3DataTemplate"}),
+])
+def test_rendered_objects_are_kept_by_helm(ci_file, kinds):
+    """helm uninstall must not delete the Cluster (and with it the machines) or the pools it takes addresses from."""
+    out = subprocess.run(["helm", "template", "c", str(CHART), "--values", str(CHART / "ci" / ci_file)],
+                         check=True, capture_output=True, text=True).stdout
+    docs = [d for d in yaml.safe_load_all(out) if d]
+    assert {d["kind"] for d in docs} == kinds
+    for d in docs:
+        assert (d["metadata"].get("annotations") or {}).get("helm.sh/resource-policy") == "keep", d["kind"]
 
 
 def test_roles_labels_and_oidc():

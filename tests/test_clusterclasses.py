@@ -1,6 +1,8 @@
 import copy
 import importlib.util
 import re
+import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -109,6 +111,29 @@ def test_class_names_carry_their_revision():
                     assert name == f"dciab-{f.stem}-{v}", name
                 else:
                     assert name.startswith(f"dciab-{f.stem}-{v}"), name
+
+
+KEEP = {"helm.sh/resource-policy": "keep"}
+
+
+def test_installed_classes_are_kept_by_helm():
+    """Deleting a class or template MGMT uses breaks MGMT. Helm must leave them on uninstall or prune."""
+    for v in installed_revisions():
+        for f in (CLASSES / v).glob("*.yaml"):
+            for d in yaml.safe_load_all(f.read_text()):
+                if d:
+                    assert KEEP.items() <= (d["metadata"].get("annotations") or {}).items(), \
+                        f"{f.name}: {d['kind']} {d['metadata']['name']}"
+
+
+@pytest.mark.skipif(not shutil.which("helm"), reason="needs helm")
+def test_rendered_classes_are_kept_by_helm():
+    out = subprocess.run(["helm", "template", "classes", str(ROOT / "charts" / "capi-clusterclasses"),
+                          "--namespace", NS], check=True, capture_output=True, text=True).stdout
+    docs = [d for d in yaml.safe_load_all(out) if d]
+    assert sum(d["kind"] == "ClusterClass" for d in docs) == 3 * len(installed_revisions())
+    for d in docs:
+        assert KEEP.items() <= (d["metadata"].get("annotations") or {}).items(), f"{d['kind']} {d['metadata']['name']}"
 
 
 @needs_crds

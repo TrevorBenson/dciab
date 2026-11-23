@@ -14,6 +14,20 @@ Proxmox clusters need no pool object: CAPMOX allocates node addresses from the c
 
 Values are validated by `values.schema.json`: every site-specific value is required and nothing has a default. [ci/](ci) has a complete values file for each class.
 
+## Kept on uninstall
+
+Every object the chart renders carries `helm.sh/resource-policy: keep`. Deleting the `Cluster` deletes its machines, and deleting a pool leaves the cluster without node addresses. So `helm uninstall`, or an upgrade that stops rendering an object, leaves it in place.
+
+To really delete a cluster, delete the `Cluster` itself, then the pools once its machines are gone:
+
+```console
+$ kubectl -n <namespace> delete cluster <cluster>
+$ helm uninstall <release> -n <namespace>
+$ kubectl -n <namespace> delete inclusterippools,ippools,metal3datatemplates -l cluster.x-k8s.io/cluster-name=<cluster>
+```
+
+When Argo CD adopts these objects, also set `argocd.argoproj.io/sync-options: Prune=false,Delete=false` on them. Argo CD does not read Helm's annotation.
+
 ## Expected around it
 
 - A Secret `<cluster>-vsphere-credentials` (vSphere) or `<cluster>-proxmox-credentials` (Proxmox) in the cluster namespace. DCiaB's bootstrap creates it; External Secrets keeps it in sync afterwards.

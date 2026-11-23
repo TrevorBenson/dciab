@@ -8,6 +8,7 @@ kind: ClusterClass
 metadata:
   name: dciab-vsphere-r1
   annotations:
+    helm.sh/resource-policy: keep
     dciab.io/description: "vSphere (CAPV) machines for control plane and workers"
 spec:
   controlPlane:
@@ -655,6 +656,8 @@ apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
 kind: VSphereClusterTemplate
 metadata:
   name: dciab-vsphere-r1
+  annotations:
+    helm.sh/resource-policy: keep
 spec:
   template:
     spec:
@@ -664,6 +667,8 @@ apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
 kind: VSphereMachineTemplate
 metadata:
   name: dciab-vsphere-r1-controlplane
+  annotations:
+    helm.sh/resource-policy: keep
 spec:
   template:
     spec:
@@ -688,6 +693,8 @@ apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
 kind: VSphereMachineTemplate
 metadata:
   name: dciab-vsphere-r1-worker
+  annotations:
+    helm.sh/resource-policy: keep
 spec:
   template:
     spec:
@@ -712,6 +719,8 @@ apiVersion: controlplane.cluster.x-k8s.io/v1beta2
 kind: KubeadmControlPlaneTemplate
 metadata:
   name: dciab-vsphere-r1-controlplane
+  annotations:
+    helm.sh/resource-policy: keep
 spec:
   template:
     spec:
@@ -766,6 +775,8 @@ apiVersion: bootstrap.cluster.x-k8s.io/v1beta2
 kind: KubeadmConfigTemplate
 metadata:
   name: dciab-vsphere-r1-worker
+  annotations:
+    helm.sh/resource-policy: keep
 spec:
   template:
     spec:

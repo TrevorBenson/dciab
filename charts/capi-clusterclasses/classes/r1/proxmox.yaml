@@ -8,6 +8,7 @@ kind: ClusterClass
 metadata:
   name: dciab-proxmox-r1
   annotations:
+    helm.sh/resource-policy: keep
     dciab.io/description: "Proxmox VE (CAPMOX) machines for control plane and workers"
 spec:
   controlPlane:
@@ -671,6 +672,8 @@ apiVersion: infrastructure.cluster.x-k8s.io/v1alpha2
 kind: ProxmoxClusterTemplate
 metadata:
   name: dciab-proxmox-r1
+  annotations:
+    helm.sh/resource-policy: keep
 spec:
   template:
     spec:
@@ -689,6 +692,8 @@ apiVersion: infrastructure.cluster.x-k8s.io/v1alpha2
 kind: ProxmoxMachineTemplate
 metadata:
   name: dciab-proxmox-r1-controlplane
+  annotations:
+    helm.sh/resource-policy: keep
 spec:
   template:
     spec:
@@ -711,6 +716,8 @@ apiVersion: infrastructure.cluster.x-k8s.io/v1alpha2
 kind: ProxmoxMachineTemplate
 metadata:
   name: dciab-proxmox-r1-worker
+  annotations:
+    helm.sh/resource-policy: keep
 spec:
   template:
     spec:
@@ -733,6 +740,8 @@ apiVersion: controlplane.cluster.x-k8s.io/v1beta2
 kind: KubeadmControlPlaneTemplate
 metadata:
   name: dciab-proxmox-r1-controlplane
+  annotations:
+    helm.sh/resource-policy: keep
 spec:
   template:
     spec:
@@ -791,6 +800,8 @@ apiVersion: bootstrap.cluster.x-k8s.io/v1beta2
 kind: KubeadmConfigTemplate
 metadata:
   name: dciab-proxmox-r1-worker
+  annotations:
+    helm.sh/resource-policy: keep
 spec:
   template:
     spec:
