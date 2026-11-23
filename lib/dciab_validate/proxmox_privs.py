@@ -79,12 +79,14 @@ def compare(want: List[Grant], have: Dict[str, Dict[str, int]],
     missing = []
     for g in want:
         privs = have.get(g.path) or {}
-        lacking = [p for p in g.privileges if not privs.get(p)]
+        # The API maps a held privilege to its ACL's propagate flag: 1, or 0 when the grant
+        # does not propagate. Held means present, not truthy.
+        lacking = [p for p in g.privileges if p not in privs]
         if lacking:
             missing.append(f"{g.path}: {', '.join(lacking)}")
     broad = []
     for path, privs in sorted({**have, **({"/": root} if root else {})}.items()):
-        extra = [p for p in TOO_BROAD if (privs or {}).get(p)]
+        extra = [p for p in TOO_BROAD if p in (privs or {})]
         if extra:
             broad.append(f"{path}: {', '.join(extra)}")
     return missing, broad
