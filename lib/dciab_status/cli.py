@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Callable, Dict, List, Optional
 
 import yaml
+from dciab_state import default_state
 
 REGISTRY_CONTAINER = "dciab-registry"
 SERVICES_POD = "dciab-services"
@@ -155,7 +156,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     p = argparse.ArgumentParser(prog="dciab status", description="Where a site's bootstrap stands (read-only).")
     p.add_argument("config")
     p.add_argument("--root", required=True, help="the unpacked archive (set by the dciab entrypoint)")
-    p.add_argument("--state", help="state folder (default: .dciab/state next to the config)")
+    p.add_argument("--state", help="state folder (default: .dciab/state next to the config; "
+                                   "/var/lib/dciab/work/state on the bootstrap appliance)")
     p.add_argument("--output", choices=["text", "json"], default="text")
     args = p.parse_args(argv)
     config = Path(args.config).resolve()
@@ -168,7 +170,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     except Exception as exc:  # noqa: BLE001
         print(f"dciab status: can't read the config: {exc}", file=sys.stderr)
         return 2
-    state = Path(args.state).resolve() if args.state else config.parent / ".dciab" / "state"
+    state = Path(args.state).resolve() if args.state else default_state(config, migrate=False)
     checks = collect(site, state)
     if args.output == "json":
         print(json.dumps({"state": str(state), "checks": checks}, indent=2))

@@ -40,4 +40,4 @@ When it's done it prints the next commands, run from the copy with their state o
 
 - The config stays where it is: on the appliance that's `/var/lib/dciab/site/dciab.yaml`, already off the stick. On a host you provide, keep the config and its secrets off the stick before removing it.
 
-- kind's node lives in the container storage, and the seed registry's data under `--state`. `media` doesn't move an existing `.dciab/state`: pass `--state <work>/state` as printed.
+- kind's node lives in the container storage, and the seed registry's data under `--state`. On the appliance, `<work>/state` is also the default state folder. Elsewhere, `media` doesn't move an existing `.dciab/state`: pass `--state <work>/state` as printed.
