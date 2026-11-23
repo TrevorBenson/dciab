@@ -268,7 +268,8 @@ class FakeBMC:
     """A stateful Redfish BMC: one system, one CD slot, under the System or its Manager,
     with insert/eject as actions or as PATCH. Records every call."""
 
-    def __init__(self, cert, media="manager", actions=True, power="On", inserted=None):
+    def __init__(self, cert, media="manager", actions=True, power="On", inserted=None, boot_options=None,
+                 reset_status=204):
         self.calls = []
         self.power = power
         self.slot = {"Inserted": inserted is not None, "Image": inserted}
@@ -278,7 +279,8 @@ class FakeBMC:
         fake = self
 
         def system():
-            body = {"PowerState": fake.power, "Boot": fake.boot,
+            boot = dict(fake.boot, BootOptions={"@odata.id": SYS + "/BootOptions"}) if boot_options else fake.boot
+            body = {"PowerState": fake.power, "Boot": boot,
                     "Links": {"ManagedBy": [{"@odata.id": "/redfish/v1/Managers/1"}]},
                     "Actions": {"#ComputerSystem.Reset": {"target": SYS + "/Actions/ComputerSystem.Reset"}}}
             if media == "system":
@@ -298,6 +300,10 @@ class FakeBMC:
         gets = {SYS: system, "/redfish/v1/Managers/1": manager,
                 coll: lambda: {"Members": [{"@odata.id": coll + "/USB"}, {"@odata.id": slot_path}]},
                 coll + "/USB": lambda: {"MediaTypes": ["USBStick"]}, slot_path: slot}
+        for i, opt in enumerate(boot_options or []):
+            gets[f"{SYS}/BootOptions/{i}"] = (lambda o=opt: o)
+        gets[SYS + "/BootOptions"] = lambda: {"Members": [{"@odata.id": f"{SYS}/BootOptions/{i}"}
+                                                          for i in range(len(boot_options or []))]}
 
         class Handler(BaseHTTPRequestHandler):
             def log_message(self, *a):
@@ -332,6 +338,8 @@ class FakeBMC:
                 elif actions and self.path == slot_path + "/Actions/VirtualMedia.EjectMedia":
                     fake.slot = {"Inserted": False, "Image": None}
                 elif self.path == SYS + "/Actions/ComputerSystem.Reset":
+                    if reset_status != 204:
+                        return self._send(reset_status)
                     fake.power = "On"
                 else:
                     return self._send(404)
@@ -542,12 +550,14 @@ def test_assistant_image_needs_a_pin_unless_overridden(monkeypatch):
 
 # --- the reinstall guard (cli.media) -------------------------------------------------------
 
-def guard(f, tmp_path, reinstall=(), answers=False):
-    """Run the media step for pve01 against the fake BMC, with port 8006 answering or not."""
+def guard(f, tmp_path, reinstall=(), answers=False, ssh=None):
+    """Run the media step for pve01 against the fake BMC, with port 8006 (and 22) answering or not."""
     doc = bare()
     logs = []
+    ssh = answers if ssh is None else ssh
     failed, held, live = cli.media([host(doc)], doc, tmp_path / "installs", list(reinstall), lambda h: f.bmc,
-                                   probe=lambda a, p: answers, log=logs.append, err=logs.append)
+                                   probe=lambda a, p: ssh if p == 22 else answers, log=logs.append,
+                                   err=logs.append)
     return failed, held, live, "\n".join(logs)
 
 
@@ -615,9 +625,61 @@ def test_transitional_power_state_is_not_recorded_or_reset(fake_bmc, tmp_path):
     assert f.calls == [] and cli.read_install(tmp_path / "installs", "pve01") is None
 
 
-def test_unreadable_record_still_guards(tmp_path):
-    (tmp_path / "pve01.json").write_text("{not json")
+@pytest.mark.parametrize("text", ["{not json", "{}", "null", "[]", '"x"', "", "[1]"])
+def test_unreadable_or_empty_record_holds_the_host(fake_bmc, tmp_path, text):
+    (tmp_path / "installs").mkdir()
+    (tmp_path / "installs" / "pve01.json").write_text(text)
+    assert cli.read_install(tmp_path / "installs", "pve01") == {"outcome": "unreadable"}
+    f = fake_bmc(power="Off")
+    assert guard(f, tmp_path)[:3] == ([], ["pve01"], [])
+    assert f.calls == []
+
+
+def test_a_record_that_isnt_a_file_holds_the_host(tmp_path):
+    (tmp_path / "pve01.json").mkdir()
     assert cli.read_install(tmp_path, "pve01") == {"outcome": "unreadable"}
+
+
+def test_ssh_answering_host_without_a_record_is_held(fake_bmc, tmp_path):
+    f = fake_bmc(power="On")
+    failed, held, _, out = guard(f, tmp_path, ssh=True)
+    assert (failed, held) == ([], ["pve01"]) and ":22 answers" in out
+    assert f.calls == [] and cli.read_install(tmp_path / "installs", "pve01") is None
+
+
+def test_proxmox_boot_entry_holds_a_host_without_a_record(fake_bmc, tmp_path):
+    f = fake_bmc(power="Off", boot_options=[
+        {"Id": "0001", "DisplayName": "UEFI PXEv4", "UefiDevicePath": "MAC(b8ca3a010301)"},
+        {"Id": "0002", "DisplayName": "proxmox", "UefiDevicePath": "HD(1,GPT)/\\EFI\\proxmox\\shimx64.efi"}])
+    failed, held, _, out = guard(f, tmp_path)
+    assert (failed, held) == ([], ["pve01"]) and "boot entry" in out and "proxmox" in out
+    assert not [c for c in f.calls if c[0] in CHANGES]
+
+
+def test_boot_entries_without_proxmox_dont_hold(fake_bmc, tmp_path):
+    f = fake_bmc(power="Off", boot_options=[{"Id": "0001", "DisplayName": "UEFI PXEv4"}])
+    assert guard(f, tmp_path)[:3] == ([], [], [])
+    assert f.power == "On"
+
+
+def test_failed_reset_disarms_and_holds(fake_bmc, tmp_path):
+    f = fake_bmc(power="Off", reset_status=500)
+    failed, held, _, out = guard(f, tmp_path)
+    assert failed == ["pve01"] and "HTTP 500" in out
+    assert f.slot == {"Inserted": False, "Image": None}
+    assert f.boot["BootSourceOverrideEnabled"] == "Disabled"
+    assert cli.read_install(tmp_path / "installs", "pve01")["outcome"] == "reset-failed"
+    f2 = fake_bmc(power="Off")
+    assert guard(f2, tmp_path)[:3] == ([], ["pve01"], [])     # the rerun holds it
+
+
+def test_powered_off_install_in_progress_is_held_not_waited_for(fake_bmc, tmp_path):
+    cli.write_install(tmp_path / "installs", "pve01", started="2026-11-22T10:00:00+00:00", iso=HOST_ISO,
+                      outcome="in-progress")
+    f = fake_bmc(power="Off", inserted=HOST_ISO)
+    failed, held, _, out = guard(f, tmp_path)
+    assert (failed, held) == ([], ["pve01"]) and "power Off" in out and "--reinstall pve01" in out
+    assert not [c for c in f.calls if c[0] in CHANGES]
 
 
 def test_reinstall_must_name_a_selected_host(tmp_path, monkeypatch, capsys):

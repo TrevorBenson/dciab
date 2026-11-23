@@ -11,10 +11,13 @@ Steps, per host, in order; each is safe to re-run:
   media    attach http://<bootstrap.address>/host-isos/<host>.iso through the BMC, set a
            one-time UEFI boot from Cd, and reset the server. Each install is recorded in
            <state>/installs/<host>.json (when it started, the ISO, the outcome). A host that
-           answers on 8006 or has a recorded install is never reset, powered off or not, unless
-           --reinstall NAME names it; when it doesn't answer either, it is skipped and the run
-           exits 1. A recorded install still in progress with its ISO attached isn't reset
-           again: the run goes on to wait for it
+           answers on 8006 or has a recorded install (any file there, even an unreadable one) is
+           never reset, powered off or not, unless --reinstall NAME names it; nor is a host
+           with no record that answers on 22 or whose BMC lists a "proxmox" UEFI boot option.
+           A host held this way that doesn't answer on 8006 is skipped and the run exits 1. A
+           recorded install still in progress, powered on with its ISO attached, isn't reset
+           again: the run goes on to wait for it. If the reset fails, the ISO is ejected and
+           the boot override cleared
   wait     wait for SSH (22) and then the Proxmox VE API (8006) on the host's address, and
            record the install as done
 
@@ -109,15 +112,17 @@ def _installs_dir(state: Path) -> Path:
 
 
 def read_install(installs: Path, name: str) -> Optional[dict]:
-    """The host's install record, or None when DCiaB never installed or saw it installed."""
+    """The host's install record, or None when DCiaB never installed or saw it installed.
+    Fails closed: anything at the path that isn't a non-empty JSON object is a record of
+    unknown state ({"outcome": "unreadable"}), never "never installed"."""
     path = installs / f"{name}.json"
-    if not path.is_file():
+    if not os.path.lexists(path):
         return None
     try:
-        return json.loads(path.read_text())
-    except ValueError:
-        # Unreadable is still a record: never treat a damaged file as "never installed".
-        return {"outcome": "unreadable"}
+        record = json.loads(path.read_text())
+    except (ValueError, OSError):
+        record = None
+    return record if isinstance(record, dict) and record else {"outcome": "unreadable"}
 
 
 def write_install(installs: Path, name: str, **fields) -> dict:
@@ -147,41 +152,65 @@ def media(hosts: List[dict], doc: dict, installs: Path, reinstall: List[str], bm
           probe: Callable[[str, int], bool] = port_open, log=print,
           err=None) -> Tuple[List[str], List[str], List[str]]:
     """The media step. Returns (failed, held, live): hosts whose BMC calls failed; hosts left alone
-    that don't answer on 8006 (a recorded install: the operator must look, or pass --reinstall);
-    and hosts reset with --reinstall while they answered on 8006 (wait must see them go down first)."""
+    that need the operator (an install recorded, an OS already there, or an install that can't be
+    running); and hosts reset with --reinstall while they answered on 8006 (wait must see them go
+    down first)."""
     from .redfish import RedfishError
     err = err or (lambda msg: print(msg, file=sys.stderr))
     failed: List[str] = []
     held: List[str] = []
     live: List[str] = []
+
+    def hold(name: str, why: str) -> None:
+        log(f"  {name}: {why}; not reinstalling. Check the server through its BMC, "
+            f"or pass --reinstall {name} to wipe and reinstall it")
+        held.append(name)
+
     for h in hosts:
-        name, url = h["name"], host_iso_url(doc, h["name"])
+        name, url, addr = h["name"], host_iso_url(doc, h["name"]), h["address"]
         record = read_install(installs, name)
+        bmc = None
         try:
             if name not in reinstall:
-                if probe(h["address"], 8006):
-                    log(f"  {name}: already answers on {h['address']}:8006; not reinstalling")
+                if probe(addr, 8006):
+                    log(f"  {name}: already answers on {addr}:8006; not reinstalling")
                     continue
-                if record and record.get("outcome") == "in-progress":
+                if record is not None and record.get("outcome") == "in-progress":
                     st = bmc_for(h).attached(url)
-                    if st["attached"]:
-                        log(f"  {name}: install in progress since {record.get('started')} ({url} attached, "
-                            f"power {st['PowerState']}, boot override {st['BootSourceOverrideTarget']}/"
-                            f"{st['BootSourceOverrideEnabled']}); not resetting, waiting for it")
+                    where = (f"{url} {'attached' if st['attached'] else 'not attached'}, power {st['PowerState']}, "
+                             f"boot override {st['BootSourceOverrideTarget']}/{st['BootSourceOverrideEnabled']}")
+                    if st["attached"] and st["PowerState"] == "On":
+                        log(f"  {name}: install in progress since {record.get('started')} ({where}); "
+                            "not resetting, waiting for it")
                         continue
-                if record:
-                    log(f"  {name}: install recorded ({record.get('outcome')}, started {record.get('started')}) "
-                        f"but {h['address']}:8006 doesn't answer; not reinstalling. Check the server through "
-                        f"its BMC, or pass --reinstall {name} to wipe and reinstall it")
-                    held.append(name)
+                    hold(name, f"install recorded in progress since {record.get('started')}, but it can't be "
+                               f"running ({where})")
+                    continue
+                if record is not None:
+                    hold(name, f"install recorded ({record.get('outcome')}, started {record.get('started')}) "
+                               f"but {addr}:8006 doesn't answer")
+                    continue
+                if probe(addr, 22):
+                    hold(name, f"no install recorded, but {addr}:22 answers: an OS is running there")
+                    continue
+                bmc = bmc_for(h)
+                try:
+                    entries = bmc.os_boot_entries()
+                except RedfishError as exc:
+                    entries = []
+                    log(f"  {name}: couldn't read the BMC's boot options ({exc}); going by the ports only")
+                if entries:
+                    hold(name, f"no install recorded, but the firmware has a boot entry for an installed "
+                               f"Proxmox VE ({', '.join(entries)})")
                     continue
             else:
-                if probe(h["address"], 8006):
+                if probe(addr, 8006):
                     live.append(name)
                 log(f"  {name}: --reinstall: installing whatever its state "
                     f"({'answers on 8006' if name in live else 'no answer on 8006'}, "
-                    + (f"install recorded: {record.get('outcome')})" if record else "no install recorded)"))
-            bmc = bmc_for(h)
+                    + (f"install recorded: {record.get('outcome')})" if record is not None
+                       else "no install recorded)"))
+            bmc = bmc or bmc_for(h)
             st = bmc.state()
             log(f"  {name}: power {st['PowerState']}, boot override {st['BootSourceOverrideTarget']}/"
                 f"{st['BootSourceOverrideEnabled']}")
@@ -189,13 +218,18 @@ def media(hosts: List[dict], doc: dict, installs: Path, reinstall: List[str], bm
                 raise RedfishError(f"the server is {st['PowerState']}; run again once it is On or Off")
             for line in bmc.prepare(url):
                 log(f"  {name}: {line}")
-            # Recorded before the reset: from here on a rerun never resets this host by accident.
-            write_install(installs, name, started=_now(), iso=url, outcome="in-progress")
             try:
+                # Recorded before the reset: from here on a rerun never resets this host by accident.
+                write_install(installs, name, started=_now(), iso=url, outcome="in-progress")
                 log(f"  {name}: reset ({bmc.reset()})")
             except (RedfishError, OSError):
-                # Whether the server restarted is unknown: hold it until the operator looks.
-                write_install(installs, name, outcome="reset-failed")
+                # Disarm, so the next power-on doesn't start the installer unasked; then hold the host.
+                for line in bmc.disarm():
+                    log(f"  {name}: {line}")
+                try:
+                    write_install(installs, name, outcome="reset-failed")
+                except OSError as exc:
+                    err(f"dciab hypervisors: {name}: couldn't record the failed reset: {exc}")
                 raise
         except (RedfishError, OSError) as exc:
             err(f"dciab hypervisors: {name}: {exc}")

@@ -155,6 +155,39 @@ class Bmc:
         _, slot = self.cd_slot()
         return dict(self.state(), attached=bool(slot.get("Inserted")) and slot.get("Image") == image)
 
+    def os_boot_entries(self) -> List[str]:
+        """Names of UEFI boot options that load an installed Proxmox VE (its loader lives in
+        \\EFI\\proxmox). [] when the BMC lists none or offers no BootOptions. Reads only."""
+        system = self.system()
+        coll = system.get("Boot", {}).get("BootOptions", {}).get("@odata.id")
+        if not coll:
+            return []
+        found = []
+        for member in self.get(coll).get("Members", []):
+            opt = self.get(member["@odata.id"])
+            text = " ".join(str(opt.get(k) or "") for k in ("DisplayName", "UefiDevicePath")).lower()
+            if "proxmox" in text:
+                found.append(str(opt.get("DisplayName") or opt.get("Id") or member["@odata.id"]))
+        return found
+
+    def disarm(self) -> List[str]:
+        """Best effort: eject the CD and clear the boot override, so the server doesn't boot the
+        installer at its next power-on. Returns what was done, failures included; never raises."""
+        done = []
+        try:
+            path, slot = self.cd_slot()
+            if slot.get("Inserted"):
+                self.eject(path, slot)
+                done.append("ejected the installer ISO")
+        except RedfishError as exc:
+            done.append(f"couldn't eject the installer ISO ({exc}); it will boot at the next power-on")
+        try:
+            self._call("PATCH", self.system_path, {"Boot": {"BootSourceOverrideEnabled": "Disabled"}})
+            done.append("cleared the one-time boot override")
+        except RedfishError as exc:
+            done.append(f"couldn't clear the boot override ({exc})")
+        return done
+
     def prepare(self, image: str) -> List[str]:
         """Attach image (ejecting anything else) and set a one-time boot from it. No reset."""
         done = []
