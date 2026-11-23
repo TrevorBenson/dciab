@@ -167,3 +167,24 @@ def test_mgmt_cpi_step_runs_only_on_vsphere(site, tmp_path, platform):
         assert r.returncode == 0, r.stderr
         assert "not needed on proxmox" in r.stdout
         assert not (tmp_path / "helm.log").exists()
+
+
+def test_the_secret_leaves_no_last_applied_copy(tmp_path):
+    """A client-side kubectl apply would store the password in last-applied-configuration."""
+    (tmp_path / "secrets").mkdir()
+    (tmp_path / "secrets" / "vsphere.pw").write_text("pw\n")
+    m = cv.secret(load_example("vsphere"), "kube-system", tmp_path)
+    assert "annotations" not in m["metadata"]
+    text = INSTALL.read_text()
+    pipe = text.split('cpi_values.py" secret', 1)[1].split("\n    helm", 1)[0]
+    assert "kubectl apply --server-side" in pipe
+    # No other apply in the script could write the annotation.
+    assert text.count("kubectl apply") == 1
+
+
+def test_cilium_node_wait_is_longer_on_vsphere():
+    mgmt = (ROOT / "lib" / "steps" / "mgmt.sh").read_text()
+    cilium = (ROOT / "addons" / "cilium" / "install.sh").read_text()
+    assert 'DCIAB_NODE_WAIT_MINUTES="${DCIAB_NODE_WAIT_MINUTES:-45}"' in mgmt
+    assert mgmt.index("DCIAB_NODE_WAIT_MINUTES:-45") < mgmt.index('addons/cilium/install.sh" "$values"')
+    assert "${DCIAB_NODE_WAIT_MINUTES:-20}" in cilium and "seq 1 120" not in cilium

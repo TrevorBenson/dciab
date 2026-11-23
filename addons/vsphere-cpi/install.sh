@@ -118,8 +118,11 @@ case "$mode" in
     echo "== $NAME $version on $(kubectl config current-context)"
     tgz="$(get_chart)"
     # vCenter credentials go from the config's reference straight into the cluster through a
-    # pipe (pipefail stops the install on a bad reference).
-    python3 "$HERE/cpi_values.py" secret "$config" "$NS" | kubectl apply -f -
+    # pipe (pipefail stops the install on a bad reference). Server-side apply: a client-side
+    # apply would keep a copy of the Secret, password included, in the
+    # last-applied-configuration annotation.
+    python3 "$HERE/cpi_values.py" secret "$config" "$NS" \
+      | kubectl apply --server-side --force-conflicts --field-manager=dciab -f -
     # No --wait: without the CNI the CPI can't reach the API yet (see the header).
     helm upgrade --install "$NAME" "$tgz" "${values[@]}"
     ;;

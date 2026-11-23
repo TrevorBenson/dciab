@@ -6,7 +6,8 @@ The vSphere ClusterClass runs kubelet with `cloud-provider: external`. Each node
 - **Version and chart source:** `bundle.lock` (`charts.vsphere-cpi`, `chartRepositories.vsphere-cpi`). The chart's sha256 is checked against `chartDigests.vsphere-cpi`; a mismatch stops the install. CPI releases follow Kubernetes minor versions, so the pin moves with `kubernetes.version`.
 - **Chart, offline:** `--chart <tgz>`, else `$DCIAB_PAYLOAD/charts/vsphere-cpi-<version>.tgz` when `DCIAB_PAYLOAD` is set (the archive vendors the chart), else the pinned repository.
 - **Per-site values:** from the config's `spec.platform.vsphere` (`cpi_values.py`): `server`, `datacenter` and `thumbprint`.
-- **Credentials:** the Secret `vsphere-cloud-secret` (namespace `kube-system`) is piped from `spec.platform.vsphere.credentials` into `kubectl apply -f -`, so the password never lands on disk or in a process's arguments. The chart doesn't create it.
+- **Credentials:** the Secret `vsphere-cloud-secret` (namespace `kube-system`) is piped from `spec.platform.vsphere.credentials` into `kubectl apply --server-side -f -`, so the password never lands on disk, in a process's arguments or in a `last-applied-configuration` annotation. The chart doesn't create it.
+- **Thumbprint:** passed to the CPI as is. The schema takes a SHA-256 thumbprint, as CAPV does; that the CPI accepts SHA-256 (and not only SHA-1) is not yet confirmed on real vCenter. If it rejects it, the CPI logs a certificate error and nodes stay uninitialized.
 - **Zones and regions:** not set yet, so the CPI doesn't read vSphere tags.
 
 The CPI reaches the API server at its Service address, which works only once Cilium runs. So it is installed before Cilium and checked after it:

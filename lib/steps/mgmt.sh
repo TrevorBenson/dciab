@@ -25,7 +25,9 @@
 #               Cluster API can't match it to its Machine. It needs the network, so it starts
 #               working during the cilium step. Other platforms skip it
 #   cilium      addons/cilium/install.sh; waits until every node is Ready (on vSphere, also
-#               until the CPI has initialized every node)
+#               until the CPI has initialized every node). Nodes get DCIAB_NODE_WAIT_MINUTES
+#               to register: default 20, 45 on vSphere, where each control plane node joins
+#               only after the CPI has initialized the one before
 #   providers   cert-manager, Cluster API and the providers on MGMT
 #   move        clusterctl move: every CAPI object, MGMT's own Cluster and the
 #               ClusterClasses, from the bootstrap cluster to MGMT
@@ -177,6 +179,9 @@ fi
 finish_if cpi
 
 step cilium
+if [[ "$platform" == vsphere ]]; then
+  export DCIAB_NODE_WAIT_MINUTES="${DCIAB_NODE_WAIT_MINUTES:-45}"
+fi
 "$ROOT/addons/cilium/install.sh" "$values" "$mgmt_kubeconfig"
 if [[ "$platform" == vsphere ]]; then
   "$ROOT/addons/vsphere-cpi/install.sh" "$config" --wait "$mgmt_kubeconfig"

@@ -8,13 +8,14 @@
 # <capi-cluster values> is the values file the cluster was created with (charts/capi-cluster).
 # The chart version and source come from bundle.lock; DCiaB's defaults from values.yaml here.
 # With DCIAB_PAYLOAD set (an archive payload folder), the chart comes from its charts/.
+# DCIAB_NODE_WAIT_MINUTES (default 20) is how long to wait for every node to register.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
 
 usage() {
-  sed -n '3,9p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2
+  sed -n '3,10p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2
   exit 2
 }
 [[ $# -eq 2 ]] || usage
@@ -93,13 +94,15 @@ case "$mode" in
     # Nodes still joining aren't listed yet, so wait for the expected count, then Ready.
     echo "== waiting for $nodes nodes to register and be Ready"
     registered=0
-    for _ in $(seq 1 120); do
+    wait_minutes="${DCIAB_NODE_WAIT_MINUTES:-20}"
+    [[ "$wait_minutes" =~ ^[1-9][0-9]*$ ]] || { echo "install.sh: DCIAB_NODE_WAIT_MINUTES must be a whole number of minutes" >&2; exit 2; }
+    for _ in $(seq 1 $(( wait_minutes * 6 ))); do
       registered="$(kubectl --kubeconfig "$kubeconfig" get nodes --no-headers 2>/dev/null | wc -l)"
       (( registered >= nodes )) && break
       sleep 10
     done
     if (( registered < nodes )); then
-      echo "install.sh: only $registered of $nodes nodes registered after 20 minutes" >&2
+      echo "install.sh: only $registered of $nodes nodes registered after $wait_minutes minutes" >&2
       exit 1
     fi
     kubectl --kubeconfig "$kubeconfig" wait node --all --for=condition=Ready --timeout=10m
