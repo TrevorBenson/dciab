@@ -2,6 +2,7 @@
 
 - Status: accepted
 - Date: 2026-11-20
+- Amended by: [ADR 0010](0010-failure-domains.md) (decision 6: time settings move from `spec.bootstrap.ntp` and `network.ntpServers` to `spec.time`; production NTP runs on MGMT)
 
 ## Context
 
