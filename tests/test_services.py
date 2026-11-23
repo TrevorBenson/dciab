@@ -380,3 +380,21 @@ def test_unknown_step_is_rejected(tmp_path):
     r = run(bare_site(tmp_path), "--until", "nope")
     assert r.returncode == 1
     assert "--until must be one of" in r.stderr
+
+
+def test_chrony_image_is_built_by_ci_from_the_pinned_base():
+    """images/day0-chrony/build.sh: a recipe id from the pinned base and the Containerfile;
+    CI publishes the image once per version, checking while logged in (issue #67)."""
+    build = ROOT / "images" / "day0-chrony" / "build.sh"
+    r = subprocess.run([str(build), "--recipe-id"], capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
+    import hashlib
+    base = yaml.safe_load((ROOT / "bundle.lock").read_text())["day0"]["images"]["chronyBase"]
+    containerfile = (build.parent / "Containerfile").read_text()
+    assert r.stdout.strip() == hashlib.sha256(f"{base}\n{containerfile}".encode()).hexdigest()[:12]
+    ci = (ROOT / ".github" / "workflows" / "ci.yml").read_text()
+    job = ci[ci.index("\n  day0-chrony:"):]
+    job = job[:job.index("\n  frozen-classes:")]
+    assert "images/day0-chrony/build.sh" in job and "packages: write" in job
+    assert "github.ref == 'refs/heads/main'" in job
+    assert job.index("podman login") < job.index("skopeo inspect") < job.index("podman push")
