@@ -3,14 +3,14 @@
 apiVersion: dciab.io/v1alpha1
 kind: Site
 metadata:
-  name: lab1
+  name: dc3
 spec:
   bundleVersion: 0.1.0
 
   platform:
     type: proxmox
     proxmox:
-      url: https://pve01.lab1.example.net:8006
+      url: https://pve01.dc3.example.net:8006
       tlsFingerprint: "A5:A5:0B:7F:93:E9:EA:23:8D:79:7B:83:BB:72:AE:F7:AD:98:1B:66:D4:BC:FA:2A:FD:40:63:91:59:C2:8A:5A"
       nodes: [pve01, pve02, pve03]       # PVE nodes CAPMOX may place VMs on
       templateNode: pve01                # the node holding the template; must be in nodes
@@ -33,7 +33,7 @@ spec:
       - age1skgjkfxj3tkldtdnkd9cwuhennz9uuvg4q058rte5yhwk2vypq0g0u2207
 
   network:
-    domain: lab1.example.com
+    domain: dc3.example.com
     upstreamResolvers: []                # isolated site: the recursor forwards nothing
     ntpServers: [10.30.0.123]
     nodes:
@@ -61,22 +61,22 @@ spec:
       serviceCIDR: 10.243.0.0/16
       controlPlane: {replicas: 3, cpu: 4, memoryGiB: 16, diskGiB: 100}
       workerPools:
-        - {name: general, replicas: 3, cpu: 8, memoryGiB: 32, diskGiB: 150, dataDiskGiB: 300}
+        - {name: general, replicas: 3, cpu: 8, memoryGiB: 32, diskGiB: 150}   # Longhorn data shares the root disk
 
   storage:
     longhorn:
       replicaCount: 2                    # the Ceph datastore already replicates
-      backupTarget: nfs://nas01.lab1.example.net:/exports/longhorn
+      backupTarget: nfs://nas01.dc3.example.net:/exports/longhorn
 
   pki:
     mode: import-intermediate
-    commonName: Lab1 Platform Intermediate CA
+    commonName: DC3 Platform Intermediate CA
     certificate: {file: ./secrets/pki/intermediate.crt}
     key: {file: ./secrets/pki/intermediate.key}
     chain: {file: ./secrets/pki/chain.pem}
 
   identity:
-    adminGroup: lab1-platform-admins
+    adminGroup: dc3-platform-admins
     initialAdmins:
       - username: tparker
         email: tparker@example.com

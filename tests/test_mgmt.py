@@ -20,7 +20,7 @@ def test_proxmox_secret_reads_the_token_from_the_environment(monkeypatch, tmp_pa
     assert m["metadata"]["name"] == "mgmt-proxmox-credentials"
     assert m["metadata"]["namespace"] == "cluster-mgmt"
     assert "clusterctl.cluster.x-k8s.io/move" in m["metadata"]["labels"]
-    assert decoded(m) == {"url": "https://pve01.lab1.example.net:8006", "token": "dciab@pve!capmox",
+    assert decoded(m) == {"url": "https://pve01.dc3.example.net:8006", "token": "dciab@pve!capmox",
                           "secret": "s3cret"}
 
 

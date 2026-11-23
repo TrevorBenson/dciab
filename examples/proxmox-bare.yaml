@@ -2,24 +2,29 @@
 # Same as proxmox.yaml, plus spec.hypervisors (DCiaB installs Proxmox VE on the servers
 # through their BMCs) and spec.bootstrap.ntp (the site has no NTP of its own, so the
 # bootstrap host serves it on the DNS service IPs until the platform takes over).
+#
+# Limitation: the installed hosts are not clustered and only have local storage. CAPMOX
+# reaches them through one host's API and can't clone the template from local storage to
+# another host, so every VM runs on pve01. There is no hypervisor-level redundancy: losing
+# pve01 loses the platform. Proxmox VE clustering and shared storage are on the roadmap.
 apiVersion: dciab.io/v1alpha1
 kind: Site
 metadata:
-  name: lab1
+  name: dc3
 spec:
   bundleVersion: 0.1.0
 
   platform:
     type: proxmox
     proxmox:
-      url: https://pve01.lab1.example.net:8006
+      url: https://pve01.dc3.example.net:8006
       tlsFingerprint: "A5:A5:0B:7F:93:E9:EA:23:8D:79:7B:83:BB:72:AE:F7:AD:98:1B:66:D4:BC:FA:2A:FD:40:63:91:59:C2:8A:5A"
-      nodes: [pve01, pve02, pve03]       # PVE nodes CAPMOX may place VMs on
+      nodes: [pve01, pve02, pve03]       # PVE nodes CAPMOX may place VMs on (see the limitation above)
       templateNode: pve01                # the node holding the template; must be in nodes
       templateID: 9010
       storage: local-lvm                 # a fresh install's local storage
       bridge: vmbr0
-      vlanTag: 110                       # [opt] only when the bridge is VLAN-aware
+      # vlanTag: 110                     # not yet supported here: a fresh install's bridge isn't VLAN-aware
       credentials:
         tokenID: dciab@pve!capmox
         tokenSecret: {env: DCIAB_PVE_TOKEN}
@@ -41,7 +46,7 @@ spec:
       serveLocalClock: true              # so the bootstrap host's clock is the site's time
 
   network:
-    domain: lab1.example.com
+    domain: dc3.example.com
     upstreamResolvers: []                # isolated site: the recursor forwards nothing
     ntpServers: [10.30.110.53, 10.30.110.54]   # the DNS service IPs, where the bootstrap host serves NTP
     nodes:
@@ -69,22 +74,22 @@ spec:
       serviceCIDR: 10.243.0.0/16
       controlPlane: {replicas: 3, cpu: 4, memoryGiB: 16, diskGiB: 100}
       workerPools:
-        - {name: general, replicas: 3, cpu: 8, memoryGiB: 32, diskGiB: 150, dataDiskGiB: 300}
+        - {name: general, replicas: 3, cpu: 8, memoryGiB: 32, diskGiB: 150}   # Longhorn data shares the root disk
 
   storage:
     longhorn:
-      replicaCount: 2                    # the Ceph datastore already replicates
-      backupTarget: nfs://nas01.lab1.example.net:/exports/longhorn
+      replicaCount: 2                    # local disks on one host: survives a node VM, not the host
+      backupTarget: nfs://nas01.dc3.example.net:/exports/longhorn
 
   pki:
     mode: import-intermediate
-    commonName: Lab1 Platform Intermediate CA
+    commonName: DC3 Platform Intermediate CA
     certificate: {file: ./secrets/pki/intermediate.crt}
     key: {file: ./secrets/pki/intermediate.key}
     chain: {file: ./secrets/pki/chain.pem}
 
   identity:
-    adminGroup: lab1-platform-admins
+    adminGroup: dc3-platform-admins
     initialAdmins:
       - username: tparker
         email: tparker@example.com
@@ -99,7 +104,8 @@ spec:
     type: proxmox
     method: virtualmedia
     bootMode: UEFISecureBoot             # UEFI | UEFISecureBoot
-    managementVLAN: tagged               # the management NIC tags network.nodes.vlan (110)
+    managementVLAN: untagged             # the management NIC sits on an access port for network.nodes.vlan
+                                         # (tagged: not yet supported)
     # rootPassword: {file: ./secrets/hv/root}   # [opt] unset: one generated per host, sealed with age
     installer:                           # what the Proxmox VE installer asks for
       keyboard: en-us

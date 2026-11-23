@@ -66,7 +66,7 @@ spec:
       serviceCIDR: 10.243.0.0/16
       controlPlane: {replicas: 3, cpu: 4, memoryGiB: 16, diskGiB: 100}
       workerPools:
-        - {name: general, replicas: 4, cpu: 16, memoryGiB: 64, diskGiB: 150, dataDiskGiB: 500}
+        - {name: general, replicas: 4, cpu: 16, memoryGiB: 64, diskGiB: 150}   # Longhorn data shares the root disk
 
   storage:
     longhorn:
@@ -162,8 +162,8 @@ spec:
       class: metal3                      # vsphere | proxmox | metal3
       apiVIP: 10.20.120.10
       lbPool: 10.20.120.200-10.20.120.239
-      podCIDR: 10.250.0.0/16
-      serviceCIDR: 10.251.0.0/16
+      podCIDR: 10.246.0.0/16
+      serviceCIDR: 10.247.0.0/16
       controlPlane:
         replicas: 3
         network: metal-120

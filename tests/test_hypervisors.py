@@ -40,7 +40,7 @@ GOLDEN = """# Rendered by dciab hypervisors from dciab.yaml. Changes are overwri
 [global]
 keyboard = "en-us"
 country = "us"
-fqdn = "pve01.lab1.example.com"
+fqdn = "pve01.dc3.example.com"
 mailto = "tparker@example.com"
 timezone = "UTC"
 root-password-hashed = "$6$fake$pve01"
@@ -70,7 +70,7 @@ def test_answer_file_is_valid_toml():
     import tomllib
     doc = bare()
     parsed = tomllib.loads(answer.render(doc, host(doc, "pve02"), "$6$fake$pve02"))
-    assert parsed["global"]["fqdn"] == "pve02.lab1.example.com"
+    assert parsed["global"]["fqdn"] == "pve02.dc3.example.com"
     assert parsed["network"] == {"source": "from-answer", "cidr": "10.30.110.7/24", "dns": "10.30.110.53",
                                  "gateway": "10.30.110.1", "filter": {"ID_NET_NAME_MAC": "*b8ca3a010302"}}
     assert parsed["disk-setup"]["filter"] == {"ID_MODEL": "Dell_BOSS-N1"}
@@ -240,7 +240,7 @@ def test_print_changes_nothing(tmp_path, monkeypatch, capsys):
     out = capsys.readouterr().out
     assert code == 0, out
     assert "proxmox-ve_9.2-1.iso" in out and "http://10.30.110.5/host-isos/pve02.iso" in out
-    assert "pve02.lab1.example.com" in out and "pve01.lab1" not in out
+    assert "pve02.dc3.example.com" in out and "pve01.dc3" not in out
     assert "(hidden)" in out and "$6$" not in out
     assert not (tmp_path / ".dciab").exists()
 

@@ -109,7 +109,9 @@ def test_metal3_cluster_needs_one_image():
 
 
 def test_data_disks_are_reported_as_unsupported():
-    notes = unsupported(load_example("proxmox"), "infra")
+    doc = load_example("proxmox")
+    doc["spec"]["clusters"]["infra"]["workerPools"][0]["dataDiskGiB"] = 300
+    notes = unsupported(doc, "infra")
     assert notes and "dataDiskGiB" in notes[0]
     assert unsupported(load_example("proxmox"), "mgmt") == []
 

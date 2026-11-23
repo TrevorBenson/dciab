@@ -230,7 +230,7 @@ def test_dns_step_with_hypervisors_needs_services_answering(tmp_path, monkeypatc
     s = plan.load_settings(cfg)
     monkeypatch.setattr(cli.subprocess, "run", lambda *a, **k: pytest.fail("services must not run"))
     # Answers keyed by (server, name, type): a query to another server or of another type gets nothing.
-    good = {("10.30.110.54", "registry.lab1.example.com", "A")}
+    good = {("10.30.110.54", "registry.dc3.example.com", "A")}
     queries = []
 
     def fake_dns(ip, name, qtype):
@@ -239,13 +239,13 @@ def test_dns_step_with_hypervisors_needs_services_answering(tmp_path, monkeypatc
     monkeypatch.setattr(probe, "dns", fake_dns)
     with pytest.raises(plan.SeedError, match="10.30.110.53 doesn't resolve.*run dciab services"):
         cli.step_dns(ROOT, cfg, tmp_path, tmp_path, s, timeout=0)
-    assert queries == [("10.30.110.53", "registry.lab1.example.com", "A"),
-                       ("10.30.110.54", "registry.lab1.example.com", "A")]
-    good.add(("10.30.110.53", "registry.lab1.example.com", "A"))
+    assert queries == [("10.30.110.53", "registry.dc3.example.com", "A"),
+                       ("10.30.110.54", "registry.dc3.example.com", "A")]
+    good.add(("10.30.110.53", "registry.dc3.example.com", "A"))
     queries.clear()
     cli.step_dns(ROOT, cfg, tmp_path, tmp_path, s, timeout=0)
-    assert queries == [("10.30.110.53", "registry.lab1.example.com", "A"),
-                       ("10.30.110.54", "registry.lab1.example.com", "A")]
+    assert queries == [("10.30.110.53", "registry.dc3.example.com", "A"),
+                       ("10.30.110.54", "registry.dc3.example.com", "A")]
 
 
 def test_dns_step_retries_with_backoff_until_services_answers(tmp_path, monkeypatch):

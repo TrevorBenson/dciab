@@ -45,7 +45,7 @@ def existing():
 def test_dns_only_pod_is_coredns_alone():
     files = files_for(existing())
     assert sorted(files) == ["coredns/Corefile", "coredns/zones/db.110.30.10.in-addr.arpa",
-                             "coredns/zones/db.lab1.example.com", "pod.yaml"]
+                             "coredns/zones/db.dc3.example.com", "pod.yaml"]
     spec = yaml.safe_load(files["pod.yaml"])["spec"]
     assert [c["name"] for c in spec["containers"]] == ["coredns"]
     assert spec["containers"][0]["image"] == IMAGES["coredns"]
@@ -56,7 +56,7 @@ def test_dns_only_pod_is_coredns_alone():
 
 
 def test_dns_only_zone_has_the_registry_name():
-    z = render.zones(existing())["lab1.example.com"]
+    z = render.zones(existing())["dc3.example.com"]
     assert zone_lines(z) == ["dns1 IN A 10.30.110.53", "dns2 IN A 10.30.110.54",
                              "bootstrap IN A 10.30.110.5", "registry IN A 10.30.110.5"]
 
@@ -84,8 +84,8 @@ def test_layout_names_come_from_the_payload(tmp_path):
 def test_readiness_checks_the_registry_name_and_skips_http_in_dns_only(monkeypatch):
     answers = {}
     for ip in ("10.30.110.53", "10.30.110.54"):
-        answers[(ip, "bootstrap.lab1.example.com", "A")] = ["10.30.110.5"]
-        answers[(ip, "5.110.30.10.in-addr.arpa", "PTR")] = ["bootstrap.lab1.example.com"]
+        answers[(ip, "bootstrap.dc3.example.com", "A")] = ["10.30.110.5"]
+        answers[(ip, "5.110.30.10.in-addr.arpa", "PTR")] = ["bootstrap.dc3.example.com"]
     queries = []
 
     def fake_dns(ip, name, qtype):
@@ -94,14 +94,14 @@ def test_readiness_checks_the_registry_name_and_skips_http_in_dns_only(monkeypat
     monkeypatch.setattr(probe, "dns", fake_dns)
     monkeypatch.setattr(probe, "http", lambda url: pytest.fail("no HTTP in DNS-only mode"))
     failed = cli.check(existing(), timeout=0)
-    assert failed == [f"DNS on {ip}: registry.lab1.example.com doesn't resolve to 10.30.110.5"
+    assert failed == [f"DNS on {ip}: registry.dc3.example.com doesn't resolve to 10.30.110.5"
                       for ip in ("10.30.110.53", "10.30.110.54")]
     assert queries == [q for ip in ("10.30.110.53", "10.30.110.54") for q in (
-        (ip, "bootstrap.lab1.example.com", "A"), (ip, "5.110.30.10.in-addr.arpa", "PTR"),
-        (ip, "registry.lab1.example.com", "A"))]
-    answers[("10.30.110.53", "registry.lab1.example.com", "A")] = ["10.30.110.5"]
+        (ip, "bootstrap.dc3.example.com", "A"), (ip, "5.110.30.10.in-addr.arpa", "PTR"),
+        (ip, "registry.dc3.example.com", "A"))]
+    answers[("10.30.110.53", "registry.dc3.example.com", "A")] = ["10.30.110.5"]
     assert len(cli.check(existing(), timeout=0)) == 1
-    answers[("10.30.110.54", "registry.lab1.example.com", "A")] = ["10.30.110.5"]
+    answers[("10.30.110.54", "registry.dc3.example.com", "A")] = ["10.30.110.5"]
     assert cli.check(existing(), timeout=0) == []
 
 
@@ -122,20 +122,20 @@ def test_readiness_retries_with_backoff_and_gives_up_at_the_deadline(monkeypatch
 
 
 def test_forward_zone_has_every_host():
-    z = render.zones(bare())["lab1.example.com"]
+    z = render.zones(bare())["dc3.example.com"]
     assert zone_lines(z) == [
         "dns1 IN A 10.30.110.53", "dns2 IN A 10.30.110.54",
         "bootstrap IN A 10.30.110.5", "registry IN A 10.30.110.5",
         "pve01 IN A 10.30.110.6", "pve02 IN A 10.30.110.7", "pve03 IN A 10.30.110.8",
     ]
-    assert "@ IN NS dns1.lab1.example.com." in z
+    assert "@ IN NS dns1.dc3.example.com." in z
 
 
 def test_reverse_zone_matches_forward_and_registry_has_no_ptr():
     z = render.zones(bare())["110.30.10.in-addr.arpa"]
     ptrs = zone_lines(z)
-    assert "5 IN PTR bootstrap.lab1.example.com." in ptrs
-    assert "6 IN PTR pve01.lab1.example.com." in ptrs
+    assert "5 IN PTR bootstrap.dc3.example.com." in ptrs
+    assert "6 IN PTR pve01.dc3.example.com." in ptrs
     assert not any("registry" in p for p in ptrs)
     assert len(ptrs) == 6
 
@@ -154,7 +154,7 @@ def test_wide_network_ptr_names_are_relative_to_the_zone():
     doc = bare()
     doc["spec"]["network"]["nodes"]["cidr"] = "10.30.0.0/16"
     z = render.zones(doc)["30.10.in-addr.arpa"]
-    assert "6.110 IN PTR pve01.lab1.example.com." in z
+    assert "6.110 IN PTR pve01.dc3.example.com." in z
 
 
 def test_hypervisor_name_may_not_be_reserved():
@@ -264,7 +264,7 @@ def test_rendering_is_idempotent_and_changes_follow_config(tmp_path):
     changed = files_for(doc)
     assert render.fingerprint(changed) != render.fingerprint(files)
     assert cli.write(changed, conf) == ["Caddyfile", "coredns/zones/db.110.30.10.in-addr.arpa",
-                                        "coredns/zones/db.lab1.example.com"]
+                                        "coredns/zones/db.dc3.example.com"]
 
 
 def test_relative_state_and_isos_become_absolute(tmp_path, monkeypatch):
@@ -285,15 +285,15 @@ def test_dropped_ntp_removes_chrony_configs(tmp_path):
 
 
 def test_dns_answer_parsing():
-    name = probe._qname("pve01.lab1.example.com")
+    name = probe._qname("pve01.dc3.example.com")
     header = struct.pack("!6H", 1, 0x8180, 1, 2, 0, 0)
     question = name + struct.pack("!HH", 1, 1)
     a = b"\xc0\x0c" + struct.pack("!HHIH", 1, 1, 300, 4) + bytes([10, 30, 110, 6])
-    ptr_target = probe._qname("pve01.lab1.example.com")
+    ptr_target = probe._qname("pve01.dc3.example.com")
     ptr = b"\xc0\x0c" + struct.pack("!HHIH", 12, 1, 300, len(ptr_target)) + ptr_target
     msg = header + question + a + ptr
     assert probe.parse_answers(msg, 1) == ["10.30.110.6"]
-    assert probe.parse_answers(msg, 12) == ["pve01.lab1.example.com"]
+    assert probe.parse_answers(msg, 12) == ["pve01.dc3.example.com"]
     refused = struct.pack("!6H", 1, 0x8185, 1, 0, 0, 0) + question
     assert probe.parse_answers(refused, 1) == []
     assert probe.reverse_name("10.30.110.6") == "6.110.30.10.in-addr.arpa"
@@ -327,7 +327,7 @@ def test_print_shows_the_plan_and_changes_nothing(tmp_path):
     assert "address:     10.30.110.53/24 (DNS, NTP)" in r.stdout
     assert "http://10.30.110.5:80" in r.stdout
     assert "--- " + str(tmp_path / ".dciab/state/services/coredns/Corefile") in r.stdout
-    assert "6 IN PTR pve01.lab1.example.com." in r.stdout
+    assert "6 IN PTR pve01.dc3.example.com." in r.stdout
     assert not (tmp_path / ".dciab").exists()
 
 

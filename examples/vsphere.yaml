@@ -68,7 +68,7 @@ spec:
       serviceCIDR: 10.243.0.0/16
       controlPlane: {replicas: 3, cpu: 4, memoryGiB: 16, diskGiB: 100}
       workerPools:
-        - {name: general, replicas: 4, cpu: 16, memoryGiB: 64, diskGiB: 150, dataDiskGiB: 500}
+        - {name: general, replicas: 4, cpu: 16, memoryGiB: 64, diskGiB: 150}   # Longhorn data shares the root disk
 
   storage:
     longhorn:
@@ -100,4 +100,4 @@ spec:
       serviceCIDR: 10.245.0.0/16
       controlPlane: {replicas: 3, cpu: 4, memoryGiB: 16, diskGiB: 100}
       workerPools:
-        - {name: general, replicas: 3, cpu: 8, memoryGiB: 32, diskGiB: 150, dataDiskGiB: 300}
+        - {name: general, replicas: 3, cpu: 8, memoryGiB: 32, diskGiB: 150}   # Longhorn data shares the root disk
