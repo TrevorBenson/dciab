@@ -8,7 +8,8 @@
 # After dciab seed with the same --state, --bootstrap-kubeconfig and --trust-bundle default
 # to the files seed wrote (<state>/bootstrap.kubeconfig, <state>/pki/trust-bundle.pem).
 # --payload DIR (the archive's payload; default <archive>/payload when it exists) makes
-# every chart and manifest come from it instead of the internet.
+# every chart and manifest come from it instead of the internet, and puts its bin/ first in
+# PATH (clusterctl, kubectl, helm), as dciab seed does.
 #
 # Steps, in order. Each is safe to re-run, and a finished run changes nothing:
 #   preflight   tools present; the bootstrap cluster has Cluster API, the providers and the
@@ -81,6 +82,9 @@ try:
 except SeedError as exc:
     sys.exit(f"dciab mgmt: {exc}")' "$payload"
   export DCIAB_PAYLOAD="$payload"
+  # Its tools come first, as in dciab seed: sudo resets PATH, and the appliance has no
+  # clusterctl of its own.
+  export PATH="$payload/bin:$PATH"
 fi
 values="$state/mgmt-values.yaml"
 mgmt_kubeconfig="$state/mgmt.kubeconfig"
