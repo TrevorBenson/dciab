@@ -1,35 +1,45 @@
 """dciab hypervisors: install Proxmox VE on spec.hypervisors.hosts over Redfish virtual media.
 
     dciab hypervisors <config> [--state DIR] [--isos DIR] [--host NAME ...] [--until STEP]
-                      [--iso FILE] [--timeout SECONDS] [--print]
+                      [--iso FILE] [--timeout SECONDS] [--reinstall NAME ...] [--print]
 
 Steps, per host, in order; each is safe to re-run:
   answer   render answer.toml -> <state>/answers/<host>.toml (dir 700, file 600)
   iso      build <state>/host-isos/<host>.iso: the Proxmox VE installer ISO (--iso, from the
            ISOs folder dciab services serves; checked against bundle.lock) with that host's
            answer file inside (iso.py). Caddy serves it to that host's BMC address only
-  media    unless the host already answers on 8006: attach
-           http://<bootstrap.address>/host-isos/<host>.iso through the BMC, set a one-time UEFI
-           boot from Cd, and reset the server
-  wait     wait for SSH (22) and then the Proxmox VE API (8006) on the host's address
+  media    attach http://<bootstrap.address>/host-isos/<host>.iso through the BMC, set a
+           one-time UEFI boot from Cd, and reset the server. Each install is recorded in
+           <state>/installs/<host>.json (when it started, the ISO, the outcome). A host that
+           answers on 8006 or has a recorded install (any file there, even an unreadable one) is
+           never reset, powered off or not, unless --reinstall NAME names it; nor is a host
+           with no record that answers on 22 or whose BMC lists a "proxmox" UEFI boot option.
+           A host held this way that doesn't answer on 8006 is skipped and the run exits 1. A
+           recorded install still in progress, powered on with its ISO attached, isn't reset
+           again: the run goes on to wait for it. If the reset fails, the ISO is ejected and
+           the boot override cleared
+  wait     wait for SSH (22) and then the Proxmox VE API (8006) on the host's address, and
+           record the install as done
 
 --until STEP stops after STEP. --print shows the plan and the answer files with the password
-hash masked, and changes nothing. <state> defaults to .dciab/state next to the config, as for
-dciab services. Exit codes: 0 done, 1 a step failed, 2 could not run.
+hash masked, and changes nothing. <state> defaults as for dciab services: .dciab/state next to
+the config, or /var/lib/dciab/work/state on the bootstrap appliance. Exit codes: 0 done, 1 a step failed, 2 could not run.
 """
 
 from __future__ import annotations
 
 import argparse
 import fcntl
+import json
 import os
 import socket
 import subprocess
 import sys
 import tempfile
 import time
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable, Dict, List, Optional
+from typing import Callable, Dict, List, Optional, Tuple
 from urllib.parse import urlsplit
 
 STEPS = ("answer", "iso", "media", "wait")
@@ -97,6 +107,142 @@ def wait_for(address: str, ports: List[int], timeout: float, interval: float = 1
     return None
 
 
+def _installs_dir(state: Path) -> Path:
+    return Path(os.path.abspath(state)) / "installs"
+
+
+def read_install(installs: Path, name: str) -> Optional[dict]:
+    """The host's install record, or None when DCiaB never installed or saw it installed.
+    Fails closed: anything at the path that isn't a non-empty JSON object is a record of
+    unknown state ({"outcome": "unreadable"}), never "never installed"."""
+    path = installs / f"{name}.json"
+    if not os.path.lexists(path):
+        return None
+    try:
+        record = json.loads(path.read_text())
+    except (ValueError, OSError):
+        record = None
+    return record if isinstance(record, dict) and record else {"outcome": "unreadable"}
+
+
+def write_install(installs: Path, name: str, **fields) -> dict:
+    """Merge fields into the host's install record, atomically, mode 600. Returns the record."""
+    installs.mkdir(parents=True, exist_ok=True)
+    os.chmod(installs, 0o700)
+    record = dict(read_install(installs, name) or {}, **fields)
+    record["updated"] = _now()
+    fd, tmp = tempfile.mkstemp(dir=installs, prefix=f".{name}.", suffix=".tmp")   # mode 600
+    try:
+        with os.fdopen(fd, "w") as fh:
+            json.dump(record, fh, indent=2, sort_keys=True)
+            fh.write("\n")
+        os.replace(tmp, installs / f"{name}.json")
+    except BaseException:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+        raise
+    return record
+
+
+def _now() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def media(hosts: List[dict], doc: dict, installs: Path, reinstall: List[str], bmc_for: Callable,
+          probe: Callable[[str, int], bool] = port_open, log=print,
+          err=None) -> Tuple[List[str], List[str], List[str]]:
+    """The media step. Returns (failed, held, live): hosts whose BMC calls failed; hosts left alone
+    that need the operator (an install recorded, an OS already there, or an install that can't be
+    running); and hosts reset with --reinstall while they answered on 8006 (wait must see them go
+    down first)."""
+    from .redfish import RedfishError
+    err = err or (lambda msg: print(msg, file=sys.stderr))
+    failed: List[str] = []
+    held: List[str] = []
+    live: List[str] = []
+
+    def hold(name: str, why: str) -> None:
+        log(f"  {name}: {why}; not reinstalling. Check the server through its BMC, "
+            f"or pass --reinstall {name} to wipe and reinstall it")
+        held.append(name)
+
+    for h in hosts:
+        name, url, addr = h["name"], host_iso_url(doc, h["name"]), h["address"]
+        record = read_install(installs, name)
+        bmc = None
+        try:
+            if name not in reinstall:
+                if probe(addr, 8006):
+                    log(f"  {name}: already answers on {addr}:8006; not reinstalling")
+                    continue
+                if record is not None and record.get("outcome") == "in-progress":
+                    st = bmc_for(h).attached(url)
+                    where = (f"{url} {'attached' if st['attached'] else 'not attached'}, power {st['PowerState']}, "
+                             f"boot override {st['BootSourceOverrideTarget']}/{st['BootSourceOverrideEnabled']}")
+                    if st["attached"] and st["PowerState"] == "On":
+                        log(f"  {name}: install in progress since {record.get('started')} ({where}); "
+                            "not resetting, waiting for it")
+                        continue
+                    hold(name, f"install recorded in progress since {record.get('started')}, but it can't be "
+                               f"running ({where})")
+                    continue
+                if record is not None:
+                    hold(name, f"install recorded ({record.get('outcome')}, started {record.get('started')}) "
+                               f"but {addr}:8006 doesn't answer")
+                    continue
+                if probe(addr, 22):
+                    hold(name, f"no install recorded, but {addr}:22 answers: an OS is running there")
+                    continue
+                bmc = bmc_for(h)
+                try:
+                    entries = bmc.os_boot_entries()
+                except RedfishError as exc:
+                    # Fail closed: one unreadable option could be the installed OS.
+                    hold(name, f"no install recorded, but the BMC's boot options couldn't be read ({exc})")
+                    continue
+                if entries is None:
+                    log(f"  {name}: the BMC lists no boot options; going by the record and the ports only")
+                elif entries:
+                    hold(name, f"no install recorded, but the firmware has a boot entry for an installed "
+                               f"Proxmox VE ({', '.join(entries)})")
+                    continue
+            else:
+                if probe(addr, 8006):
+                    live.append(name)
+                log(f"  {name}: --reinstall: installing whatever its state "
+                    f"({'answers on 8006' if name in live else 'no answer on 8006'}, "
+                    + (f"install recorded: {record.get('outcome')})" if record is not None
+                       else "no install recorded)"))
+            bmc = bmc or bmc_for(h)
+            st = bmc.state()
+            log(f"  {name}: power {st['PowerState']}, boot override {st['BootSourceOverrideTarget']}/"
+                f"{st['BootSourceOverrideEnabled']}")
+            if st["PowerState"] not in ("On", "Off"):
+                raise RedfishError(f"the server is {st['PowerState']}; run again once it is On or Off")
+            for line in bmc.prepare(url):
+                log(f"  {name}: {line}")
+            try:
+                # Recorded before the reset: from here on a rerun never resets this host by accident.
+                write_install(installs, name, started=_now(), iso=url, outcome="in-progress")
+                log(f"  {name}: reset ({bmc.reset()})")
+            except (RedfishError, OSError):
+                # Disarm, so the next power-on doesn't start the installer unasked; then hold the host.
+                for line in bmc.disarm():
+                    log(f"  {name}: {line}")
+                log(f"  {name}: the reset may have happened anyway; check the server's console through its BMC")
+                try:
+                    write_install(installs, name, outcome="reset-failed")
+                except OSError as exc:
+                    err(f"dciab hypervisors: {name}: couldn't record the failed reset: {exc}")
+                raise
+        except (RedfishError, OSError) as exc:
+            err(f"dciab hypervisors: {name}: {exc}")
+            failed.append(name)
+            if name in live:
+                live.remove(name)
+    return failed, held, live
+
+
 def host_iso_url(doc: dict, name: str) -> str:
     return f"http://{doc['spec']['bootstrap']['address']}/host-isos/{name}.iso"
 
@@ -148,6 +294,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument("--iso", help="installer ISO file name in the ISOs folder (default: the bundle.lock file name)")
     ap.add_argument("--isos", help="the ISOs folder (default: as for dciab services)")
     ap.add_argument("--timeout", type=float, default=3600.0, help="seconds to wait for each host's install")
+    ap.add_argument("--reinstall", action="append", default=[], metavar="NAME",
+                    help="wipe and reinstall this host even if it answers on 8006 or has a recorded "
+                         "install (repeatable); without it such a host is never reset")
     ap.add_argument("--print", dest="print_only", action="store_true")
     ap.add_argument("config")
     args = ap.parse_args(argv)
@@ -163,7 +312,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     from dciab_services.cli import Paths
     from dciab_validate.live import read_secret
 
-    from . import answer, iso, redfish
+    from . import answer, iso
 
     root = Path(args.root).resolve()
     config = Path(args.config).resolve()
@@ -183,10 +332,15 @@ def main(argv: Optional[List[str]] = None) -> int:
         return 2
     if args.host:
         hosts = [h for h in hosts if h["name"] in args.host]
+    stray = sorted(set(args.reinstall) - {h["name"] for h in hosts})
+    if stray:
+        print(f"dciab hypervisors: --reinstall {', '.join(stray)}: not a selected host", file=sys.stderr)
+        return 2
     from dciab_state import default_state
     state = Path(args.state) if args.state else default_state(config, migrate=not args.print_only)
     answers = _answers_dir(state)
     host_isos = Path(os.path.abspath(state)) / "host-isos"
+    installs = _installs_dir(state)
     base_iso = Paths(doc, state, args.isos).isos / (args.iso or default_iso(root))
     config_dir = config.parent
 
@@ -203,6 +357,12 @@ def main(argv: Optional[List[str]] = None) -> int:
         for h in hosts:
             print(f"  {h['name']}: {h['address']}, BMC {urlsplit(h['bmc']['address'].split('+', 1)[1]).netloc}, "
                   f"answer {answers / (h['name'] + '.toml')}, ISO {host_iso_url(doc, h['name'])}")
+            record = read_install(installs, h["name"])
+            if h["name"] in args.reinstall:
+                print("    --reinstall: reinstalled whatever its state")
+            elif record:
+                print(f"    install recorded ({record.get('outcome')}, started {record.get('started')}): "
+                      f"not reset without --reinstall {h['name']}")
         for name, text in rendered.items():
             print(f"--- {answers / (name + '.toml')}")
             print(mask(text), end="")
@@ -271,31 +431,34 @@ def main(argv: Optional[List[str]] = None) -> int:
         return 0
 
     print("\n== hypervisors: media")
-    failed = []
-    for h in hosts:
-        if port_open(h["address"], 8006):
-            print(f"  {h['name']}: already answers on {h['address']}:8006; not reinstalling")
-            continue
-        try:
-            for line in _bmc(h, config_dir).install_from(host_iso_url(doc, h["name"])):
-                print(f"  {h['name']}: {line}")
-        except (redfish.RedfishError, OSError) as exc:
-            print(f"dciab hypervisors: {h['name']}: {exc}", file=sys.stderr)
-            failed.append(h["name"])
+    failed, held, live = media(hosts, doc, installs, args.reinstall, lambda h: _bmc(h, config_dir))
     if failed:
         return 1
     if args.until == "media":
         print("dciab hypervisors: stopped after 'media' (--until)")
-        return 0
+        return 1 if held else 0
 
     print("\n== hypervisors: wait")
     for h in hosts:
+        if h["name"] in held:
+            continue
+        if h["name"] in live and wait_for(h["address"], [8006], 300.0,
+                                          probe=lambda a, p: not port_open(a, p), log=lambda *_: None):
+            print(f"dciab hypervisors: {h['name']}: still answers on {h['address']}:8006 five minutes after "
+                  "the reset; watch the server's console through its BMC", file=sys.stderr)
+            failed.append(h["name"])
+            continue
         port = wait_for(h["address"], [22, 8006], args.timeout)
         if port is not None:
             print(f"dciab hypervisors: {h['name']}: {h['address']}:{port} didn't answer within "
                   f"{args.timeout:g}s; watch the server's console through its BMC", file=sys.stderr)
             failed.append(h["name"])
-    if failed:
+        else:
+            write_install(installs, h["name"], outcome="installed")
+    if held:
+        print(f"dciab hypervisors: {', '.join(held)}: held, not reinstalled; each needs the operator "
+              "(see above)", file=sys.stderr)
+    if failed or held:
         return 1
     print("installed: " + ", ".join(h["name"] for h in hosts))
     return 0
