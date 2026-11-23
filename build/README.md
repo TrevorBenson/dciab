@@ -14,8 +14,8 @@ DCiaB ships as one archive that a site unpacks on the bootstrap host and runs of
 | Checksums (`archive.py sums`) | done | `SHA256SUMS` over the whole payload, SBOMs included |
 | Packaging (`package.py package`) | done | `dciab`, its libraries, charts, add-ons, docs and the payload as one reproducible tar with a `MANIFEST` |
 | Signatures (`package.py package --signing-key`, `dciab verify-archive`) | done | `MANIFEST` and `SHA256SUMS` signed with a cosign key; the site checks them offline with the public key |
-| `dciab seed` | next | Loading the images into the site registry |
-| Node images | later | The bootc node image as an OCI image, plus disks per platform where a platform needs one |
+| `dciab seed` | done | Loading the payload's images into the seed registry ([SEED.md](../docs/SEED.md)) |
+| Node images | next | The bootc node image as an OCI image, plus disks per platform where a platform needs one |
 
 ## Image inventory
 

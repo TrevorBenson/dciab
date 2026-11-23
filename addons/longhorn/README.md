@@ -1,6 +1,6 @@
 # Longhorn
 
-Longhorn is DCiaB's block storage (CSI): the default StorageClass `longhorn` on the clusters that run it, starting with MGMT. Volumes are replicated across nodes and backed up to the site's target.
+Longhorn is DCiaB's block storage (CSI): the default StorageClass `longhorn` on the clusters that run it, starting with MGMT. Volumes are replicated across nodes. The site's backup target is Longhorn's default target; no backup schedule is set yet, so a volume is backed up only when someone asks for a backup.
 
 `install.sh` installs or upgrades Longhorn on one cluster:
 - **Version and chart source:** `bundle.lock` (`charts.longhorn`, `chartRepositories.longhorn`). The chart's sha256 is checked against `chartDigests.longhorn`; a mismatch stops the install.
