@@ -7,6 +7,13 @@
 {{- end }}
 {{- $_ := set $seen .name true }}
 {{- end }}
+{{- $workers := 0 }}
+{{- range .Values.workerPools }}
+{{- $workers = add $workers .replicas }}
+{{- end }}
+{{- if and (eq (int $workers) 0) (not .Values.controlPlane.schedulable) }}
+{{- fail "workerPools: no worker nodes, and controlPlane.schedulable is not true: nothing could run ordinary pods. Set controlPlane.schedulable: true, or add a worker pool" }}
+{{- end }}
 {{- range $key, $_ := .Values.labels }}
 {{- if or (eq $key "dciab.io/class") (hasPrefix "cluster.x-k8s.io/" $key) (hasPrefix "app.kubernetes.io/" $key) }}
 {{- fail (printf "labels: %q is set by the chart; remove it from labels" $key) }}

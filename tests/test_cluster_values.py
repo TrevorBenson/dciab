@@ -299,3 +299,36 @@ def test_vsphere_storage_ci_values_come_from_the_example():
             continue
         assert got[key] == ci[key], key
     assert ci["nodes"]["mtu"] == 9000 and len(ci["storageNetworks"]) == 2
+
+
+def test_a_cluster_without_workers_gets_a_schedulable_control_plane():
+    """#112: MGMT with workerPools: [] must be able to run cert-manager and the rest."""
+    doc = load_example("proxmox")
+    assert cluster_values(doc, "mgmt", CA)["controlPlane"]["schedulable"] is True
+    assert "schedulable" not in cluster_values(doc, "infra", CA)["controlPlane"]
+    for pool in doc["spec"]["clusters"]["infra"]["workerPools"]:
+        pool["replicas"] = 0
+    assert cluster_values(doc, "infra", CA)["controlPlane"]["schedulable"] is True
+    metal = load_example("metal3-cluster")
+    assert cluster_values(metal, "mgmt", CA)["controlPlane"]["schedulable"] is True
+
+
+def _render(values: dict):
+    return subprocess.run(["helm", "template", "c", str(CHART), "--values", "-"], input=yaml.safe_dump(values),
+                          capture_output=True, text=True)
+
+
+@pytest.mark.skipif(not shutil.which("helm"), reason="needs helm")
+def test_chart_passes_schedulable_and_refuses_a_cluster_with_nowhere_to_run_pods():
+    values = yaml.safe_load((CHART / "ci" / "proxmox-values.yaml").read_text())
+    r = _render(values)
+    assert r.returncode == 0, r.stderr
+    assert "controlPlaneSchedulable" not in r.stdout
+    values["workerPools"] = []
+    r = _render(values)
+    assert r.returncode != 0 and "controlPlane.schedulable" in r.stderr
+    values["controlPlane"]["schedulable"] = True
+    r = _render(values)
+    assert r.returncode == 0, r.stderr
+    cluster = next(d for d in yaml.safe_load_all(r.stdout) if d and d["kind"] == "Cluster")
+    assert {"name": "controlPlaneSchedulable", "value": True} in cluster["spec"]["topology"]["variables"]

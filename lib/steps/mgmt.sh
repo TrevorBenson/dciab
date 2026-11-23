@@ -31,12 +31,19 @@
 #               Then addons/kubelet-csr-approver/install.sh (kubelet serving certificates),
 #               once every node is Ready and, on vSphere, has its CPI addresses
 #   providers   cert-manager, Cluster API and the providers on MGMT
-#   move        clusterctl move: every CAPI object, MGMT's own Cluster and the
-#               ClusterClasses, from the bootstrap cluster to MGMT
-#   adopt       the classes and mgmt Helm releases on MGMT take over the moved objects
+#   move        clusterctl move of namespace cluster-mgmt (MGMT's own Cluster, its machines
+#               and their Secrets, and copies of the ClusterClasses it uses) from the
+#               bootstrap cluster to MGMT; then checks that the Cluster and its Machines are
+#               on MGMT and none are left on the bootstrap cluster
+#   adopt       the classes and mgmt Helm releases on MGMT take over the moved objects; it
+#               refuses to run unless the moved Cluster is on MGMT
 #   longhorn    addons/longhorn/install.sh: Longhorn, MGMT's default StorageClass, backed up
 #               to spec.storage.longhorn's target; after the move, so a storage problem
 #               never holds up the pivot, and the bootstrap cluster can go once it finishes
+#
+# A Cluster left on both clusters (a move that stopped part-way, or a second Cluster on MGMT
+# from an earlier run whose move moved nothing) stops the run with what to do about it.
+# Each step prints how long it took.
 #
 # --until STEP stops after STEP. <state> defaults to .dciab/state next to the config
 # (/var/lib/dciab/work/state on the bootstrap appliance; lib/dciab_state).
@@ -102,7 +109,20 @@ mgmt_kubeconfig="$state/mgmt.kubeconfig"
 export PYTHONPATH="$ROOT/lib${PYTHONPATH:+:$PYTHONPATH}"
 on_bootstrap() { KUBECONFIG="$bootstrap" "$@"; }
 on_mgmt() { KUBECONFIG="$mgmt_kubeconfig" "$@"; }
-step() { echo; echo "== mgmt: $1"; }
+# "== mgmt: <step> done in Ns" (or "failed after Ns") when the next step starts or the run
+# ends, as dciab seed and services print.
+step_name="" step_start=0
+step_done() {   # step_done <exit status>
+  [[ -n "$step_name" ]] || return 0
+  if (( $1 )); then
+    echo "== mgmt: $step_name failed after $((SECONDS - step_start))s"
+  else
+    echo "== mgmt: $step_name done in $((SECONDS - step_start))s"
+  fi
+  step_name=""
+}
+step() { step_done 0; step_name="$1" step_start=$SECONDS; echo; echo "== mgmt: $1"; }
+trap 'step_done $?' EXIT
 finish_if() { if [[ "$until" == "$1" ]]; then echo "dciab mgmt: stopped after '$1' (--until)"; exit 0; fi; }
 
 platform="$(python3 -c 'import sys, yaml; print(yaml.safe_load(open(sys.argv[1]))["spec"]["platform"]["type"])' "$config")"
@@ -111,18 +131,9 @@ platform="$(python3 -c 'import sys, yaml; print(yaml.safe_load(open(sys.argv[1])
 exec 9>"$state/.lock"
 flock -n 9 || die "another dciab mgmt is running with state $state"
 
-# Where MGMT's Cluster object lives: before the move on the bootstrap cluster, after it on
-# MGMT. A failed lookup (API down, access denied) stops the run instead of reading as absent.
-cluster_on() {   # cluster_on <kubeconfig>: prints the Cluster's name if it exists there
-  KUBECONFIG="$1" kubectl -n "$NS" get cluster mgmt --ignore-not-found -o name
-}
-moved() {
-  local on_m on_b
-  [[ -f "$mgmt_kubeconfig" ]] || return 1
-  on_m="$(cluster_on "$mgmt_kubeconfig")" || return 1   # MGMT not reachable yet: not moved
-  on_b="$(cluster_on "$bootstrap")" || die "can't read Clusters on the bootstrap cluster"
-  [[ -n "$on_m" && -z "$on_b" ]]
-}
+# Where MGMT's Cluster object lives (pivot_state), the move and its checks.
+# shellcheck source=lib/steps/mgmt-pivot.sh
+source "$ROOT/lib/steps/mgmt-pivot.sh"
 
 step preflight
 for tool in kubectl helm clusterctl python3 flock; do
@@ -131,7 +142,11 @@ done
 want="$(python3 -c 'import sys, yaml; print(yaml.safe_load(open(sys.argv[1]))["clusterAPI"]["core"]["version"])' "$ROOT/bundle.lock")"
 have="$(clusterctl version -o short 2>/dev/null || true)"
 [[ "$have" == "$want" ]] || die "clusterctl is ${have:-unknown}; bundle.lock pins Cluster API $want and clusterctl must match"
-if ! moved; then
+# Read once: values and the cluster steps go by it.
+pivot="$(pivot_state)"
+# On both clusters: stop before anything changes, with what to do.
+[[ "$pivot" != split && "$pivot" != interrupted ]] || die "$(both_help "$pivot")"
+if [[ "$pivot" == bootstrap ]]; then
   seed_hint="run dciab seed (or: KUBECONFIG=$bootstrap $ROOT/lib/steps/capi-providers.sh --with-classes)"
   on_bootstrap kubectl -n capi-system get deployment capi-controller-manager >/dev/null 2>&1 \
     || die "the bootstrap cluster has no Cluster API; $seed_hint"
@@ -152,7 +167,7 @@ apply_credentials() {   # apply_credentials <kubeconfig>
   python3 -m dciab_cluster.credentials "$config" mgmt "$NS" | KUBECONFIG="$1" kubectl apply -f -
 }
 
-if moved; then
+if [[ "$pivot" == mgmt ]]; then
   echo "MGMT already manages itself; checking the remaining steps"
   finish_if cluster
 else
@@ -198,19 +213,13 @@ on_mgmt "$ROOT/lib/steps/capi-providers.sh" "${providers_args[@]}"
 finish_if providers
 
 step move
-if moved; then
-  echo "already moved"
-else
-  # clusterctl move takes every CAPI object on the bootstrap cluster: it must hold MGMT only.
-  others="$(on_bootstrap kubectl get clusters -A --no-headers -o custom-columns=NS:.metadata.namespace,NAME:.metadata.name \
-    | awk -v ns="$NS" '!($1 == ns && $2 == "mgmt")')"
-  [[ -z "$others" ]] || die "the bootstrap cluster holds other Clusters, which the move would take to MGMT: $others"
-  on_bootstrap kubectl -n "$NS" wait cluster/mgmt --for=condition=Available --timeout=45m
-  clusterctl move --kubeconfig "$bootstrap" --to-kubeconfig "$mgmt_kubeconfig"
-fi
+move_mgmt
 finish_if move
 
 step adopt
+# Only a moved Cluster is adopted: on an empty MGMT, the mgmt release would create a second
+# Cluster with the same VIP and node range.
+check_moved || die "refusing to adopt: the moved Cluster mgmt is not on MGMT (above)"
 # The credentials Secret moves with the Cluster (clusterctl's move label); applying it here
 # as well keeps it current when the config's secret changes after the move.
 apply_credentials "$mgmt_kubeconfig"

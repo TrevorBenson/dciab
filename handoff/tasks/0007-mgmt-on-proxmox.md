@@ -8,6 +8,17 @@ report: handoff/reports/0007-mgmt-on-proxmox.md
 may_change: []
 ---
 
+## Retry (2026-11-23)
+
+The first run (findings on issue #113) built MGMT but stopped at the move: `clusterctl move` ran without `--namespace` and moved nothing, `dciab mgmt` reported success, and `adopt` created a second, empty Cluster on MGMT. Before that, cert-manager couldn't schedule on MGMT's control plane. What changed:
+
+- **#126:** `dciab mgmt` moves namespace `cluster-mgmt` (`--namespace`), then checks that the Cluster and its Machines are on MGMT and none are left on the bootstrap cluster, and fails otherwise. `adopt` refuses to run unless the moved Cluster is on MGMT. A Cluster on both clusters stops the run with what to do.
+- **#112:** a cluster with no worker nodes gets a schedulable control plane (`controlPlaneSchedulable` in the `r1` draft; no taint at init or join). Don't use the `kubectl taint` workaround: step 5 must pass without it. On MGMT, `kubectl get nodes -o jsonpath='{.items[*].spec.taints}'` shows no `control-plane` taint.
+- `dciab mgmt` no longer prints `the server doesn't have a resource type "cluster"` on a re-run, and prints `== mgmt: <step> done in Ns` after each step; use those for the timings.
+- **#127**, if its PR (#128) is merged before you start: seed's findings from the first run (its timings lines, and the rest that PR lists).
+
+The `r1` draft changed, so the old ClusterClasses can't be upgraded in place (`docs/VERSIONING.md`). Start from a **fresh** bootstrap cluster and state: with Trevor's go-ahead, delete the old `dciab-bootstrap` kind cluster and `dciab-registry` container (`~/.dciab/0007/teardown.sh`), and remove `~/.dciab/0007/state/mgmt.kubeconfig` and `mgmt-values.yaml` (the old MGMT's VMs are gone). Keep `state/pki`. Then run every step again. In step 5, record the move check's line (`Cluster mgmt and its 3 Machines are on MGMT ...`). Append this attempt to the report, keeping the first run's findings.
+
 ## Goal
 
 Run `dciab seed` and then `dciab mgmt` for real: the seed registry and the kind bootstrap cluster from an archive payload, then MGMT on Proxmox, Cilium, and the move of Cluster API into MGMT so it manages itself. That's the Phase 1 gate "MGMT builds and pivots", without the parts that don't exist yet: MGMT's services and the DNS handoff.

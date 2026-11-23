@@ -21,6 +21,9 @@ Site-wide conventions, the same for every cluster:
   platform (narrowed by its own failureDomains list). With two or more, each worker pool
   becomes one MachineDeployment per domain, <pool>-<domain>, with the replicas split
   evenly; with one, the pools are placed in it
+- a cluster with no worker nodes (no worker pools, or only pools of 0 replicas, as MGMT
+  often has) runs its workloads on its control plane nodes: controlPlane.schedulable,
+  which the classes turn into control plane nodes without the NoSchedule taint
 """
 
 from __future__ import annotations
@@ -215,6 +218,8 @@ def cluster_values(site: dict, name: str, trust_bundle: str, lock: Optional[dict
         _metal3(values, spec, c, domain)
     else:
         _vm(values, spec, c, klass, site["metadata"]["name"])
+    if not any(p["replicas"] > 0 for p in values["workerPools"]):
+        values["controlPlane"]["schedulable"] = True
     return values
 
 

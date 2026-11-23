@@ -37,6 +37,7 @@ encryption:
 # VM classes (vsphere, proxmox): one node network and range per cluster.
 # network: {nodeIPRange: 10.20.110.60-10.20.110.89, prefix: 24, gateway: 10.20.110.1}
 # controlPlane: {replicas: 3, machine: {cpu: 4, memoryGiB: 16, diskGiB: 100}}
+# controlPlane.schedulable: true        # no worker nodes: the control plane runs workloads (README.md)
 # workerPools:
 #   - {name: general, replicas: 3, machine: {cpu: 8, memoryGiB: 32, diskGiB: 150}}
 # vsphere: {server, thumbprint, datacenter, datastore, folder, resourcePool, network, template}

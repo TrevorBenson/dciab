@@ -561,6 +561,23 @@ def test_installed_classes_bootstrap_kubelet_serving_certificates():
             assert part["patches"]["directory"] == "/etc/kubernetes/patches", f.name
 
 
+def test_installed_classes_can_drop_the_control_plane_taint():
+    """#112: a cluster without workers needs a schedulable control plane, at init and join."""
+    for f in _installed_class_files():
+        cc = _kind(_docs(f), "ClusterClass")
+        var = next(v for v in cc["spec"]["variables"] if v["name"] == "controlPlaneSchedulable")
+        assert not var["required"] and var["schema"]["openAPIV3Schema"]["default"] is False, f.name
+        patch = next(p for p in cc["spec"]["patches"] if p["name"] == "controlPlaneSchedulable")
+        assert patch["enabledIf"] == "{{ if .controlPlaneSchedulable }}true{{ end }}", f.name
+        (d,) = patch["definitions"]
+        assert d["selector"]["kind"] == "KubeadmControlPlaneTemplate"
+        base = "/spec/template/spec/kubeadmConfigSpec"
+        assert [(j["op"], j["path"], j["value"]) for j in d["jsonPatches"]] == [
+            ("add", f"{base}/initConfiguration/nodeRegistration/taints", []),
+            ("add", f"{base}/joinConfiguration/nodeRegistration/taints", []),
+        ], f.name
+
+
 def test_kubelet_csr_approver_is_pinned():
     lock = yaml.safe_load((ROOT / "bundle.lock").read_text())
     assert lock["charts"]["kubelet-csr-approver"]
