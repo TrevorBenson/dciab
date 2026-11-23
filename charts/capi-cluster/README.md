@@ -7,11 +7,14 @@ Values come from the site config: `dciab cluster-values <config> <cluster>` prin
 The chart renders:
 
 - a `Cluster` whose topology uses `dciab-<class>-<classRevision>` from [capi-clusterclasses](../capi-clusterclasses),
-- for `vsphere`: an `InClusterIPPool` named `<cluster>-nodes`,
-- for `metal3`: an `IPPool` and a `Metal3DataTemplate` per role (`<cluster>-controlplane`, `<cluster>-<pool>`),
+- for `vsphere`: an `InClusterIPPool` named `<cluster>-nodes`, and, when the site has vSphere failure domains, a `VSphereFailureDomain` and a `VSphereDeploymentZone` per domain, named `<cluster>-<domain>` and labelled `dciab.io/cluster=<cluster>` (both kinds are cluster-scoped, so each cluster has its own),
+- for `vsphere` and `proxmox` clusters with `storageNetworks`: an `InClusterIPPool` `<cluster>-storage-<name>` per storage network (no gateway),
+- for `metal3`: an `IPPool` and a `Metal3DataTemplate` per role (`<cluster>-controlplane`, `<cluster>-<pool>`); a pool split over failure domains gets a data template per domain and keeps one `IPPool` (`addressPool`),
 - the Secret `<cluster>-encryption-config`, which holds the cluster's Secret encryption key (below).
 
-Proxmox clusters need no pool object: CAPMOX allocates node addresses from the cluster's `ipv4Config`.
+Proxmox clusters need no pool object for node addresses: CAPMOX allocates them from the cluster's `ipv4Config`.
+
+Worker pools with a `failureDomain` (`dciab cluster-values` splits each pool into one per domain, `<pool>-<domain>`) are placed there: on vSphere and Metal3 through the MachineDeployment's `failureDomain`, on Proxmox through the class's `failureDomain` variable.
 
 Values are validated by `values.schema.json`: every site-specific value is required and nothing has a default. [ci/](ci) has a complete values file for each class.
 

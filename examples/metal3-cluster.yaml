@@ -33,10 +33,19 @@ spec:
       - age1ffyw9h8rvfdsshhfl4jvfgvh5mdl3xv98a9sq5p6lyg5d7z62t2r2q9j6f
       - age1skgjkfxj3tkldtdnkd9cwuhennz9uuvg4q058rte5yhwk2vypq0g0u2207
 
+  time:
+    servedBy: site
+    servers: [10.0.0.123]
+
+  failureDomains:                        # racks: bare-metal hosts name theirs, and each rack's ESXi hosts
+    domains:                             # are a DRS host group, so MGMT and INFRA spread over them too
+      - {name: rack-a, vsphere: {computeCluster: Compute-A, hostGroup: rack-a-hosts, vmGroup: rack-a-vms}}
+      - {name: rack-b, vsphere: {computeCluster: Compute-A, hostGroup: rack-b-hosts, vmGroup: rack-b-vms}}
+      - {name: rack-c, vsphere: {computeCluster: Compute-A, hostGroup: rack-c-hosts, vmGroup: rack-c-vms}}
+
   network:
     domain: dc2.example.com
     upstreamResolvers: [10.0.0.53]
-    ntpServers: [10.0.0.123]
     nodes:
       cidr: 10.20.110.0/24
       gateway: 10.20.110.1
@@ -106,6 +115,7 @@ spec:
           credentials: {username: dciab, password: {file: ./secrets/bmc/r760-01}}
         bootMACAddress: "b8:ca:3a:01:02:01"
         rootDeviceHints: {serialNumber: S6EUNE0T100001}
+        failureDomain: rack-a
         labels: {pool: metal01-cp}
       - name: r760-02
         bmc:
@@ -114,6 +124,7 @@ spec:
           credentials: {username: dciab, password: {file: ./secrets/bmc/r760-02}}
         bootMACAddress: "b8:ca:3a:01:02:02"
         rootDeviceHints: {serialNumber: S6EUNE0T100002}
+        failureDomain: rack-b
         labels: {pool: metal01-cp}
       - name: r760-03
         bmc:
@@ -122,6 +133,7 @@ spec:
           credentials: {username: dciab, password: {file: ./secrets/bmc/r760-03}}
         bootMACAddress: "b8:ca:3a:01:02:03"
         rootDeviceHints: {serialNumber: S6EUNE0T100003}
+        failureDomain: rack-c
         labels: {pool: metal01-cp}
       - name: r760-04
         bmc:
@@ -130,6 +142,7 @@ spec:
           credentials: {username: dciab, password: {file: ./secrets/bmc/r760-04}}
         bootMACAddress: "b8:ca:3a:01:02:04"
         rootDeviceHints: {serialNumber: S6EUNE0T100004}
+        failureDomain: rack-a
         labels: {pool: metal01-gpu}
       - name: r760-05
         bmc:
@@ -138,6 +151,7 @@ spec:
           credentials: {username: dciab, password: {file: ./secrets/bmc/r760-05}}
         bootMACAddress: "b8:ca:3a:01:02:05"
         rootDeviceHints: {serialNumber: S6EUNE0T100005}
+        failureDomain: rack-b
         labels: {pool: metal01-gpu}
       # One spare per pool, so a rolling upgrade can add a node before removing one.
       - name: r760-06
@@ -147,6 +161,7 @@ spec:
           credentials: {username: dciab, password: {file: ./secrets/bmc/r760-06}}
         bootMACAddress: "b8:ca:3a:01:02:06"
         rootDeviceHints: {serialNumber: S6EUNE0T100006}
+        failureDomain: rack-a
         labels: {pool: metal01-cp}
       - name: r760-07
         bmc:
@@ -155,6 +170,7 @@ spec:
           credentials: {username: dciab, password: {file: ./secrets/bmc/r760-07}}
         bootMACAddress: "b8:ca:3a:01:02:07"
         rootDeviceHints: {serialNumber: S6EUNE0T100007}
+        failureDomain: rack-c
         labels: {pool: metal01-gpu}
 
   workloadClusters:

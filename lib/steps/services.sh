@@ -4,7 +4,7 @@
 #
 #   dciab services <config> [--state DIR] [--isos DIR] [--payload DIR] [--until STEP] [--print]
 #
-# CoreDNS, chrony (only with spec.bootstrap.ntp) and Caddy run as one podman pod with host
+# CoreDNS, chrony (only with spec.time.servedBy: dciab) and Caddy run as one podman pod with host
 # networking. CoreDNS and chrony answer only on network.dnsServiceIPs, Caddy only on
 # spec.bootstrap.address. A config without spec.hypervisors (its servers exist already) gets
 # CoreDNS alone, so registry.<network.domain> resolves to the seed registry during bootstrap;

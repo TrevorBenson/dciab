@@ -1,13 +1,14 @@
 # DCiaB site config: Proxmox VE, starting from bare servers.
 # Same as proxmox.yaml, plus spec.hypervisors (DCiaB installs Proxmox VE on the servers
-# through their BMCs) and spec.bootstrap.ntp (the site has no NTP of its own, so the
+# through their BMCs) and spec.time servedBy: dciab (the site has no NTP of its own, so the
 # bootstrap host serves it on the DNS service IPs until the platform takes over).
 #
 # Limitation: the installed hosts are not clustered and only have local storage. CAPMOX
 # reaches them through pve01's API and can't clone the template from local storage to
-# another host, so CAPMOX places VMs on pve01 until the hosts are clustered, even though
-# nodes lists all three. There is no hypervisor-level redundancy: losing pve01 loses the
-# platform. Proxmox VE clustering and shared storage are on the roadmap.
+# another host. spec.failureDomains declares pve01 as the one domain, which keeps every VM
+# there (even though nodes lists all three). There is no hypervisor-level redundancy:
+# losing pve01 loses the platform. Proxmox VE clustering and shared storage are on the
+# roadmap.
 apiVersion: dciab.io/v1alpha1
 kind: Site
 metadata:
@@ -44,14 +45,22 @@ spec:
     recipients:
       - age1j5xfcwdps86qjrrxvv8uresmxqessnxskgml6p7x7xw8az4th6mpns0acs
       - age1skgjkfxj3tkldtdnkd9cwuhennz9uuvg4q058rte5yhwk2vypq0g0u2207
-    ntp:
-      upstream: []                       # nothing to sync from on this isolated site
-      serveLocalClock: true              # so the bootstrap host's clock is the site's time
+
+  time:
+    servedBy: dciab                      # DCiaB serves NTP on the DNS service IPs (the bootstrap host on Day 0)
+    upstream: []                         # nothing to sync from on this isolated site
+    serveLocalClock: true                # so DCiaB's clock is the site's time
+
+  failureDomains:
+    domains:
+      - name: pve01
+        proxmox: {node: pve01}           # every VM runs here
+    notHighlyAvailable:
+      reason: unclustered hosts with local storage; losing pve01 stops the site, restore is from backups
 
   network:
     domain: dc3.example.com
     upstreamResolvers: []                # isolated site: the recursor forwards nothing
-    ntpServers: [10.30.110.53, 10.30.110.54]   # the DNS service IPs, where the bootstrap host serves NTP
     nodes:
       cidr: 10.30.110.0/24
       gateway: 10.30.110.1

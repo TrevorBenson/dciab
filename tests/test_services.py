@@ -38,7 +38,7 @@ def test_only_sites_with_hypervisors_run_full_services():
 def existing():
     """A site whose hypervisors exist already, with NTP set: still DNS only."""
     doc = copy.deepcopy(load_example("proxmox"))
-    doc["spec"]["bootstrap"]["ntp"] = {"upstream": [], "serveLocalClock": True}
+    doc["spec"]["time"] = {"servedBy": "dciab", "upstream": [], "serveLocalClock": True}
     return doc
 
 
@@ -65,7 +65,7 @@ def test_full_mode_needs_coredns_caddy_and_the_pinned_chrony_image(monkeypatch):
     monkeypatch.delenv("DCIAB_CHRONY_IMAGE", raising=False)
     assert cli.pod_images(bare(), IMAGES) == [IMAGES["coredns"], IMAGES["caddy"], IMAGES["chrony"]]
     no_ntp = bare()
-    del no_ntp["spec"]["bootstrap"]["ntp"]
+    no_ntp["spec"]["time"] = {"servedBy": "site", "servers": ["10.30.0.123"]}
     assert cli.pod_images(no_ntp, IMAGES) == [IMAGES["coredns"], IMAGES["caddy"]]
     assert cli.pod_images(existing(), IMAGES) == [IMAGES["coredns"]]
     # A local image (building and testing DCiaB) is neither loaded nor pulled.
@@ -195,7 +195,7 @@ def test_chrony_one_server_per_service_ip_with_local_clock():
 
 def test_chrony_follows_bootstrap_upstream():
     doc = bare()
-    doc["spec"]["bootstrap"]["ntp"] = {"upstream": ["ntp1.example.org"], "serveLocalClock": False}
+    doc["spec"]["time"] = {"servedBy": "dciab", "upstream": ["ntp1.example.org"], "serveLocalClock": False}
     c = render.chrony_confs(doc)["10.30.110.54"]
     assert "server ntp1.example.org iburst" in c
     assert "local" not in c
@@ -203,7 +203,7 @@ def test_chrony_follows_bootstrap_upstream():
 
 def test_no_chrony_when_the_site_has_ntp():
     doc = bare()
-    del doc["spec"]["bootstrap"]["ntp"]
+    doc["spec"]["time"] = {"servedBy": "site", "servers": ["10.30.0.123"]}
     files = files_for(doc)
     assert not any(f.startswith("chrony") for f in files)
     pod = yaml.safe_load(files["pod.yaml"])
@@ -300,7 +300,7 @@ def test_dropped_ntp_removes_chrony_configs(tmp_path):
     conf = tmp_path / "services"
     cli.write(files_for(bare()), conf)
     doc = bare()
-    del doc["spec"]["bootstrap"]["ntp"]
+    doc["spec"]["time"] = {"servedBy": "site", "servers": ["10.30.0.123"]}
     changed = cli.write(files_for(doc), conf)
     assert "chrony-1.conf (removed)" in changed
     assert not (conf / "chrony-1.conf").exists()

@@ -470,13 +470,13 @@ def test_ntp_unreachable_is_an_error(udp, monkeypatch):
     assert f.severity == "error" and "no NTP answer" in f.found
 
 
-def test_ntp_targets_follow_bootstrap_ntp():
+def test_ntp_targets_follow_who_serves_time():
     bare = load_example("proxmox-bare")["spec"]
-    assert live.ntp_targets(bare) == []  # isolated: upstream is empty, ntpServers are DCiaB's own
-    bare["bootstrap"]["ntp"]["upstream"] = ["ntp.example.org"]
-    assert live.ntp_targets(bare) == [(("spec", "bootstrap", "ntp", "upstream", 0), "ntp.example.org")]
+    assert live.ntp_targets(bare) == []  # isolated: upstream is empty, the servers are DCiaB's own
+    bare["time"]["upstream"] = ["ntp.example.org"]
+    assert live.ntp_targets(bare) == [(("spec", "time", "upstream", 0), "ntp.example.org")]
     plain = load_example("vsphere")["spec"]
-    assert [p[1] for p in live.ntp_targets(plain)] == plain["network"]["ntpServers"]
+    assert [p[1] for p in live.ntp_targets(plain)] == plain["time"]["servers"]
 
 
 def dns_reply(rcode=0, answers=(1,), ra=True):
@@ -707,7 +707,9 @@ def test_cli_live_end_to_end(cert, servers, site, monkeypatch):
         h["bmc"]["tlsFingerprint"] = cert["sha256"]
     code, report, out = _validate_live(site, doc)
     assert code == 0, report
-    assert errors(report) == [] and warnings(report) == []
+    # Only the example's own acknowledgements (tests/test_validate.py EXPECTED_WARNINGS).
+    assert errors(report) == [] and {w["path"] for w in warnings(report)} == {
+        "spec.failureDomains.notHighlyAvailable", "spec.time.serveLocalClock"}
     notes = report["notes"]
     assert not any("were not run" in n for n in notes)
     assert sum("virtual media" in n for n in notes) == 3

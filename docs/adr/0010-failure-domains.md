@@ -3,6 +3,10 @@
 - Status: Accepted (2026-11-23)
 - Date: 2026-11-23
 - Amended 2026-11-23: MachineHealthCheck moves from `r2` to `r1` (decision 10).
+- Amended 2026-11-23, in the implementation (decisions 2 and 10):
+  - vSphere: each cluster gets its own `VSphereFailureDomain` and `VSphereDeploymentZone` per domain (`<cluster>-<domain>`, labelled `dciab.io/cluster`), and the selector matches that label instead of `failureDomainSelector: {}`. Both kinds are cluster-scoped: `{}` would take every cluster's zones, two Helm releases can't own one object, and a cluster couldn't narrow its list. The zone tag stays the domain name.
+  - Proxmox: a cluster's `allowedNodes` are its domains' nodes, not every node; with no domains declared, the template's node. Every node then carries the zone label the Proxmox CSI driver needs.
+  - Metal3: the label-sync annotation sits in the `Metal3ClusterTemplate`'s `spec.template.metadata`, which the topology controller copies to the `Metal3Cluster`. That answers the open question in decision 10.
 
 ## Context
 
@@ -253,7 +257,7 @@ spec:
 
 **`r2` or later:** Proxmox control plane spread, control plane zone labels and domains of several PVE nodes, once a CAPMOX release with failure domains is pinned.
 
-**Amended: MachineHealthCheck is in `r1`.** It was planned for `r2`, to come with failure domains so a replacement doesn't land beside the survivor. Failure domains land in `r1` for vSphere and Metal3, so a replacement goes to a domain KubeadmControlPlane and the MachineDeployments choose. On Proxmox a replacement control plane VM may land on the same host as a survivor until CAPMOX spreads the control plane; `validate` and `dciab status` report that (decision 6), once the failure-domain support lands. Remediation replaces one machine at a time (`unhealthyLessThanOrEqualTo: 1`) and retries a failing control plane machine at most three times, so a site-wide problem never turns into mass replacement.
+**Amended: MachineHealthCheck is in `r1`.** It was planned for `r2`, to come with failure domains so a replacement doesn't land beside the survivor. Failure domains land in `r1` for vSphere and Metal3, so a replacement goes to a domain KubeadmControlPlane and the MachineDeployments choose. On Proxmox a replacement control plane VM may land on the same host as a survivor until CAPMOX spreads the control plane; `validate` and `dciab status` report it (decision 6). Remediation replaces one machine at a time (`unhealthyLessThanOrEqualTo: 1`) and retries a failing control plane machine at most three times, so a site-wide problem never turns into mass replacement.
 
 ## Alternatives considered
 

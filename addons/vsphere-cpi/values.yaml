@@ -10,6 +10,7 @@ config:
   secret:
     create: false
     name: vsphere-cloud-secret
-  # No vSphere tag categories for zones and regions yet: empty turns the CPI's zone lookup off.
+  # Empty turns the CPI's zone lookup off; cpi_values.py sets k8s-region and k8s-zone when
+  # the site declares vSphere failure domains.
   region: ""
   zone: ""

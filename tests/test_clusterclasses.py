@@ -581,6 +581,7 @@ def test_kubelet_csr_approver_allows_only_the_node_ranges(ci_file):
     nets = [ipaddress.ip_network(p) for p in yaml.safe_load(r.stdout)["providerIpPrefixes"]]
     allowed = {ip for n in nets for ip in n}
     ranges = [v["network"]] if "network" in v else [v["controlPlane"]["network"]] + [p["network"] for p in v["workerPools"]]
+    ranges += [{"nodeIPRange": s["ipRange"]} for s in v.get("storageNetworks", [])]
     want = set()
     for n in ranges:
         first, last = (int(ipaddress.ip_address(a)) for a in n["nodeIPRange"].split("-"))
@@ -634,3 +635,125 @@ def test_kubelet_csr_approver_skips_the_chart_test_hook():
     text = (ROOT / "addons" / "kubelet-csr-approver" / "install.sh").read_text()
     calls = [l for l in text.splitlines() if l.strip().startswith(("helm template", "helm upgrade"))]
     assert len(calls) == 2 and all("--skip-tests" in c for c in calls)
+# --- ADR-driven r1 items: structured authentication, failure domains, storage networks ----
+
+AUTHENTICATION_CONFIG = "/etc/kubernetes/authentication/config.yaml"
+
+
+def test_installed_classes_use_structured_authentication():
+    """ADR 0008, decision 8: an AuthenticationConfiguration file with several issuers, no --oidc-* flags."""
+    for f in _installed_class_files():
+        docs = _docs(f)
+        text = f.read_text()
+        assert "oidc-issuer-url" not in text and "name: oidc" not in text, f.name
+        cc = _kind(docs, "ClusterClass")
+        names = [p["name"] for p in cc["spec"]["patches"]]
+        assert names.index("authentication") > names.index("nodeBase"), f.name
+        patch = _patch(cc, "authentication")
+        assert patch["enabledIf"] == "{{ if .authentication }}true{{ end }}"
+        ops = {op["path"].rsplit("/", 2)[-2]: op for op in patch["definitions"][0]["jsonPatches"]}
+        assert ops["extraArgs"]["value"] == {"name": "authentication-config", "value": AUTHENTICATION_CONFIG}
+        assert ops["extraVolumes"]["value"]["mountPath"] == AUTHENTICATION_CONFIG
+        file = yaml.safe_load(re.sub(r"{{.*?}}", "x", ops["files"]["valueFrom"]["template"]))
+        assert file["path"] == AUTHENTICATION_CONFIG
+        assert "kind: AuthenticationConfiguration" in file["content"]
+        var = next(v for v in cc["spec"]["variables"] if v["name"] == "authentication")
+        issuers = var["schema"]["openAPIV3Schema"]["properties"]["issuers"]
+        assert issuers["type"] == "array" and set(issuers["items"]["required"]) == {"name", "url", "clientID"}
+        rules = " ".join(r["rule"] for r in issuers["x-kubernetes-validations"])
+        assert "b.url == a.url" in rules and "b.name == a.name" in rules
+        assert "usernamePrefix" in rules and "groupsPrefix" in rules
+        assert 'default (printf "%s:" $i.name)' in ops["files"]["valueFrom"]["template"]
+
+
+def test_proxmox_class_places_workers_and_labels_nodes():
+    docs = _docs(CLASSES / "r1" / "proxmox.yaml")
+    cc = _kind(docs, "ClusterClass")
+    variables = {v["name"]: v for v in cc["spec"]["variables"]}
+    assert not variables["failureDomain"]["required"] and not variables["topology"]["required"]
+    worker = _patch(cc, "proxmoxMachines")["definitions"][1]["jsonPatches"]
+    allowed = next(op for op in worker if op["path"] == "/spec/template/spec/allowedNodes")
+    assert ".failureDomain" in allowed["valueFrom"]["template"] and ".proxmox.allowedNodes" in allowed["valueFrom"]["template"]
+    cp = _patch(cc, "proxmoxMachines")["definitions"][0]["jsonPatches"]
+    assert not any(op["path"] == "/spec/template/spec/allowedNodes" for op in cp)  # r1: the control plane isn't spread
+    topo = _patch(cc, "nodeTopology")
+    paths = [op["path"] for d in topo["definitions"] for op in d["jsonPatches"]]
+    assert all(p.endswith("/nodeRegistration/kubeletExtraArgs/-") for p in paths) and len(paths) == 3
+    templates = [op["valueFrom"]["template"] for d in topo["definitions"] for op in d["jsonPatches"]]
+    assert all("topology.kubernetes.io/region=" in t for t in templates)
+    assert "topology.kubernetes.io/zone={{ .failureDomain }}" in templates[-1]
+
+
+def test_vsphere_class_failure_domains_and_cluster_modules():
+    cc = _kind(_docs(CLASSES / "r1" / "vsphere.yaml"), "ClusterClass")
+    fd = _patch(cc, "vsphereFailureDomains")
+    assert fd["enabledIf"] == "{{ if .zones }}true{{ end }}"
+    assert "dciab.io/cluster" in fd["definitions"][0]["jsonPatches"][0]["valueFrom"]["template"]
+    cm = _patch(cc, "vsphereClusterModules")
+    assert cm["definitions"][0]["jsonPatches"][0] == {"op": "add", "path": "/spec/template/spec/disableClusterModule",
+                                                      "value": True}
+
+
+def test_metal3_class_failure_domains_and_label_sync():
+    docs = _docs(CLASSES / "r1" / "metal3.yaml")
+    cc = _kind(docs, "ClusterClass")
+    assert _patch(cc, "metal3FailureDomains")["definitions"][0]["jsonPatches"][0]["path"] == "/spec/template/spec/failureDomains"
+    tmpl = _kind(docs, "Metal3ClusterTemplate")["spec"]["template"]
+    assert tmpl["metadata"]["annotations"]["metal3.io/metal3-label-sync-prefixes"] == "topology.kubernetes.io"
+
+
+@pytest.mark.parametrize("provider", ["proxmox", "vsphere"])
+def test_vm_classes_add_a_nic_per_storage_network(provider):
+    cc = _kind(_docs(CLASSES / "r1" / f"{provider}.yaml"), "ClusterClass")
+    variables = {v["name"]: v for v in cc["spec"]["variables"]}
+    sn = variables["storageNetworks"]
+    assert sn["required"] is False and sn["schema"]["openAPIV3Schema"]["default"] == []
+    assert variables["mtu"]["required"] is False
+    machines = _patch(cc, f"{provider}Machines")
+    for d in machines["definitions"]:
+        net = next(op for op in d["jsonPatches"] if op["path"] == "/spec/template/spec/network")
+        text = net["valueFrom"]["template"]
+        assert "range" in text and ".storageNetworks" in text and "-storage-{{ $n.name }}" in text
+        assert "{{ .mtu }}" in text
+    init = _patch(cc, "storageInitiators")
+    assert init["enabledIf"] == "{{ if .storageNetworks }}true{{ end }}"
+    assert len(init["definitions"]) == 2
+
+
+def test_cluster_modules_are_on_for_vsphere():
+    lock = yaml.safe_load((ROOT / "bundle.lock").read_text())
+    assert lock["clusterAPI"]["variables"]["EXP_NODE_ANTI_AFFINITY"] == "true"
+
+
+def _bounded(schema, path):
+    """Every array has maxItems and every string maxLength, so CEL rules on them have a bounded cost."""
+    if schema.get("type") == "array":
+        assert "maxItems" in schema, f"{path}: array without maxItems"
+        _bounded(schema["items"], path + "[]")
+    elif schema.get("type") == "string":
+        assert "maxLength" in schema, f"{path}: string without maxLength"
+    for k, sub in (schema.get("properties") or {}).items():
+        _bounded(sub, f"{path}.{k}")
+
+
+def test_variables_with_cel_rules_are_bounded():
+    """The API server rejects a ClusterClass whose CEL rules have an unbounded estimated cost
+    (it did, for the issuer uniqueness rules, before maxItems and maxLength were set)."""
+    from dciab_cluster.values import MAX_ISSUERS
+    for f in _installed_class_files():
+        cc = _kind(_docs(f), "ClusterClass")
+        found = 0
+        for var in cc["spec"]["variables"]:
+            def walk(schema, path):
+                nonlocal found
+                if schema.get("x-kubernetes-validations"):
+                    found += 1
+                    _bounded(schema, path)
+                for k, sub in (schema.get("properties") or {}).items():
+                    walk(sub, f"{path}.{k}")
+                if isinstance(schema.get("items"), dict):
+                    walk(schema["items"], path + "[]")
+            walk(var["schema"]["openAPIV3Schema"], f"{f.name}:{var['name']}")
+        assert found, f.name
+        auth = next(v for v in cc["spec"]["variables"] if v["name"] == "authentication")
+        assert auth["schema"]["openAPIV3Schema"]["properties"]["issuers"]["maxItems"] == MAX_ISSUERS

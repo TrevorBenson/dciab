@@ -17,6 +17,8 @@ from datetime import datetime, timezone
 from pathlib import Path as FsPath
 from typing import Dict, List, Optional, Tuple
 
+from dciab_cluster.values import place_pools, usable_domains
+
 from . import netutil as nu
 from .findings import ERROR, WARNING, Finding, Path, format_path
 
@@ -26,6 +28,9 @@ RESERVED_CLUSTER_NAMES = {"mgmt", "infra"}
 # each child SPIRE CA (ADR 0004 and ADR 0005).
 PKI_MIN_PATH_LEN = 3
 ONE_YEAR_SECONDS = 365 * 24 * 3600
+# A MachineDeployment's name ends up in its machines' host names, <cluster>-<md>-<5>-<5>,
+# which must fit a 63-character DNS label with a 20-character cluster name.
+MAX_MD_NAME = 30
 
 
 @dataclass
@@ -79,8 +84,11 @@ class Checker:
         self.check_addresses()
         self.check_cidrs()
         self.check_baremetal()
-        self.check_bootstrap_ntp()
+        self.check_bootstrap_notes()
+        self.check_time()
         self.check_hypervisors()
+        self.check_failure_domains()
+        self.check_storage_networks()
         self.check_storage()
         self.check_resilience()
         self.check_template_version()
@@ -311,6 +319,8 @@ class Checker:
             if svc is not None and svc.prefixlen < 12:
                 self.error(cpath + ("serviceCIDR",), c["serviceCIDR"],
                            "use /12 or smaller: the Kubernetes API server rejects a larger service range")
+        for i, n in enumerate(self.spec["network"].get("storage", [])):
+            nets.append((("spec", "network", "storage", i, "cidr"), n["cidr"]))
         if self.spec["baremetal"]["enabled"]:
             for i, n in enumerate(self.spec["baremetal"]["networks"]):
                 nets.append((("spec", "baremetal", "networks", i, "cidr"), n["cidr"]))
@@ -401,39 +411,42 @@ class Checker:
                         self.warn(role_path + ("network",), role["network"],
                                   "this pool is on a different network from its control plane; make sure the networks route to each other")
 
-    def check_bootstrap_ntp(self) -> None:
-        """When the bootstrap host serves NTP, it does so on the DNS service IPs, so every
-        host must be pointed at exactly those; and nothing may point at them otherwise."""
-        net = self.spec["network"]
-        ntp_path = ("spec", "network", "ntpServers")
-        service_ips = list(net["dnsServiceIPs"])
-        listed = set(net["ntpServers"])
+    def check_bootstrap_notes(self) -> None:
         if "workDisk" not in self.spec["bootstrap"]:
             self.notes.append("spec.bootstrap.workDisk isn't set; dciab media and the DCiaB appliance installer "
                               "need it (disk: for the appliance, path: for a Rocky Linux 10 host you provide)")
         if "managementVLAN" not in self.spec["bootstrap"]:
             self.notes.append("spec.bootstrap.managementVLAN isn't set; the DCiaB bootstrap appliance needs it "
                               "(tagged or untagged) to configure its own network")
-        serving = "ntp" in self.spec["bootstrap"]
-        if serving:
+
+    def check_time(self) -> None:
+        """spec.time. With servedBy dciab the bootstrap host serves NTP on the DNS service IPs,
+        so nodes use exactly those; with servedBy site nothing may point at them."""
+        t = self.spec["time"]
+        base = ("spec", "time")
+        service_ips = list(self.spec["network"]["dnsServiceIPs"])
+        if t["servedBy"] == "dciab":
             if "hypervisors" not in self.spec:
-                self.error(("spec", "bootstrap", "ntp"), "set without spec.hypervisors",
-                           "remove it, or add spec.hypervisors: the bootstrap host serves NTP only in the Day 0 steps, "
-                           "which run for sites that start from bare servers")
-            for i, up in enumerate(self.spec["bootstrap"]["ntp"]["upstream"]):
+                self.error(base + ("servedBy",), "dciab without spec.hypervisors",
+                           "use servedBy: site with the site's servers, or add spec.hypervisors: for now DCiaB "
+                           "serves NTP only from the Day 0 steps, which run for sites that start from bare servers")
+            for i, up in enumerate(t["upstream"]):
                 if up in service_ips:
-                    self.error(("spec", "bootstrap", "ntp", "upstream", i), f"{up} (a DNS service IP)",
-                               "use an NTP server outside the site: the bootstrap host itself serves NTP on the DNS service IPs")
-            if listed != set(service_ips):
-                self.error(ntp_path, ", ".join(net["ntpServers"]),
-                           "with spec.bootstrap.ntp set, use exactly the DNS service IPs: "
-                           + ", ".join(service_ips) + " (that is where the bootstrap host serves NTP)")
-            if not self.spec["bootstrap"]["ntp"]["upstream"]:
-                self.notes.append("spec.bootstrap.ntp has no upstream: the whole site will take its time "
-                                  "from the bootstrap host's clock; set that clock correctly before running dciab")
-        elif listed & set(service_ips):
-            self.error(ntp_path, ", ".join(sorted(listed & set(service_ips))) + " (a DNS service IP)",
-                       "add spec.bootstrap.ntp so the bootstrap host serves NTP there, or list the site's own NTP servers")
+                    self.error(base + ("upstream", i), f"{up} (a DNS service IP)",
+                               "use an NTP server outside the site: DCiaB itself serves NTP on the DNS service IPs")
+            if "servers" in t and set(t["servers"]) != set(service_ips):
+                self.error(base + ("servers",), ", ".join(t["servers"]),
+                           "leave it out, or use exactly the DNS service IPs: " + ", ".join(service_ips)
+                           + " (that is where DCiaB serves NTP)")
+            if t["serveLocalClock"]:
+                self.warn(base + ("serveLocalClock",), "true: the site has one time source, DCiaB's own clock",
+                          "set this host's clock correctly before running dciab; at least two hardware or "
+                          "GPS-backed upstream servers are better, when the site can have them")
+        else:
+            overlap = sorted(set(t["servers"]) & set(service_ips))
+            if overlap:
+                self.error(base + ("servers",), ", ".join(overlap) + " (a DNS service IP)",
+                           "use servedBy: dciab so DCiaB serves NTP there, or list the site's own NTP servers")
 
     def check_hypervisors(self) -> None:
         hv = self.spec.get("hypervisors")
@@ -543,9 +556,199 @@ class Checker:
             if cp["replicas"] == 1:
                 self.warn(("spec", "clusters", name, "controlPlane", "replicas"), "1",
                           "use 3 for production: one control plane node is a single point of failure")
-        if self.spec["storage"]["longhorn"]["replicaCount"] == 1:
+        replicas = self.spec["storage"]["longhorn"]["replicaCount"]
+        if replicas == 1:
             self.warn(("spec", "storage", "longhorn", "replicaCount"), "1",
-                      "use 2 or 3 unless the datastore underneath already replicates")
+                      "use 2 or 3: with one replica a volume is lost with its node")
+        mgmt = self.spec["clusters"]["mgmt"]
+        zones = len(usable_domains(self.spec, mgmt, self.spec["platform"]["type"]))
+        if 0 < zones < replicas and "notHighlyAvailable" not in self.spec["failureDomains"]:
+            self.warn(("spec", "storage", "longhorn", "replicaCount"), f"{replicas}, over {zones} failure domain(s) on MGMT",
+                      "two replicas will share a domain; Longhorn then allows it (soft zone anti-affinity), "
+                      "but losing that domain loses both")
+
+    # -- failure domains (ADR 0010) -------------------------------------------------
+
+    def check_failure_domains(self) -> None:
+        fd = self.spec["failureDomains"]
+        base = ("spec", "failureDomains")
+        domains = fd["domains"]
+        ptype = self.spec["platform"]["type"]
+        names = self._unique(domains, "name", base + ("domains",))
+        px_nodes = self.spec["platform"]["proxmox"]["nodes"] if ptype == "proxmox" else []
+        node_owner: Dict[str, int] = {}
+        for i, d in enumerate(domains):
+            dp = base + ("domains", i)
+            for other in ("proxmox", "vsphere"):
+                if other in d and other != ptype:
+                    self.error(dp + (other,), f"set on a {ptype} site", f"remove it: spec.platform.type is {ptype}")
+            if "proxmox" in d and ptype == "proxmox":
+                node = d["proxmox"]["node"]
+                if node not in px_nodes:
+                    self.error(dp + ("proxmox", "node"), node,
+                               "use one of spec.platform.proxmox.nodes: " + ", ".join(px_nodes))
+                if node in node_owner:
+                    self.error(dp + ("proxmox", "node"), f"{node}, also in domains[{node_owner[node]}]",
+                               "put each PVE node in one domain")
+                node_owner.setdefault(node, i)
+                if d["name"] != node:
+                    self.error(dp + ("name",), d["name"],
+                               f"name the domain {node}, after its PVE node: the Proxmox CSI driver reads the zone "
+                               "label as the node name")
+
+        # What counts is the domains MGMT and INFRA can use: Metal3 racks don't spread a
+        # Proxmox control plane.
+        n = min(len(usable_domains(self.spec, self.spec["clusters"][c], ptype)) for c in ("mgmt", "infra"))
+        nha = fd.get("notHighlyAvailable")
+        if n < 3 and not nha:
+            self.error(base + ("notHighlyAvailable",), f"missing, with {n} failure domain(s) MGMT and INFRA can use",
+                       "declare at least three domains for the platform, or add notHighlyAvailable: {reason: ...}: "
+                       "with fewer, losing one can stop the site (ADR 0010)")
+        if nha:
+            usable = usable_domains(self.spec, self.spec["clusters"]["mgmt"], ptype)
+            if n <= 1:
+                what = (f"this site is one failure domain: losing {usable[0]['name'] if usable else 'it'} stops "
+                        "MGMT, INFRA and every workload cluster")
+            elif n == 2:
+                what = ("this site has two failure domains: losing the one that holds two of three control plane "
+                        "nodes loses etcd quorum")
+            else:
+                what = f"marked not highly available with {n} failure domains"
+            self.warn(base + ("notHighlyAvailable",), nha["reason"],
+                      f"{what}; restore is from backups (ADR 0009)")
+
+        # Every reference names a declared domain its platform can use.
+        if self.spec["baremetal"]["enabled"]:
+            for i, h in enumerate(self.spec["baremetal"]["hosts"]):
+                if "failureDomain" in h and h["failureDomain"] not in names:
+                    self.error(("spec", "baremetal", "hosts", i, "failureDomain"), h["failureDomain"],
+                               "use the name of a spec.failureDomains.domains entry" + self._one_of(names))
+        multi_px = ptype == "proxmox" and sum("proxmox" in d for d in domains) > 1
+        for cpath, c in self._clusters():
+            klass = c.get("class", ptype)
+            usable = [d["name"] for d in usable_domains(self.spec, {}, klass)]
+            for ref_path, ref in [(cpath, c)] + [(cpath + ("workerPools", j), p)
+                                                 for j, p in enumerate(c.get("workerPools", []))]:
+                for k, name in enumerate(ref.get("failureDomains", [])):
+                    if name not in usable:
+                        self.error(ref_path + ("failureDomains", k), name,
+                                   f"use a domain this {klass} cluster can be placed in" + self._one_of(usable))
+            self._check_placement(cpath, c, klass)
+        if multi_px:
+            self.warn(base + ("domains",), "Proxmox with several failure domains",
+                      "worker pools are spread, but the control plane isn't in r1 (CAPMOX v0.9 has no failure "
+                      "domains): its VMs may share a PVE node; dciab status shows where each one runs")
+        vs = self.spec["platform"].get("vsphere", {})
+        if vs.get("clusterModules") is False:
+            self.warn(("spec", "platform", "vsphere", "clusterModules"), "false",
+                      "nothing keeps a cluster's VMs on separate hosts inside a compute cluster; use DRS and "
+                      "turn cluster modules on when the site can")
+
+    @staticmethod
+    def _one_of(names: List[str]) -> str:
+        return (": " + ", ".join(names)) if names else " (it has none)"
+
+    def _check_placement(self, cpath: Path, c: dict, klass: str) -> None:
+        domains = [d["name"] for d in usable_domains(self.spec, c, klass)]
+        cp = c["controlPlane"]["replicas"]
+        acknowledged = "notHighlyAvailable" in self.spec["failureDomains"]
+        if 0 < len(domains) < cp and not acknowledged:
+            self.warn(cpath + ("controlPlane", "replicas"), f"{cp} control plane nodes over {len(domains)} failure domain(s)",
+                      "losing the busiest domain loses etcd quorum; give the cluster at least as many domains as "
+                      "control plane nodes")
+        pools = c.get("workerPools", [])
+        # Every MachineDeployment name the pools turn into, generated or not, must be unique:
+        # pool a over domain b-c and pool a-b over domain c are both a-b-c.
+        owner: Dict[str, int] = {}
+        for j, p in enumerate(pools):
+            for placed in place_pools([p], domains):
+                name = placed["name"]
+                generated = name != p["name"]
+                where = f"{name} (pool over {placed['failureDomain']})" if generated else name
+                if generated and len(name) > MAX_MD_NAME:
+                    self.error(cpath + ("workerPools", j, "name"), f"{where} is longer than {MAX_MD_NAME} characters",
+                               "shorten the pool or domain name: each pool becomes <pool>-<domain> per failure domain")
+                if name in owner and owner[name] != j:
+                    self.error(cpath + ("workerPools", j, "name"),
+                               f"{where} is also a MachineDeployment of workerPools[{owner[name]}]",
+                               "rename a pool: each pool becomes <pool>-<domain> per failure domain, and the names must differ")
+                owner.setdefault(name, j)
+        if klass == "metal3" and domains:
+            self._check_metal3_domain_hosts(cpath, c, domains)
+
+    def _check_metal3_domain_hosts(self, cpath: Path, c: dict, domains: List[str]) -> None:
+        hosts = self.spec["baremetal"]["hosts"]
+        roles = [(cpath + ("controlPlane",), c["controlPlane"], None)] + [
+            (cpath + ("workerPools", j), p, j) for j, p in enumerate(c["workerPools"])]
+        for rpath, role, _ in roles:
+            sel = role["hostSelector"]
+            mine = [d for d in domains if not role.get("failureDomains") or d in role["failureDomains"]]
+            if not mine:
+                continue  # an undeclared domain: reported with the reference
+            if rpath[-1] == "controlPlane":
+                need = {d: -(-role["replicas"] // len(mine)) for d in mine}
+            else:
+                need = {pl["failureDomain"]: pl["replicas"] for pl in place_pools([role], mine)}
+            for d, n in need.items():
+                have = sum(1 for h in hosts if h.get("failureDomain") == d
+                           and all(h["labels"].get(k) == v for k, v in sel.items()))
+                if have < n:
+                    self.warn(rpath + ("hostSelector",), f"{have} matching host(s) in {d}, for {n} machine(s) there",
+                              f"label more hosts in {d}, or CAPM3 takes hosts from another domain")
+
+    # -- storage networks -----------------------------------------------------------
+
+    def check_storage_networks(self) -> None:
+        nets = self.spec["network"].get("storage", [])
+        base = ("spec", "network", "storage")
+        ptype = self.spec["platform"]["type"]
+        by_name = self._unique(nets, "name", base)
+        parsed = {}
+        for i, n in enumerate(nets):
+            np_ = base + (i,)
+            parsed[n["name"]] = self._parse_net(np_ + ("cidr",), n["cidr"])
+            if ptype == "vsphere":
+                if "portGroup" not in n:
+                    self.error(np_ + ("portGroup",), "missing", "add the storage network's port group")
+                for k in ("bridge", "vlan"):
+                    if k in n:
+                        self.error(np_ + (k,), f"set on a vsphere site", "remove it: the port group carries the VLAN")
+            elif "portGroup" in n:
+                self.error(np_ + ("portGroup",), "set on a proxmox site", "remove it; use bridge and vlan")
+        claims: Dict[str, List[Claim]] = {name: [] for name in by_name}
+        used = set()
+        for cpath, c in self._clusters():
+            for name, rng in (c.get("storageIPRanges") or {}).items():
+                rp = cpath + ("storageIPRanges", name)
+                if name not in by_name:
+                    self.error(rp, name, "use the name of a spec.network.storage entry" + self._one_of(sorted(by_name)))
+                    continue
+                used.add(name)
+                self._claim(claims[name], rp, rng, "range")
+                try:
+                    have = nu.size(nu.span_of_range(rng))
+                except nu.NetError:
+                    continue
+                need = c["controlPlane"]["replicas"] + sum(p["replicas"] for p in c["workerPools"]) + 1
+                if have < need:
+                    self.error(rp, f"{rng} holds {have} addresses",
+                               f"widen it to at least {need}: every node plus one spare for rolling updates")
+        for name, items in claims.items():
+            n = parsed.get(name)
+            if n is None:
+                continue
+            usable = nu.usable_hosts(n)
+            for cl in items:
+                if not nu.within(cl.span, usable):
+                    self.error(cl.path, f"{cl.text}, outside spec.network.storage {name} ({n})",
+                               f"choose usable addresses inside {n}")
+            for a_i, a in enumerate(items):
+                for b in items[a_i + 1:]:
+                    if nu.overlaps(a.span, b.span):
+                        self.error(b.path, f"{b.text}, which overlaps {format_path(a.path)} ({a.text})",
+                                   f"choose addresses in {n} that no other cluster uses")
+        for name in sorted(set(by_name) - used):
+            self.notes.append(f"spec.network.storage {name}: no cluster has storageIPRanges for it, so no node gets a NIC on it")
 
     def check_template_version(self) -> None:
         plat = self.spec["platform"]

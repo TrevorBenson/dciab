@@ -35,7 +35,12 @@ def vsphere(site: dict) -> dict:
 
 def site_values(site: dict) -> Dict:
     v = vsphere(site)
-    return {"config": {"vcenter": v["server"], "datacenter": v["datacenter"], "thumbprint": v["thumbprint"]}}
+    config = {"vcenter": v["server"], "datacenter": v["datacenter"], "thumbprint": v["thumbprint"]}
+    # With vSphere failure domains (ADR 0010), the CPI labels each Node's region and zone from
+    # the tag categories the VSphereFailureDomains name (charts/capi-cluster).
+    if any("vsphere" in d for d in site["spec"].get("failureDomains", {}).get("domains", [])):
+        config.update(region="k8s-region", zone="k8s-zone")
+    return {"config": config}
 
 
 def secret(site: dict, namespace: str, config_dir: Path) -> Dict:

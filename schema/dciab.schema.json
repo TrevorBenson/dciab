@@ -24,7 +24,7 @@
     "spec": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["bundleVersion", "platform", "kubernetes", "bootstrap", "network", "clusters", "storage", "pki", "identity", "baremetal"],
+      "required": ["bundleVersion", "platform", "kubernetes", "bootstrap", "network", "time", "failureDomains", "clusters", "storage", "pki", "identity", "baremetal"],
       "properties": {
         "bundleVersion": {"type": "string", "pattern": "^\\d+\\.\\d+\\.\\d+$", "description": "the archive version, as in its VERSION file"},
         "platform": {"$ref": "#/$defs/platform"},
@@ -61,11 +61,12 @@
               "uniqueItems": true,
               "items": {"type": "string", "pattern": "^age1[0-9a-z]{58}$", "description": "an age public key (age1...)"},
               "description": "at least two age public keys, so break-glass access never depends on one person"
-            },
-            "ntp": {"$ref": "#/$defs/bootstrapNTP"}
+            }
           }
         },
         "network": {"$ref": "#/$defs/network"},
+        "time": {"$ref": "#/$defs/time"},
+        "failureDomains": {"$ref": "#/$defs/failureDomains"},
         "clusters": {
           "type": "object",
           "additionalProperties": false,
@@ -150,6 +151,7 @@
         "resourcePool": {"type": "string", "pattern": "^/", "description": "an absolute inventory path"},
         "network": {"type": "string", "minLength": 1, "description": "the port group for MGMT and INFRA nodes"},
         "template": {"type": "string", "minLength": 1, "description": "the VM template name"},
+        "clusterModules": {"type": "boolean", "description": "optional, default true: CAPV cluster modules (DRS VM-VM anti-affinity) keep each group's VMs on separate hosts. Set false only on a site without DRS"},
         "credentials": {
           "type": "object",
           "additionalProperties": false,
@@ -208,7 +210,7 @@
     "network": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["domain", "upstreamResolvers", "ntpServers", "nodes", "dnsServiceIPs", "loadBalancer"],
+      "required": ["domain", "upstreamResolvers", "nodes", "dnsServiceIPs", "loadBalancer"],
       "properties": {
         "domain": {"$ref": "#/$defs/hostname"},
         "upstreamResolvers": {
@@ -217,12 +219,6 @@
           "items": {"$ref": "#/$defs/ipv4"},
           "description": "upstream DNS servers; an explicit empty list means an isolated site"
         },
-        "ntpServers": {
-          "type": "array",
-          "minItems": 1,
-          "uniqueItems": true,
-          "items": {"type": "string", "minLength": 1}
-        },
         "nodes": {
           "type": "object",
           "additionalProperties": false,
@@ -230,8 +226,14 @@
           "properties": {
             "cidr": {"$ref": "#/$defs/cidr"},
             "gateway": {"$ref": "#/$defs/ipv4"},
-            "vlan": {"type": "integer", "minimum": 1, "maximum": 4094}
+            "vlan": {"type": "integer", "minimum": 1, "maximum": 4094},
+            "mtu": {"$ref": "#/$defs/mtu"}
           }
+        },
+        "storage": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/storageNetwork"},
+          "description": "optional storage networks (iSCSI, NVMe-oF), one per multipath fabric: every VM node of a cluster with storageIPRanges gets one extra NIC per entry; nothing changes when it's absent"
         },
         "dnsServiceIPs": {
           "type": "array",
@@ -303,7 +305,8 @@
         "cpu": {"type": "integer", "minimum": 2},
         "memoryGiB": {"type": "integer", "minimum": 4},
         "diskGiB": {"type": "integer", "minimum": 25},
-        "dataDiskGiB": {"type": "integer", "minimum": 10, "description": "optional second disk for Longhorn"}
+        "dataDiskGiB": {"type": "integer", "minimum": 10, "description": "optional second disk for Longhorn"},
+        "failureDomains": {"$ref": "#/$defs/domainList"}
       }
     },
     "vmCluster": {
@@ -317,7 +320,9 @@
         "podCIDR": {"$ref": "#/$defs/cidr"},
         "serviceCIDR": {"$ref": "#/$defs/cidr"},
         "controlPlane": {"$ref": "#/$defs/vmControlPlane"},
-        "workerPools": {"type": "array", "items": {"$ref": "#/$defs/vmWorkerPool"}, "description": "a list, which may be empty: then control plane nodes run workloads"}
+        "workerPools": {"type": "array", "items": {"$ref": "#/$defs/vmWorkerPool"}, "description": "a list, which may be empty: then control plane nodes run workloads"},
+        "failureDomains": {"$ref": "#/$defs/domainList"},
+        "storageIPRanges": {"$ref": "#/$defs/storageIPRanges"}
       }
     },
     "storage": {
@@ -398,7 +403,8 @@
           "type": "object",
           "minProperties": 1,
           "additionalProperties": {"type": "string", "minLength": 1}
-        }
+        },
+        "failureDomain": {"type": "string", "minLength": 1, "description": "the name of a spec.failureDomains.domains entry: the host's rack, room or power feed"}
       }
     },
     "baremetal": {
@@ -475,7 +481,8 @@
         "network": {"type": "string", "minLength": 1, "description": "the name of a spec.baremetal.networks entry"},
         "nodeIPRange": {"$ref": "#/$defs/ipRange"},
         "image": {"type": "string", "minLength": 1, "description": "the name of a spec.baremetal.images entry"},
-        "hostSelector": {"type": "object", "minProperties": 1, "additionalProperties": {"type": "string"}}
+        "hostSelector": {"type": "object", "minProperties": 1, "additionalProperties": {"type": "string"}},
+        "failureDomains": {"$ref": "#/$defs/domainList"}
       }
     },
     "workloadCluster": {
@@ -497,7 +504,8 @@
           "podCIDR": {"$ref": "#/$defs/cidr"},
           "serviceCIDR": {"$ref": "#/$defs/cidr"},
           "controlPlane": {"$ref": "#/$defs/metal3ControlPlane"},
-          "workerPools": {"type": "array", "items": {"$ref": "#/$defs/metal3WorkerPool"}}
+          "workerPools": {"type": "array", "items": {"$ref": "#/$defs/metal3WorkerPool"}},
+          "failureDomains": {"$ref": "#/$defs/domainList"}
         }
       },
       "else": {
@@ -512,7 +520,9 @@
           "podCIDR": {"$ref": "#/$defs/cidr"},
           "serviceCIDR": {"$ref": "#/$defs/cidr"},
           "controlPlane": {"$ref": "#/$defs/vmControlPlane"},
-          "workerPools": {"type": "array", "items": {"$ref": "#/$defs/vmWorkerPool"}}
+          "workerPools": {"type": "array", "items": {"$ref": "#/$defs/vmWorkerPool"}},
+          "failureDomains": {"$ref": "#/$defs/domainList"},
+          "storageIPRanges": {"$ref": "#/$defs/storageIPRanges"}
         }
       }
     },
@@ -556,22 +566,122 @@
         "rotational": {"type": "boolean"}
       }
     },
-    "bootstrapNTP": {
+    "time": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["upstream", "serveLocalClock"],
+      "required": ["servedBy"],
       "properties": {
+        "servedBy": {"enum": ["dciab", "site"], "description": "dciab: DCiaB serves time on the node-facing addresses (the bootstrap host on Day 0, the platform after); site: the site's own NTP servers"},
         "upstream": {
           "type": "array",
           "uniqueItems": true,
           "items": {"type": "string", "minLength": 1},
-          "description": "NTP servers the bootstrap host syncs from; an explicit empty list means none (an isolated site)"
+          "description": "servedBy dciab: the NTP servers DCiaB syncs from; an explicit empty list means none (an isolated site)"
         },
-        "serveLocalClock": {"type": "boolean", "description": "true to serve the bootstrap host's own clock when no upstream answers; required true with no upstream"}
+        "serveLocalClock": {"type": "boolean", "description": "servedBy dciab: true only with no upstream; DCiaB's own clock is then the site's time"},
+        "servers": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"type": "string", "minLength": 1},
+          "description": "what nodes, hypervisors and BMCs use. servedBy site: the site's NTP servers (required). servedBy dciab: optional, the DNS service addresses (network.dnsServiceIPs), where DCiaB serves NTP"
+        }
       },
-      "if": {"properties": {"upstream": {"maxItems": 0}}, "required": ["upstream"]},
-      "then": {"properties": {"serveLocalClock": {"const": true, "description": "true: with no upstream, the bootstrap host's clock is the only time source"}}},
-      "description": "optional; the bootstrap host serves NTP on network.dnsServiceIPs until the platform takes over. Then network.ntpServers must be exactly the dnsServiceIPs"
+      "allOf": [
+        {
+          "if": {"properties": {"servedBy": {"const": "site"}}, "required": ["servedBy"]},
+          "then": {"required": ["servers"], "not": {"anyOf": [{"required": ["upstream"]}, {"required": ["serveLocalClock"]}]}}
+        },
+        {
+          "if": {"properties": {"servedBy": {"const": "dciab"}}, "required": ["servedBy"]},
+          "then": {"required": ["upstream", "serveLocalClock"]}
+        },
+        {
+          "if": {"properties": {"upstream": {"maxItems": 0}}, "required": ["upstream"]},
+          "then": {"properties": {"serveLocalClock": {"const": true, "description": "true: with no upstream, DCiaB's clock is the only time source"}}}
+        },
+        {
+          "if": {"properties": {"serveLocalClock": {"const": true}}, "required": ["serveLocalClock"]},
+          "then": {"properties": {"upstream": {"maxItems": 0, "description": "empty: serveLocalClock is only for a site with no upstream"}}}
+        }
+      ],
+      "description": "where the site's time comes from (ADR 0010, decision 9)"
+    },
+    "failureDomains": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["domains"],
+      "properties": {
+        "domains": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/failureDomain"},
+          "description": "the site's failure domains: hardware that fails independently (a host, rack, room or power feed). Every cluster uses all of them unless it narrows the list"
+        },
+        "notHighlyAvailable": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["reason"],
+          "properties": {"reason": {"type": "string", "minLength": 10, "description": "why this site runs with fewer than three failure domains, and how it recovers (for example: one server at an edge site; restore is from backups)"}},
+          "description": "required with fewer than three domains: the site isn't highly available, and says so"
+        }
+      },
+      "description": "failure domains (ADR 0010)"
+    },
+    "failureDomain": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name"],
+      "properties": {
+        "name": {"type": "string", "pattern": "^[a-z0-9]([a-z0-9-]{0,18}[a-z0-9])?$", "description": "1-20 characters, lowercase letters, digits and hyphens; the value of topology.kubernetes.io/zone on its nodes"},
+        "proxmox": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["node"],
+          "properties": {"node": {"type": "string", "minLength": 1, "description": "the PVE node in this domain; the domain is named after it"}}
+        },
+        "vsphere": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["computeCluster"],
+          "properties": {
+            "computeCluster": {"type": "string", "minLength": 1},
+            "hostGroup": {"type": "string", "minLength": 1, "description": "a DRS host group, when several domains share one compute cluster"},
+            "vmGroup": {"type": "string", "minLength": 1, "description": "the DRS VM group that goes with hostGroup"},
+            "datastore": {"type": "string", "minLength": 1, "description": "default: platform.vsphere.datastore"},
+            "network": {"type": "string", "minLength": 1, "description": "default: platform.vsphere.network"}
+          },
+          "dependentRequired": {"hostGroup": ["vmGroup"], "vmGroup": ["hostGroup"]}
+        }
+      },
+      "not": {"required": ["proxmox", "vsphere"]}
+    },
+    "domainList": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {"type": "string", "minLength": 1},
+      "description": "optional: the spec.failureDomains names this cluster or pool uses (default: all of them)"
+    },
+    "mtu": {"type": "integer", "minimum": 1280, "maximum": 9216, "description": "optional MTU, 1280-9216 (default: the platform's, usually 1500)"},
+    "storageNetwork": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "cidr"],
+      "properties": {
+        "name": {"type": "string", "pattern": "^[a-z0-9]([a-z0-9-]{0,13}[a-z0-9])?$", "description": "1-15 characters, lowercase letters, digits and hyphens"},
+        "cidr": {"$ref": "#/$defs/cidr"},
+        "vlan": {"type": "integer", "minimum": 1, "maximum": 4094, "description": "proxmox: the VLAN tag on the storage NIC"},
+        "mtu": {"$ref": "#/$defs/mtu"},
+        "bridge": {"type": "string", "minLength": 1, "description": "proxmox: the bridge (default: platform.proxmox.bridge)"},
+        "portGroup": {"type": "string", "minLength": 1, "description": "vsphere: the port group (required on vSphere)"}
+      },
+      "description": "a storage network: no gateway, so storage traffic stays on its segment"
+    },
+    "storageIPRanges": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {"$ref": "#/$defs/ipRange"},
+      "description": "optional: an address range per network.storage entry (by name) for this cluster's nodes; the nodes get a NIC on each listed network"
     },
     "hypervisorHost": {
       "type": "object",

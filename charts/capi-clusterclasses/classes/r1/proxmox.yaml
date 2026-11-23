@@ -153,24 +153,74 @@ spec:
           items:
             type: string
           description: Public keys for the break-glass user 'dciab' on every node.
-    - name: oidc
+    - name: authentication
       required: false
       schema:
         openAPIV3Schema:
           type: object
-          required: [issuerURL, clientID]
+          required: [issuers]
           properties:
-            issuerURL:
-              type: string
-            clientID:
-              type: string
-            usernameClaim:
-              type: string
-              default: preferred_username
-            groupsClaim:
-              type: string
-              default: groups
-          description: API server OIDC settings (Authentik). Leave unset to disable.
+            issuers:
+              type: array
+              minItems: 1
+              # Bounded, so the API server's CEL cost estimate for the rules below stays small.
+              maxItems: 4
+              # Each issuer's users and groups get their own prefix, so two issuers can never
+              # name the same user or group (alice from Authentik isn't alice from the site IdP).
+              x-kubernetes-validations:
+                - rule: self.all(a, self.exists_one(b, b.url == a.url))
+                  message: each issuer URL may appear once
+                - rule: self.all(a, self.exists_one(b, b.name == a.name))
+                  message: each issuer name may appear once
+                - rule: "self.all(a, self.exists_one(b, (has(b.usernamePrefix) ? b.usernamePrefix : b.name + ':') == (has(a.usernamePrefix) ? a.usernamePrefix : a.name + ':')))"
+                  message: each issuer needs its own username prefix
+                - rule: "self.all(a, self.exists_one(b, (has(b.groupsPrefix) ? b.groupsPrefix : b.name + ':') == (has(a.groupsPrefix) ? a.groupsPrefix : a.name + ':')))"
+                  message: each issuer needs its own groups prefix
+              items:
+                type: object
+                required: [name, url, clientID]
+                properties:
+                  name:
+                    type: string
+                    pattern: '^[a-z0-9]([-a-z0-9]*[a-z0-9])?$'
+                    maxLength: 63
+                    description: Short issuer name; the default username and groups prefix is <name>:.
+                  url:
+                    type: string
+                    pattern: '^https://'
+                    maxLength: 512
+                  clientID:
+                    type: string
+                    minLength: 1
+                    maxLength: 256
+                    description: The audience the issuer's ID tokens carry.
+                  usernameClaim:
+                    type: string
+                    maxLength: 256
+                    default: preferred_username
+                  usernamePrefix:
+                    type: string
+                    minLength: 1
+                    maxLength: 63
+                    description: Default <name>:. Must differ from every other issuer's.
+                  groupsClaim:
+                    type: string
+                    maxLength: 256
+                    default: groups
+                  groupsPrefix:
+                    type: string
+                    minLength: 1
+                    maxLength: 63
+                    description: Default <name>:. Must differ from every other issuer's.
+                  certificateAuthority:
+                    type: string
+                    maxLength: 65536
+                    description: PEM CA bundle for the issuer's TLS certificate, when the node trust store lacks it.
+          description: >-
+            JWT issuers the API server trusts, written to an AuthenticationConfiguration file
+            (structured authentication). Several may be listed at once, for example Authentik
+            and the site's IdP while people move from one to the other. Leave unset for
+            certificate-only clusters (MGMT and INFRA).
     - name: machine
       required: true
       schema:
@@ -197,6 +247,44 @@ spec:
           items:
             type: string
           description: DNS resolvers for the nodes (the PowerDNS recursor service IPs).
+    - name: mtu
+      required: false
+      schema:
+        openAPIV3Schema:
+          type: integer
+          minimum: 1280
+          maximum: 9216
+          description: MTU of the node NIC. Leave unset for the platform's default (usually 1500).
+    - name: storageNetworks
+      required: false
+      schema:
+        openAPIV3Schema:
+          type: array
+          default: []
+          items:
+            type: object
+            required: [name]
+            properties:
+              name:
+                type: string
+                pattern: '^[a-z0-9]([-a-z0-9]*[a-z0-9])?$'
+                description: The network.storage entry; addresses come from the pool <cluster>-storage-<name>.
+              bridge:
+                type: string
+                minLength: 1
+                description: Bridge on the PVE nodes. Default, the node network's bridge.
+              vlan:
+                type: integer
+                minimum: 1
+                maximum: 4094
+              mtu:
+                type: integer
+                minimum: 1280
+                maximum: 9216
+          description: >-
+            Storage networks (iSCSI or NVMe-oF, one per path for multipathing): one extra NIC
+            per entry on every node, with an address from the cluster's pool for it and no
+            gateway. Empty by default.
     - name: proxmox
       required: true
       schema:
@@ -222,6 +310,36 @@ spec:
               type: integer
               minimum: 1
               maximum: 4094
+    - name: topology
+      required: false
+      schema:
+        openAPIV3Schema:
+          type: object
+          required: [region]
+          properties:
+            region:
+              type: string
+              minLength: 1
+              description: topology.kubernetes.io/region on every node (the site name; the Proxmox CSI driver needs it).
+            zone:
+              type: string
+              minLength: 1
+              description: >-
+                topology.kubernetes.io/zone on every node: set only when the site is one
+                failure domain (its one PVE node). Worker pools placed in a domain take
+                their zone from failureDomain instead.
+          description: The topology labels each kubelet sets on its own Node (--node-labels).
+    - name: failureDomain
+      required: false
+      schema:
+        openAPIV3Schema:
+          type: string
+          minLength: 1
+          description: >-
+            Set per MachineDeployment: the failure domain (one PVE node, named after it) a
+            worker pool is placed in. Its machines go only to that node (allowedNodes) and
+            their Nodes get topology.kubernetes.io/zone=<it>. The control plane isn't spread
+            in r1: CAPMOX v0.9 has no failure domains (ADR 0010).
     - name: nodeNetwork
       required: true
       schema:
@@ -401,9 +519,12 @@ spec:
                             path: /etc/kubernetes/admin.conf
                             type: FileOrCreate
 
-    - name: oidc
-      description: API server OIDC flags, when the oidc variable is set.
-      enabledIf: '{{ if .oidc }}true{{ end }}'
+    - name: authentication
+      description: >-
+        Structured authentication when the authentication variable is set: the
+        AuthenticationConfiguration file, and the API server flag and mount that read it.
+        Replaces the --oidc-* flags. Comes after nodeBase, which creates the files list.
+      enabledIf: '{{ if .authentication }}true{{ end }}'
       definitions:
         - selector:
             apiVersion: controlplane.cluster.x-k8s.io/v1beta2
@@ -412,29 +533,42 @@ spec:
               controlPlane: true
           jsonPatches:
             - op: add
-              path: /spec/template/spec/kubeadmConfigSpec/clusterConfiguration/apiServer/extraArgs/-
+              path: /spec/template/spec/kubeadmConfigSpec/files/-
               valueFrom:
                 template: |
-                  name: oidc-issuer-url
-                  value: {{ .oidc.issuerURL | quote }}
+                  path: /etc/kubernetes/authentication/config.yaml
+                  owner: root:root
+                  permissions: "0644"
+                  content: |
+                    apiVersion: apiserver.config.k8s.io/v1
+                    kind: AuthenticationConfiguration
+                    jwt:
+                    {{- range $i := .authentication.issuers }}
+                      - issuer:
+                          url: {{ $i.url | quote }}
+                          audiences: [{{ $i.clientID | quote }}]
+                          {{- if $i.certificateAuthority }}
+                          certificateAuthority: {{ $i.certificateAuthority | quote }}
+                          {{- end }}
+                        claimMappings:
+                          username:
+                            claim: {{ $i.usernameClaim | default "preferred_username" | quote }}
+                            prefix: {{ $i.usernamePrefix | default (printf "%s:" $i.name) | quote }}
+                          groups:
+                            claim: {{ $i.groupsClaim | default "groups" | quote }}
+                            prefix: {{ $i.groupsPrefix | default (printf "%s:" $i.name) | quote }}
+                    {{- end }}
             - op: add
               path: /spec/template/spec/kubeadmConfigSpec/clusterConfiguration/apiServer/extraArgs/-
-              valueFrom:
-                template: |
-                  name: oidc-client-id
-                  value: {{ .oidc.clientID | quote }}
+              value: {name: authentication-config, value: /etc/kubernetes/authentication/config.yaml}
             - op: add
-              path: /spec/template/spec/kubeadmConfigSpec/clusterConfiguration/apiServer/extraArgs/-
-              valueFrom:
-                template: |
-                  name: oidc-username-claim
-                  value: {{ .oidc.usernameClaim | quote }}
-            - op: add
-              path: /spec/template/spec/kubeadmConfigSpec/clusterConfiguration/apiServer/extraArgs/-
-              valueFrom:
-                template: |
-                  name: oidc-groups-claim
-                  value: {{ .oidc.groupsClaim | quote }}
+              path: /spec/template/spec/kubeadmConfigSpec/clusterConfiguration/apiServer/extraVolumes/-
+              value:
+                name: authentication-config
+                hostPath: /etc/kubernetes/authentication/config.yaml
+                mountPath: /etc/kubernetes/authentication/config.yaml
+                readOnly: true
+                pathType: File
     - name: proxmoxCluster
       description: Allowed nodes, node addressing, DNS, credentials Secret and control plane endpoint.
       definitions:
@@ -469,7 +603,9 @@ spec:
                 template: |
                   name: {{ .builtin.cluster.name }}-proxmox-credentials
     - name: proxmoxMachines
-      description: Template, storage, size and network device for every machine.
+      description: >-
+        Template, storage, size and network devices for every machine (the node NIC and
+        one per storage network); worker placement by failure domain.
       definitions:
         - selector:
             apiVersion: infrastructure.cluster.x-k8s.io/v1alpha2
@@ -512,6 +648,24 @@ spec:
                       {{- if .proxmox.vlanTag }}
                       vlan: {{ .proxmox.vlanTag }}
                       {{- end }}
+                      {{- if .mtu }}
+                      mtu: {{ .mtu }}
+                      {{- end }}
+                    {{- range $i, $n := .storageNetworks }}
+                    - name: net{{ add1 $i }}
+                      bridge: {{ $n.bridge | default $.proxmox.bridge | quote }}
+                      model: virtio
+                      {{- if $n.vlan }}
+                      vlan: {{ $n.vlan }}
+                      {{- end }}
+                      {{- if $n.mtu }}
+                      mtu: {{ $n.mtu }}
+                      {{- end }}
+                      ipPoolRef:
+                        - apiGroup: ipam.cluster.x-k8s.io
+                          kind: InClusterIPPool
+                          name: {{ $.builtin.cluster.name }}-storage-{{ $n.name }}
+                    {{- end }}
         - selector:
             apiVersion: infrastructure.cluster.x-k8s.io/v1alpha2
             kind: ProxmoxMachineTemplate
@@ -522,6 +676,11 @@ spec:
             - op: add
               path: /spec/template/spec/sourceNode
               valueFrom: {variable: proxmox.templateNode}
+            # A pool placed in a failure domain runs only on that domain's PVE node.
+            - op: add
+              path: /spec/template/spec/allowedNodes
+              valueFrom:
+                template: '{{ if .failureDomain }}[{{ .failureDomain | quote }}]{{ else }}{{ .proxmox.allowedNodes | toJson }}{{ end }}'
             - op: add
               path: /spec/template/spec/templateID
               valueFrom: {variable: proxmox.templateID}
@@ -554,6 +713,24 @@ spec:
                       {{- if .proxmox.vlanTag }}
                       vlan: {{ .proxmox.vlanTag }}
                       {{- end }}
+                      {{- if .mtu }}
+                      mtu: {{ .mtu }}
+                      {{- end }}
+                    {{- range $i, $n := .storageNetworks }}
+                    - name: net{{ add1 $i }}
+                      bridge: {{ $n.bridge | default $.proxmox.bridge | quote }}
+                      model: virtio
+                      {{- if $n.vlan }}
+                      vlan: {{ $n.vlan }}
+                      {{- end }}
+                      {{- if $n.mtu }}
+                      mtu: {{ $n.mtu }}
+                      {{- end }}
+                      ipPoolRef:
+                        - apiGroup: ipam.cluster.x-k8s.io
+                          kind: InClusterIPPool
+                          name: {{ $.builtin.cluster.name }}-storage-{{ $n.name }}
+                    {{- end }}
     - name: apiServerAudit
       description: >-
         Kubernetes API audit policy file on control plane nodes. The API server flags and
@@ -712,6 +889,87 @@ spec:
                 permissions: "0644"
                 content: |
                   serverTLSBootstrap: true
+    - name: nodeTopology
+      description: >-
+        topology.kubernetes.io/region (and zone, on a single-domain site or for a worker
+        pool placed in a domain) through the kubelet's --node-labels.
+      enabledIf: '{{ if .topology }}true{{ end }}'
+      definitions:
+        - selector:
+            apiVersion: controlplane.cluster.x-k8s.io/v1beta2
+            kind: KubeadmControlPlaneTemplate
+            matchResources:
+              controlPlane: true
+          jsonPatches:
+            - op: add
+              path: /spec/template/spec/kubeadmConfigSpec/initConfiguration/nodeRegistration/kubeletExtraArgs/-
+              valueFrom:
+                template: |
+                  name: node-labels
+                  value: "topology.kubernetes.io/region={{ .topology.region }}{{ if .topology.zone }},topology.kubernetes.io/zone={{ .topology.zone }}{{ end }}"
+            - op: add
+              path: /spec/template/spec/kubeadmConfigSpec/joinConfiguration/nodeRegistration/kubeletExtraArgs/-
+              valueFrom:
+                template: |
+                  name: node-labels
+                  value: "topology.kubernetes.io/region={{ .topology.region }}{{ if .topology.zone }},topology.kubernetes.io/zone={{ .topology.zone }}{{ end }}"
+        - selector:
+            apiVersion: bootstrap.cluster.x-k8s.io/v1beta2
+            kind: KubeadmConfigTemplate
+            matchResources:
+              machineDeploymentClass:
+                names: [default]
+          jsonPatches:
+            - op: add
+              path: /spec/template/spec/joinConfiguration/nodeRegistration/kubeletExtraArgs/-
+              valueFrom:
+                template: |
+                  name: node-labels
+                  value: "topology.kubernetes.io/region={{ .topology.region }}{{ if .failureDomain }},topology.kubernetes.io/zone={{ .failureDomain }}{{ else if .topology.zone }},topology.kubernetes.io/zone={{ .topology.zone }}{{ end }}"
+    - name: storageInitiators
+      description: >-
+        When the nodes have storage networks: load the NVMe/TCP and multipath kernel
+        modules, and start multipathd where the node image has it. The initiators and
+        their multipath configuration come with the node image.
+      enabledIf: '{{ if .storageNetworks }}true{{ end }}'
+      definitions:
+        - selector:
+            apiVersion: controlplane.cluster.x-k8s.io/v1beta2
+            kind: KubeadmControlPlaneTemplate
+            matchResources:
+              controlPlane: true
+          jsonPatches:
+            - op: add
+              path: /spec/template/spec/kubeadmConfigSpec/files/-
+              value:
+                path: /etc/modules-load.d/dciab-storage.conf
+                owner: root:root
+                permissions: "0644"
+                content: |
+                  nvme-tcp
+                  dm_multipath
+            - op: add
+              path: /spec/template/spec/kubeadmConfigSpec/preKubeadmCommands/-
+              value: "systemctl restart systemd-modules-load.service && if systemctl cat multipathd.service >/dev/null 2>&1; then systemctl enable --now multipathd.service; fi"
+        - selector:
+            apiVersion: bootstrap.cluster.x-k8s.io/v1beta2
+            kind: KubeadmConfigTemplate
+            matchResources:
+              machineDeploymentClass:
+                names: [default]
+          jsonPatches:
+            - op: add
+              path: /spec/template/spec/files/-
+              value:
+                path: /etc/modules-load.d/dciab-storage.conf
+                owner: root:root
+                permissions: "0644"
+                content: |
+                  nvme-tcp
+                  dm_multipath
+            - op: add
+              path: /spec/template/spec/preKubeadmCommands/-
+              value: "systemctl restart systemd-modules-load.service && if systemctl cat multipathd.service >/dev/null 2>&1; then systemctl enable --now multipathd.service; fi"
 
 ---
 apiVersion: infrastructure.cluster.x-k8s.io/v1alpha2

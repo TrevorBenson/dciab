@@ -32,15 +32,27 @@ spec:
       - age1j5xfcwdps86qjrrxvv8uresmxqessnxskgml6p7x7xw8az4th6mpns0acs
       - age1skgjkfxj3tkldtdnkd9cwuhennz9uuvg4q058rte5yhwk2vypq0g0u2207
 
+  time:
+    servedBy: site                       # the site's own NTP servers
+    servers: [10.30.0.123]
+
+  failureDomains:                        # one PVE node per domain, named after it
+    domains:
+      - {name: pve01, proxmox: {node: pve01}}
+      - {name: pve02, proxmox: {node: pve02}}
+      - {name: pve03, proxmox: {node: pve03}}
+
   network:
     domain: dc3.example.com
     upstreamResolvers: []                # isolated site: the recursor forwards nothing
-    ntpServers: [10.30.0.123]
     nodes:
       cidr: 10.30.110.0/24
       gateway: 10.30.110.1
       vlan: 110
     dnsServiceIPs: [10.30.110.53, 10.30.110.54]
+    storage:                             # [opt] iSCSI/NVMe-oF fabrics for initiators inside the nodes (ceph-csi, SAN drivers)
+      - {name: san-a, cidr: 10.40.10.0/24, vlan: 410, mtu: 9000}
+      - {name: san-b, cidr: 10.40.20.0/24, vlan: 420, mtu: 9000}
     loadBalancer:
       mode: l2
 
@@ -62,6 +74,9 @@ spec:
       controlPlane: {replicas: 3, cpu: 4, memoryGiB: 16, diskGiB: 100}
       workerPools:
         - {name: general, replicas: 3, cpu: 8, memoryGiB: 32, diskGiB: 150}   # Longhorn data shares the root disk
+      storageIPRanges:                   # [opt] a NIC on each storage network, for every INFRA node
+        san-a: 10.40.10.30-10.40.10.49
+        san-b: 10.40.20.30-10.40.20.49
 
   storage:
     longhorn:

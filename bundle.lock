@@ -31,6 +31,9 @@ clusterAPI:
     # per-cluster Secret, so these stay empty.
     VSPHERE_USERNAME: ""
     VSPHERE_PASSWORD: ""
+    # CAPV cluster modules (DRS VM-VM anti-affinity) for every vSphere site (ADR 0010); off
+    # upstream. A site without DRS turns them off per cluster (platform.vsphere.clusterModules).
+    EXP_NODE_ANTI_AFFINITY: "true"
   core:
     repo: kubernetes-sigs/cluster-api
     version: v1.14.4

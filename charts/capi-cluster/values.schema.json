@@ -104,33 +104,80 @@
             "$ref": "#/definitions/ipv4"
           }
         },
-        "oidc": {
+        "authentication": {
           "type": "object",
           "additionalProperties": false,
           "required": [
-            "issuerURL",
-            "clientID"
+            "issuers"
           ],
           "properties": {
-            "issuerURL": {
-              "type": "string",
-              "pattern": "^https://"
-            },
-            "clientID": {
-              "type": "string"
-            },
-            "usernameClaim": {
-              "type": "string"
-            },
-            "groupsClaim": {
-              "type": "string"
+            "issuers": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "name",
+                  "url",
+                  "clientID"
+                ],
+                "properties": {
+                  "name": {
+                    "type": "string",
+                    "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
+                    "maxLength": 63
+                  },
+                  "url": {
+                    "type": "string",
+                    "pattern": "^https://",
+                    "maxLength": 512
+                  },
+                  "clientID": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 256
+                  },
+                  "usernameClaim": {
+                    "type": "string",
+                    "maxLength": 256
+                  },
+                  "usernamePrefix": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 63
+                  },
+                  "groupsClaim": {
+                    "type": "string",
+                    "maxLength": 256
+                  },
+                  "groupsPrefix": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 63
+                  },
+                  "certificateAuthority": {
+                    "type": "string",
+                    "pattern": "-----BEGIN CERTIFICATE-----",
+                    "maxLength": 65536
+                  }
+                }
+              },
+              "maxItems": 4
             }
-          }
+          },
+          "description": "optional: JWT issuers the API server trusts (structured authentication)"
         },
         "vipInterface": {
           "type": "string",
           "pattern": "^[A-Za-z0-9._-]{1,15}$",
           "description": "optional: the interface kube-vip announces the API VIP on (default: the interface holding the default route)"
+        },
+        "mtu": {
+          "type": "integer",
+          "minimum": 1280,
+          "maximum": 9216,
+          "description": "optional, VM classes: the node NIC's MTU"
         }
       }
     },
@@ -290,6 +337,16 @@
               ]
             }
           }
+        },
+        "failureDomains": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "description": "optional: the site's failure domains that have hosts for this cluster"
         }
       }
     },
@@ -297,6 +354,121 @@
       "type": "string",
       "pattern": "^r[0-9]+$",
       "description": "ClusterClass revision, such as r1 (not a Kubernetes API version)"
+    },
+    "topology": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "region"
+      ],
+      "properties": {
+        "region": {
+          "type": "string",
+          "minLength": 1
+        },
+        "zone": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "description": "proxmox: topology.kubernetes.io labels the kubelets set (zone only on a one-domain site)"
+    },
+    "storageNetworks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "name",
+          "ipRange",
+          "prefix"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
+          },
+          "ipRange": {
+            "type": "string",
+            "pattern": "^(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])(\\.(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])){3}-(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])(\\.(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])){3}$",
+            "description": "an inclusive IPv4 range: first-last"
+          },
+          "prefix": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 32
+          },
+          "vlan": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 4094
+          },
+          "bridge": {
+            "type": "string",
+            "minLength": 1
+          },
+          "portGroup": {
+            "type": "string",
+            "minLength": 1
+          },
+          "mtu": {
+            "type": "integer",
+            "minimum": 1280,
+            "maximum": 9216
+          }
+        }
+      },
+      "description": "optional, VM classes: storage networks; one NIC and one address pool per entry"
+    },
+    "vsphereFailureDomains": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "name",
+          "computeCluster"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
+          },
+          "computeCluster": {
+            "type": "string",
+            "minLength": 1
+          },
+          "hostGroup": {
+            "type": "string",
+            "minLength": 1
+          },
+          "vmGroup": {
+            "type": "string",
+            "minLength": 1
+          },
+          "datastore": {
+            "type": "string",
+            "minLength": 1
+          },
+          "network": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "dependencies": {
+          "hostGroup": [
+            "vmGroup"
+          ],
+          "vmGroup": [
+            "hostGroup"
+          ]
+        }
+      },
+      "description": "optional, vsphere: the failure domains this cluster uses (ADR 0010)"
+    },
+    "clusterModules": {
+      "type": "boolean",
+      "description": "vsphere: false only on a site without DRS"
     }
   },
   "allOf": [
@@ -357,6 +529,11 @@
               "required": [
                 "metal3"
               ]
+            },
+            {
+              "required": [
+                "topology"
+              ]
             }
           ]
         }
@@ -387,6 +564,16 @@
             {
               "required": [
                 "metal3"
+              ]
+            },
+            {
+              "required": [
+                "vsphereFailureDomains"
+              ]
+            },
+            {
+              "required": [
+                "clusterModules"
               ]
             }
           ]
@@ -423,6 +610,26 @@
             {
               "required": [
                 "network"
+              ]
+            },
+            {
+              "required": [
+                "storageNetworks"
+              ]
+            },
+            {
+              "required": [
+                "topology"
+              ]
+            },
+            {
+              "required": [
+                "vsphereFailureDomains"
+              ]
+            },
+            {
+              "required": [
+                "clusterModules"
               ]
             }
           ]
@@ -548,6 +755,11 @@
         },
         "machine": {
           "$ref": "#/definitions/machine"
+        },
+        "failureDomain": {
+          "type": "string",
+          "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
+          "description": "optional: the failure domain the pool runs in"
         }
       }
     },
@@ -607,6 +819,15 @@
         },
         "network": {
           "$ref": "#/definitions/network"
+        },
+        "failureDomain": {
+          "type": "string",
+          "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
+          "description": "optional: the failure domain the pool runs in"
+        },
+        "addressPool": {
+          "$ref": "#/definitions/poolName",
+          "description": "set by cluster-values for a pool split over failure domains: the pool whose addresses it shares"
         }
       }
     }

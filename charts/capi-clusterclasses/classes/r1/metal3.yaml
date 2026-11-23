@@ -153,24 +153,88 @@ spec:
           items:
             type: string
           description: Public keys for the break-glass user 'dciab' on every node.
-    - name: oidc
+    - name: authentication
       required: false
       schema:
         openAPIV3Schema:
           type: object
-          required: [issuerURL, clientID]
+          required: [issuers]
           properties:
-            issuerURL:
-              type: string
-            clientID:
-              type: string
-            usernameClaim:
-              type: string
-              default: preferred_username
-            groupsClaim:
-              type: string
-              default: groups
-          description: API server OIDC settings (Authentik). Leave unset to disable.
+            issuers:
+              type: array
+              minItems: 1
+              # Bounded, so the API server's CEL cost estimate for the rules below stays small.
+              maxItems: 4
+              # Each issuer's users and groups get their own prefix, so two issuers can never
+              # name the same user or group (alice from Authentik isn't alice from the site IdP).
+              x-kubernetes-validations:
+                - rule: self.all(a, self.exists_one(b, b.url == a.url))
+                  message: each issuer URL may appear once
+                - rule: self.all(a, self.exists_one(b, b.name == a.name))
+                  message: each issuer name may appear once
+                - rule: "self.all(a, self.exists_one(b, (has(b.usernamePrefix) ? b.usernamePrefix : b.name + ':') == (has(a.usernamePrefix) ? a.usernamePrefix : a.name + ':')))"
+                  message: each issuer needs its own username prefix
+                - rule: "self.all(a, self.exists_one(b, (has(b.groupsPrefix) ? b.groupsPrefix : b.name + ':') == (has(a.groupsPrefix) ? a.groupsPrefix : a.name + ':')))"
+                  message: each issuer needs its own groups prefix
+              items:
+                type: object
+                required: [name, url, clientID]
+                properties:
+                  name:
+                    type: string
+                    pattern: '^[a-z0-9]([-a-z0-9]*[a-z0-9])?$'
+                    maxLength: 63
+                    description: Short issuer name; the default username and groups prefix is <name>:.
+                  url:
+                    type: string
+                    pattern: '^https://'
+                    maxLength: 512
+                  clientID:
+                    type: string
+                    minLength: 1
+                    maxLength: 256
+                    description: The audience the issuer's ID tokens carry.
+                  usernameClaim:
+                    type: string
+                    maxLength: 256
+                    default: preferred_username
+                  usernamePrefix:
+                    type: string
+                    minLength: 1
+                    maxLength: 63
+                    description: Default <name>:. Must differ from every other issuer's.
+                  groupsClaim:
+                    type: string
+                    maxLength: 256
+                    default: groups
+                  groupsPrefix:
+                    type: string
+                    minLength: 1
+                    maxLength: 63
+                    description: Default <name>:. Must differ from every other issuer's.
+                  certificateAuthority:
+                    type: string
+                    maxLength: 65536
+                    description: PEM CA bundle for the issuer's TLS certificate, when the node trust store lacks it.
+          description: >-
+            JWT issuers the API server trusts, written to an AuthenticationConfiguration file
+            (structured authentication). Several may be listed at once, for example Authentik
+            and the site's IdP while people move from one to the other. Leave unset for
+            certificate-only clusters (MGMT and INFRA).
+    - name: failureDomains
+      required: false
+      schema:
+        openAPIV3Schema:
+          type: array
+          minItems: 1
+          uniqueItems: true
+          items:
+            type: string
+            minLength: 1
+          description: >-
+            The site's failure domains that have hosts for this cluster. Each becomes a
+            Metal3Cluster failure domain the control plane spreads over; CAPM3 picks hosts
+            labelled infrastructure.cluster.x-k8s.io/failure-domain=<name>.
     - name: image
       required: true
       schema:
@@ -360,9 +424,12 @@ spec:
                             path: /etc/kubernetes/admin.conf
                             type: FileOrCreate
 
-    - name: oidc
-      description: API server OIDC flags, when the oidc variable is set.
-      enabledIf: '{{ if .oidc }}true{{ end }}'
+    - name: authentication
+      description: >-
+        Structured authentication when the authentication variable is set: the
+        AuthenticationConfiguration file, and the API server flag and mount that read it.
+        Replaces the --oidc-* flags. Comes after nodeBase, which creates the files list.
+      enabledIf: '{{ if .authentication }}true{{ end }}'
       definitions:
         - selector:
             apiVersion: controlplane.cluster.x-k8s.io/v1beta2
@@ -371,29 +438,42 @@ spec:
               controlPlane: true
           jsonPatches:
             - op: add
-              path: /spec/template/spec/kubeadmConfigSpec/clusterConfiguration/apiServer/extraArgs/-
+              path: /spec/template/spec/kubeadmConfigSpec/files/-
               valueFrom:
                 template: |
-                  name: oidc-issuer-url
-                  value: {{ .oidc.issuerURL | quote }}
+                  path: /etc/kubernetes/authentication/config.yaml
+                  owner: root:root
+                  permissions: "0644"
+                  content: |
+                    apiVersion: apiserver.config.k8s.io/v1
+                    kind: AuthenticationConfiguration
+                    jwt:
+                    {{- range $i := .authentication.issuers }}
+                      - issuer:
+                          url: {{ $i.url | quote }}
+                          audiences: [{{ $i.clientID | quote }}]
+                          {{- if $i.certificateAuthority }}
+                          certificateAuthority: {{ $i.certificateAuthority | quote }}
+                          {{- end }}
+                        claimMappings:
+                          username:
+                            claim: {{ $i.usernameClaim | default "preferred_username" | quote }}
+                            prefix: {{ $i.usernamePrefix | default (printf "%s:" $i.name) | quote }}
+                          groups:
+                            claim: {{ $i.groupsClaim | default "groups" | quote }}
+                            prefix: {{ $i.groupsPrefix | default (printf "%s:" $i.name) | quote }}
+                    {{- end }}
             - op: add
               path: /spec/template/spec/kubeadmConfigSpec/clusterConfiguration/apiServer/extraArgs/-
-              valueFrom:
-                template: |
-                  name: oidc-client-id
-                  value: {{ .oidc.clientID | quote }}
+              value: {name: authentication-config, value: /etc/kubernetes/authentication/config.yaml}
             - op: add
-              path: /spec/template/spec/kubeadmConfigSpec/clusterConfiguration/apiServer/extraArgs/-
-              valueFrom:
-                template: |
-                  name: oidc-username-claim
-                  value: {{ .oidc.usernameClaim | quote }}
-            - op: add
-              path: /spec/template/spec/kubeadmConfigSpec/clusterConfiguration/apiServer/extraArgs/-
-              valueFrom:
-                template: |
-                  name: oidc-groups-claim
-                  value: {{ .oidc.groupsClaim | quote }}
+              path: /spec/template/spec/kubeadmConfigSpec/clusterConfiguration/apiServer/extraVolumes/-
+              value:
+                name: authentication-config
+                hostPath: /etc/kubernetes/authentication/config.yaml
+                mountPath: /etc/kubernetes/authentication/config.yaml
+                readOnly: true
+                pathType: File
     - name: metal3Cluster
       description: Control plane endpoint.
       definitions:
@@ -609,6 +689,24 @@ spec:
                 permissions: "0644"
                 content: |
                   serverTLSBootstrap: true
+    - name: metal3FailureDomains
+      description: The cluster's failure domains, all usable by the control plane.
+      enabledIf: '{{ if .failureDomains }}true{{ end }}'
+      definitions:
+        - selector:
+            apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
+            kind: Metal3ClusterTemplate
+            matchResources:
+              infrastructureCluster: true
+          jsonPatches:
+            - op: add
+              path: /spec/template/spec/failureDomains
+              valueFrom:
+                template: |
+                  {{- range .failureDomains }}
+                  - name: {{ . | quote }}
+                    controlPlane: true
+                  {{- end }}
 
 ---
 apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
@@ -620,6 +718,10 @@ metadata:
     argocd.argoproj.io/sync-options: Prune=false,Delete=false
 spec:
   template:
+    metadata:
+      annotations:
+        # CAPM3 copies the BareMetalHost's topology.kubernetes.io labels to its Node.
+        metal3.io/metal3-label-sync-prefixes: topology.kubernetes.io
     spec:
       cloudProviderEnabled: false
       # Placeholder: CAPM3's webhook rejects a template without an endpoint.

@@ -36,27 +36,33 @@ argocd.argoproj.io/sync-options: Prune=false,Delete=false
 {{- define "capi-cluster.rangeStart" -}}{{ index (splitList "-" .) 0 }}{{- end }}
 {{- define "capi-cluster.rangeEnd" -}}{{ index (splitList "-" .) 1 }}{{- end }}
 
-{{- /* IPPool + Metal3DataTemplate for one Metal3 role. Args: dict "root" $ "role" <name> "network" <net> */ -}}
+{{- /* IPPool + Metal3DataTemplate for one Metal3 role. Args: dict "root" $ "role" <name> "network" <net>
+"pool" <name> "renderPool" <bool>: the role's addresses come from the IPPool <cluster>-<pool>, rendered
+here when renderPool is true. A worker pool split over failure domains has one data template per
+domain and one address pool between them. */ -}}
 {{- define "capi-cluster.metal3Role" -}}
 {{- $name := printf "%s-%s" .root.Values.name .role }}
+{{- $pool := printf "%s-%s" .root.Values.name .pool }}
+{{- if .renderPool }}
 ---
 apiVersion: ipam.metal3.io/v1alpha1
 kind: IPPool
 metadata:
-  name: {{ $name | quote }}
+  name: {{ $pool | quote }}
   labels:
     {{- include "capi-cluster.labels" .root | nindent 4 }}
   annotations:
     {{- include "capi-cluster.annotations" .root | nindent 4 }}
 spec:
   clusterName: {{ .root.Values.name | quote }}
-  namePrefix: {{ $name | quote }}
+  namePrefix: {{ $pool | quote }}
   pools:
     - start: {{ include "capi-cluster.rangeStart" .network.nodeIPRange }}
       end: {{ include "capi-cluster.rangeEnd" .network.nodeIPRange }}
   prefix: {{ .network.prefix }}
   gateway: {{ .network.gateway }}
   dnsServers: {{ toJson .root.Values.nodes.dnsServers }}
+{{- end }}
 ---
 apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
 kind: Metal3DataTemplate
@@ -85,7 +91,7 @@ spec:
           fromPoolRef:
             apiGroup: ipam.metal3.io
             kind: IPPool
-            name: {{ $name | quote }}
+            name: {{ $pool | quote }}
           routes:
             - network: 0.0.0.0
               prefix: 0
@@ -93,7 +99,7 @@ spec:
                 fromPoolRef:
                   apiGroup: ipam.metal3.io
                   kind: IPPool
-                  name: {{ $name | quote }}
+                  name: {{ $pool | quote }}
     services:
       dns: {{ toJson .root.Values.nodes.dnsServers }}
 {{- end }}
