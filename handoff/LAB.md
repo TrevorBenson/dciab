@@ -10,6 +10,16 @@ Never put secrets here: no token secrets, passwords or keys.
 - kind, helm and kubectl are installed at the versions pinned in `bundle.lock`.
 - A long-lived kind cluster `dciab-e2e` may exist from earlier runs. Tasks that need a fresh one must ask before deleting it.
 
+## Files outside the repo
+
+Credentials and task files live under `~/.dciab/` on the workstation (directories mode 700, files 600), never in the repo:
+
+- **Credentials, by purpose:** `~/.dciab/<purpose>/<credential>`. They outlive any one task, and cleanup never removes them. For example:
+  - `~/.dciab/lab-runner/github-token`: the lab runner's GitHub registration token (task 0011)
+  - `~/.dciab/proxmox/<token-name>.token` for later Proxmox tokens, such as task 0008's least-privilege token
+- **Task scratch, by task:** `~/.dciab/NNNN/` holds values files, kubeconfigs, CAs and logs for one task. The task's cleanup step says what to keep.
+- **Older location:** the existing CAPMOX credentials stay in `~/.dciab-e2e/proxmox.env` (see Proxmox below) until a task moves them.
+
 ## Proxmox
 
 - Proxmox VE 9.2.3, node `pve1`.

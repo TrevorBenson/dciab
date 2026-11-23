@@ -1,0 +1,93 @@
+name: lab runner smoke test
+
+# Runs only on the self-hosted lab runner (images/lab-runner), only when dispatched by hand.
+# It touches no infrastructure: it checks the VM's OS, tools and rootful podman, runs a kind
+# cluster, and checks that nothing is left from an earlier job. It deliberately leaves state
+# behind (a root-owned file, a dummy link with an address, a container) for the next run to
+# check that the runner's cleanup removed it.
+#
+# Every lab workflow: runs-on [self-hosted, dciab-lab], the dciab-lab concurrency group
+# (one lab, one set of fixed addresses, shared with hand runs), and actions pinned by commit
+# SHA (jobs have root on a VM that holds credentials). tests/test_lab_runner.py checks this.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dciab-lab
+  cancel-in-progress: false
+
+jobs:
+  smoke:
+    runs-on: [self-hosted, dciab-lab]
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      - name: OS, SELinux, sudo
+        run: |
+          set -euo pipefail
+          . /etc/os-release
+          echo "$PRETTY_NAME"
+          [[ "$ID" == rocky && "$VERSION_ID" == 10* ]] || { echo "expected Rocky Linux 10, got $ID $VERSION_ID" >&2; exit 1; }
+          [[ "$(getenforce)" == Enforcing ]] || { echo "SELinux is $(getenforce), expected Enforcing" >&2; exit 1; }
+          sudo -n true
+          sudo bootc status --format yaml | sed -n '1,20p'
+          df -h /sysroot /var
+      - name: Nothing left from an earlier job
+        run: |
+          set -euo pipefail
+          left=()
+          for f in "$HOME/.dciab-smoke" /tmp/dciab-smoke /tmp/dciab-smoke-root /var/tmp/dciab-smoke-root; do
+            [[ ! -e "$f" ]] || left+=("$f")
+          done
+          ip link show dciab-smoke0 >/dev/null 2>&1 && left+=("link dciab-smoke0")
+          ip -4 addr show | grep -q '192\.0\.2\.1/32' && left+=("address 192.0.2.1/32")
+          [[ -z "$(sudo podman ps -aq)" ]] || left+=("containers: $(sudo podman ps -a --format '{{.Names}}' | paste -sd,)")
+          if (( ${#left[@]} )); then
+            printf 'left from an earlier job (the runner cleanup missed it): %s\n' "${left[@]}" >&2
+            exit 1
+          fi
+      - name: Pinned images from bundle.lock
+        run: |
+          python3 - >> "$GITHUB_ENV" <<'PY'
+          import yaml
+          digests = yaml.safe_load(open("bundle.lock"))["imageDigests"]
+          ref = next(r for r in digests if r.startswith("registry.k8s.io/pause:"))
+          print(f"PAUSE_IMAGE={ref}@{digests[ref]}")
+          PY
+      - name: Tools match bundle.lock
+        run: |
+          set -euo pipefail
+          read -r kind helm k8s < <(python3 -c 'import yaml; l = yaml.safe_load(open("bundle.lock")); print(l["tools"]["kind"], l["tools"]["helm"], l["kubernetes"]["version"])')
+          kind version | grep -F "$kind"
+          helm version --short | grep -F "$helm"
+          kubectl version --client | grep -F "$k8s"
+          clusterctl version -o short; oras version | head -1; cosign version 2>&1 | grep GitVersion; age --version
+          sudo podman version --format '{{.Client.Version}}'; skopeo --version; buildah --version
+      - name: kind on rootful podman
+        run: |
+          set -euo pipefail
+          trap 'sudo KIND_EXPERIMENTAL_PROVIDER=podman kind delete cluster --name lab-smoke || true' EXIT
+          sudo KIND_EXPERIMENTAL_PROVIDER=podman kind create cluster --name lab-smoke --wait 180s
+          sudo kubectl --context kind-lab-smoke get nodes -o wide
+          sudo kubectl --context kind-lab-smoke run smoke --image="$PAUSE_IMAGE" --restart=Never >/dev/null
+          sudo kubectl --context kind-lab-smoke wait --for=condition=Ready pod/smoke --timeout=120s
+      - name: dciab runs on the system python
+        run: ./dciab validate --help >/dev/null
+      - name: Leave state for the next run to check
+        run: |
+          set -euo pipefail
+          echo "$GITHUB_RUN_ID" > "$HOME/.dciab-smoke"
+          echo "$GITHUB_RUN_ID" > /tmp/dciab-smoke
+          echo "$GITHUB_RUN_ID" | sudo tee /tmp/dciab-smoke-root /var/tmp/dciab-smoke-root >/dev/null
+          sudo ip link add dciab-smoke0 type dummy
+          sudo ip addr add 192.0.2.1/32 dev dciab-smoke0   # TEST-NET-1 (RFC 5737)
+          sudo podman run -d --name dciab-smoke-left "$PAUSE_IMAGE" >/dev/null
+      # A refused job (job-started hook) must never reach this step, even though it runs
+      # after failures. Task 0011 checks that.
+      - name: Always runs (refused jobs must never get here)
+        if: always()
+        run: |
+          echo "dciab lab runner: reached the always() step in run $GITHUB_RUN_ID"

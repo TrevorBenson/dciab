@@ -1,0 +1,17 @@
+[Unit]
+Description=DCiaB lab runner: GitHub Actions jobs, one fresh just-in-time runner per job
+Documentation=file:///usr/libexec/dciab-lab-runner/loop
+Wants=network-online.target
+After=network-online.target cloud-final.service
+# Written at clone time (cloud-init). Without it the runner stays off.
+ConditionPathExists=/etc/dciab-lab-runner/runner.conf
+
+[Service]
+Type=simple
+ExecStart=/usr/libexec/dciab-lab-runner/loop
+Restart=always
+RestartSec=30
+TimeoutStopSec=60
+
+[Install]
+WantedBy=multi-user.target

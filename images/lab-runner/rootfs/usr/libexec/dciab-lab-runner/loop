@@ -1,0 +1,148 @@
+#!/usr/bin/env bash
+# dciab-lab-runner loop (run by dciab-lab-runner.service, as root): one job per runner.
+#
+# At start, once per boot, it records the VM's network baseline: its IPv4 addresses and
+# links. Then each round:
+#   1. Cleans up after the last job, and stops the round if any required step fails (the
+#      next round retries; a runner never registers on a VM that isn't clean):
+#      - kills the runner user's processes
+#      - removes root's containers, pods, volumes and networks (kind nodes, the seed
+#        registry, test pods), and checks none are left
+#      - reloads firewalld (drops runtime-only ports)
+#      - removes IPv4 addresses and dummy links that weren't there at boot (dciab seed adds
+#        its DNS service addresses to the host NIC)
+#      - empties /tmp and /var/tmp (except systemd's private directories), /root/.kube and
+#        /root/.dciab
+#      - replaces the runner directory and the runner user's home with fresh copies
+#      /var/cache/dciab is kept: jobs may cache downloads there, and must verify them
+#      against bundle.lock before use.
+#      This covers the state lab jobs are known to leave. It doesn't make the VM pristine:
+#      anything else a job writes as root (under /var/lib, say) stays until the VM is
+#      re-cloned from its template.
+#   2. Asks GitHub for a just-in-time (JIT) runner configuration: a single-use, ephemeral
+#      runner registered to one repository, with the labels from runner.conf.
+#   3. Runs that runner as dciab-runner until it has run one job (or the job-started hook
+#      refused the job and killed it), then deletes the runner's registration.
+#
+# Config: /etc/dciab-lab-runner/runner.conf (KEY=VALUE lines; written at clone time):
+#   DCIAB_LAB_REPO=owner/repo          required
+#   DCIAB_LAB_LABELS=dciab-lab         extra labels, comma-separated (self-hosted,linux,x64 are added)
+#   DCIAB_LAB_BRANCH=main              the only branch whose jobs run
+#   DCIAB_LAB_TOKEN_FILE=/etc/dciab-lab-runner/token
+# The token file holds a GitHub token allowed to create JIT runners on that repository
+# (repository Administration: write), owned by root, mode 0600 or 0400.
+#
+# The VM's own addresses must be static (cloud-init or NetworkManager), so the baseline
+# holds: an IPv4 address that appears after boot is treated as a job's and removed.
+set -euo pipefail
+export LC_ALL=C   # comm needs the same collation as sort
+
+CONF=/etc/dciab-lab-runner/runner.conf
+STATE=/var/lib/dciab-lab-runner
+RUN=/run/dciab-lab-runner
+RUNNER_USER=dciab-runner
+SRC=/usr/lib/dciab-lab-runner/actions-runner
+HOOK=/usr/libexec/dciab-lab-runner/job-started.sh
+API=https://api.github.com
+
+log() { echo "dciab-lab-runner: $*"; }
+die() { log "$*" >&2; exit 1; }
+
+conf() { sed -n "s/^$1=//p" "$CONF" | tail -n 1; }
+repo="$(conf DCIAB_LAB_REPO)"
+labels="$(conf DCIAB_LAB_LABELS)"; labels="${labels:-dciab-lab}"
+branch="$(conf DCIAB_LAB_BRANCH)"; branch="${branch:-main}"
+token_file="$(conf DCIAB_LAB_TOKEN_FILE)"; token_file="${token_file:-/etc/dciab-lab-runner/token}"
+
+[[ "$repo" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || die "$CONF: DCIAB_LAB_REPO must be owner/repo, got '$repo'"
+[[ "$labels" =~ ^[A-Za-z0-9_.-]+(,[A-Za-z0-9_.-]+)*$ ]] || die "$CONF: DCIAB_LAB_LABELS must be comma-separated names, got '$labels'"
+[[ "$branch" =~ ^[A-Za-z0-9_./-]+$ ]] || die "$CONF: DCIAB_LAB_BRANCH is not a branch name: '$branch'"
+[[ -f "$token_file" ]] || die "no token file at $token_file"
+[[ "$(stat -c '%u %a' "$token_file")" =~ ^0\ [46]00$ ]] || die "$token_file must be owned by root with mode 0600 or 0400"
+
+# "<ifname> <address>/<prefix>" for every global IPv4 address; "<ifname>" for every dummy link.
+addrs() { ip -j -4 addr show | jq -r '.[] | .ifname as $i | .addr_info[] | select(.scope == "global") | "\($i) \(.local)/\(.prefixlen)"' | sort; }
+dummies() { ip -j link show type dummy | jq -r '.[].ifname' | sort; }
+
+baseline() {
+  install -d -m 0700 "$RUN"
+  if [[ ! -f "$RUN/addrs" ]]; then
+    addrs > "$RUN/addrs"; dummies > "$RUN/dummies"
+    log "network baseline: $(paste -sd, "$RUN/addrs")"
+  fi
+}
+
+# Every step that leaves state behind when it fails returns non-zero.
+cleanup() {
+  local ifname addr
+  pkill -KILL -u "$RUNNER_USER" || [[ $? == 1 ]] || return 1   # 1: no processes
+  podman rm --all --force --time 0 >/dev/null || return 1
+  podman pod rm --all --force --time 0 >/dev/null || return 1
+  podman volume prune --force >/dev/null || return 1
+  podman network prune --force >/dev/null || return 1
+  local left_containers left_pods
+  left_containers="$(podman ps --all --quiet)" || return 1
+  left_pods="$(podman pod ps --quiet)" || return 1
+  [[ -z "$left_containers" && -z "$left_pods" ]] \
+    || { log "containers or pods are left after cleanup" >&2; return 1; }
+  if systemctl -q is-active firewalld; then firewall-cmd --quiet --reload || return 1; fi
+  while read -r ifname addr; do
+    [[ -n "$ifname" ]] || continue
+    log "removing $addr from $ifname (added after boot)"
+    ip addr del "$addr" dev "$ifname" || return 1
+  done < <(comm -13 "$RUN/addrs" <(addrs))
+  while read -r ifname; do
+    [[ -n "$ifname" ]] || continue
+    log "removing dummy link $ifname (added after boot)"
+    ip link del "$ifname" || return 1
+  done < <(comm -13 "$RUN/dummies" <(dummies))
+  find /tmp /var/tmp -xdev -mindepth 1 -maxdepth 1 ! -name 'systemd-private-*' -exec rm -rf {} + || return 1
+  rm -rf "${STATE:?}/runner" "${STATE:?}/home" /root/.kube /root/.dciab || return 1
+  cp -a "$SRC" "$STATE/runner" || return 1
+  chown -R "$RUNNER_USER:$RUNNER_USER" "$STATE/runner" || return 1
+  install -d -o "$RUNNER_USER" -g "$RUNNER_USER" -m 0700 "$STATE/home" || return 1
+}
+
+# GitHub API call. The token goes to curl as a header file, never as an argument.
+gh_api() {
+  local method="$1" path="$2"; shift 2
+  curl -fsS --max-time 60 -X "$method" \
+    -H @<(printf 'Authorization: Bearer %s\n' "$(<"$token_file")") \
+    -H 'Accept: application/vnd.github+json' -H 'X-GitHub-Api-Version: 2022-11-28' \
+    "$@" "$API/repos/$repo/actions/runners$path"
+}
+
+# Prints "<runner id> <encoded JIT config>".
+mint() {
+  local name body
+  name="$(hostname -s)-$(date +%s)"
+  body="$(jq -nc --arg name "$name" --arg labels "self-hosted,linux,x64,$labels" \
+    '{name: $name, runner_group_id: 1, labels: ($labels | split(",")), work_folder: "_work"}')"
+  gh_api POST /generate-jitconfig --data "$body" | jq -er '"\(.runner.id) \(.encoded_jit_config)"'
+}
+
+install -d -m 0755 "$STATE"
+baseline
+wait=30
+backoff() { sleep "$wait"; wait=$(( wait < 600 ? wait * 2 : 600 )); }
+while true; do
+  if ! cleanup; then
+    log "cleanup failed; not registering a runner; retrying in ${wait}s" >&2
+    backoff; continue
+  fi
+  if ! read -r runner_id jit < <(mint); then
+    log "could not create a JIT runner for $repo; retrying in ${wait}s" >&2
+    backoff; continue
+  fi
+  wait=30
+  log "runner $runner_id registered for $repo (labels self-hosted,linux,x64,$labels); waiting for a job"
+  rc=0
+  runuser -u "$RUNNER_USER" -- env -i \
+    HOME="$STATE/home" USER="$RUNNER_USER" LANG=C.UTF-8 PATH=/usr/local/bin:/usr/bin:/usr/sbin \
+    ACTIONS_RUNNER_HOOK_JOB_STARTED="$HOOK" DCIAB_LAB_REPO="$repo" DCIAB_LAB_BRANCH="$branch" \
+    "$STATE/runner/run.sh" --jitconfig "$jit" || rc=$?
+  unset jit
+  log "runner $runner_id exited ($rc)"
+  # An ephemeral runner removes itself after a job; one the hook killed doesn't. 404 is fine.
+  gh_api DELETE "/$runner_id" -o /dev/null 2>/dev/null || true
+done

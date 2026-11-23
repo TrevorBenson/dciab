@@ -1,0 +1,5 @@
+# Lab runner jobs need root: rootful podman (kind, the seed registry on port 443),
+# bootc-image-builder, firewall-cmd. So a job can do anything on this VM. That is why the
+# VM runs nothing else, its runner takes only jobs from the default branch (the
+# job-started hook), and it is cleaned before every job. See images/lab-runner/README.md.
+dciab-runner ALL=(ALL) NOPASSWD: ALL
