@@ -67,7 +67,7 @@ The stick holds the payload; the bootstrap's heavy I/O happens on local storage.
 
 ## Consequences
 
-- Recipes: `images/bootstrap-bootc/` (the appliance and its kickstart) and `images/usb/` (the stick). Both are under evaluation until task 0005 reports.
+- Recipes: `images/bootstrap-bootc/` (the appliance and its kickstart) and `images/usb/` (the stick). Both are under evaluation until the unattended-install spike on the roadmap passes.
 - `bundle.lock` has `bootstrapAppliance`: Ventoy, PyYAML for the installer, and the checksums of the tools baked into the appliance.
 - dciab's step state lives under `/var` (the appliance's `/usr` is read-only), and its heavy state on the work disk.
 - Server zero's work disk is wiped by the appliance install, and again when server zero is reinstalled as a hypervisor.
