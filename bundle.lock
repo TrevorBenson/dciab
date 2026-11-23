@@ -175,18 +175,23 @@ charts:
   cilium: 1.20.5
   cert-manager: v1.21.3
   longhorn: 1.13.0
+  # vSphere cloud provider (CPI), installed on vSphere clusters only. Its releases follow
+  # Kubernetes minor versions: bump it with kubernetes.version.
+  vsphere-cpi: 1.36.0
 
 # Where the charts above come from. The archive build (build/archive.py charts) vendors
 # each chart listed here. cert-manager is installed from its release manifest instead.
 chartRepositories:
   cilium: https://helm.cilium.io
   longhorn: https://charts.longhorn.io
+  vsphere-cpi: https://kubernetes.github.io/cloud-provider-vsphere
 
 # sha256 of each chart .tgz, checked before install and by the archive build. Empty: the
 # installer warns and prints the sum to pin; the archive build refuses the chart.
 chartDigests:
   cilium: "0c7592eb75179ecf46dd3ec22145916f0164c4401214ea15afb5b230b1d11a21"
   longhorn: "e57f010d2a8bcf0da5b8b03ffecf49c5bc35ddc2663588ce8f22b7567b6133ed"
+  vsphere-cpi: "657f29b3409645592a6183c5199bb672dce7bb3b9e3ecbe70df7564d5e722752"
 
 # Digests for images their source manifests name by tag only (the Cluster API, provider
 # and cert-manager manifests, and kubeadm's control plane images). The archive pulls these
@@ -212,6 +217,7 @@ imageDigests:
   quay.io/jetstack/cert-manager-controller:v1.21.3: "sha256:9f4f96a33c7774cef24466fcd85031997531a03a8d117f151126baa8d1290dcc"
   quay.io/jetstack/cert-manager-webhook:v1.21.3: "sha256:055ac8e9de6a0ba6763794838fe38944acc650f68ebe1b01dd8be079e580f458"
   registry.k8s.io/capi-ipam-ic/cluster-api-ipam-in-cluster-controller:v1.1.1: "sha256:49a4cc0c5d7cd8deef20105e71ce168407ddcaab612f5819947163bd4b66ff0b"
+  registry.k8s.io/cloud-pv-vsphere/cloud-provider-vsphere:v1.36.0: "sha256:c0f3933f69006683bed53a67976bbb9106d52b910727492a0bb04c9d6a0bb8ac"
   registry.k8s.io/cluster-api-vsphere/cluster-api-vsphere-controller:v1.17.0: "sha256:1f5a163b32e48e1fcaeee5ddc3e3aa93dc6fcdace85501d9078f014ab516d374"
   registry.k8s.io/cluster-api/cluster-api-controller:v1.14.4: "sha256:ee7b274a4c237d7831840c1a05a950c383f11a1755d3cca6292103cabb00bd26"
   registry.k8s.io/cluster-api/kubeadm-bootstrap-controller:v1.14.4: "sha256:674dd5e666d209c7bdb72525dd3bb40a670c068bd12d610b596b532a84463e62"

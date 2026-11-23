@@ -92,3 +92,40 @@ def test_mgmt_refuses_a_tampered_payload(tmp_path):
     (payload / "SHA256SUMS").write_text("0" * 64 + "  bin/kubectl\n")
     r = run_mgmt(str(config), "--bootstrap-kubeconfig", str(kubeconfig), "--payload", str(payload))
     assert r.returncode == 1 and "SHA256SUMS" in r.stderr
+
+
+def test_mgmt_puts_the_payload_bin_first_in_path(tmp_path):
+    """sudo resets PATH and the appliance has no clusterctl: mgmt must find the payload's (#98)."""
+    import hashlib
+    import os
+    import sys
+
+    import yaml
+
+    want = yaml.safe_load((ROOT / "bundle.lock").read_text())["clusterAPI"]["core"]["version"]
+    config = tmp_path / "dciab.yaml"
+    config.write_text("spec: {platform: {type: vsphere}}\n")
+    state = tmp_path / "state"
+    state.mkdir()
+    (state / "bootstrap.kubeconfig").write_text("x")
+    payload = tmp_path / "payload"
+    for d in ("providers", "charts", "bin"):
+        (payload / d).mkdir(parents=True)
+    tools = {"clusterctl": f"#!/bin/sh\necho {want}\n", "kubectl": "#!/bin/sh\nexit 1\n", "helm": "#!/bin/sh\n"}
+    sums = []
+    for name, body in tools.items():
+        f = payload / "bin" / name
+        f.write_text(body)
+        f.chmod(0o755)
+        sums.append(f"{hashlib.sha256(body.encode()).hexdigest()}  bin/{name}")
+    (payload / "SHA256SUMS").write_text("\n".join(sums) + "\n")
+    # A PATH like sudo's secure_path: python3 and coreutils, none of the payload's tools.
+    pybin = tmp_path / "py"
+    pybin.mkdir()
+    (pybin / "python3").symlink_to(sys.executable)
+    env = {"PATH": f"{pybin}:/usr/bin:/bin"}
+    r = subprocess.run([str(ROOT / "dciab"), "mgmt", str(config), "--state", str(state), "--payload", str(payload)],
+                       capture_output=True, text=True, env=env)
+    assert "not on PATH" not in r.stderr, r.stderr
+    # Past the tools check and clusterctl's version: the fake kubectl finds no Cluster API.
+    assert r.returncode == 1 and "has no Cluster API" in r.stderr, r.stderr

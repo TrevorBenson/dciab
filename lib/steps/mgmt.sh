@@ -8,7 +8,8 @@
 # After dciab seed with the same --state, --bootstrap-kubeconfig and --trust-bundle default
 # to the files seed wrote (<state>/bootstrap.kubeconfig, <state>/pki/trust-bundle.pem).
 # --payload DIR (the archive's payload; default <archive>/payload when it exists) makes
-# every chart and manifest come from it instead of the internet.
+# every chart and manifest come from it instead of the internet, and puts its bin/ first in
+# PATH (clusterctl, kubectl, helm), as dciab seed does.
 #
 # Steps, in order. Each is safe to re-run, and a finished run changes nothing:
 #   preflight   tools present; the bootstrap cluster has Cluster API, the providers and the
@@ -18,7 +19,15 @@
 #               namespace cluster-mgmt, on the bootstrap cluster
 #   control-plane
 #               wait for the first control plane node; save <state>/mgmt.kubeconfig
-#   cilium      addons/cilium/install.sh; waits until every node is Ready
+#   cpi         vSphere only: addons/vsphere-cpi/install.sh, the cloud provider the vSphere
+#               class's kubelets wait for (cloud-provider: external). Until it initializes a
+#               node, the node keeps the uninitialized taint, nothing else schedules there, and
+#               Cluster API can't match it to its Machine. It needs the network, so it starts
+#               working during the cilium step. Other platforms skip it
+#   cilium      addons/cilium/install.sh; waits until every node is Ready (on vSphere, also
+#               until the CPI has initialized every node). Nodes get DCIAB_NODE_WAIT_MINUTES
+#               to register: default 20, 45 on vSphere, where each control plane node joins
+#               only after the CPI has initialized the one before
 #   providers   cert-manager, Cluster API and the providers on MGMT
 #   move        clusterctl move: every CAPI object, MGMT's own Cluster and the
 #               ClusterClasses, from the bootstrap cluster to MGMT
@@ -32,7 +41,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-STEPS=(preflight values cluster control-plane cilium providers move adopt longhorn)
+STEPS=(preflight values cluster control-plane cpi cilium providers move adopt longhorn)
 NS=cluster-mgmt
 CLASS_NS=dciab-clusterclasses
 
@@ -81,6 +90,9 @@ try:
 except SeedError as exc:
     sys.exit(f"dciab mgmt: {exc}")' "$payload"
   export DCIAB_PAYLOAD="$payload"
+  # Its tools come first, as in dciab seed: sudo resets PATH, and the appliance has no
+  # clusterctl of its own.
+  export PATH="$payload/bin:$PATH"
 fi
 values="$state/mgmt-values.yaml"
 mgmt_kubeconfig="$state/mgmt.kubeconfig"
@@ -157,8 +169,23 @@ else
 fi
 finish_if control-plane
 
+step cpi
+if [[ "$platform" == vsphere ]]; then
+  # The chart comes from $DCIAB_PAYLOAD/charts when DCIAB_PAYLOAD is set.
+  "$ROOT/addons/vsphere-cpi/install.sh" "$config" "$mgmt_kubeconfig"
+else
+  echo "not needed on $platform"
+fi
+finish_if cpi
+
 step cilium
+if [[ "$platform" == vsphere ]]; then
+  export DCIAB_NODE_WAIT_MINUTES="${DCIAB_NODE_WAIT_MINUTES:-45}"
+fi
 "$ROOT/addons/cilium/install.sh" "$values" "$mgmt_kubeconfig"
+if [[ "$platform" == vsphere ]]; then
+  "$ROOT/addons/vsphere-cpi/install.sh" "$config" --wait "$mgmt_kubeconfig"
+fi
 finish_if cilium
 
 step providers

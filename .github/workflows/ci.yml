@@ -89,6 +89,8 @@ jobs:
             echo "ok: longhorn renders for $config"
           done
           addons/longhorn/install.sh examples/proxmox.yaml --images
+      - name: Render the vSphere CPI
+        run: addons/vsphere-cpi/install.sh examples/vsphere.yaml --template > /dev/null
       - name: Bad values fail the render, with the expected message
         run: |
           set -uo pipefail
@@ -242,10 +244,12 @@ jobs:
           # Longhorn's manager starts most of its images itself: list them from the chart values too.
           addons/longhorn/install.sh examples/proxmox.yaml --template > "$RUNNER_TEMP/longhorn.yaml"
           addons/longhorn/install.sh examples/proxmox.yaml --images > "$RUNNER_TEMP/longhorn-images.txt"
+          addons/vsphere-cpi/install.sh examples/vsphere.yaml --template > "$RUNNER_TEMP/vsphere-cpi.yaml"
           mapfile -t longhorn < "$RUNNER_TEMP/longhorn-images.txt"
           (( ${#longhorn[@]} > 0 )) || { echo "no Longhorn images listed" >&2; exit 1; }
           "$RUNNER_TEMP/kubeadm" config images list --kubernetes-version "$K8S" > "$RUNNER_TEMP/kubeadm.txt"
           args=(--manifests "$crds" --extra "$RUNNER_TEMP/cilium.yaml" --extra "$RUNNER_TEMP/longhorn.yaml"
+                --extra "$RUNNER_TEMP/vsphere-cpi.yaml"
                 --kubeadm-images "$RUNNER_TEMP/kubeadm.txt")
           for ref in "${longhorn[@]}"; do args+=(--image "$ref=longhorn chart values"); done
           python3 build/inventory.py "${args[@]}"
@@ -602,7 +606,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: shellcheck dciab hack/e2e/run.sh hack/check_frozen_classes.sh images/node/build.sh lib/steps/mgmt.sh lib/steps/services.sh lib/steps/capi-providers.sh images/node-bootc/build.sh images/node-bootc/rootfs/usr/libexec/dciab/growroot images/bootstrap-bootc/build.sh images/usb/build.sh images/day0-chrony/build.sh images/lab-runner/build.sh images/lab-runner/rootfs/usr/libexec/dciab-lab-runner/loop images/lab-runner/rootfs/usr/libexec/dciab-lab-runner/job-started.sh addons/cilium/install.sh addons/longhorn/install.sh
+      - run: shellcheck dciab hack/e2e/run.sh hack/check_frozen_classes.sh images/node/build.sh lib/steps/mgmt.sh lib/steps/services.sh lib/steps/capi-providers.sh images/node-bootc/build.sh images/node-bootc/rootfs/usr/libexec/dciab/growroot images/bootstrap-bootc/build.sh images/usb/build.sh images/day0-chrony/build.sh images/lab-runner/build.sh images/lab-runner/rootfs/usr/libexec/dciab-lab-runner/loop images/lab-runner/rootfs/usr/libexec/dciab-lab-runner/job-started.sh addons/cilium/install.sh addons/longhorn/install.sh addons/vsphere-cpi/install.sh
 
   rocky10:
     # The validator must run on the bootstrap host with distro packages only.

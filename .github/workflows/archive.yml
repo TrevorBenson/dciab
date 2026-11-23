@@ -50,10 +50,12 @@ jobs:
           addons/cilium/install.sh charts/capi-cluster/ci/proxmox-values.yaml --template > "$RUNNER_TEMP/cilium.yaml"
           addons/longhorn/install.sh examples/proxmox.yaml --template > "$RUNNER_TEMP/longhorn.yaml"
           addons/longhorn/install.sh examples/proxmox.yaml --images > "$RUNNER_TEMP/longhorn-images.txt"
+          addons/vsphere-cpi/install.sh examples/vsphere.yaml --template > "$RUNNER_TEMP/vsphere-cpi.yaml"
           mapfile -t longhorn < "$RUNNER_TEMP/longhorn-images.txt"
           (( ${#longhorn[@]} > 0 )) || { echo "no Longhorn images listed" >&2; exit 1; }
           "$RUNNER_TEMP/kubeadm" config images list --kubernetes-version "$K8S" > "$RUNNER_TEMP/kubeadm.txt"
           args=(--manifests "$crds" --extra "$RUNNER_TEMP/cilium.yaml" --extra "$RUNNER_TEMP/longhorn.yaml"
+                --extra "$RUNNER_TEMP/vsphere-cpi.yaml"
                 --kubeadm-images "$RUNNER_TEMP/kubeadm.txt")
           for ref in "${longhorn[@]}"; do args+=(--image "$ref=longhorn chart values"); done
           python3 build/inventory.py "${args[@]}" --format yaml > images.yaml
