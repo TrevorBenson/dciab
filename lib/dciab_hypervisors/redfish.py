@@ -150,8 +150,13 @@ class Bmc:
                 "BootSourceOverrideTarget": boot.get("BootSourceOverrideTarget"),
                 "BootSourceOverrideEnabled": boot.get("BootSourceOverrideEnabled")}
 
-    def install_from(self, image: str) -> List[str]:
-        """Attach image (ejecting anything else), boot from it once, and reset. Returns what was done."""
+    def attached(self, image: str) -> Dict[str, object]:
+        """state() plus whether image is the media in the CD slot. Reads only."""
+        _, slot = self.cd_slot()
+        return dict(self.state(), attached=bool(slot.get("Inserted")) and slot.get("Image") == image)
+
+    def prepare(self, image: str) -> List[str]:
+        """Attach image (ejecting anything else) and set a one-time boot from it. No reset."""
         done = []
         path, slot = self.cd_slot()
         if slot.get("Inserted") and slot.get("Image") == image:
@@ -164,5 +169,10 @@ class Bmc:
             done.append(f"attached {image}")
         self.boot_once_from_cd()
         done.append("one-time boot from Cd (UEFI)")
+        return done
+
+    def install_from(self, image: str) -> List[str]:
+        """prepare(image), then reset. Returns what was done. Callers decide whether a reset is safe."""
+        done = self.prepare(image)
         done.append(f"reset ({self.reset()})")
         return done

@@ -538,3 +538,91 @@ def test_assistant_image_needs_a_pin_unless_overridden(monkeypatch):
         cli.assistant_image(ROOT, {"images": {"pveAssistant": "ghcr.io/x/y:1"}})
     monkeypatch.setenv("DCIAB_PVE_ASSISTANT_IMAGE", "localhost/pve-assistant:test")
     assert cli.assistant_image(ROOT, {"images": {}}) == "localhost/pve-assistant:test"
+
+
+# --- the reinstall guard (cli.media) -------------------------------------------------------
+
+def guard(f, tmp_path, reinstall=(), answers=False):
+    """Run the media step for pve01 against the fake BMC, with port 8006 answering or not."""
+    doc = bare()
+    logs = []
+    failed, held, live = cli.media([host(doc)], doc, tmp_path / "installs", list(reinstall), lambda h: f.bmc,
+                                   probe=lambda a, p: answers, log=logs.append, err=logs.append)
+    return failed, held, live, "\n".join(logs)
+
+
+HOST_ISO = "http://10.30.110.5/host-isos/pve01.iso"
+CHANGES = ("POST", "PATCH")
+
+
+def test_first_run_installs_and_records_it(fake_bmc, tmp_path):
+    f = fake_bmc(power="Off")
+    assert guard(f, tmp_path)[:3] == ([], [], [])
+    assert f.slot == {"Inserted": True, "Image": HOST_ISO} and f.power == "On"
+    assert f.calls[-1] == ("POST", SYS + "/Actions/ComputerSystem.Reset", {"ResetType": "On"})
+    record = cli.read_install(tmp_path / "installs", "pve01")
+    assert record["outcome"] == "in-progress" and record["iso"] == HOST_ISO and record["started"]
+    assert (tmp_path / "installs" / "pve01.json").stat().st_mode & 0o777 == 0o600
+
+
+def test_powered_off_installed_host_is_not_reinstalled(fake_bmc, tmp_path):
+    cli.write_install(tmp_path / "installs", "pve01", started="2026-11-01T00:00:00+00:00", iso=HOST_ISO,
+                      outcome="installed")
+    f = fake_bmc(power="Off")
+    failed, held, live, out = guard(f, tmp_path)
+    assert (failed, held, live) == ([], ["pve01"], [])
+    assert f.calls == [] and "--reinstall pve01" in out
+    assert cli.read_install(tmp_path / "installs", "pve01")["outcome"] == "installed"
+
+
+def test_install_in_progress_is_not_reset_again(fake_bmc, tmp_path):
+    cli.write_install(tmp_path / "installs", "pve01", started="2026-11-22T10:00:00+00:00", iso=HOST_ISO,
+                      outcome="in-progress")
+    f = fake_bmc(power="On", inserted=HOST_ISO)
+    failed, held, live, out = guard(f, tmp_path)
+    assert (failed, held, live) == ([], [], [])          # goes on to wait
+    assert not [c for c in f.calls if c[0] in CHANGES] and "not resetting" in out
+
+
+def test_install_in_progress_without_its_iso_is_held(fake_bmc, tmp_path):
+    cli.write_install(tmp_path / "installs", "pve01", outcome="in-progress", iso=HOST_ISO)
+    f = fake_bmc(power="On", inserted="http://old/other.iso")
+    assert guard(f, tmp_path)[:3] == ([], ["pve01"], [])
+    assert f.calls == []
+
+
+def test_answering_host_is_left_alone(fake_bmc, tmp_path):
+    f = fake_bmc()
+    assert guard(f, tmp_path, answers=True)[:3] == ([], [], [])
+    assert f.calls == []
+
+
+@pytest.mark.parametrize("answers", [True, False])
+def test_reinstall_forces_an_install(fake_bmc, tmp_path, answers):
+    cli.write_install(tmp_path / "installs", "pve01", started="2026-11-01T00:00:00+00:00", outcome="installed")
+    f = fake_bmc(power="On", inserted=HOST_ISO)
+    failed, held, live, _ = guard(f, tmp_path, reinstall=["pve01"], answers=answers)
+    assert (failed, held, live) == ([], [], ["pve01"] if answers else [])
+    assert f.calls[-1] == ("POST", SYS + "/Actions/ComputerSystem.Reset", {"ResetType": "ForceRestart"})
+    record = cli.read_install(tmp_path / "installs", "pve01")
+    assert record["outcome"] == "in-progress" and record["started"] != "2026-11-01T00:00:00+00:00"
+
+
+def test_transitional_power_state_is_not_recorded_or_reset(fake_bmc, tmp_path):
+    f = fake_bmc(power="PoweringOff")
+    failed, held, _, out = guard(f, tmp_path)
+    assert failed == ["pve01"] and "PoweringOff" in out
+    assert f.calls == [] and cli.read_install(tmp_path / "installs", "pve01") is None
+
+
+def test_unreadable_record_still_guards(tmp_path):
+    (tmp_path / "pve01.json").write_text("{not json")
+    assert cli.read_install(tmp_path, "pve01") == {"outcome": "unreadable"}
+
+
+def test_reinstall_must_name_a_selected_host(tmp_path, monkeypatch, capsys):
+    Site(tmp_path, monkeypatch, capsys)
+    cfg = tmp_path / "dciab.yaml"
+    cfg.write_text(yaml.safe_dump(bare(), sort_keys=False))
+    assert cli.main(["--root", str(ROOT), "--print", "--host", "pve02", "--reinstall", "pve01", str(cfg)]) == 2
+    assert "--reinstall pve01" in capsys.readouterr().err
