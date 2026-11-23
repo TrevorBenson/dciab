@@ -8,13 +8,13 @@
 Nothing in DCiaB places machines or replicas with the hardware in mind:
 
 - **No failure-domain model.** No `zone`, `failureDomain`, anti-affinity or `topology.kubernetes.io` key exists in `schema/`, `charts/` (the `r1` classes in `charts/capi-clusterclasses/classes/r1/` and `charts/capi-cluster/`), `addons/` or `lib/`. A VM cluster has sizes and addresses only (`schema/dciab.schema.json:309-321`). Proxmox takes one storage and a flat node list (`:164-186`). CAPMOX gets every node as `allowedNodes` (`lib/dciab_cluster/values.py:135-141`, `charts/capi-clusterclasses/classes/r1/proxmox.yaml:499-501`). The Cluster topology sets control plane replicas and worker pools, with no failure domain (`charts/capi-cluster/templates/cluster.yaml:25-43`).
-- **So quorum can sit on one host.** All three etcd members of MGMT or INFRA, and every Longhorn replica, can land on one hypervisor. Losing that host loses quorum and data. MGMT has no worker pools in the examples (`examples/proxmox-bare.yaml:63`), so its Longhorn replicas live on its control plane nodes too.
+- **So quorum can sit on one host.** All three etcd members of MGMT or INFRA, and every Longhorn replica, can land on one hypervisor. Losing that host loses quorum and data. MGMT has no worker pools in the examples (`examples/proxmox-bare.yaml:63` on `main` @ 11cebc3), so its Longhorn replicas live on its control plane nodes too.
 - **The only resilience check** warns on one control plane node or one Longhorn replica (`lib/dciab_validate/checks.py:540-548`).
-- **The bare-Proxmox path is one host.** `examples/proxmox-bare.yaml:15-20` points at one API (`pve01`), lists three nodes, and uses `local-lvm`. Hosts installed by `dciab hypervisors` aren't clustered; Proxmox clustering and shared storage are backlog (`docs/ROADMAP.md:73`). A clone on local storage can't target another node: CAPMOX's own clone `target` is "only allowed if the original VM is on shared storage". Every MGMT, INFRA and workload VM therefore lands on `pve01`. The comment at `:76`, "the Ceph datastore already replicates", is wrong for this example. The project's design notes accept single-host local storage as a v1 limitation; no product doc says so.
+- **The bare-Proxmox path is one host.** On `main` @ 11cebc3, `examples/proxmox-bare.yaml:15-20` points at one API (`pve01`), lists three nodes, and uses `local-lvm`. Hosts installed by `dciab hypervisors` aren't clustered; Proxmox clustering and shared storage are backlog (`docs/ROADMAP.md:73`). A clone on local storage can't target another node: CAPMOX's own clone `target` is "only allowed if the original VM is on shared storage". Every MGMT, INFRA and workload VM therefore lands on `pve01`. Its comment at `:76`, "the Ceph datastore already replicates", is wrong for this example (an open PR rewrites it). The project's design notes accept single-host local storage as a v1 limitation; no product doc says so.
 - **One flat network.** Hypervisors, the bootstrap host, MGMT, INFRA and workload clusters share `network.nodes`: one CIDR, gateway and VLAN (`schema/dciab.schema.json:226-235`). There is no MTU field anywhere. Bare-metal nodes get one untagged `phy` link with no bond (`charts/capi-cluster/templates/_helpers.tpl:60-69`).
 - **No production NTP.** [ADR 0001](0001-day0-hypervisors-and-services.md):77 says the production platform must serve NTP on the DNS service addresses after the handoff whenever `spec.bootstrap.ntp` was used. [COMPONENTS.md](../COMPONENTS.md) has chrony only on the bootstrap host (line 22), and nothing replaces it.
 
-ADR 0008 decides which block and object providers a site uses (an array first, Longhorn or OpenEBS only on local disks, never two layers of replication) and gives every cluster `replicated`, `replicated-retain` and, where it exists, `local` StorageClasses. ADR 0009 decides backups and their targets. This ADR decides where machines and replicas go so that losing one host, rack or zone doesn't take quorum or the only copy with it.
+[ADR 0008](0008-provider-pattern.md) decides which block and object providers a site uses (an array first, Longhorn or OpenEBS only on local disks, never two layers of replication) and gives every cluster `replicated`, `replicated-retain` and, where it exists, `local` StorageClasses. [ADR 0009](0009-backup-and-dr.md) decides backups and their targets. This ADR decides where machines and replicas go so that losing one host, rack or zone doesn't take quorum or the only copy with it.
 
 The `r1` classes are still a draft ([VERSIONING.md](../VERSIONING.md)). Whatever the classes must carry has to land before the first release freezes them.
 
@@ -68,7 +68,7 @@ Cluster API has one model: the infrastructure cluster reports failure domains, K
 - *Several zones* (compute clusters, or DRS host groups inside one cluster). Each `vsphere` entry renders a `VSphereFailureDomain` (region type `ComputeCluster`, zone type `HostGroup`; or `Datacenter`/`ComputeCluster` for one cluster per zone) and a `VSphereDeploymentZone` with `controlPlane: true`. The `VSphereClusterTemplate` gets `failureDomainSelector: {}`, so the control plane uses every zone. CAPV no longer creates the vSphere side (`autoConfigure` is gone), so the site creates the tag categories, tags and DRS groups first. `validate --live` checks they exist. Today the schema requires `vsphere.cluster` but `values.py` never passes it on (`lib/dciab_cluster/values.py:145-148`); in this mode it becomes the default compute cluster.
 - *One compute cluster, no zones.* DCiaB enables CAPV's `NodeAntiAffinity` feature gate (`EXP_NODE_ANTI_AFFINITY`, off by default, in `bundle.lock`'s provider variables). CAPV then puts the control plane and each MachineDeployment in their own cluster module, and DRS keeps each group's VMs on separate hosts. This needs DRS on the cluster.
 
-**Proxmox.** CAPMOX `v0.9.2` (pinned) has "zones", but they are IP pools per zone, not Cluster API failure domains: `ProxmoxCluster.status.failureDomains` is never set, and `ProxmoxMachine` has no `failureDomain`. Upstream issue #717 proposes the contract (a zone lists its PVE nodes, and the machine controller limits `allowedNodes` and the IP pool to the machine's failure domain). It is open. Until it ships:
+**Proxmox.** CAPMOX `v0.9.2` (pinned) has "zones", but they are IP pools per zone, not Cluster API failure domains: `ProxmoxCluster.status.failureDomains` is never set, and `ProxmoxMachine` has no `failureDomain`. Upstream issue #717 proposes the contract (a zone lists its PVE nodes, and the machine controller limits `allowedNodes` and the IP pool to the machine's failure domain), with PR #720 linked to it. Status as of 2026-11-22, unverified: #717 open, #720 not known to be merged; no CAPMOX release with the contract is known. Until one ships:
 
 - **Workers** are placed per MachineDeployment. `ProxmoxMachine` has its own `allowedNodes`, which overrides the cluster's. The class sets it from a per-MachineDeployment `failureDomain` variable to that domain's PVE nodes, and adds `topology.kubernetes.io/zone=<domain>` to the kubelet's `--node-labels`. The kubelet may set this label on its own Node.
 - **The control plane can't be pinned.** KubeadmControlPlane uses one machine template, and CAPMOX places each VM on any allowed node by free memory. Three control plane VMs may share a host. DCiaB can't fix this without the upstream contract, so it reports it: `dciab status` lists each quorum member's PVE node and warns when two share one. Control plane spread on Proxmox comes in the class revision that pins a CAPMOX release with failure domains.
@@ -89,16 +89,16 @@ Core Cluster API syncs only `node-role.kubernetes.io`, `node-restriction.kuberne
 
 ### 4. How stateful services use the label
 
-The services keep their own replicas apart by zone, and by host inside a zone. ADR 0008 puts services that replicate themselves on the `local` class where one exists, so their spread is the only thing between one host failure and data loss.
+The services keep their own replicas apart by zone, and by host inside a zone. ADR 0008 puts services that replicate themselves on the `local` class where one exists, and on `replicated-retain` where it doesn't. On `local`, their spread is the only thing between one host failure and data loss.
 
 | Service | Members | Rule |
 | --- | --- | --- |
 | etcd (every cluster) | 3 (or 5) control plane machines | Decision 2. KCP spreads where the provider reports failure domains |
-| Longhorn (`replicated`, on local disks only, per ADR 0008) | `replicaCount` | `replicaSoftAntiAffinity: false` (never two replicas on one node, Longhorn's default, now set explicitly). `replicaZoneSoftAntiAffinity: false` when the cluster has at least `replicaCount` zones with Longhorn nodes, `true` otherwise, so a volume can still become healthy. `replicaAutoBalance: best-effort`, so replicas move back after a zone returns |
+| Longhorn (`replicated`, on local disks only, per [ADR 0008](0008-provider-pattern.md)) | `replicaCount` | `replicaSoftAntiAffinity: false` (never two replicas on one node, Longhorn's default, now set explicitly). `replicaZoneSoftAntiAffinity: false` when the cluster has at least `replicaCount` zones with Longhorn nodes, `true` otherwise, so a volume can still become healthy. `replicaAutoBalance: best-effort`, so replicas move back after a zone returns |
 | Longhorn `local` class | 1, `strict-local` | The service's own replicas are what is spread |
 | CloudNativePG | 3 instances | Keep its default pod anti-affinity on `kubernetes.io/hostname`, set `podAntiAffinityType: required`, and add a topology spread constraint on `topology.kubernetes.io/zone` (`maxSkew: 1`; `DoNotSchedule` with at least 3 zones, `ScheduleAnyway` below) |
 | OpenBao (Raft) | 3 voters (5 at large sites) | Required pod anti-affinity on hostname, and the same zone spread constraint. OpenBao's autopilot has no redundancy zones (a Vault Enterprise feature), so placement is the only protection |
-| SeaweedFS | 3 masters, N volume servers | Masters: same as OpenBao. Volume servers start with `-dataCenter=<site>` and `-rack=<zone>`, read from their node's label. Replication follows ADR 0009: `010` (a copy in another rack, here another zone) with 2 or more failure domains, `001` (another server) with one |
+| SeaweedFS | 3 masters, N volume servers | Masters: same as OpenBao. Volume servers start with `-dataCenter=<site>` and `-rack=<zone>`, read from their node's label. Replication follows [ADR 0009](0009-backup-and-dr.md): `010` (a copy in another rack, here another zone) with 2 or more failure domains, `001` (another server) with one |
 | OpenSearch | 3 cluster-manager nodes, data nodes | The same zone spread; shard allocation awareness on the zone attribute |
 
 **When the site's array provides redundancy** (vSphere CSI, Ceph CSI or a vendor CSI driver under ADR 0008), the array keeps the disk safe but not the VM. A dead ESXi host still stops every pod on it until vSphere HA restarts its VMs elsewhere, so the services' own replicas still spread across zones and hosts, as in the table. What changes is the storage layer:
@@ -151,13 +151,13 @@ The existing `check_resilience` (`lib/dciab_validate/checks.py:540-548`) becomes
 
 ### 7. The single-host limitation in v1
 
-**Stated plainly:** in v1, a Proxmox site installed from bare servers by `dciab hypervisors` is one failure domain. The hosts aren't clustered, CAPMOX talks to one host's API, and local storage can't clone to another node. Every MGMT, INFRA and workload VM runs on one host. If that host fails, the whole platform stops, and its data survives only in ADR 0009's backups on the site and off-site targets.
+**Stated plainly:** in v1, a Proxmox site installed from bare servers by `dciab hypervisors` is one failure domain. The hosts aren't clustered, CAPMOX talks to one host's API, and local storage can't clone to another node. Every MGMT, INFRA and workload VM runs on one host. If that host fails, the whole platform stops, and its data survives only in [ADR 0009](0009-backup-and-dr.md)'s backups on the site and off-site targets.
 
 How it is surfaced:
 
 - `validate` prints one warning at `spec.platform.proxmox`, whichever check finds it: "this site is one failure domain: losing <host> stops MGMT, INFRA and every workload cluster; restore is from backups (ADR 0009)". With failure domains declared, a second hypervisor that `spec.hypervisors` installs but CAPMOX can't use is an error (decision 6).
-- The product docs say it where an operator chooses the path: `README.md`, `docs/HYPERVISORS.md` and `docs/PROXMOX.md` get a "single failure domain" note, and `examples/proxmox-bare.yaml` lists only `pve01` with its wrong Ceph comment removed.
-- It ends when Proxmox clustering with shared storage (Ceph, or a SAN) is built. That moves from backlog to a Phase 2 gate. Clustering also gives CAPMOX one API for all nodes; `platform.proxmox.url` should then point at a name or address that more than one node answers, not one host.
+- The product docs say it where an operator chooses the path: `README.md`, `docs/HYPERVISORS.md` and `docs/PROXMOX.md` get a "single failure domain" note, and `examples/proxmox-bare.yaml` lists only `pve01` and says the storage is local to one host (unless an earlier PR has already done so).
+- It ends when Proxmox clustering with shared storage (Ceph, or a SAN) is built. This ADR proposes moving that from backlog to a Phase 2 gate; that is a roadmap decision (open question 8), and `docs/ROADMAP.md` changes only if it is accepted. Clustering also gives CAPMOX one API for all nodes; `platform.proxmox.url` should then point at a name or address that more than one node answers, not one host.
 
 ### 8. Network: MTU, bonds and separate VLANs
 
@@ -177,7 +177,8 @@ The reference VLAN plan the docs should show: out-of-band (BMCs), hypervisor man
 
 When `spec.bootstrap.ntp` is set, every node, hypervisor and BMC takes its time from the two DNS service addresses. So the platform takes over NTP when it takes over DNS:
 
-- **Where.** Two chrony Deployments on MGMT, one replica each, in different failure domains. Each sits behind a Cilium LoadBalancer Service on one of the two DNS service addresses, UDP 123, sharing the address with DNS (Cilium LB IPAM's sharing key). `externalTrafficPolicy: Local` keeps client addresses for chrony's `allow` list (the node network). Not a host-network DaemonSet: the node's own `chronyd` holds UDP 123, the same conflict `dciab services` works around on Day 0.
+- **Where.** Two chrony Deployments on MGMT, one replica each, in different failure domains, each answering on one of the two DNS service addresses, UDP 123. Not a host-network DaemonSet: the node's own `chronyd` holds UDP 123, the same conflict `dciab services` works around on Day 0.
+- **Sharing the address with DNS needs a spike; it is not decided.** The candidate is a Cilium LoadBalancer Service per address that shares it with the DNS Service (Cilium LB IPAM's sharing key), with `externalTrafficPolicy: Local` to keep client addresses for chrony's `allow` list. That breaks if the L2 or BGP announcement goes to a node with no local chrony or DNS endpoint, which can happen when the two Services' backends sit on different nodes. The spike tests it, and the alternatives: co-scheduling DNS and chrony per address, `Cluster` traffic policy, or separate NTP addresses (already on the roadmap "only if a site needs them"). Open question 9.
 - **Upstreams.** The same as the bootstrap host's: `spec.bootstrap.ntp.upstream`. The two servers also peer with each other. With no upstream (`serveLocalClock: true`) both run `local stratum 10 orphan`, so they agree with each other rather than drift apart. The docs recommend at least two hardware or GPS-backed sources for isolated sites, because otherwise the site's time is just a guess that stays consistent.
 - **Handoff without a step.** Before the addresses move, MGMT's chrony syncs from the bootstrap host's own address (`bootstrap.address`), so the time on both sides is the same when clients switch. That upstream is removed at `finalize`.
 - **When the site has its own NTP** (`spec.bootstrap.ntp` unset), nodes keep using `network.ntpServers` and DCiaB runs no NTP service.
@@ -215,36 +216,39 @@ When `spec.bootstrap.ntp` is set, every node, hypervisor and BMC takes its time 
 - A worker pool becomes one MachineDeployment per failure domain. Pool names, replica counts and `dciab status` output change to match.
 - vSphere sites with zones must prepare tags, tag categories and DRS groups before `dciab mgmt`. The docs list them, and `validate --live` checks them.
 - Proxmox control plane quorum stays unprotected until CAPMOX ships failure domains and DCiaB pins it in a new class revision. `dciab status` makes it visible.
-- `examples/proxmox-bare.yaml` changes (one node, no Ceph comment), or the new `validate` error fails it. `examples/proxmox.yaml` already changes under ADR 0008.
-- MGMT gains an NTP service that must be up before the DNS addresses move. The DNS handoff test covers NTP too.
-- Phase 2's gate gains Proxmox clustering with shared storage, which ends the single-host limitation.
+- `examples/proxmox-bare.yaml` lists one node, or the new `validate` error fails it. `examples/proxmox.yaml` already changes under ADR 0008.
+- MGMT gains an NTP service that must be up before the DNS addresses move. The DNS handoff test covers NTP too. How NTP and DNS share the two addresses is a spike before the implementation (decision 9).
+- If open question 8 is accepted, Phase 2's gate gains Proxmox clustering with shared storage, which ends the single-host limitation.
 
-## Open questions for Trevor
+## Open questions
 
-1. **Proxmox control plane before CAPMOX failure domains.** Accept unspread control planes on Proxmox in `r1` (reported by `dciab status`), or help land upstream PR #720 and pin a CAPMOX build with it before the first release?
+1. **Proxmox control plane before CAPMOX failure domains.** Accept unspread control planes on Proxmox in `r1` (reported by `dciab status`), or help land upstream PR #720 (status as of 2026-11-22, unverified) and pin a CAPMOX build with it before the first release?
 2. **Single-domain sites.** Is a warning enough, or should the config have to say so (for example `failureDomains: []` with a `reason`, as ADR 0009 does for off-site backups) before `validate` passes?
 3. **Zone labels for Proxmox control plane nodes**, once they can be spread: a small DCiaB controller on MGMT that copies `Machine.spec.failureDomain` to the Node, or wait for a CAPMOX or Cluster API feature?
 4. **Two-host sites.** Support them at all? etcd needs a third member somewhere; DCiaB has no witness role.
 5. **CAPV cluster modules by default.** They need DRS, which not every vSphere licence includes. Turn `NodeAntiAffinity` on for every vSphere site, or only when the config asks?
 6. **Where time sources live.** Production NTP reads `spec.bootstrap.ntp.upstream`. Move the time settings to their own block (`spec.time`) now, while the schema is `v1alpha1`?
 7. **Storage network priority.** A second NIC for Longhorn and iSCSI traffic in `r2`, or only when a site asks?
+8. **Proxmox clustering on the roadmap.** Move Proxmox clustering with shared storage from backlog to a Phase 2 gate (decision 7)?
+9. **NTP and DNS on the same addresses.** Run the spike in decision 9 before `dciab mgmt` takes over DNS, and if shared addresses don't hold up, prefer co-scheduling or separate NTP addresses?
 
 ## References
 
 - CAPMOX `v0.9.2` components (zones as IP pools, `allowedNodes` on `ProxmoxMachine`, clone `target` needs shared storage): https://github.com/ionos-cloud/cluster-api-provider-proxmox/releases/download/v0.9.2/infrastructure-components.yaml
-- CAPMOX issue #717, "implement CAPI failure domain contract for v1alpha2 zones": https://github.com/ionos-cloud/cluster-api-provider-proxmox/issues/717
+- CAPMOX issue #717, "implement CAPI failure domain contract for v1alpha2 zones" (status as of 2026-11-22, unverified): https://github.com/ionos-cloud/cluster-api-provider-proxmox/issues/717
+- CAPMOX PR #720, linked to #717 (status as of 2026-11-22, unverified): https://github.com/ionos-cloud/cluster-api-provider-proxmox/pull/720
 - Cluster API failure domains (introduced in v1alpha3): https://kubernetes.io/blog/2020/04/21/cluster-api-v1alpha3-delivers-new-features-and-an-improved-user-experience/
 - Cluster API metadata propagation (labels synced from Machines to Nodes): https://main.cluster-api.sigs.k8s.io/reference/api/metadata-propagation
-- CAPM3 failure domains: https://metal3io.netlify.app/capm3/failure_domain
-- CAPM3 label synchronization: https://metal3io.netlify.app/capm3/label_sync
+- CAPM3 failure domains: https://book.metal3.io/capm3/failure_domain
+- CAPM3 label synchronization: https://book.metal3.io/capm3/label_sync
 - CAPM3 `v1.14.2` components (`failureDomains`, `bondMode`, `bondLinks`, `vlanID`, `mtu`): https://github.com/metal3-io/cluster-api-provider-metal3/releases/download/v1.14.2/infrastructure-components.yaml
 - CAPV `v1.17.0` components (`VSphereFailureDomain`, `VSphereDeploymentZone`, `failureDomainSelector`, `NodeAntiAffinity` gate): https://github.com/kubernetes-sigs/cluster-api-provider-vsphere/releases/download/v1.17.0/infrastructure-components.yaml
-- vSphere multi-AZ with CAPV (zone types, tag categories, `autoConfigure` removed, CSI topology): https://docs.vmware.com/en/VMware-Tanzu-Kubernetes-Grid/2.5/using-tkg/workload-clusters-multi-az-vsphere.html
+- vSphere multi-AZ with CAPV (zone types, tag categories, `autoConfigure` removed, CSI topology; docs.vmware.com is being retired, so the CAPV CRDs above are the lasting source): https://docs.vmware.com/en/VMware-Tanzu-Kubernetes-Grid/2.5/using-tkg/workload-clusters-multi-az-vsphere.html
 - Node anti-affinity with vSphere cluster modules: https://apps-cloudmgmt.techzone.vmware.com/blog/tkg-node-anti-affinity
 - vSphere CPI with zones (`labels` region and zone): https://cloud-provider-vsphere.sigs.k8s.io/tutorials/deploying_cpi_with_multi_dc_vc_aka_zones
 - Labels the kubelet may set on its own Node (includes `topology.kubernetes.io/zone`): https://github.com/kubernetes/kubernetes/blob/master/staging/src/k8s.io/kubelet/pkg/apis/well_known_labels.go
 - Pod topology spread constraints: https://kubernetes.io/docs/concepts/scheduling-eviction/topology-spread-constraints
-- Longhorn replica scheduling (node, zone and disk anti-affinity; zone from `topology.kubernetes.io/zone`): https://longhorn.io/docs/1.10.0/nodes-and-volumes/nodes/scheduling
+- Longhorn replica scheduling (node, zone and disk anti-affinity; zone from `topology.kubernetes.io/zone`): https://longhorn.io/docs/1.13.0/nodes-and-volumes/nodes/scheduling
 - CloudNativePG scheduling (anti-affinity defaults): https://cloudnative-pg.io/docs/1.28/scheduling
 - OpenBao autopilot (no redundancy zones): https://openbao.org/docs/concepts/integrated-storage/autopilot/
 - Vault redundancy zones (Enterprise only, for contrast): https://developer.hashicorp.com/vault/docs/v1.21.x/enterprise/redundancy-zones
