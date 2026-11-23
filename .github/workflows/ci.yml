@@ -471,6 +471,54 @@ jobs:
           podman push --digestfile "$RUNNER_TEMP/digest" "$TAG" "docker://$dest"
           echo "published: $dest@$(cat "$RUNNER_TEMP/digest")  (pin it as bundle.lock images.pveAssistant)"
 
+  day0-chrony:
+    # DCiaB's Day 0 chrony image, built here and never at the site (its build installs chrony
+    # from the Rocky Linux repositories). Published on main, once per version; bundle.lock pins
+    # it as day0.images.chrony and the archive ships it like the other images.
+    name: Day 0 chrony image
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install pyyaml
+      - name: Build
+        id: build
+        run: echo "tag=$(images/day0-chrony/build.sh)" >> "$GITHUB_OUTPUT"
+      - name: chrony runs and the pin matches this recipe
+        env:
+          TAG: ${{ steps.build.outputs.tag }}
+        run: |
+          set -euo pipefail
+          podman run --rm --network none --entrypoint /usr/sbin/chronyd "$TAG" --version
+          pinned="$(python3 -c 'import yaml; print(yaml.safe_load(open("bundle.lock"))["day0"]["images"].get("chrony") or "")')"
+          id="$(images/day0-chrony/build.sh --recipe-id)"
+          tagged="${pinned%@*}"
+          if [[ "$tagged" != *"-$id" ]]; then
+            echo "::warning::bundle.lock day0.images.chrony (${pinned:-unpinned}) isn't built from this recipe ($id); pin the image this job publishes on main"
+          fi
+      - name: Publish (main only)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          TAG: ${{ steps.build.outputs.tag }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          version="$(podman run --rm --entrypoint rpm "$TAG" -q --qf '%{VERSION}-%{RELEASE}' chrony)"
+          dest="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/dciab-day0-chrony:$version-$(images/day0-chrony/build.sh --recipe-id)"
+          # Log in first: skopeo reads the same auth file, so the check below also sees a private package.
+          echo "$GH_TOKEN" | podman login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          # A version is published once: bundle.lock pins its digest, so it's never overwritten.
+          if skopeo inspect --raw "docker://$dest" >/dev/null 2>&1; then
+            echo "already published: $dest"; exit 0
+          fi
+          podman push --digestfile "$RUNNER_TEMP/digest" "$TAG" "docker://$dest"
+          echo "published: $dest@$(cat "$RUNNER_TEMP/digest")  (pin it as bundle.lock day0.images.chrony)"
+
   frozen-classes:
     # A class revision freezes when a DCiaB release tag first contains it; drafts may change (docs/VERSIONING.md).
     name: released ClusterClasses are unchanged
@@ -552,7 +600,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: shellcheck dciab hack/e2e/run.sh hack/check_frozen_classes.sh images/node/build.sh lib/steps/mgmt.sh lib/steps/services.sh lib/steps/capi-providers.sh images/node-bootc/build.sh images/node-bootc/rootfs/usr/libexec/dciab/growroot images/bootstrap-bootc/build.sh images/usb/build.sh addons/cilium/install.sh addons/longhorn/install.sh
+      - run: shellcheck dciab hack/e2e/run.sh hack/check_frozen_classes.sh images/node/build.sh lib/steps/mgmt.sh lib/steps/services.sh lib/steps/capi-providers.sh images/node-bootc/build.sh images/node-bootc/rootfs/usr/libexec/dciab/growroot images/bootstrap-bootc/build.sh images/usb/build.sh images/day0-chrony/build.sh addons/cilium/install.sh addons/longhorn/install.sh
 
   rocky10:
     # The validator must run on the bootstrap host with distro packages only.
