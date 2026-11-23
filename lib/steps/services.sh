@@ -26,7 +26,7 @@
 # bootstrap appliance; lib/dciab_state). ISOs are served from --isos,
 # default spec.bootstrap.workDisk.path/isos, else <state>/isos; per-host installer ISOs from <state>/host-isos.
 # DCIAB_CHRONY_IMAGE names a chrony image already in local storage instead of the pinned one
-# (building and testing DCiaB).
+# (building and testing DCiaB); the step warns when it is set.
 # Teardown: podman kube down <state>/services/pod.yaml.
 set -euo pipefail
 
@@ -83,6 +83,11 @@ IMAGE_LAYOUTS="" CHRONY_IMAGE="" CONF_DIR="" ISOS_DIR="" HOST_ISOS_DIR="" POD=""
 plan="$(helper env)" || exit $?
 eval "$plan"
 dns_only() { [[ "$MODE" == dns ]]; }
+chrony_local=""
+if [[ "$NTP" == 1 && -n "${DCIAB_CHRONY_IMAGE:-}" ]]; then
+  chrony_local=" (DCIAB_CHRONY_IMAGE: a local image, not the pinned one)"
+  echo "dciab services: warning: DCIAB_CHRONY_IMAGE is set; chrony runs $CHRONY_IMAGE instead of bundle.lock day0.images.chrony" >&2
+fi
 
 nic_name() {   # spec.bootstrap.interface is a NIC name or its MAC
   local want="$1" dev
@@ -111,7 +116,7 @@ if (( print )); then
   for ip in $SERVICE_IPS; do echo "  address:     $ip/$PREFIX (DNS$([[ "$NTP" == 1 ]] && echo ', NTP'))"; done
   dns_only || echo "  HTTP:        http://$BOOTSTRAP_ADDRESS:80 (ISOs from $ISOS_DIR, per-host ISOs from $HOST_ISOS_DIR)"
   echo "  images:      $IMAGES${payload:+ (from $payload)}"
-  [[ "$NTP" == 1 ]] && echo "  chrony:      $CHRONY_IMAGE"
+  [[ "$NTP" == 1 ]] && echo "  chrony:      $CHRONY_IMAGE$chrony_local"
   if [[ $EUID -eq 0 ]] && command -v podman >/dev/null; then
     if applied && pod_running; then echo "  pod $POD:  running with this config (no change)"
     else echo "  pod $POD:  would be (re)created"; fi

@@ -354,7 +354,8 @@ def test_print_shows_the_plan_and_changes_nothing(tmp_path):
     assert "http://10.30.110.5:80" in r.stdout
     assert "--- " + str(tmp_path / ".dciab/state/services/coredns/Corefile") in r.stdout
     assert "6 IN PTR pve01.dc3.example.com." in r.stdout
-    assert f"chrony:      {CHRONY_LOCAL}" in r.stdout
+    assert f"chrony:      {CHRONY_LOCAL} (DCIAB_CHRONY_IMAGE: a local image, not the pinned one)" in r.stdout
+    assert "warning: DCIAB_CHRONY_IMAGE is set" in r.stderr
     assert not (tmp_path / ".dciab").exists()
 
 
@@ -362,6 +363,7 @@ def test_print_uses_the_pinned_chrony_image_or_refuses_an_unpinned_one(tmp_path)
     cfg = bare_site(tmp_path)
     r = run(cfg, "--print", env_extra={"DCIAB_CHRONY_IMAGE": None})
     pinned = yaml.safe_load((ROOT / "bundle.lock").read_text())["day0"]["images"].get("chrony") or ""
+    assert "DCIAB_CHRONY_IMAGE" not in r.stderr
     if "@sha256:" in pinned:
         assert r.returncode == 0, r.stderr
         assert f"chrony:      {pinned}" in r.stdout
