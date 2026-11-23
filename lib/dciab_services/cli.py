@@ -66,20 +66,37 @@ class Paths:
         self.isos = Path(os.path.abspath(isos)) if isos else (Path(work) / "isos" if work else state / "isos")
 
 
+def chrony_image(doc: dict, images: Dict[str, str]) -> Optional[str]:
+    """DCiaB's chrony image, or None when the site has its own NTP: bundle.lock
+    day0.images.chrony, built from images/day0-chrony and published by CI, and shipped in the
+    archive like the other images. It is never built here. DCIAB_CHRONY_IMAGE names an image
+    already in local storage instead (building and testing DCiaB)."""
+    if not render.chrony_confs(doc):
+        return None
+    local = os.environ.get("DCIAB_CHRONY_IMAGE")
+    if local:
+        return local
+    ref = images.get("chrony") or ""
+    if "@sha256:" not in ref:
+        raise render.ServicesError("bundle.lock day0.images.chrony isn't pinned by digest yet "
+                                   "(CI builds it from images/day0-chrony and publishes it on main)")
+    return ref
+
+
 def _inputs(root: Path, doc: dict):
     import yaml
     lock = yaml.safe_load((root / "bundle.lock").read_text())
     images = dict(lock["day0"]["images"])
-    containerfile = (root / "images" / "day0-chrony" / "Containerfile").read_text()
-    chrony = render.chrony_image(containerfile, images["chronyBase"]) if render.chrony_confs(doc) else None
-    return images, chrony
+    return images, chrony_image(doc, images)
 
 
 def pod_images(doc: dict, images: Dict[str, str]) -> List[str]:
-    """The pinned images the step needs: the pod's, and chrony's base (DCiaB builds its image locally)."""
+    """The pinned images the step needs, chrony's among them when the site needs NTP (unless
+    DCIAB_CHRONY_IMAGE names a local one)."""
     if render.dns_only(doc):
         return [images["coredns"]]
-    return [images["coredns"], images["caddy"]] + ([images["chronyBase"]] if render.chrony_confs(doc) else [])
+    chrony = render.chrony_confs(doc) and not os.environ.get("DCIAB_CHRONY_IMAGE")
+    return [images["coredns"], images["caddy"]] + ([images["chrony"]] if chrony else [])
 
 
 def layout_names(payload: Path, refs: List[str]) -> List[str]:
@@ -198,7 +215,6 @@ def main(argv: Optional[List[str]] = None) -> int:
             "IMAGES": " ".join(refs),
             "IMAGE_LAYOUTS": " ".join(layouts),
             "CHRONY_IMAGE": chrony or "",
-            "CHRONY_BASE": images["chronyBase"],
             "CONF_DIR": str(paths.conf),
             "ISOS_DIR": str(paths.isos),
             "HOST_ISOS_DIR": str(paths.host_isos),

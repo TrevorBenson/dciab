@@ -1,6 +1,6 @@
 """Render the Day 0 services' configuration from a validated site config.
 
-Pure functions: they read the config, bundle.lock and the chrony Containerfile, and
+Pure functions: they read the config and bundle.lock's images, and
 return file contents. Nothing here touches the host. See ADR 0001 for what each service
 must serve:
 
@@ -199,12 +199,6 @@ http://{addr}:80 {{
 \t}}
 }}
 """
-
-
-def chrony_image(containerfile: str, base: str) -> str:
-    """Local tag of DCiaB's chrony image: changes whenever its recipe or base changes."""
-    digest = hashlib.sha256((base + "\n" + containerfile).encode()).hexdigest()[:12]
-    return f"localhost/dciab/day0-chrony:{digest}"
 
 
 def pod(doc: dict, images: Dict[str, str], chrony: Optional[str], conf_dir: str,

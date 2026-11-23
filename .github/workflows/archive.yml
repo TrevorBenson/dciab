@@ -58,7 +58,8 @@ jobs:
                 --extra "$RUNNER_TEMP/vsphere-cpi.yaml"
                 --kubeadm-images "$RUNNER_TEMP/kubeadm.txt")
           for ref in "${longhorn[@]}"; do args+=(--image "$ref=longhorn chart values"); done
-          python3 build/inventory.py "${args[@]}" --format yaml > images.yaml
+          # --require-built: the images DCiaB builds itself (the chrony image, ...) must be published and pinned.
+          python3 build/inventory.py "${args[@]}" --require-built --format yaml > images.yaml
           out="$RUNNER_TEMP/payload"
           python3 build/archive.py binaries --out "$out"
           python3 build/archive.py images --inventory images.yaml --out "$out" --oras "$out/bin/oras"

@@ -28,12 +28,13 @@ $ python3 build/inventory.py --manifests "$crds" --extra cilium.yaml --kubeadm-i
 
 The sources are:
 - **`bundle.lock`:** every image it pins by digest: kube-vip, the kind node image, the Day 0 services, bootc-image-builder, and so on.
+- **Images DCiaB builds itself,** such as the Day 0 chrony image (`images/day0-chrony/build.sh`). CI builds and publishes each on `main`, once per version, and `bundle.lock` pins its digest (`day0.images.chrony`). From then on it is listed like any other pinned image. Until it is pinned the inventory leaves it out with a warning, and `--require-built` (used by the full archive build) refuses.
 - **The Cluster API, provider and cert-manager manifests**, rendered with the provider variables DCiaB installs them with.
 - **Rendered add-ons:** Cilium and Longhorn. Longhorn's manager starts most of its images itself, so `addons/longhorn/install.sh <config> --images` lists them from the chart's values and CI passes each as `--image`.
 - **The Kubernetes control plane images** kubeadm pulls for the bundle's version.
 
 Not covered yet:
-- **Images DCiaB builds itself:** the chrony image from `images/day0-chrony` and the bootc node image. The archive build makes these instead of pulling them.
+- **The bootc node image,** which DCiaB builds itself.
 - **Images of charts other than Cilium and Longhorn**, such as MGMT's other services (Metal3, PowerDNS, Kea), until DCiaB installs them.
 
 A manifest that needs a provider variable `bundle.lock` doesn't set is an error, and so is a manifests folder with nothing in it.
@@ -82,7 +83,6 @@ $ COSIGN_PASSWORD=... python3 build/package.py package --payload payload --out d
 dciab-<VERSION>.tar
   dciab-<VERSION>/
     dciab  lib/  schema/  charts/  addons/  docs/  examples/  hack/ (the scripts steps run)
-    images/day0-chrony/ (dciab services builds it)
     README.md  VERSION  bundle.lock
     payload/     the payload above, plus sboms/ and SHA256SUMS.sig
     MANIFEST     sha256 of every other file (sha256sum format)
@@ -93,7 +93,7 @@ dciab-<VERSION>.tar
 
 **Reproducible.** Entries are sorted, owned by 0:0 with fixed modes (755 or 644) and dated `SOURCE_DATE_EPOCH`, or the last commit's time. The same inputs give the same tar byte for byte, except the signatures: ECDSA signatures differ on every run. The tar isn't compressed, since images already are; `--zstd` writes `.tar.zst`. `package` refuses a payload that doesn't match its `SHA256SUMS`.
 
-**What ships.** Only the paths in `SOURCES` in `package.py`, an allowlist of what the shipped `dciab` reads at run time plus the docs and examples. Inside them, caches, byte code, dot files and `tests` are skipped. A test checks that every path the CLI and its steps open is in the list. Everything else stays out: `handoff/`, `build/`, `tests/`, and the image recipes other than `images/day0-chrony`.
+**What ships.** Only the paths in `SOURCES` in `package.py`, an allowlist of what the shipped `dciab` reads at run time plus the docs and examples. Inside them, caches, byte code, dot files and `tests` are skipped. A test checks that every path the CLI and its steps open is in the list. Everything else stays out: `handoff/`, `build/`, `tests/`, and `images/` (build recipes; CI builds those images).
 
 **No secrets.** The build fails if a file under those paths looks like a site secret: anything in a `secrets/` folder, a `*.key`, `*.pw`, `*.env`, `.env`, `*.age`, `kubeconfig` or `*.kubeconfig` file, or a file holding a PEM private key, an age identity or a kubeconfig client key. Public certificates still ship. Keep a site's `dciab.yaml` and `secrets/` outside these paths, for example at the top of the checkout.
 

@@ -20,6 +20,10 @@ from bundle.lock's imageDigests. One still without a digest is listed with
 "digest: resolve"; build/archive.py digests prints the imageDigests lines to pin, and the
 archive build refuses to pull it until it is pinned. The site registry serves each image
 by digest and by its tag.
+
+Images DCiaB builds itself (BUILT: the chrony and pve-assistant images) are listed from
+their bundle.lock pins, like any other. CI publishes them; until one is pinned
+--require-built refuses, so a full archive never ships without them.
 """
 
 from __future__ import annotations
@@ -41,8 +45,25 @@ DIGEST = re.compile(r"@sha256:[0-9a-f]{64}$")
 PINNED_REF = re.compile(r"^[a-z0-9.-]+(:[0-9]+)?/[^\s@]+@sha256:[0-9a-f]{64}$")
 
 
+# Images DCiaB builds itself: CI publishes each, then bundle.lock pins it by digest. Until
+# then the inventory can't list it; --require-built makes that an error (the full archive).
+BUILT = ("images.pveAssistant", "day0.images.chrony")
+
+
 class InventoryError(Exception):
     pass
+
+
+def unpublished(lock: dict) -> List[str]:
+    """The BUILT entries bundle.lock doesn't pin by digest yet."""
+    out = []
+    for path in BUILT:
+        node = lock
+        for key in path.split("."):
+            node = (node or {}).get(key) if isinstance(node, dict) else None
+        if not (isinstance(node, str) and PINNED_REF.match(node)):
+            out.append(path)
+    return out
 
 
 def pinned_in_lock(node, path: str = "") -> Iterable[tuple]:
@@ -148,9 +169,19 @@ def main(argv=None) -> int:
     p.add_argument("--image", action="append", default=[], metavar="REF[=SOURCE]",
                    help="one more image, e.g. the kind node image the bootstrap cluster boots")
     p.add_argument("--format", choices=["text", "yaml"], default="text")
+    p.add_argument("--require-built", action="store_true",
+                   help="refuse while an image DCiaB builds itself isn't pinned yet (the full archive)")
     args = p.parse_args(argv)
 
     lock = yaml.safe_load((ROOT / "bundle.lock").read_text())
+    missing = unpublished(lock)
+    if missing and args.require_built:
+        print(f"inventory: bundle.lock {', '.join(missing)} not pinned by digest yet: CI publishes "
+              "them on main (images/); pin the digests it prints", file=sys.stderr)
+        return 1
+    for path in missing:
+        print(f"inventory: bundle.lock {path} isn't pinned yet, so it isn't listed "
+              "(a full archive needs it: --require-built)", file=sys.stderr)
     try:
         found = inventory(lock, args.manifests, args.extra, args.kubeadm_images, args.image)
     except InventoryError as exc:

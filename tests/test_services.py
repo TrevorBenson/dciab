@@ -13,7 +13,7 @@ from conftest import ROOT, load_example
 from dciab_services import cli, probe, render
 
 IMAGES = {"coredns": "example/coredns@sha256:aa", "caddy": "example/caddy@sha256:bb",
-          "chronyBase": "example/rocky@sha256:cc"}
+          "chronyBase": "example/rocky@sha256:cc", "chrony": "example/day0-chrony:4.6-x@sha256:dd"}
 
 
 def bare():
@@ -61,12 +61,16 @@ def test_dns_only_zone_has_the_registry_name():
                              "bootstrap IN A 10.30.110.5", "registry IN A 10.30.110.5"]
 
 
-def test_full_mode_needs_coredns_caddy_and_chrony_base():
-    assert cli.pod_images(bare(), IMAGES) == [IMAGES["coredns"], IMAGES["caddy"], IMAGES["chronyBase"]]
+def test_full_mode_needs_coredns_caddy_and_the_pinned_chrony_image(monkeypatch):
+    monkeypatch.delenv("DCIAB_CHRONY_IMAGE", raising=False)
+    assert cli.pod_images(bare(), IMAGES) == [IMAGES["coredns"], IMAGES["caddy"], IMAGES["chrony"]]
     no_ntp = bare()
     del no_ntp["spec"]["bootstrap"]["ntp"]
     assert cli.pod_images(no_ntp, IMAGES) == [IMAGES["coredns"], IMAGES["caddy"]]
     assert cli.pod_images(existing(), IMAGES) == [IMAGES["coredns"]]
+    # A local image (building and testing DCiaB) is neither loaded nor pulled.
+    monkeypatch.setenv("DCIAB_CHRONY_IMAGE", "localhost/dciab/day0-chrony:test")
+    assert cli.pod_images(bare(), IMAGES) == [IMAGES["coredns"], IMAGES["caddy"]]
 
 
 def test_layout_names_come_from_the_payload(tmp_path):
@@ -243,12 +247,30 @@ def test_pod_uses_pinned_images_and_host_network():
     assert "&id" not in files_for(bare())["pod.yaml"]
 
 
-def test_chrony_image_tag_follows_recipe_and_base():
-    a = render.chrony_image("FROM x", "base@sha256:1")
-    assert a.startswith("localhost/dciab/day0-chrony:")
-    assert a == render.chrony_image("FROM x", "base@sha256:1")
-    assert a != render.chrony_image("FROM y", "base@sha256:1")
-    assert a != render.chrony_image("FROM x", "base@sha256:2")
+def test_chrony_image_is_the_pinned_one_and_never_built(monkeypatch):
+    monkeypatch.delenv("DCIAB_CHRONY_IMAGE", raising=False)
+    assert cli.chrony_image(bare(), IMAGES) == IMAGES["chrony"]
+    assert cli.chrony_image(existing(), IMAGES) is None
+    for unpinned in ("", "example/day0-chrony:4.6-x"):
+        with pytest.raises(render.ServicesError, match="day0.images.chrony isn't pinned by digest"):
+            cli.chrony_image(bare(), {**IMAGES, "chrony": unpinned})
+    monkeypatch.setenv("DCIAB_CHRONY_IMAGE", "localhost/dciab/day0-chrony:test")
+    assert cli.chrony_image(bare(), {**IMAGES, "chrony": ""}) == "localhost/dciab/day0-chrony:test"
+
+
+def test_services_step_never_builds_or_pulls_chrony_from_the_internet():
+    """The chrony image is built at archive build time (images/day0-chrony, CI); the step only
+    loads the pinned image like the others (issue #67)."""
+    step = (ROOT / "lib" / "steps" / "services.sh").read_text()
+    code = "\n".join(line for line in step.splitlines() if not line.lstrip().startswith("#"))
+    for banned in ("podman build", "buildah", "microdnf", "dnf ", "images/day0-chrony", "CHRONY_BASE"):
+        assert banned not in code, banned
+    # The only pull is the generic one for the pinned images, when there is no payload.
+    assert code.count("podman pull") == 2
+    assert 'podman pull -q "oci:$payload/images:' in code
+    assert "dciab services doesn't build it" in code
+    helper = (ROOT / "lib" / "dciab_services" / "cli.py").read_text()
+    assert "chronyBase" not in helper and "Containerfile" not in helper
 
 
 def test_rendering_is_idempotent_and_changes_follow_config(tmp_path):
@@ -314,8 +336,12 @@ def bare_site(tmp_path):
     return cfg
 
 
+CHRONY_LOCAL = "localhost/dciab/day0-chrony:test"
+
+
 def run(*args, env_extra=None):
-    env = {**os.environ, "DCIAB_PVE_TOKEN": "x", **(env_extra or {})}
+    env = {**os.environ, "DCIAB_PVE_TOKEN": "x", "DCIAB_CHRONY_IMAGE": CHRONY_LOCAL, **(env_extra or {})}
+    env = {k: v for k, v in env.items() if v is not None}
     return subprocess.run([str(ROOT / "dciab"), "services", *map(str, args)],
                           capture_output=True, text=True, env=env)
 
@@ -328,7 +354,23 @@ def test_print_shows_the_plan_and_changes_nothing(tmp_path):
     assert "http://10.30.110.5:80" in r.stdout
     assert "--- " + str(tmp_path / ".dciab/state/services/coredns/Corefile") in r.stdout
     assert "6 IN PTR pve01.dc3.example.com." in r.stdout
+    assert f"chrony:      {CHRONY_LOCAL} (DCIAB_CHRONY_IMAGE: a local image, not the pinned one)" in r.stdout
+    assert "warning: DCIAB_CHRONY_IMAGE is set" in r.stderr
     assert not (tmp_path / ".dciab").exists()
+
+
+def test_print_uses_the_pinned_chrony_image_or_refuses_an_unpinned_one(tmp_path):
+    cfg = bare_site(tmp_path)
+    r = run(cfg, "--print", env_extra={"DCIAB_CHRONY_IMAGE": None})
+    pinned = yaml.safe_load((ROOT / "bundle.lock").read_text())["day0"]["images"].get("chrony") or ""
+    assert "DCIAB_CHRONY_IMAGE" not in r.stderr
+    if "@sha256:" in pinned:
+        assert r.returncode == 0, r.stderr
+        assert f"chrony:      {pinned}" in r.stdout
+        assert pinned in r.stdout.split("images:", 1)[1].splitlines()[0]
+    else:
+        assert r.returncode == 1
+        assert "day0.images.chrony isn't pinned by digest yet" in r.stderr
 
 
 @pytest.mark.skipif(os.geteuid() == 0, reason="runs as root")
@@ -398,3 +440,14 @@ def test_chrony_image_is_built_by_ci_from_the_pinned_base():
     assert "images/day0-chrony/build.sh" in job and "packages: write" in job
     assert "github.ref == 'refs/heads/main'" in job
     assert job.index("podman login") < job.index("skopeo inspect") < job.index("podman push")
+
+
+def test_pinned_chrony_image_is_built_from_this_recipe():
+    """A recipe or base change needs the image CI publishes on main pinned again."""
+    pinned = yaml.safe_load((ROOT / "bundle.lock").read_text())["day0"]["images"]["chrony"]
+    assert "@sha256:" in pinned
+    r = subprocess.run([str(ROOT / "images" / "day0-chrony" / "build.sh"), "--recipe-id"],
+                       capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
+    assert pinned.split("@", 1)[0].endswith("-" + r.stdout.strip()), \
+        "images/day0-chrony changed: pin the image CI publishes on main as day0.images.chrony"
