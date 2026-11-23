@@ -155,20 +155,24 @@ class Bmc:
         _, slot = self.cd_slot()
         return dict(self.state(), attached=bool(slot.get("Inserted")) and slot.get("Image") == image)
 
-    def os_boot_entries(self) -> List[str]:
+    def os_boot_entries(self) -> Optional[List[str]]:
         """Names of UEFI boot options that load an installed Proxmox VE (its loader lives in
-        \\EFI\\proxmox). [] when the BMC lists none or offers no BootOptions. Reads only."""
-        system = self.system()
-        coll = system.get("Boot", {}).get("BootOptions", {}).get("@odata.id")
+        \\EFI\\proxmox); [] when none does. None when the BMC offers no BootOptions. Reads only.
+        Raises RedfishError when the list can't be read in full or a member makes no sense:
+        the caller must then assume an OS may be there."""
+        coll = (self.system().get("Boot") or {}).get("BootOptions")
         if not coll:
-            return []
-        found = []
-        for member in self.get(coll).get("Members", []):
-            opt = self.get(member["@odata.id"])
-            text = " ".join(str(opt.get(k) or "") for k in ("DisplayName", "UefiDevicePath")).lower()
-            if "proxmox" in text:
-                found.append(str(opt.get("DisplayName") or opt.get("Id") or member["@odata.id"]))
-        return found
+            return None
+        try:
+            found = []
+            for member in self.get(coll["@odata.id"]).get("Members", []):
+                opt = self.get(member["@odata.id"])
+                text = " ".join(str(opt.get(k) or "") for k in ("DisplayName", "UefiDevicePath")).lower()
+                if "proxmox" in text:
+                    found.append(str(opt.get("DisplayName") or opt.get("Id") or member["@odata.id"]))
+            return found
+        except (KeyError, TypeError, AttributeError) as exc:
+            raise RedfishError(f"{self.client.where}: a boot option makes no sense ({type(exc).__name__}: {exc})") from None
 
     def disarm(self) -> List[str]:
         """Best effort: eject the CD and clear the boot override, so the server doesn't boot the

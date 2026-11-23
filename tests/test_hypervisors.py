@@ -269,7 +269,7 @@ class FakeBMC:
     with insert/eject as actions or as PATCH. Records every call."""
 
     def __init__(self, cert, media="manager", actions=True, power="On", inserted=None, boot_options=None,
-                 reset_status=204):
+                 reset_status=204, overrides=None):
         self.calls = []
         self.power = power
         self.slot = {"Inserted": inserted is not None, "Image": inserted}
@@ -304,6 +304,7 @@ class FakeBMC:
             gets[f"{SYS}/BootOptions/{i}"] = (lambda o=opt: o)
         gets[SYS + "/BootOptions"] = lambda: {"Members": [{"@odata.id": f"{SYS}/BootOptions/{i}"}
                                                           for i in range(len(boot_options or []))]}
+        overrides = overrides or {}   # path -> a body, or an HTTP status to answer instead
 
         class Handler(BaseHTTPRequestHandler):
             def log_message(self, *a):
@@ -324,6 +325,10 @@ class FakeBMC:
             def do_GET(self):
                 if self.headers.get("Authorization") != "Basic ZGNpYWI6cHc=":   # dciab:pw
                     return self._send(401)
+                if isinstance(overrides.get(self.path), int):
+                    return self._send(overrides[self.path])
+                if self.path in overrides:
+                    return self._send(200, overrides[self.path])
                 if self.path in gets:
                     return self._send(200, gets[self.path]())
                 self._send(404)
@@ -688,3 +693,27 @@ def test_reinstall_must_name_a_selected_host(tmp_path, monkeypatch, capsys):
     cfg.write_text(yaml.safe_dump(bare(), sort_keys=False))
     assert cli.main(["--root", str(ROOT), "--print", "--host", "pve02", "--reinstall", "pve01", str(cfg)]) == 2
     assert "--reinstall pve01" in capsys.readouterr().err
+
+
+PROXMOX_OPT = {"Id": "0002", "DisplayName": "proxmox", "UefiDevicePath": "HD(1,GPT)/\\EFI\\proxmox\\shimx64.efi"}
+PXE_OPT = {"Id": "0001", "DisplayName": "UEFI PXEv4"}
+
+
+@pytest.mark.parametrize("overrides", [
+    {SYS + "/BootOptions": 500},                                          # the list can't be read
+    {SYS + "/BootOptions/1": 500},                                        # a member fails after a match
+    {SYS + "/BootOptions": {"Members": [{"href": "x"}]}},                 # a member without @odata.id
+    {SYS + "/BootOptions": {"Members": ["x"]}},                           # a member that isn't an object
+    {SYS + "/BootOptions/0": ["not", "an", "object"]},                    # a body that isn't an object
+], ids=["list-error", "member-error-after-match", "no-odata-id", "member-not-object", "body-not-object"])
+def test_unreadable_boot_options_hold_the_host(fake_bmc, tmp_path, overrides):
+    f = fake_bmc(power="Off", boot_options=[PROXMOX_OPT, PXE_OPT], overrides=overrides)
+    failed, held, _, out = guard(f, tmp_path)
+    assert (failed, held) == ([], ["pve01"]) and "boot options couldn't be read" in out
+    assert not [c for c in f.calls if c[0] in CHANGES]
+
+
+def test_no_boot_options_offered_installs_with_a_note(fake_bmc, tmp_path):
+    f = fake_bmc(power="Off")
+    failed, held, _, out = guard(f, tmp_path)
+    assert (failed, held) == ([], []) and "lists no boot options" in out and f.power == "On"

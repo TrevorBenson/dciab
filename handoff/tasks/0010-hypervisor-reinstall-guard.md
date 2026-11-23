@@ -34,6 +34,7 @@ Read first:
    - `sudo ./dciab hypervisors dciab.yaml --state ~/.dciab/0010/state --print`. Pass: the host's lines include `install recorded (installed, ...): not reset without --reinstall <host>`.
    - `sudo ./dciab hypervisors dciab.yaml --state ~/.dciab/0010/state`. Pass: `media` prints `install recorded (installed, ...) but <address>:8006 doesn't answer; not reinstalling`, `wait` skips the host, and the run exits 1 (`echo $?`).
    - Read-only: compare the BMC's CD slot `Image` with `http://<bootstrap.address>/host-isos/<host>.iso`. Record whether they match exactly; the in-progress check depends on it.
+   - Read-only: GET the system's `Boot.BootOptions` collection and each member. Record whether the BMC offers it, each member's `DisplayName` and `UefiDevicePath`, and whether one names `proxmox`. No change, no Stop and ask.
    - Read the BMC again. Pass: still `Off`; virtual media and the boot override are unchanged from before the run; the BMC's event or audit log shows no reset or media change during the run. Attach the before and after Redfish `Boot` objects and the slot's `Image`/`Inserted`.
 4. **`--reinstall` is what it takes.**
    - `sudo ./dciab hypervisors dciab.yaml --state ~/.dciab/0010/state --host <host> --reinstall <host> --print`. Pass: the host's lines include `--reinstall: reinstalled whatever its state`. This changes nothing.
@@ -54,6 +55,7 @@ Read first:
 - pass/fail per step, with the commit and how long each step took
 - the install record before and after step 3, and the exit code of step 3
 - whether the BMC's slot `Image` matched the host-ISO URL exactly
+- whether the BMC offers `BootOptions`, the members' `DisplayName`/`UefiDevicePath`, and whether one names `proxmox`
 - the BMC state (power, `Boot`, virtual media) before and after step 3, and any BMC log entries during it
 - step 4's `--print` output, and whether the real run happened (and its output) or Trevor declined it
 - any message that was unclear, or any BMC behaviour that differed from what the steps expect

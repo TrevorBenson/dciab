@@ -197,9 +197,12 @@ def media(hosts: List[dict], doc: dict, installs: Path, reinstall: List[str], bm
                 try:
                     entries = bmc.os_boot_entries()
                 except RedfishError as exc:
-                    entries = []
-                    log(f"  {name}: couldn't read the BMC's boot options ({exc}); going by the ports only")
-                if entries:
+                    # Fail closed: one unreadable option could be the installed OS.
+                    hold(name, f"no install recorded, but the BMC's boot options couldn't be read ({exc})")
+                    continue
+                if entries is None:
+                    log(f"  {name}: the BMC lists no boot options; going by the record and the ports only")
+                elif entries:
                     hold(name, f"no install recorded, but the firmware has a boot entry for an installed "
                                f"Proxmox VE ({', '.join(entries)})")
                     continue
@@ -226,6 +229,7 @@ def media(hosts: List[dict], doc: dict, installs: Path, reinstall: List[str], bm
                 # Disarm, so the next power-on doesn't start the installer unasked; then hold the host.
                 for line in bmc.disarm():
                     log(f"  {name}: {line}")
+                log(f"  {name}: the reset may have happened anyway; check the server's console through its BMC")
                 try:
                     write_install(installs, name, outcome="reset-failed")
                 except OSError as exc:
@@ -452,8 +456,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         else:
             write_install(installs, h["name"], outcome="installed")
     if held:
-        print(f"dciab hypervisors: {', '.join(held)}: installed before but not answering; "
-              "not reinstalled (see above)", file=sys.stderr)
+        print(f"dciab hypervisors: {', '.join(held)}: held, not reinstalled; each needs the operator "
+              "(see above)", file=sys.stderr)
     if failed or held:
         return 1
     print("installed: " + ", ".join(h["name"] for h in hosts))
