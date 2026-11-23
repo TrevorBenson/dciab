@@ -266,14 +266,16 @@ def main(argv: Optional[List[str]] = None) -> int:
     if not config.is_file():
         print(f"dciab seed: no such config: {config}", file=sys.stderr)
         return 2
-    payload = Path(args.payload).resolve() if args.payload else root / "payload"
-    state = Path(args.state).resolve() if args.state else default_state(config)
-    state.mkdir(parents=True, exist_ok=True)
-    state.chmod(0o700)
+    # Before the state folder is made or migrated: run as another user, seed would leave it
+    # owned by that user.
     if os.geteuid() != 0:
         print("dciab seed: run as root: the registry binds port 443 and kind runs on rootful podman",
               file=sys.stderr)
         return 1
+    payload = Path(args.payload).resolve() if args.payload else root / "payload"
+    state = Path(args.state).resolve() if args.state else default_state(config)
+    state.mkdir(parents=True, exist_ok=True)
+    state.chmod(0o700)
     # One seed per host: the registry container and the kind cluster have fixed names.
     # O_NOFOLLOW: a planted symlink can't make root truncate another file.
     lock_dir = Path("/run/lock") if os.access("/run/lock", os.W_OK) else state
