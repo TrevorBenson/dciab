@@ -19,7 +19,13 @@
 #               namespace cluster-mgmt, on the bootstrap cluster
 #   control-plane
 #               wait for the first control plane node; save <state>/mgmt.kubeconfig
-#   cilium      addons/cilium/install.sh; waits until every node is Ready
+#   cpi         vSphere only: addons/vsphere-cpi/install.sh, the cloud provider the vSphere
+#               class's kubelets wait for (cloud-provider: external). Until it initializes a
+#               node, the node keeps the uninitialized taint, nothing else schedules there, and
+#               Cluster API can't match it to its Machine. It needs the network, so it starts
+#               working during the cilium step. Other platforms skip it
+#   cilium      addons/cilium/install.sh; waits until every node is Ready (on vSphere, also
+#               until the CPI has initialized every node)
 #   providers   cert-manager, Cluster API and the providers on MGMT
 #   move        clusterctl move: every CAPI object, MGMT's own Cluster and the
 #               ClusterClasses, from the bootstrap cluster to MGMT
@@ -33,7 +39,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-STEPS=(preflight values cluster control-plane cilium providers move adopt longhorn)
+STEPS=(preflight values cluster control-plane cpi cilium providers move adopt longhorn)
 NS=cluster-mgmt
 CLASS_NS=dciab-clusterclasses
 
@@ -161,8 +167,20 @@ else
 fi
 finish_if control-plane
 
+step cpi
+if [[ "$platform" == vsphere ]]; then
+  # The chart comes from $DCIAB_PAYLOAD/charts when DCIAB_PAYLOAD is set.
+  "$ROOT/addons/vsphere-cpi/install.sh" "$config" "$mgmt_kubeconfig"
+else
+  echo "not needed on $platform"
+fi
+finish_if cpi
+
 step cilium
 "$ROOT/addons/cilium/install.sh" "$values" "$mgmt_kubeconfig"
+if [[ "$platform" == vsphere ]]; then
+  "$ROOT/addons/vsphere-cpi/install.sh" "$config" --wait "$mgmt_kubeconfig"
+fi
 finish_if cilium
 
 step providers
