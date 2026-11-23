@@ -60,6 +60,8 @@ jobs:
           for values in charts/capi-cluster/ci/*-values.yaml; do
             helm lint charts/capi-cluster --values "$values"
           done
+      - name: Rendered objects carry helm.sh/resource-policy=keep
+        run: python -m pytest -v tests/test_clusterclasses.py tests/test_cluster_values.py -k kept_by_helm
       - name: Render and check every CI cluster against the classes
         run: |
           set -euo pipefail

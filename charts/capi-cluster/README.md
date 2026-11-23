@@ -14,6 +14,25 @@ Proxmox clusters need no pool object: CAPMOX allocates node addresses from the c
 
 Values are validated by `values.schema.json`: every site-specific value is required and nothing has a default. [ci/](ci) has a complete values file for each class.
 
+## Kept on uninstall
+
+Every object the chart renders carries `helm.sh/resource-policy: keep`. Deleting the `Cluster` deletes its machines, and deleting a pool leaves the cluster without node addresses. So `helm uninstall`, or an upgrade that stops rendering an object, leaves it in place.
+
+They also carry `argocd.argoproj.io/sync-options: Prune=false,Delete=false`. Argo CD ignores Helm's annotation; this one does the same for Argo CD once it adopts these objects. It does nothing without Argo CD.
+
+To really delete a cluster, delete the `Cluster` and wait: CAPI deletes its machines first. Then uninstall the release and delete the pools:
+
+```console
+$ kubectl -n <namespace> delete cluster <cluster> --wait
+$ helm uninstall <release> -n <namespace>
+$ kubectl -n <namespace> delete inclusterippools.ipam.cluster.x-k8s.io -l cluster.x-k8s.io/cluster-name=<cluster>          # vSphere
+$ kubectl -n <namespace> delete ippools.ipam.metal3.io,metal3datatemplates -l cluster.x-k8s.io/cluster-name=<cluster>     # Metal3
+```
+
+A self-managed cluster (MGMT) runs the controllers that delete it. `clusterctl move` it to a bootstrap cluster first, or expect leftovers.
+
+Kept objects keep Helm's `meta.helm.sh/release-*` annotations. Installing again with the same release name and namespace adopts them; another release name fails with "invalid ownership metadata".
+
 ## Expected around it
 
 - A Secret `<cluster>-vsphere-credentials` (vSphere) or `<cluster>-proxmox-credentials` (Proxmox) in the cluster namespace. DCiaB's bootstrap creates it (for MGMT, `dciab mgmt`); keeping it in sync afterwards with External Secrets is planned.

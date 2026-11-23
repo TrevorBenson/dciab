@@ -16,6 +16,22 @@ Editing a ClusterClass rolls every cluster that uses it, so a class never change
 
 There has been no release yet, so `r1` is a draft.
 
+## Kept on uninstall
+
+Every ClusterClass and template carries `helm.sh/resource-policy: keep` and `argocd.argoproj.io/sync-options: Prune=false,Delete=false`, set in the class files. Clusters that use a deleted class stop reconciling, so `helm uninstall`, dropping a revision from `revisions`, or an Argo CD prune leaves its objects in place. Argo CD ignores Helm's annotation, hence the second one; it does nothing without Argo CD. Because the chart serves class files as they are, both annotations are part of a revision and freeze with it.
+
+To really delete a revision:
+
+1. Check that no `Cluster` still uses it:
+
+   ```console
+   $ kubectl get clusters -A -o jsonpath='{range .items[*]}{.metadata.namespace}/{.metadata.name} {.spec.topology.classRef.name}{"\n"}{end}'
+   ```
+
+2. Drop it from `revisions` and upgrade the release.
+3. Delete its ClusterClasses (`dciab-<provider>-rN`) first: CAPI refuses to delete a class a Cluster still references, which catches a missed one.
+4. Then delete its templates (every object named `dciab-<provider>-rN*`) in the class namespace.
+
 ## What every class sets up
 
 - **No kube-proxy**: kubeadm skips its kube-proxy addon. Cilium replaces it and is installed after the control plane is up ([addons/cilium](../../addons/cilium/README.md)); nodes stay `NotReady` until then.

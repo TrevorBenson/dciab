@@ -120,7 +120,7 @@ Keep everything outside the repo in `~/.dciab/0003/`: create it first with `mkdi
       - the `/readyz` failures
       - whether all nodes are Ready at the end
 8. **Clean up.**
-   1. Run `helm -n cluster-lab01 uninstall lab01`, and wait until the Cluster is gone and Proxmox shows no `lab01` VMs.
+   1. Run `kubectl -n cluster-lab01 delete cluster lab01`, and wait until the Cluster and its Machines are gone and Proxmox shows no `lab01` VMs. Then run `helm -n cluster-lab01 uninstall lab01`. The chart sets `helm.sh/resource-policy: keep`, so `helm uninstall` alone leaves the Cluster and its VMs running.
    2. Run `kind delete cluster --name dciab-lab`.
    3. Revert step 7's local changes: `git checkout -- charts/capi-clusterclasses/values.yaml && rm -rf charts/capi-clusterclasses/classes/r2`. Before step 7, check that `git status` is clean; if it isn't, stop and ask. Afterwards, `git status` must show only your `handoff/` changes.
    4. Keep the template.
