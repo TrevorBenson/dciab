@@ -153,24 +153,66 @@ spec:
           items:
             type: string
           description: Public keys for the break-glass user 'dciab' on every node.
-    - name: oidc
+    - name: authentication
       required: false
       schema:
         openAPIV3Schema:
           type: object
-          required: [issuerURL, clientID]
+          required: [issuers]
           properties:
-            issuerURL:
-              type: string
-            clientID:
-              type: string
-            usernameClaim:
-              type: string
-              default: preferred_username
-            groupsClaim:
-              type: string
-              default: groups
-          description: API server OIDC settings (Authentik). Leave unset to disable.
+            issuers:
+              type: array
+              minItems: 1
+              items:
+                type: object
+                required: [url, clientID]
+                properties:
+                  url:
+                    type: string
+                    pattern: '^https://'
+                  clientID:
+                    type: string
+                    minLength: 1
+                    description: The audience the issuer's ID tokens carry.
+                  usernameClaim:
+                    type: string
+                    default: preferred_username
+                  usernamePrefix:
+                    type: string
+                    default: ""
+                  groupsClaim:
+                    type: string
+                    default: groups
+                  groupsPrefix:
+                    type: string
+                    default: ""
+                  certificateAuthority:
+                    type: string
+                    description: PEM CA bundle for the issuer's TLS certificate, when the node trust store lacks it.
+          description: >-
+            JWT issuers the API server trusts, written to an AuthenticationConfiguration file
+            (structured authentication). Several may be listed at once, for example Authentik
+            and the site's IdP while people move from one to the other. Leave unset for
+            certificate-only clusters (MGMT and INFRA).
+    - name: zones
+      required: false
+      schema:
+        openAPIV3Schema:
+          type: boolean
+          default: false
+          description: >-
+            True when the site declares vSphere failure domains: the cluster spreads its
+            control plane over the VSphereDeploymentZones labelled dciab.io/cluster=<cluster>
+            (charts/capi-cluster renders them), and each worker pool names one.
+    - name: disableClusterModule
+      required: false
+      schema:
+        openAPIV3Schema:
+          type: boolean
+          default: false
+          description: >-
+            True only on sites without DRS (platform.vsphere.clusterModules: false). Cluster
+            modules (DRS anti-affinity) otherwise keep each group's VMs on separate hosts.
     - name: machine
       required: true
       schema:
@@ -197,6 +239,40 @@ spec:
           items:
             type: string
           description: DNS resolvers for the nodes (the PowerDNS recursor service IPs).
+    - name: mtu
+      required: false
+      schema:
+        openAPIV3Schema:
+          type: integer
+          minimum: 1280
+          maximum: 9216
+          description: MTU of the node NIC. Leave unset for the platform's default (usually 1500).
+    - name: storageNetworks
+      required: false
+      schema:
+        openAPIV3Schema:
+          type: array
+          default: []
+          items:
+            type: object
+            required: [name, portGroup]
+            properties:
+              name:
+                type: string
+                pattern: '^[a-z0-9]([-a-z0-9]*[a-z0-9])?$'
+                description: The network.storage entry; addresses come from the pool <cluster>-storage-<name>.
+              portGroup:
+                type: string
+                minLength: 1
+                description: Port group of the storage network.
+              mtu:
+                type: integer
+                minimum: 1280
+                maximum: 9216
+          description: >-
+            Storage networks (iSCSI or NVMe-oF, one per path for multipathing): one extra NIC
+            per entry on every node, with an address from the cluster's pool for it and no
+            gateway. Empty by default.
     - name: vsphere
       required: true
       schema:
@@ -377,9 +453,12 @@ spec:
                             path: /etc/kubernetes/admin.conf
                             type: FileOrCreate
 
-    - name: oidc
-      description: API server OIDC flags, when the oidc variable is set.
-      enabledIf: '{{ if .oidc }}true{{ end }}'
+    - name: authentication
+      description: >-
+        Structured authentication when the authentication variable is set: the
+        AuthenticationConfiguration file, and the API server flag and mount that read it.
+        Replaces the --oidc-* flags. Comes after nodeBase, which creates the files list.
+      enabledIf: '{{ if .authentication }}true{{ end }}'
       definitions:
         - selector:
             apiVersion: controlplane.cluster.x-k8s.io/v1beta2
@@ -388,29 +467,42 @@ spec:
               controlPlane: true
           jsonPatches:
             - op: add
-              path: /spec/template/spec/kubeadmConfigSpec/clusterConfiguration/apiServer/extraArgs/-
+              path: /spec/template/spec/kubeadmConfigSpec/files/-
               valueFrom:
                 template: |
-                  name: oidc-issuer-url
-                  value: {{ .oidc.issuerURL | quote }}
+                  path: /etc/kubernetes/authentication/config.yaml
+                  owner: root:root
+                  permissions: "0644"
+                  content: |
+                    apiVersion: apiserver.config.k8s.io/v1
+                    kind: AuthenticationConfiguration
+                    jwt:
+                    {{- range $i := .authentication.issuers }}
+                      - issuer:
+                          url: {{ $i.url | quote }}
+                          audiences: [{{ $i.clientID | quote }}]
+                          {{- if $i.certificateAuthority }}
+                          certificateAuthority: {{ $i.certificateAuthority | quote }}
+                          {{- end }}
+                        claimMappings:
+                          username:
+                            claim: {{ $i.usernameClaim | default "preferred_username" | quote }}
+                            prefix: {{ $i.usernamePrefix | default "" | quote }}
+                          groups:
+                            claim: {{ $i.groupsClaim | default "groups" | quote }}
+                            prefix: {{ $i.groupsPrefix | default "" | quote }}
+                    {{- end }}
             - op: add
               path: /spec/template/spec/kubeadmConfigSpec/clusterConfiguration/apiServer/extraArgs/-
-              valueFrom:
-                template: |
-                  name: oidc-client-id
-                  value: {{ .oidc.clientID | quote }}
+              value: {name: authentication-config, value: /etc/kubernetes/authentication/config.yaml}
             - op: add
-              path: /spec/template/spec/kubeadmConfigSpec/clusterConfiguration/apiServer/extraArgs/-
-              valueFrom:
-                template: |
-                  name: oidc-username-claim
-                  value: {{ .oidc.usernameClaim | quote }}
-            - op: add
-              path: /spec/template/spec/kubeadmConfigSpec/clusterConfiguration/apiServer/extraArgs/-
-              valueFrom:
-                template: |
-                  name: oidc-groups-claim
-                  value: {{ .oidc.groupsClaim | quote }}
+              path: /spec/template/spec/kubeadmConfigSpec/clusterConfiguration/apiServer/extraVolumes/-
+              value:
+                name: authentication-config
+                hostPath: /etc/kubernetes/authentication/config.yaml
+                mountPath: /etc/kubernetes/authentication/config.yaml
+                readOnly: true
+                pathType: File
     - name: vsphereCluster
       description: vCenter connection, credentials Secret and control plane endpoint.
       definitions:
@@ -489,6 +581,19 @@ spec:
                           kind: InClusterIPPool
                           name: {{ .builtin.cluster.name }}-nodes
                       nameservers: {{ .dnsServers | toJson }}
+                      {{- if .mtu }}
+                      mtu: {{ .mtu }}
+                      {{- end }}
+                    {{- range $n := .storageNetworks }}
+                    - networkName: {{ $n.portGroup | quote }}
+                      addressesFromPools:
+                        - apiGroup: ipam.cluster.x-k8s.io
+                          kind: InClusterIPPool
+                          name: {{ $.builtin.cluster.name }}-storage-{{ $n.name }}
+                      {{- if $n.mtu }}
+                      mtu: {{ $n.mtu }}
+                      {{- end }}
+                    {{- end }}
         - selector:
             apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
             kind: VSphereMachineTemplate
@@ -538,6 +643,19 @@ spec:
                           kind: InClusterIPPool
                           name: {{ .builtin.cluster.name }}-nodes
                       nameservers: {{ .dnsServers | toJson }}
+                      {{- if .mtu }}
+                      mtu: {{ .mtu }}
+                      {{- end }}
+                    {{- range $n := .storageNetworks }}
+                    - networkName: {{ $n.portGroup | quote }}
+                      addressesFromPools:
+                        - apiGroup: ipam.cluster.x-k8s.io
+                          kind: InClusterIPPool
+                          name: {{ $.builtin.cluster.name }}-storage-{{ $n.name }}
+                      {{- if $n.mtu }}
+                      mtu: {{ $n.mtu }}
+                      {{- end }}
+                    {{- end }}
     - name: apiServerAudit
       description: >-
         Kubernetes API audit policy file on control plane nodes. The API server flags and
@@ -696,6 +814,79 @@ spec:
                 permissions: "0644"
                 content: |
                   serverTLSBootstrap: true
+    - name: vsphereFailureDomains
+      description: Spread the control plane over the cluster's deployment zones, when the site has zones.
+      enabledIf: '{{ if .zones }}true{{ end }}'
+      definitions:
+        - selector:
+            apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
+            kind: VSphereClusterTemplate
+            matchResources:
+              infrastructureCluster: true
+          jsonPatches:
+            - op: add
+              path: /spec/template/spec/failureDomainSelector
+              valueFrom:
+                template: |
+                  matchLabels:
+                    dciab.io/cluster: {{ .builtin.cluster.name | quote }}
+    - name: vsphereClusterModules
+      description: Turn cluster modules off on a site without DRS.
+      enabledIf: '{{ if .disableClusterModule }}true{{ end }}'
+      definitions:
+        - selector:
+            apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
+            kind: VSphereClusterTemplate
+            matchResources:
+              infrastructureCluster: true
+          jsonPatches:
+            - op: add
+              path: /spec/template/spec/disableClusterModule
+              value: true
+    - name: storageInitiators
+      description: >-
+        When the nodes have storage networks: load the NVMe/TCP and multipath kernel
+        modules, and start multipathd where the node image has it. The initiators and
+        their multipath configuration come with the node image.
+      enabledIf: '{{ if .storageNetworks }}true{{ end }}'
+      definitions:
+        - selector:
+            apiVersion: controlplane.cluster.x-k8s.io/v1beta2
+            kind: KubeadmControlPlaneTemplate
+            matchResources:
+              controlPlane: true
+          jsonPatches:
+            - op: add
+              path: /spec/template/spec/kubeadmConfigSpec/files/-
+              value:
+                path: /etc/modules-load.d/dciab-storage.conf
+                owner: root:root
+                permissions: "0644"
+                content: |
+                  nvme-tcp
+                  dm_multipath
+            - op: add
+              path: /spec/template/spec/kubeadmConfigSpec/preKubeadmCommands/-
+              value: "systemctl restart systemd-modules-load.service && if systemctl cat multipathd.service >/dev/null 2>&1; then systemctl enable --now multipathd.service; fi"
+        - selector:
+            apiVersion: bootstrap.cluster.x-k8s.io/v1beta2
+            kind: KubeadmConfigTemplate
+            matchResources:
+              machineDeploymentClass:
+                names: [default]
+          jsonPatches:
+            - op: add
+              path: /spec/template/spec/files/-
+              value:
+                path: /etc/modules-load.d/dciab-storage.conf
+                owner: root:root
+                permissions: "0644"
+                content: |
+                  nvme-tcp
+                  dm_multipath
+            - op: add
+              path: /spec/template/spec/preKubeadmCommands/-
+              value: "systemctl restart systemd-modules-load.service && if systemctl cat multipathd.service >/dev/null 2>&1; then systemctl enable --now multipathd.service; fi"
 
 ---
 apiVersion: infrastructure.cluster.x-k8s.io/v1beta2

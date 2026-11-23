@@ -29,9 +29,10 @@ encryption:
 #   ntpServers: [10.0.0.123]
 #   sshAuthorizedKeys: ["ssh-ed25519 AAAA..."]
 #   dnsServers: [10.20.110.53, 10.20.110.54]
-#   oidc:                           # optional
-#     issuerURL: https://auth.dc1.example.com/application/o/kubernetes/
-#     clientID: kubernetes
+#   mtu: 9000                       # optional, VM classes: the node NIC's MTU
+#   authentication:                 # optional: JWT issuers (AuthenticationConfiguration)
+#     issuers:
+#       - {url: https://auth.dc1.example.com/application/o/kubernetes/, clientID: kubernetes}
 
 # VM classes (vsphere, proxmox): one node network and range per cluster.
 # network: {nodeIPRange: 10.20.110.60-10.20.110.89, prefix: 24, gateway: 10.20.110.1}
@@ -40,10 +41,19 @@ encryption:
 #   - {name: general, replicas: 3, machine: {cpu: 8, memoryGiB: 32, diskGiB: 150}}
 # vsphere: {server, thumbprint, datacenter, datastore, folder, resourcePool, network, template}
 # proxmox: {allowedNodes, templateNode, templateID, storage, bridge, vlanTag}
+# topology: {region: lab1, zone: pve01}  # proxmox: node topology labels (zone only on a one-domain site)
+# workerPools[].failureDomain: pve02     # optional: the pool runs in that failure domain only
+# storageNetworks:                       # optional, VM classes: one NIC and pool per entry, no gateway
+#   - {name: san-a, ipRange: 10.40.10.20-10.40.10.39, prefix: 24, vlan: 410, mtu: 9000}   # proxmox (bridge optional)
+#   - {name: san-a, ipRange: ..., prefix: 24, portGroup: san-a, mtu: 9000}               # vsphere
+# vsphereFailureDomains:                 # optional, vsphere zones (ADR 0010)
+#   - {name: az1, computeCluster: c1, hostGroup: az1-hosts, vmGroup: az1-vms, datastore: az1-ds}
+# clusterModules: false                  # vsphere: only on a site without DRS
 
 # metal3 class: a network and host selector per role.
 # metal3:
 #   image: {url, checksum, checksumType: sha256, diskFormat: raw}
+#   failureDomains: [rack-a, rack-b, rack-c]   # optional: the domains with hosts for this cluster
 # controlPlane:
 #   replicas: 3
 #   hostSelector: {pool: metal01-cp}

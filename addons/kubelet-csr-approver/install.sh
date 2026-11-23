@@ -27,8 +27,8 @@ workdir="$(mktemp -d)"
 trap 'rm -rf "$workdir"' EXIT
 overrides="$workdir/overrides.yaml"
 
-# The addresses a serving certificate may name: the cluster's node IP ranges only, as
-# CIDRs. Never the whole node subnet, which also holds the API VIP, the load balancer pool
+# The addresses a serving certificate may name: the cluster's node IP ranges (and its
+# storage network ranges) only, as CIDRs. Never the whole node subnet, which also holds the API VIP, the load balancer pool
 # and the DNS service addresses. The chart pin from bundle.lock.
 read -r version repo digest < <(python3 - "$ROOT/bundle.lock" "$cluster_values" "$overrides" <<'PY'
 import ipaddress
@@ -41,6 +41,8 @@ if not cluster.get("name"):
     sys.exit(f"install.sh: {sys.argv[2]} has no name")
 networks = [cluster["network"]] if "network" in cluster else (
     [cluster["controlPlane"]["network"]] + [p["network"] for p in cluster.get("workerPools", [])])
+# Storage NICs: a cloud provider (the vSphere CPI) reports their addresses on the Node too.
+networks += [{"nodeIPRange": s["ipRange"]} for s in cluster.get("storageNetworks", [])]
 prefixes = []
 for n in networks:
     first, last = (ipaddress.ip_address(a) for a in n["nodeIPRange"].split("-"))

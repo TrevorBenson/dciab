@@ -33,9 +33,14 @@ def run(*args, env=None):
 
 
 def test_values_come_from_the_vsphere_config():
-    v = cv.site_values(load_example("vsphere"))
+    doc = load_example("vsphere")
+    v = cv.site_values(doc)
+    # The example declares vSphere failure domains, so the CPI reads the zone tags.
     assert v == {"config": {"vcenter": "vcsa.dc1.example.net", "datacenter": "DC1",
-                            "thumbprint": load_example("vsphere")["spec"]["platform"]["vsphere"]["thumbprint"]}}
+                            "thumbprint": doc["spec"]["platform"]["vsphere"]["thumbprint"],
+                            "region": "k8s-region", "zone": "k8s-zone"}}
+    doc["spec"]["failureDomains"] = {"domains": [], "notHighlyAvailable": {"reason": "one compute cluster here"}}
+    assert "zone" not in cv.site_values(doc)["config"]
 
 
 def test_secret_reads_the_password_reference(tmp_path):

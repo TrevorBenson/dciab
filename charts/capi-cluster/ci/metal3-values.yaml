@@ -1,36 +1,89 @@
 # CI render: a bare-metal workload cluster (matches examples/metal3-cluster.yaml).
+# Generated from the example with dciab cluster-values; regenerate rather than edit.
 name: metal01
 class: metal3
 kubernetesVersion: v1.36.6
 apiVIP: 10.20.120.10
 podCIDR: 10.246.0.0/16
 serviceCIDR: 10.247.0.0/16
-podSecurity:
-  exemptNamespaces: [kube-system, longhorn-system]
-encryption:
-  createSecret: true
 nodes:
   registryMirror: registry.dc2.example.com
-  mirroredRegistries: [docker.io, quay.io, ghcr.io, registry.k8s.io]
+  mirroredRegistries:
+  - docker.io
+  - quay.io
+  - ghcr.io
+  - registry.k8s.io
   trustBundle: |
     -----BEGIN CERTIFICATE-----
     MIIBdummyCertificateForCIOnly
     -----END CERTIFICATE-----
-  ntpServers: [10.0.0.123]
-  sshAuthorizedKeys: ["ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExampleKeyDoNotUseExampleKeyDoNotUse00 tparker"]
-  dnsServers: [10.20.110.53, 10.20.110.54]
+  ntpServers:
+  - 10.0.0.123
+  sshAuthorizedKeys:
+  - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExampleKeyDoNotUseExampleKeyDoNotUse00 tparker
+  dnsServers:
+  - 10.20.110.53
+  - 10.20.110.54
+  authentication:
+    issuers:
+    - url: https://auth.dc2.example.com/application/o/kubernetes/
+      clientID: kubernetes
+      usernameClaim: preferred_username
+      usernamePrefix: ''
+      groupsClaim: groups
+      groupsPrefix: ''
+podSecurity:
+  exemptNamespaces:
+  - kube-system
+  - longhorn-system
+encryption:
+  createSecret: true
 metal3:
   image:
     url: https://ironic.dc2.example.com/images/rocky10-kube-v1.36.6.raw
     checksum: https://ironic.dc2.example.com/images/rocky10-kube-v1.36.6.raw.sha256sum
     checksumType: sha256
     diskFormat: raw
+  failureDomains:
+  - rack-a
+  - rack-b
+  - rack-c
 controlPlane:
   replicas: 3
-  hostSelector: {pool: metal01-cp}
-  network: {nodeIPRange: 10.20.120.11-10.20.120.19, prefix: 24, gateway: 10.20.120.1}
+  hostSelector:
+    pool: metal01-cp
+  network:
+    nodeIPRange: 10.20.120.11-10.20.120.19
+    prefix: 24
+    gateway: 10.20.120.1
 workerPools:
-  - name: gpu
-    replicas: 2
-    hostSelector: {pool: metal01-gpu}
-    network: {nodeIPRange: 10.20.120.21-10.20.120.40, prefix: 24, gateway: 10.20.120.1}
+- name: gpu-rack-a
+  replicas: 1
+  hostSelector:
+    pool: metal01-gpu
+  network:
+    nodeIPRange: 10.20.120.21-10.20.120.40
+    prefix: 24
+    gateway: 10.20.120.1
+  failureDomain: rack-a
+  addressPool: gpu
+- name: gpu-rack-b
+  replicas: 1
+  hostSelector:
+    pool: metal01-gpu
+  network:
+    nodeIPRange: 10.20.120.21-10.20.120.40
+    prefix: 24
+    gateway: 10.20.120.1
+  failureDomain: rack-b
+  addressPool: gpu
+- name: gpu-rack-c
+  replicas: 0
+  hostSelector:
+    pool: metal01-gpu
+  network:
+    nodeIPRange: 10.20.120.21-10.20.120.40
+    prefix: 24
+    gateway: 10.20.120.1
+  failureDomain: rack-c
+  addressPool: gpu

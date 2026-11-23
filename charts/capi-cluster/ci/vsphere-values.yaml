@@ -1,46 +1,95 @@
 # CI render: a vSphere workload cluster (matches examples/vsphere.yaml).
+# Generated from the example with dciab cluster-values; regenerate rather than edit.
 name: apps01
 class: vsphere
 kubernetesVersion: v1.36.6
 apiVIP: 10.20.110.12
 podCIDR: 10.244.0.0/16
 serviceCIDR: 10.245.0.0/16
-labels:
-  dciab.io/baseline: "true"
-podSecurity:
-  exemptNamespaces: [kube-system, longhorn-system]
-encryption:
-  createSecret: true
 nodes:
   registryMirror: registry.dc1.example.com
-  mirroredRegistries: [docker.io, quay.io, ghcr.io, registry.k8s.io]
+  mirroredRegistries:
+  - docker.io
+  - quay.io
+  - ghcr.io
+  - registry.k8s.io
   trustBundle: |
     -----BEGIN CERTIFICATE-----
     MIIBdummyCertificateForCIOnly
     -----END CERTIFICATE-----
-  ntpServers: [10.0.0.123, 10.0.1.123]
-  sshAuthorizedKeys: ["ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExampleKeyDoNotUseExampleKeyDoNotUse00 tparker"]
-  dnsServers: [10.20.110.53, 10.20.110.54]
-  oidc:
-    issuerURL: https://auth.dc1.example.com/application/o/kubernetes/
-    clientID: kubernetes
+  ntpServers:
+  - 10.0.0.123
+  - 10.0.1.123
+  sshAuthorizedKeys:
+  - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExampleKeyDoNotUseExampleKeyDoNotUse00 tparker
+  dnsServers:
+  - 10.20.110.53
+  - 10.20.110.54
+  authentication:
+    issuers:
+    - url: https://auth.dc1.example.com/application/o/kubernetes/
+      clientID: kubernetes
+      usernameClaim: preferred_username
+      usernamePrefix: ''
+      groupsClaim: groups
+      groupsPrefix: ''
+podSecurity:
+  exemptNamespaces:
+  - kube-system
+  - longhorn-system
+encryption:
+  createSecret: true
 network:
   nodeIPRange: 10.20.110.60-10.20.110.89
   prefix: 24
   gateway: 10.20.110.1
 controlPlane:
   replicas: 3
-  machine: {cpu: 4, memoryGiB: 16, diskGiB: 100}
+  machine:
+    cpu: 4
+    memoryGiB: 16
+    diskGiB: 100
 workerPools:
-  - name: general
-    replicas: 3
-    machine: {cpu: 8, memoryGiB: 32, diskGiB: 150}
+- name: general-az1
+  replicas: 1
+  machine:
+    cpu: 8
+    memoryGiB: 32
+    diskGiB: 150
+  failureDomain: az1
+- name: general-az2
+  replicas: 1
+  machine:
+    cpu: 8
+    memoryGiB: 32
+    diskGiB: 150
+  failureDomain: az2
+- name: general-az3
+  replicas: 1
+  machine:
+    cpu: 8
+    memoryGiB: 32
+    diskGiB: 150
+  failureDomain: az3
 vsphere:
   server: vcsa.dc1.example.net
-  thumbprint: "53:19:77:F3:07:F2:EE:EB:E0:2C:81:E7:74:09:50:0C:D3:82:8F:7C:0B:A0:01:2F:07:F7:AC:2D:FF:51:8E:74"
+  thumbprint: 53:19:77:F3:07:F2:EE:EB:E0:2C:81:E7:74:09:50:0C:D3:82:8F:7C:0B:A0:01:2F:07:F7:AC:2D:FF:51:8E:74
   datacenter: DC1
   datastore: vsanDatastore
   folder: /DC1/vm/dciab
   resourcePool: /DC1/host/Compute-A/Resources/dciab
   network: dvpg-mgmt-110
   template: rocky10-kube-v1.36.6
+vsphereFailureDomains:
+- computeCluster: Compute-A
+  hostGroup: az1-hosts
+  vmGroup: az1-vms
+  name: az1
+- computeCluster: Compute-A
+  hostGroup: az2-hosts
+  vmGroup: az2-vms
+  name: az2
+- computeCluster: Compute-A
+  hostGroup: az3-hosts
+  vmGroup: az3-vms
+  name: az3

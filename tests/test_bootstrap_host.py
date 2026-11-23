@@ -91,10 +91,10 @@ def test_blocking_errors_only_cover_network_and_identity(site, monkeypatch):
     path = site.dir / "dciab.yaml"
     path.write_text(yaml.safe_dump(doc))
     assert setup.blocking_errors(str(path)) == []
-    doc["spec"]["network"]["ntpServers"] = ["10.30.0.123"]                          # blocking
+    doc["spec"]["time"]["servers"] = ["10.30.0.123"]                                # blocking
     path.write_text(yaml.safe_dump(doc))
     [err] = setup.blocking_errors(str(path))
-    assert err.startswith("spec.network.ntpServers")
+    assert err.startswith("spec.time.servers")
 
 
 def test_sync_copies_config_and_secrets_privately(tmp_path):

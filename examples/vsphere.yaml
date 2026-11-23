@@ -34,10 +34,19 @@ spec:
       - age1ffyw9h8rvfdsshhfl4jvfgvh5mdl3xv98a9sq5p6lyg5d7z62t2r2q9j6f
       - age1j5xfcwdps86qjrrxvv8uresmxqessnxskgml6p7x7xw8az4th6mpns0acs
 
+  time:
+    servedBy: site                       # site | dciab
+    servers: [10.0.0.123, 10.0.1.123]
+
+  failureDomains:                        # three DRS host groups in Compute-A; the site creates the groups and
+    domains:                             # the k8s-region/k8s-zone tags first (validate --live checks them)
+      - {name: az1, vsphere: {computeCluster: Compute-A, hostGroup: az1-hosts, vmGroup: az1-vms}}
+      - {name: az2, vsphere: {computeCluster: Compute-A, hostGroup: az2-hosts, vmGroup: az2-vms}}
+      - {name: az3, vsphere: {computeCluster: Compute-A, hostGroup: az3-hosts, vmGroup: az3-vms}}
+
   network:
     domain: dc1.example.com              # zone the site delegates to DCiaB
     upstreamResolvers: [10.0.0.53, 10.0.1.53]   # explicit [] = isolated site
-    ntpServers: [10.0.0.123, 10.0.1.123]
     nodes:
       cidr: 10.20.110.0/24
       gateway: 10.20.110.1

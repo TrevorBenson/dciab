@@ -16,8 +16,28 @@ spec:
 {{- end }}
 {{- if eq $v.class "metal3" }}
 {{- /* dciab-metal3-* machines use <cluster>-controlplane and <cluster>-<pool>. */}}
-{{- include "capi-cluster.metal3Role" (dict "root" $ "role" "controlplane" "network" $v.controlPlane.network) }}
+{{- include "capi-cluster.metal3Role" (dict "root" $ "role" "controlplane" "network" $v.controlPlane.network "pool" "controlplane" "renderPool" true) }}
+{{- $seen := dict }}
 {{- range $v.workerPools }}
-{{- include "capi-cluster.metal3Role" (dict "root" $ "role" .name "network" .network) }}
+{{- $pool := .addressPool | default .name }}
+{{- include "capi-cluster.metal3Role" (dict "root" $ "role" .name "network" .network "pool" $pool "renderPool" (not (hasKey $seen $pool))) }}
+{{- $_ := set $seen $pool true }}
+{{- end }}
+{{- end }}
+{{- if ne $v.class "metal3" }}
+{{- /* One pool per storage network: the class gives each node a NIC on it. No gateway. */}}
+{{- range $v.storageNetworks }}
+---
+apiVersion: ipam.cluster.x-k8s.io/v1alpha2
+kind: InClusterIPPool
+metadata:
+  name: {{ printf "%s-storage-%s" $v.name .name | quote }}
+  labels:
+    {{- include "capi-cluster.labels" $ | nindent 4 }}
+  annotations:
+    {{- include "capi-cluster.annotations" $ | nindent 4 }}
+spec:
+  addresses: [{{ .ipRange | quote }}]
+  prefix: {{ .prefix }}
 {{- end }}
 {{- end }}

@@ -146,9 +146,37 @@ def check_mgmt(state: Path, runner: Runner = run) -> Dict[str, str]:
     return result("mgmt", "missing", "no MGMT Cluster yet (dciab mgmt)")
 
 
+def check_placement(site: dict, state: Path, runner: Runner = run) -> Optional[Dict[str, str]]:
+    """Proxmox only: the PVE node of each MGMT control plane machine. r1 can't spread them
+    (CAPMOX v0.9 has no failure domains, ADR 0010), so this says where quorum sits. A note,
+    never a failure: on a single-domain site they always share one node."""
+    if site.get("spec", {}).get("platform", {}).get("type") != "proxmox":
+        return None
+    kc = next((k for k in (state / "mgmt.kubeconfig", state / "bootstrap.kubeconfig") if k.is_file()), None)
+    if kc is None:
+        return None
+    r = kubectl(kc, ["-n", MGMT_NS, "get", "proxmoxmachines", "-l", "cluster.x-k8s.io/control-plane",
+                     "-o", "jsonpath={range .items[*]}{.metadata.name}={.status.proxmoxNode}{\"\\n\"}{end}"], runner)
+    if r.returncode != 0:
+        return None
+    nodes: Dict[str, List[str]] = {}
+    for line in r.stdout.split():
+        name, _, node = line.partition("=")
+        nodes.setdefault(node or "(not placed yet)", []).append(name)
+    if not nodes:
+        return None
+    where = "; ".join(f"{node}: {len(ms)}" for node, ms in sorted(nodes.items()))
+    shared = [n for n, ms in nodes.items() if len(ms) > 1 and n != "(not placed yet)"]
+    detail = f"MGMT control plane by PVE node: {where}"
+    if shared:
+        detail += (f". {', '.join(sorted(shared))} holds more than one etcd member: losing it loses quorum "
+                   "(r1 doesn't spread the Proxmox control plane, ADR 0010)")
+    return result("placement", "note", detail)
+
+
 def collect(site: dict, state: Path, runner: Runner = run) -> List[Dict[str, str]]:
     checks = [check_services(site, runner), check_pki(state, runner), check_registry(site, state, runner),
-              check_bootstrap(state, runner), check_mgmt(state, runner)]
+              check_bootstrap(state, runner), check_mgmt(state, runner), check_placement(site, state, runner)]
     return [c for c in checks if c is not None]
 
 
@@ -178,4 +206,4 @@ def main(argv: Optional[List[str]] = None) -> int:
         width = max(len(c["check"]) for c in checks)
         for c in checks:
             print(f"{c['check']:<{width}}  {c['status']:<8}  {c['detail']}")
-    return 0 if all(c["status"] == "ok" for c in checks) else 1
+    return 0 if all(c["status"] in ("ok", "note") for c in checks) else 1

@@ -253,7 +253,7 @@ spec:
 
 **`r2` or later:** Proxmox control plane spread, control plane zone labels and domains of several PVE nodes, once a CAPMOX release with failure domains is pinned.
 
-**Amended: MachineHealthCheck is in `r1`.** It was planned for `r2`, to come with failure domains so a replacement doesn't land beside the survivor. Failure domains land in `r1` for vSphere and Metal3, so a replacement goes to a domain KubeadmControlPlane and the MachineDeployments choose. On Proxmox a replacement control plane VM may land on the same host as a survivor until CAPMOX spreads the control plane; `validate` and `dciab status` report that (decision 6), once the failure-domain support lands. Remediation replaces one machine at a time (`unhealthyLessThanOrEqualTo: 1`) and retries a failing control plane machine at most three times, so a site-wide problem never turns into mass replacement.
+**Amended: MachineHealthCheck is in `r1`.** It was planned for `r2`, to come with failure domains so a replacement doesn't land beside the survivor. Failure domains land in `r1` for vSphere and Metal3, so a replacement goes to a domain KubeadmControlPlane and the MachineDeployments choose. On Proxmox a replacement control plane VM may land on the same host as a survivor until CAPMOX spreads the control plane; `validate` and `dciab status` report it (decision 6). Remediation replaces one machine at a time (`unhealthyLessThanOrEqualTo: 1`) and retries a failing control plane machine at most three times, so a site-wide problem never turns into mass replacement.
 
 ## Alternatives considered
 

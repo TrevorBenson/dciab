@@ -84,3 +84,15 @@ def test_cli_json(tmp_path, monkeypatch, capsys):
     rc = cli.main([str(cfg), "--root", str(ROOT), "--output", "json"])
     out = json.loads(capsys.readouterr().out)
     assert rc == 1 and out["state"].endswith(".dciab/state") and len(out["checks"]) == 4
+
+
+def test_proxmox_control_plane_placement_is_a_note(tmp_path):
+    site = {"spec": {"bootstrap": {"address": "x"}, "platform": {"type": "proxmox"}}}
+    assert cli.check_placement(site, tmp_path, fake([])) is None          # no cluster yet
+    (tmp_path / "mgmt.kubeconfig").write_text("x")
+    spread = fake([("proxmoxmachines", 0, "cp-a=pve01\ncp-b=pve02\ncp-c=pve03\n")])
+    c = cli.check_placement(site, tmp_path, spread)
+    assert c["status"] == "note" and "pve01: 1; pve02: 1; pve03: 1" in c["detail"] and "quorum" not in c["detail"]
+    shared = fake([("proxmoxmachines", 0, "cp-a=pve01\ncp-b=pve01\ncp-c=pve02\n")])
+    assert "pve01 holds more than one etcd member" in cli.check_placement(site, tmp_path, shared)["detail"]
+    assert cli.check_placement({"spec": {"platform": {"type": "vsphere"}}}, tmp_path, shared) is None

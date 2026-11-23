@@ -8,7 +8,7 @@ The vSphere ClusterClass runs kubelet with `cloud-provider: external`. Each node
 - **Per-site values:** from the config's `spec.platform.vsphere` (`cpi_values.py`): `server`, `datacenter` and `thumbprint`.
 - **Credentials:** the Secret `vsphere-cloud-secret` (namespace `kube-system`) is piped from `spec.platform.vsphere.credentials` into `kubectl apply --server-side -f -`, so the password never lands on disk, in a process's arguments or in a `last-applied-configuration` annotation. The chart doesn't create it.
 - **Thumbprint:** passed to the CPI as is. The schema takes a SHA-256 thumbprint, as CAPV does; that the CPI accepts SHA-256 (and not only SHA-1) is not yet confirmed on real vCenter. If it rejects it, the CPI logs a certificate error and nodes stay uninitialized.
-- **Zones and regions:** not set yet, so the CPI doesn't read vSphere tags.
+- **Zones and regions:** when the site declares vSphere failure domains (`spec.failureDomains`, ADR 0010), the CPI reads the `k8s-region` and `k8s-zone` tag categories and labels each Node `topology.kubernetes.io/region` and `zone`. Otherwise they stay empty and the CPI reads no tags.
 
 The CPI reaches the API server at its Service address, which works only once Cilium runs. So it is installed before Cilium and checked after it:
 
