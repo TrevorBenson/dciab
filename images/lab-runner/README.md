@@ -22,23 +22,47 @@ It uses the same base as the node image and the bootstrap appliance (`nodeImages
 
 ## How it runs jobs
 
-The loop repeats:
+When the service starts (once per boot), the loop records the VM's IPv4 addresses and dummy links. Then it repeats:
 
-1. **Clean.** It kills the job user's processes, removes all of root's containers, pods, volumes and networks, reloads firewalld (dropping runtime-only ports), and replaces the runner directory and the job user's home with fresh copies. Pulled images stay cached. Jobs should still undo their own host changes (dummy interfaces, routes); a reboot clears what they miss.
-2. **Register.** It asks GitHub for a **just-in-time runner**: single-use, ephemeral, registered to one repository, with labels `self-hosted,linux,x64` plus `DCIAB_LAB_LABELS`.
-3. **Run one job** as `dciab-runner`, which has passwordless sudo (the jobs need root).
+1. **Clean.**
+   - Kill the job user's processes.
+   - Remove all of root's containers, pods, volumes and networks, and check none are left.
+   - Reload firewalld, which drops runtime-only ports.
+   - Remove IPv4 addresses and dummy links added since boot. `dciab seed`, for example, adds its DNS service addresses to the host NIC.
+   - Empty `/tmp` and `/var/tmp` (except systemd's private directories), `/root/.kube` and `/root/.dciab`.
+   - Replace the runner directory and the job user's home with fresh copies.
+
+   If any of these steps fails, the loop doesn't register a runner: it retries the cleanup with backoff. Pulled images stay cached, and so does **`/var/cache/dciab`**, which jobs may use to cache downloads (such as a payload) as long as they check every file against `bundle.lock` before using it. A reboot clears anything else a job changed at runtime, such as routes.
+2. **Register.** Ask GitHub for a **just-in-time runner**: single-use, ephemeral, registered to one repository, with labels `self-hosted,linux,x64` plus `DCIAB_LAB_LABELS`.
+3. **Run one job** as `dciab-runner`, which has passwordless sudo (the jobs need root). Afterwards, delete the runner's registration.
+
+The VM's own addresses must be static: an IPv4 address that appears after boot counts as a job's and is removed.
 
 ## Security model
 
-Every job has root on this VM and reaches real infrastructure. The repository is public, so three layers decide what runs:
+Every job has root on this VM and reaches real infrastructure. The repository is public, so several layers decide what runs.
 
-1. **The job-started hook** (`/usr/libexec/dciab-lab-runner/job-started.sh`) refuses any job that isn't a `push`, `schedule` or `workflow_dispatch` on `refs/heads/<DCIAB_LAB_BRANCH>` of `DCIAB_LAB_REPO`, from a workflow file on that branch. Pull requests (including from forks) and dispatches of other branches fail before their first step, whatever their workflow says. It fails closed: a missing variable refuses the job.
+1. **The job-started hook** (`/usr/libexec/dciab-lab-runner/job-started.sh`) refuses any job that isn't a `push`, `schedule` or `workflow_dispatch` on `refs/heads/<DCIAB_LAB_BRANCH>` of `DCIAB_LAB_REPO`, from a workflow file on that branch. That rules out pull requests (including from forks) and dispatches of other branches, whatever their workflow says. It fails closed: a missing variable refuses the job.
+   - **A refusal kills the runner.** The runner runs the hook as an ordinary pre-job step, and a failed step still lets later `if: always()` steps run. So the hook kills every process of the job user, itself included, before the job's first step can start. The loop then cleans up and registers a new runner. GitHub shows the job as failed, with the refusal in the "Set up runner" step's log (or as the runner losing contact), and the VM's journal records it (`journalctl -t dciab-lab-runner`).
 2. **GitHub settings:**
    - Under Actions → General, require approval for workflows from fork pull requests (all outside contributors).
-   - Give lab jobs a GitHub Environment with required reviewers, and keep the hypervisor token there as an environment secret. Any job that creates or destroys infrastructure then waits for a reviewer.
-3. **The VM** runs nothing else, and is cleaned between jobs.
+   - Use **two Environments**, so read-only and scheduled jobs don't wait for a person:
+     - `lab-read`, with no reviewers, for smoke tests, `dciab validate --live` and the janitor
+     - `lab-write`, with required reviewers, for anything that creates or destroys infrastructure
 
-The registration token can create runners on the repository: it needs **Administration: write** on that one repository (a fine-grained personal access token or a GitHub App). It lives on the VM, readable by root only (`/etc/dciab-lab-runner/token`, mode 0600). A job can read it, because a job has root. That's accepted, since only code merged to the branch runs here. Use a token scoped to this repository alone, and rotate it.
+     Each holds only the hypervisor token for its purpose, as an environment secret.
+3. **Workflow rules**, checked by `tests/test_lab_runner.py` for every workflow that runs on a self-hosted runner:
+   - no `pull_request`, `pull_request_target` or `workflow_run` triggers
+   - the `dciab-lab` concurrency group, with `cancel-in-progress: false`: there's one lab, with one set of fixed addresses, shared with runs by hand
+   - actions pinned by commit SHA
+4. **The VM** runs nothing else, and is cleaned between jobs.
+
+**Secrets in jobs.** `sudo` drops the environment, so pass a secret explicitly (`sudo --preserve-env=DCIAB_PVE_TOKEN …` or `sudo env VAR="$VAR" …`). Mask derived values with `::add-mask::`, and never `tee` output that contains one into a log or file.
+
+**The registration token** can create runners on the repository. For a repository owned by a user account, that takes **Administration: write** on that one repository (a fine-grained personal access token or a GitHub App). That permission is broad: it can also change repository settings and branch protection, and a leaked token is not bound by the hook.
+- The token lives on the VM, readable by root only (`/etc/dciab-lab-runner/token`, mode 0600). A job can read it, because a job has root; that's accepted, since only code merged to the branch runs here.
+- Scope it to this repository alone, give it a short expiry, and rotate it.
+- **Narrower:** an organization-owned repository can register runners with the organization permission "Self-hosted runners: write" instead, and put the runner in a runner group restricted to this repository (and, where the plan allows, to chosen workflows). The hook stays as defense in depth.
 
 ## Build
 

@@ -78,13 +78,20 @@ Keep this task's scratch files in `~/.dciab/0011/` (mode 700). The token stays i
      ```
    - Expected: `journalctl -u dciab-lab-runner` shows "runner registered for TrevorBenson/dciab", and the repository's Settings → Actions → Runners lists it as Idle, with labels `self-hosted, linux, x64, dciab-lab`.
 6. **Smoke job from `main`, twice.**
-   - Run `gh workflow run lab-runner-smoke.yml --ref main`, then watch it with `gh run watch`. Every step must pass.
-   - Dispatch it again once the first run is done. It must pass too. Its "Nothing left from an earlier job" step proves the loop cleaned up between jobs.
-   - Record each run's ID and duration, and confirm a new runner registered after each job (`journalctl`).
+   - Run `gh workflow run lab-runner-smoke.yml --ref main`, then watch it with `gh run watch`. Every step must pass, including the final `always()` step.
+   - The first run leaves state behind on purpose: a root-owned file in `/tmp` and `/var/tmp`, a dummy link `dciab-smoke0` with `192.0.2.1/32`, a running container, and a file in the job user's home. Between the two runs, check over SSH that the loop removed it all:
+     - `ls /tmp/dciab-smoke-root /var/tmp/dciab-smoke-root` finds neither file
+     - `ip link show dciab-smoke0` fails
+     - `sudo podman ps -a` is empty
+     - `journalctl -u dciab-lab-runner` shows "removing dummy link dciab-smoke0" and a new runner registered
+   - Dispatch it again. It must pass too: its "Nothing left from an earlier job" step checks the same things from inside a job.
+   - Record each run's ID and duration.
 7. **Refused job.**
    - Push your handoff branch (it has the workflow), then run `gh workflow run lab-runner-smoke.yml --ref handoff/0011-lab-runner`.
-   - Expected: the job fails at "Set up runner", with the hook's message `refused: ref 'refs/heads/handoff/0011-lab-runner': only refs/heads/main runs here`, and no step after it runs.
-   - Record the message, and that the runner registered again afterwards.
+   - **Expected:** the job fails at "Set up runner" with the hook's message `refused: ref 'refs/heads/handoff/0011-lab-runner': only refs/heads/main runs here`. GitHub may report instead that the runner lost communication: the hook kills the runner on a refusal.
+   - **No step after "Set up runner" may run, not even the final `always()` step** ("Always runs (refused jobs must never get here)"). The job log must not contain `reached the always() step`.
+   - `journalctl -t dciab-lab-runner` on the VM shows `refused job: ref ...`. Within a minute, `journalctl -u dciab-lab-runner` shows the cleanup and a new runner registered. The repository's runner list shows no leftover offline runner.
+   - Record the message, the job's final status, and how long until the new runner was Idle.
 8. **Clean up.**
    - **Keep the VM:** it's the lab runner.
    - Remove `images/lab-runner/{build,output}/`, `~/.dciab/0011/`, and any local images you don't need (keep the bootc base). **Keep `~/.dciab/lab-runner/github-token`:** it's needed to rebuild the VM or re-register it.
@@ -95,7 +102,8 @@ Keep this task's scratch files in `~/.dciab/0011/` (mode 700). The token stays i
 - **Before step 2,** if `sudo -n` doesn't work: Trevor runs the build.
 - **Before step 3:** step 3 creates a VM on Proxmox. Show Trevor the VM plan.
 - **If any smoke step fails, or step 7's job is not refused:** stop, collect the job log and `journalctl -u dciab-lab-runner -n 200`, and report.
-  - A refusal that doesn't happen is a security finding: stop the service (`sudo systemctl stop dciab-lab-runner`) before reporting.
+  - A refusal that doesn't happen, or a refused job that reaches the `always()` step, is a security finding: stop the service (`sudo systemctl stop dciab-lab-runner`) before reporting.
+  - If the journal shows "cleanup failed; not registering a runner", report the failing command from the journal. Don't clean up by hand to get past it.
   - If **step 6** fails at "Set up runner" with `refused: ... ''` (an empty variable), the hook didn't get the job's `GITHUB_*` variables. That's a finding for the planner, not something to work around.
 
 ## Report

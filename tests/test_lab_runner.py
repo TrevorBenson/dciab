@@ -56,8 +56,28 @@ def test_never_part_of_the_archive():
     assert not any(s == "images" or s.startswith("images/lab-runner") for s in package.SOURCES)
 
 
+@pytest.fixture(autouse=True)
+def stub_bin(tmp_path, monkeypatch):
+    """logger and pkill stubs that record their arguments, ahead of the real ones on PATH."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    for name in ("logger", "pkill"):
+        stub = bin_dir / name
+        stub.write_text(f'#!/bin/sh\necho "$*" >> "{tmp_path}/{name}.calls"\n')
+        stub.chmod(0o755)
+    monkeypatch.setenv("STUB_DIR", str(tmp_path))
+    monkeypatch.setenv("PATH", f"{bin_dir}:{os.environ['PATH']}")
+    return tmp_path
+
+
+def calls(stub_dir, name):
+    f = stub_dir / f"{name}.calls"
+    return f.read_text().splitlines() if f.exists() else []
+
+
 def hook(**env):
     base = {"PATH": os.environ["PATH"], "DCIAB_LAB_REPO": REPO, "DCIAB_LAB_BRANCH": "main",
+            "DCIAB_LAB_REFUSE_GRACE": "0",
             "GITHUB_REPOSITORY": REPO, "GITHUB_EVENT_NAME": "push", "GITHUB_REF": "refs/heads/main",
             "GITHUB_WORKFLOW_REF": f"{REPO}/.github/workflows/lab.yml@refs/heads/main"}
     base.update(env)
@@ -97,11 +117,41 @@ def test_hook_refuses(env, reason):
     assert "refused" in r.stderr and reason in r.stderr
 
 
-def test_hook_follows_the_configured_branch():
-    r = hook(DCIAB_LAB_BRANCH="release", GITHUB_REF="refs/heads/release",
-             GITHUB_WORKFLOW_REF=f"{REPO}/.github/workflows/lab.yml@refs/heads/release")
+@pytest.mark.parametrize("branch", ["release", "Release"])
+def test_hook_follows_the_configured_branch(branch):
+    r = hook(DCIAB_LAB_BRANCH=branch, GITHUB_REF=f"refs/heads/{branch}",
+             GITHUB_WORKFLOW_REF=f"{REPO.upper()}/.github/workflows/lab.yml@refs/heads/{branch}")
     assert r.returncode == 0, r.stderr
-    assert hook(DCIAB_LAB_BRANCH="release").returncode == 1  # main is now refused
+    assert hook(DCIAB_LAB_BRANCH=branch).returncode == 1  # main is now refused
+
+
+def test_hook_keeps_branch_case():
+    # Git branches are case-sensitive: Release is not release.
+    r = hook(DCIAB_LAB_BRANCH="Release", GITHUB_REF="refs/heads/Release",
+             GITHUB_WORKFLOW_REF=f"{REPO}/.github/workflows/lab.yml@refs/heads/release")
+    assert r.returncode == 1 and "workflow" in r.stderr
+
+
+def test_refusal_kills_the_runner_before_any_step(stub_bin):
+    """A failed hook alone still lets `if: always()` steps run, so a refusal kills the runner user's processes."""
+    import getpass
+    me = getpass.getuser()
+    r = hook(GITHUB_EVENT_NAME="pull_request", DCIAB_LAB_RUNNER_USER=me)
+    assert r.returncode == 1
+    assert calls(stub_bin, "pkill") == [f"-KILL -u {me}"]
+    assert any("refused job" in c for c in calls(stub_bin, "logger"))
+
+
+def test_refusal_kills_nothing_as_another_user(stub_bin):
+    r = hook(GITHUB_EVENT_NAME="pull_request")  # the runner user is dciab-runner, not the test's user
+    assert r.returncode == 1
+    assert calls(stub_bin, "pkill") == []
+
+
+def test_acceptance_kills_nothing(stub_bin):
+    import getpass
+    assert hook(DCIAB_LAB_RUNNER_USER=getpass.getuser()).returncode == 0
+    assert calls(stub_bin, "pkill") == []
 
 
 def test_loop_runs_each_job_with_the_hook_as_the_runner_user():
@@ -118,16 +168,51 @@ def test_loop_keeps_the_token_off_command_lines():
     assert "-H @<(printf 'Authorization: Bearer %s\\n'" in text
     assert "generate-jitconfig" in text
     assert re.search(r"\^0\\ \[46\]00\$", text)  # root-owned, 0600 or 0400
+    assert text.count("Authorization: Bearer") == 1  # one helper makes every API call
+
+
+def test_loop_deletes_each_runner_registration():
+    text = LOOP.read_text()
+    after_run = text[text.index('"$STATE/runner/run.sh"'):]
+    assert 'gh_api DELETE "/$runner_id"' in after_run
+    assert ".runner.id" in text
+
+
+def cleanup_body():
+    text = LOOP.read_text()
+    start = text.index("cleanup() {")
+    return text[start:text.index("\n}\n", start)]
 
 
 def test_loop_starts_every_round_clean():
     text = LOOP.read_text()
     body = text[text.index("while true; do"):]
-    assert body.index("cleanup") < body.index("mint")
-    clean = text[text.index("cleanup() {"):text.index("\n}\n", text.index("cleanup() {"))]
-    for step in ("pkill -KILL -u", "podman rm --all", "podman volume prune", "firewall-cmd --quiet --reload",
+    assert body.index("if ! cleanup; then") < body.index("mint")
+    assert "not registering a runner" in body
+    clean = cleanup_body()
+    for step in ("pkill -KILL -u", "podman rm --all", "podman pod rm --all", "podman volume prune",
+                 "podman network prune", "firewall-cmd --quiet --reload", "ip addr del", "ip link del",
+                 "! -name 'systemd-private-*' -exec rm -rf {} +",
                  'rm -rf "${STATE:?}/runner" "${STATE:?}/home"', 'cp -a "$SRC" "$STATE/runner"'):
         assert step in clean, step
+    assert "/var/cache/dciab" not in clean  # the download cache survives
+
+
+def test_cleanup_failures_stop_the_round():
+    clean = cleanup_body()
+    assert "|| true" not in clean and "2>/dev/null" not in clean
+    for line in clean.splitlines():
+        if line.strip().startswith(("podman ", "rm ", "cp ", "chown ", "install ", "find ")):
+            assert line.rstrip().endswith("|| return 1"), line
+    assert "|| [[ $? == 1 ]] || return 1" in clean  # pkill: no processes is fine
+
+
+def test_loop_removes_network_state_added_after_boot():
+    text = LOOP.read_text()
+    assert 'comm -13 "$RUN/addrs" <(addrs)' in text and 'comm -13 "$RUN/dummies" <(dummies)' in text
+    assert "RUN=/run/dciab-lab-runner" in text  # the baseline is per boot
+    assert text.index("baseline\n") < text.index("while true; do")
+    assert "export LC_ALL=C" in text
 
 
 def test_image_wires_up_the_service_user_and_sudoers():
@@ -161,3 +246,36 @@ def test_root_grows_with_the_node_images_script():
     unit = (HERE / "rootfs/usr/lib/systemd/system/dciab-growroot.service").read_text()
     assert "RequiredBy=dciab-lab-runner.service" in unit and "kubelet" not in unit
     assert (ROOT / "images/node-bootc/rootfs/usr/libexec/dciab/growroot").is_file()
+
+
+def lab_workflows():
+    for f in sorted((ROOT / ".github/workflows").glob("*.yml")):
+        wf = yaml.safe_load(f.read_text())
+        jobs = wf.get("jobs", {})
+        if any("self-hosted" in (j.get("runs-on") if isinstance(j.get("runs-on"), list) else [j.get("runs-on")])
+               for j in jobs.values()):
+            yield f, wf
+
+
+def test_lab_workflows_follow_the_rules():
+    found = list(lab_workflows())
+    assert any(f.name == "lab-runner-smoke.yml" for f, _ in found)
+    for f, wf in found:
+        triggers = wf.get(True, wf.get("on"))  # PyYAML reads the key `on` as True
+        names = set(triggers) if isinstance(triggers, (dict, list)) else {triggers}
+        assert not names & {"pull_request", "pull_request_target", "workflow_run"}, f.name
+        assert wf.get("concurrency") == {"group": "dciab-lab", "cancel-in-progress": False}, f.name
+        for job in wf["jobs"].values():
+            for step in job.get("steps", []):
+                if "uses" in step:
+                    assert re.fullmatch(r"[\w.-]+/[\w./-]+@[0-9a-f]{40}", step["uses"]), f"{f.name}: pin {step['uses']} by SHA"
+
+
+def test_smoke_leaves_state_that_the_next_run_checks():
+    wf = yaml.safe_load((ROOT / ".github/workflows/lab-runner-smoke.yml").read_text())
+    steps = {s.get("name"): s for s in wf["jobs"]["smoke"]["steps"]}
+    check, leave = steps["Nothing left from an earlier job"]["run"], steps["Leave state for the next run to check"]["run"]
+    for marker in ("/tmp/dciab-smoke-root", "/var/tmp/dciab-smoke-root", "dciab-smoke0", "192.0.2.1/32", "$HOME/.dciab-smoke"):
+        assert marker in leave and marker.replace(".", "\\.") in check or marker in check, marker
+    assert steps["Always runs (refused jobs must never get here)"]["if"] == "always()"
+    assert "$PAUSE_IMAGE" in leave
