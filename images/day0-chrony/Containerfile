@@ -5,8 +5,6 @@
 # from dciab.yaml by `dciab services` and mounted at /etc/dciab/chrony.conf; the image
 # holds no site values.
 #
-# Built with build.sh when the archive is built, never at the site: microdnf needs the Rocky
-# Linux repositories. CI publishes it and bundle.lock pins it as day0.images.chrony.
 # BASE_IMAGE is bundle.lock day0.images.chronyBase (pinned by digest).
 ARG BASE_IMAGE
 FROM ${BASE_IMAGE}

@@ -440,3 +440,14 @@ def test_chrony_image_is_built_by_ci_from_the_pinned_base():
     assert "images/day0-chrony/build.sh" in job and "packages: write" in job
     assert "github.ref == 'refs/heads/main'" in job
     assert job.index("podman login") < job.index("skopeo inspect") < job.index("podman push")
+
+
+def test_pinned_chrony_image_is_built_from_this_recipe():
+    """A recipe or base change needs the image CI publishes on main pinned again."""
+    pinned = yaml.safe_load((ROOT / "bundle.lock").read_text())["day0"]["images"]["chrony"]
+    assert "@sha256:" in pinned
+    r = subprocess.run([str(ROOT / "images" / "day0-chrony" / "build.sh"), "--recipe-id"],
+                       capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
+    assert pinned.split("@", 1)[0].endswith("-" + r.stdout.strip()), \
+        "images/day0-chrony changed: pin the image CI publishes on main as day0.images.chrony"

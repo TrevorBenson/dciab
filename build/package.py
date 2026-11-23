@@ -64,8 +64,6 @@ SOURCES = [
     "charts", "addons",         # lib/steps/mgmt.sh, capi-providers.sh
     # Run at the site by lib/steps/capi-providers.sh.
     "hack/fetch_crds.py", "hack/render_components.py",
-    # dciab services reads the base image from its Containerfile and builds it.
-    "images/day0-chrony",
     "README.md", "docs", "examples",
 ]
 # Inside those paths, files a checkout or a run leaves behind are skipped: caches, byte

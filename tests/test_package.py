@@ -101,9 +101,9 @@ def test_entries_sorted_owned_by_root_dated_epoch_without_dev_files(tree):
     assert all(m.uid == 0 and m.gid == 0 and m.mtime == EPOCH for m in members)
     rel = {n.split("/", 1)[1] for n in names if "/" in n}
     for kept in ["dciab", "lib/dciab_x/__init__.py", "charts/c/Chart.yaml", "hack/fetch_crds.py",
-                 "images/day0-chrony/Containerfile", "payload/bin/oras", "payload/SHA256SUMS", "MANIFEST"]:
+                 "payload/bin/oras", "payload/SHA256SUMS", "MANIFEST"]:
         assert kept in rel
-    for dropped in ["handoff", "tests", ".git", ".cache", "images/node", "images/usb", "build",
+    for dropped in ["handoff", "tests", ".git", ".cache", "images/node", "images/usb", "images/day0-chrony", "build",
                     "hack/check_manifests.py", "lib/tests", "payload/.lock", "secrets", "dciab.yaml"]:
         assert not any(r == dropped or r.startswith(dropped + "/") for r in rel), dropped
     assert not any("__pycache__" in r or r.endswith(".pyc") for r in rel)
@@ -185,7 +185,7 @@ def runtime_paths(root: Path):
 def test_every_runtime_path_ships():
     shipped = set(package.source_files(ROOT))
     paths = runtime_paths(ROOT)
-    for must in ["lib/steps/services.sh", "images/day0-chrony/Containerfile", "hack/fetch_crds.py",
+    for must in ["lib/steps/services.sh", "hack/fetch_crds.py",
                  "charts/capi-cluster", "schema/dciab.schema.json", "bundle.lock"]:
         assert must in paths, f"the scan no longer finds {must}"
     missing = {p: str(f.relative_to(ROOT)) for p, f in paths.items()

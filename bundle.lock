@@ -151,7 +151,7 @@ day0:
     # DCiaB's chrony image: built from images/day0-chrony and published by CI on main
     # (<chrony version>-<recipe id>); pinned by digest once published, then shipped in the
     # archive like the images above. dciab services never builds it, and refuses an unpinned one.
-    chrony: ""
+    chrony: ghcr.io/trevorbenson/dciab-day0-chrony:4.8-2.el10-84e130375818@sha256:b839cb5a5e6c3e5780795b537d2e1cb7a4b4c56a0326df2c9a3c24418e1c8ed0
 
 # The bootstrap appliance ("server zero") and the DCiaB USB it boots from
 # (docs/adr/0002-bootstrap-appliance-on-ventoy.md). The appliance image builds on
