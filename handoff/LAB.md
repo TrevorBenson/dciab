@@ -28,6 +28,20 @@ Never put secrets here: no token secrets, passwords or keys.
 - `sudo` on the workstation needs a password, so the runner cannot run root builds. The bootc image stages build rootless; only the bootc-image-builder disk step needs root, which Trevor runs.
 - A test clone uses a free VMID of its own (the runner may pick one) and is deleted afterwards.
 
+## Proxmox API tokens by purpose (created 2026-11-23)
+
+One user and privilege-separated token per purpose, each with only the privileges its job needs (ACLs on both the user and the token, as `docs/PROXMOX.md`). Secrets live in `~/.dciab/proxmox/<purpose>.env` (directory 700, files 600: `PVE_URL`, `PVE_TLS_FINGERPRINT`, `PVE_TOKEN_ID`, `PVE_TOKEN_SECRET`), never in Git. Copy into GitHub Environment secrets with the same names when the workflows exist.
+
+| Purpose | Token ID | Privileges | Use |
+| --- | --- | --- | --- |
+| capmox | `capmox@pve!dciab` | exactly `docs/PROXMOX.md` | CAPMOX and `dciab mgmt`/clusters |
+| publisher | `dciab-publisher@pve!ci` | the same as capmox, a separate identity | publish node templates, test clones (CI `lab-write`) |
+| janitor | `dciab-janitor@pve!ci` | `VM.Audit,VM.Allocate,VM.PowerMgmt` on `/vms`; delete on `/storage/local`; free space on `/storage/pool0` | remove leftover CI VMs and `user-data-*.iso` |
+| audit | `dciab-audit@pve!ci` | `PVEAuditor` on `/` | `validate --live`, smoke jobs (CI `lab-read`) |
+| netadmin | `dciab-netadmin@pve!setup` | `PVESDNAdmin` on `/sdn`; `Sys.Audit,Sys.Modify` on `/nodes`; `PVEPoolAdmin` on `/pool` | one-time network setup (SDN, EVPN, pools); **expires 2026-12-23**; not for CI |
+
+Roles created: `DCiaBNodes`, `DCiaBVMs`, `DCiaBStorage`, `DCiaBBootstrapISO`, `DCiaBNetwork`, `DCiaBJanitorVMs`, `DCiaBJanitorISO`, `DCiaBNetAdmin`. Other users and tokens on this Proxmox (`claude@pam`, `tofu@pve`, `illuminatus@*`, `root@pam`) were not touched. Not yet granted: datacenter firewall edits (`Sys.Modify` on `/`); add them to netadmin when that task needs them.
+
 ## Bootstrap USB tests (task 0005)
 
 - A Secure Boot VM on `pve1`: `qm create <id> --machine q35 --bios ovmf --efidisk0 pool0:1,efitype=4m,pre-enrolled-keys=1 --sata0 pool0:<GiB> …`. Proxmox 9.2.3 turns `pre-enrolled-keys=1` into `ms-cert=2023k`. For Secure Boot off, create the EFI disk with `pre-enrolled-keys=0`.
@@ -39,6 +53,6 @@ Never put secrets here: no token secrets, passwords or keys.
 ## CAPMOX on this Proxmox (task 0003)
 
 - The node network for a cluster is untagged `vmbr0`: nodes `192.168.186.200-.209/24`, gateway `.1`, API VIP `.199`, DNS `192.168.186.1`, pod CIDR `10.250.0.0/16`, service CIDR `10.251.0.0/16`. The workstation reaches all of it.
-- The CAPMOX credentials Secret (`<cluster>-proxmox-credentials`: keys `url`, `token`, `secret`) is built from `~/.dciab-e2e/proxmox.env` (`PVE_URL`, `PVE_TOKEN_ID`, `PVE_TOKEN_SECRET`); the URL host is `pve1`'s Tailscale name.
+- The CAPMOX credentials Secret (`<cluster>-proxmox-credentials`: keys `url`, `token`, `secret`) is built from `~/.dciab/proxmox/capmox.env` (`PVE_URL`, `PVE_TOKEN_ID`, `PVE_TOKEN_SECRET`, `PVE_TLS_FINGERPRINT`); the older `~/.dciab-e2e/proxmox.env` (the broad `claude@pam!claude-dciab` token) still exists and should be retired once nothing reads it; the URL host is `pve1`'s Tailscale name.
 - CAPMOX 0.9.2 uploads its own cloud-init ISO (`local:iso/user-data-<vmid>.iso`, label `cidata`) and attaches it at `ide0`. A node template that also carries Proxmox's cloud-init drive on `ide2` makes the guest read `ide2` instead, so the node gets DHCP and never gets its bootstrap data.
 - A management cluster kept for days goes stale against `main`'s classes, and `helm upgrade classes` can fail on immutable machine templates; start the management cluster fresh for each run.
