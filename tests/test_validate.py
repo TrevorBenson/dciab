@@ -809,3 +809,27 @@ def test_generated_names_never_collide(site):
                                                        dict(pool, name="ab-b", failureDomains=["c", "pve03"])]
     _, report = site.validate(doc)
     assert any("also a MachineDeployment" in e["found"] for e in errors(report))
+
+
+# --- upstream DNS -------------------------------------------------------------------
+
+def test_empty_upstream_resolvers_without_isolated_is_a_warning(site):
+    doc = load_example("proxmox")
+    del doc["spec"]["network"]["isolated"]
+    code, report = site.validate(doc)
+    assert code == 0
+    [w] = warnings(report, "spec.network.upstreamResolvers")
+    assert "isolated" in w["fix"] and "kubeadm init" in w["fix"]
+
+
+def test_isolated_site_with_no_resolvers_is_quiet(site):
+    _, report = site.validate(load_example("proxmox"))
+    assert warnings(report, "spec.network.upstreamResolvers") == []
+
+
+def test_isolated_with_resolvers_is_a_warning(site):
+    doc = load_example("vsphere")
+    doc["spec"]["network"]["isolated"] = True
+    code, report = site.validate(doc)
+    assert code == 0
+    assert warnings(report, "spec.network.isolated")

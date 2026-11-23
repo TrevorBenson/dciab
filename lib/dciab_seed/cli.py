@@ -2,6 +2,7 @@
 
     dciab seed <config> [--payload DIR] [--state DIR] [--age-identity FILE] [--force-new-ca]
                [--until STEP]
+    dciab seed <config> --remove [--purge-state] [--force] [--state DIR]
 
 Steps, in order. Each is safe to re-run, and a finished run changes nothing:
   preflight  root; the config is valid; tools present (the payload's bin/ first in PATH)
@@ -22,6 +23,12 @@ Steps, in order. Each is safe to re-run, and a finished run changes nothing:
 
 Then: dciab mgmt <config> --bootstrap-kubeconfig <state>/bootstrap.kubeconfig
       --trust-bundle <state>/pki/trust-bundle.pem
+
+--remove undoes what seed did to the host, and only what <state>/seed-created.json (and, for
+the DNS-only services seed ran, <state>/services/created) says it created: the kind cluster,
+the registry container, the services pod, the service IPs on the NIC and the runtime firewalld
+ports. It refuses to delete a bootstrap cluster that still holds Cluster API Clusters unless
+--force is given. The state folder stays (it holds the CA) unless --purge-state is also given.
 
 Exit codes: 0 done, 1 a step failed, 2 could not run.
 """
@@ -57,6 +64,11 @@ def say(msg: str) -> None:
     print(msg, flush=True)
 
 
+def elapsed(started: float) -> str:
+    """Seconds since a time.monotonic() reading, for the '== seed: <step> done in Ns' lines."""
+    return f"{time.monotonic() - started:.0f}s"
+
+
 def run(cmd, **kw) -> subprocess.CompletedProcess:
     return subprocess.run([str(c) for c in cmd], check=True, text=True, capture_output=True, **kw)
 
@@ -64,6 +76,30 @@ def run(cmd, **kw) -> subprocess.CompletedProcess:
 def run_live(cmd, **kw) -> None:
     """Run with output going straight to the terminal (long steps)."""
     subprocess.run([str(c) for c in cmd], check=True, **kw)
+
+
+CREATED = "seed-created.json"
+
+
+def load_created(state: Path) -> dict:
+    """What seed created on this host (<state>/seed-created.json), for --remove."""
+    path = state / CREATED
+    return json.loads(path.read_text()) if path.is_file() else {}
+
+
+def save_created(state: Path, created: dict) -> None:
+    path = state / CREATED
+    if created:
+        pki.write_private(path, json.dumps(created, indent=2, sort_keys=True) + "\n")
+    elif path.exists():
+        path.unlink()
+
+
+def record_created(state: Path, key: str, value) -> None:
+    created = load_created(state)
+    if created.get(key) != value:
+        created[key] = value
+        save_created(state, created)
 
 
 def verify_payload_tools(payload: Path) -> None:
@@ -124,6 +160,8 @@ def step_dns(root: Path, config: Path, payload: Path, state: Path, s, timeout: f
         say(f"dns: {name} resolves to {s.address} on {', '.join(ips)} (dciab services)")
         return
     # DNS-only services, with CoreDNS from the payload. Its output, prefixed, is this step's.
+    # Recorded first: whatever it adds before a failure is still seed's to remove.
+    record_created(state, "services", "dns-only")
     result = subprocess.run([str(root / "dciab"), "services", str(config), "--state", str(state),
                              "--payload", str(payload)], text=True, stdout=subprocess.PIPE,
                             stderr=subprocess.STDOUT)
@@ -169,10 +207,11 @@ def step_registry(root: Path, payload: Path, state: Path, s) -> None:
     if have != [want, "running"]:
         if have:
             run(["podman", "rm", "-f", REGISTRY_CONTAINER])
-        run(["podman", "run", "-d", "--name", REGISTRY_CONTAINER, "--restart=always", "--user", "0:0",
-             "--label", f"dciab.io/spec={want}",
-             "-p", f"{s.address}:{REGISTRY_PORT}:5000",
-             "-v", f"{data}:/var/lib/registry:Z", "-v", f"{etc}:/etc/zot:ro,Z", image_id])
+        cid = run(["podman", "run", "-d", "--name", REGISTRY_CONTAINER, "--restart=always", "--user", "0:0",
+                   "--label", f"dciab.io/spec={want}",
+                   "-p", f"{s.address}:{REGISTRY_PORT}:5000",
+                   "-v", f"{data}:/var/lib/registry:Z", "-v", f"{etc}:/etc/zot:ro,Z", image_id]).stdout.strip()
+        record_created(state, "registry", (cid.split() or [""])[-1])
         say(f"registry: started {REGISTRY_CONTAINER} on https://{s.address}:{REGISTRY_PORT}")
     else:
         say("registry: already serving")
@@ -231,6 +270,7 @@ def step_kind(root: Path, payload: Path, state: Path, s) -> None:
              f"{s.address}/{node['repo']}@{node['digest']}"])
         run(["podman", "tag", f"{s.address}/{node['repo']}@{node['digest']}", local])
         say(f"kind: creating {KIND_CLUSTER} from {node['image']}")
+        record_created(state, "kind", KIND_CLUSTER)
         run_live(["kind", "create", "cluster", "--name", KIND_CLUSTER, "--image", local, "--config", config,
                   "--wait", "5m"], env=env)
     text = run(["kind", "get", "kubeconfig", "--name", KIND_CLUSTER], env=env).stdout
@@ -243,6 +283,132 @@ def step_providers(root: Path, payload: Path, state: Path) -> None:
     env = dict(os.environ, KUBECONFIG=str(state / "bootstrap.kubeconfig"))
     run_live([root / "lib" / "steps" / "capi-providers.sh", "--with-classes", "--manifests", payload / "providers"],
              env=env)
+
+
+def probe_cmd(cmd, **kw) -> subprocess.CompletedProcess:
+    """Run a query whose exit code is the answer; a missing tool answers no."""
+    try:
+        return subprocess.run([str(c) for c in cmd], text=True, capture_output=True, **kw)
+    except FileNotFoundError:
+        return subprocess.CompletedProcess(cmd, 127, "", f"{cmd[0]}: not found")
+
+
+def remove_kind(state: Path, force: bool) -> None:
+    env = dict(os.environ, KIND_EXPERIMENTAL_PROVIDER="podman")
+    if KIND_CLUSTER in run(["kind", "get", "clusters"], env=env).stdout.split():
+        kubeconfig = state / "bootstrap.kubeconfig"
+        r = probe_cmd(["kubectl", "--kubeconfig", kubeconfig, "get", "clusters.cluster.x-k8s.io", "-A",
+                       "-o", "name", "--request-timeout=20s"])
+        missing_crd = "doesn't have a resource type" in r.stderr
+        if not force and (r.stdout.strip() or (r.returncode != 0 and not missing_crd)):
+            found = (f"it still holds {', '.join(r.stdout.split())}" if r.stdout.strip()
+                     else f"can't list its Clusters ({r.stderr.strip() or r.returncode})")
+            raise SeedError(f"not deleting kind cluster {KIND_CLUSTER}: {found}. Move them first (dciab mgmt), "
+                            "or pass --force to delete it with them")
+        run(["kind", "delete", "cluster", "--name", KIND_CLUSTER], env=env)
+        say(f"remove: deleted kind cluster {KIND_CLUSTER}")
+    else:
+        say(f"remove: kind cluster {KIND_CLUSTER} is already gone")
+
+
+def remove_registry(recorded: str) -> None:
+    have = run(["podman", "ps", "-a", "--no-trunc", "--filter", f"name=^{REGISTRY_CONTAINER}$",
+                "--format", "{{.ID}}"]).stdout.split()
+    if not have:
+        say(f"remove: container {REGISTRY_CONTAINER} is already gone")
+        return
+    if not recorded or not have[0].startswith(recorded):
+        raise SeedError(f"container {REGISTRY_CONTAINER} ({have[0][:12]}) isn't the one seed created "
+                        f"({recorded[:12] or 'none recorded'}); leaving it")
+    run(["podman", "rm", "-f", "-t", "10", have[0]])
+    say(f"remove: removed container {REGISTRY_CONTAINER}")
+
+
+def remove_services(state: Path) -> List[str]:
+    """Undo what the DNS-only `dciab services` listed in <state>/services/created.
+    Returns the lines it couldn't undo."""
+    listing = state / "services" / "created"
+    lines = [line.split() for line in listing.read_text().splitlines() if line.strip()] if listing.is_file() else []
+    left = []
+    firewalld = probe_cmd(["firewall-cmd", "--state"]).returncode == 0
+    for entry in lines:
+        kind, args = entry[0], entry[1:]
+        try:
+            if kind == "pod" and len(args) == 1:
+                if probe_cmd(["podman", "pod", "exists", args[0]]).returncode == 0:
+                    run(["podman", "pod", "rm", "-f", args[0]])
+                    say(f"remove: removed pod {args[0]}")
+            elif kind == "address" and len(args) == 2:
+                nic, cidr = args
+                have = probe_cmd(["ip", "-o", "-4", "addr", "show", "dev", nic]).stdout.split()
+                if cidr in have:
+                    run(["ip", "addr", "del", cidr, "dev", nic])
+                    say(f"remove: removed {cidr} from {nic}")
+            elif kind == "port" and len(args) == 2:
+                zone, port = args
+                if not firewalld:
+                    say(f"remove: firewalld isn't running; nothing to close for {port}")
+                elif probe_cmd(["firewall-cmd", f"--zone={zone}", f"--query-port={port}"]).returncode == 0:
+                    run(["firewall-cmd", f"--zone={zone}", f"--remove-port={port}"])
+                    say(f"remove: closed {port} in zone {zone} (runtime)")
+            else:
+                say(f"remove: {listing}: skipping a line it doesn't understand: {' '.join(entry)}")
+        except subprocess.CalledProcessError as exc:
+            say(f"remove: couldn't undo '{' '.join(entry)}': {(exc.stderr or '').strip() or exc.returncode}")
+            left.append(" ".join(entry))
+    if left:
+        pki.write_private(listing, "".join(f"{line}\n" for line in left))
+    else:
+        for name in ("created", "applied"):   # applied: the next dciab services starts the pod again
+            if (state / "services" / name).exists():
+                (state / "services" / name).unlink()
+    return left
+
+
+def remove(state: Path, purge: bool, force: bool) -> int:
+    """dciab seed --remove. Each part is dropped from the record once undone, so a rerun
+    picks up where a failed one stopped, and a finished one changes nothing."""
+    created = load_created(state)
+    if not created:
+        say(f"remove: {state / CREATED} lists nothing seed created on this host")
+    failed = False
+    for key in ("kind", "registry", "services"):
+        if key not in created:
+            continue
+        try:
+            if key == "kind":
+                remove_kind(state, force)
+            elif key == "registry":
+                remove_registry(str(created[key]))
+            elif remove_services(state):
+                failed = True
+                continue
+        except SeedError as exc:
+            print(f"dciab seed: {exc}", file=sys.stderr)
+            failed = True
+            continue
+        except subprocess.CalledProcessError as exc:
+            detail = (exc.stderr or "").strip() if isinstance(exc.stderr, str) else ""
+            print(f"dciab seed: {' '.join(map(str, exc.cmd))} failed ({exc.returncode})"
+                  f"{': ' + detail if detail else ''}", file=sys.stderr)
+            failed = True
+            continue
+        del created[key]
+        save_created(state, created)
+    if failed:
+        print("dciab seed: --remove left something behind (above); fix it and run it again"
+              + ("; the state folder is kept" if purge else ""), file=sys.stderr)
+        return 1
+    if purge:
+        print(f"dciab seed: WARNING: deleting the state folder {state}. It holds the platform CA "
+              "(encrypted key and certificate), the registry's storage and every kubeconfig; whatever trusts "
+              "this CA can't be reissued from it again.", file=sys.stderr)
+        shutil.rmtree(state)
+        say(f"remove: deleted {state}")
+    else:
+        say(f"remove: kept the state folder {state} (it holds the CA; --purge-state deletes it)")
+    say("dciab seed: removed")
+    return 0
 
 
 def main(argv: Optional[List[str]] = None) -> int:
@@ -259,7 +425,16 @@ def main(argv: Optional[List[str]] = None) -> int:
                    help="generate a new root CA even though the state shows a previous one was issued; "
                         "whatever trusts the old CA must be re-trusted")
     p.add_argument("--until", choices=STEPS, help="stop after this step")
+    p.add_argument("--remove", action="store_true",
+                   help="undo what seed did to this host (the kind cluster, the registry container, the "
+                        "DNS-only services' pod, service IPs and firewalld ports), as recorded in the state")
+    p.add_argument("--purge-state", action="store_true",
+                   help="with --remove: also delete the state folder, including the CA")
+    p.add_argument("--force", action="store_true",
+                   help="with --remove: delete the bootstrap cluster even if it still holds Cluster API Clusters")
     args = p.parse_args(argv)
+    if (args.purge_state or args.force) and not args.remove:
+        p.error("--purge-state and --force go with --remove")
 
     root = Path(args.root).resolve()
     config = Path(args.config).resolve()
@@ -274,6 +449,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         return 1
     payload = Path(args.payload).resolve() if args.payload else root / "payload"
     state = Path(args.state).resolve() if args.state else default_state(config)
+    if args.remove and not state.is_dir():
+        say(f"dciab seed: no state folder {state}; nothing to remove")
+        return 0
     state.mkdir(parents=True, exist_ok=True)
     state.chmod(0o700)
     # One seed per host: the registry container and the kind cluster have fixed names.
@@ -288,17 +466,22 @@ def main(argv: Optional[List[str]] = None) -> int:
     except OSError as exc:
         print(f"dciab seed: can't take the lock in {lock_dir}: {exc}", file=sys.stderr)
         return 2
+    if args.remove and not (payload / "SHA256SUMS").is_file():
+        return remove(state, args.purge_state, args.force)   # the host's own kind and kubectl
     try:
         verify_payload_tools(payload)
     except SeedError as exc:
         print(f"dciab seed: {exc}", file=sys.stderr)
         return 1
     os.environ["PATH"] = f"{payload / 'bin'}{os.pathsep}{os.environ.get('PATH', '')}"
+    if args.remove:
+        return remove(state, args.purge_state, args.force)
 
     try:
         s = load_settings(config)
         for step in STEPS:
             say(f"\n== seed: {step}")
+            started = time.monotonic()
             if step == "preflight":
                 step_preflight(root, config, payload)
             elif step == "pki":
@@ -313,6 +496,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                 step_kind(root, payload, state, s)
             elif step == "providers":
                 step_providers(root, payload, state)
+            say(f"== seed: {step} done in {elapsed(started)}")
             if args.until == step:
                 say(f"dciab seed: stopped after '{step}' (--until)")
                 return 0

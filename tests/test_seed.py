@@ -289,9 +289,11 @@ def test_dns_step_without_hypervisors_runs_dns_only_services(tmp_path, monkeypat
         calls.append(cmd)
         return subprocess.CompletedProcess(cmd, 0, stdout="\n== services: pod\npod dciab-services already runs this config\n")
     monkeypatch.setattr(cli.subprocess, "run", fake)
+    (tmp_path / "s").mkdir()
     cli.step_dns(ROOT, cfg, tmp_path / "p", tmp_path / "s", plan.load_settings(cfg))
     assert calls[0][1:] == ["services", str(cfg), "--state", str(tmp_path / "s"), "--payload", str(tmp_path / "p")]
     assert capsys.readouterr().out == "dns: pod dciab-services already runs this config\n"
+    assert cli.load_created(tmp_path / "s") == {"services": "dns-only"}   # for dciab seed --remove
 
 
 @pytest.mark.parametrize("left", ["pki/ca.crt", "pki/trust-bundle.pem", "pki/registry.crt", "mgmt.kubeconfig"])
@@ -362,3 +364,248 @@ def test_lone_ca_key_is_kept_aside(tmp_path):
     [bak] = d.glob("ca.key.age.*.bak")
     assert bak.read_text() == "interrupted\n" and any("aside" in c for c in changed)
     assert (d / "ca.key.age").read_bytes() != b"interrupted\n"
+
+
+# capi-providers.sh: the classes release, against fake kubectl and helm
+
+
+FAKE_HELM = """#!/usr/bin/env bash
+echo "helm $*" >> "$FAKE_LOG"
+case "$1" in
+  list) [[ -n "${FAKE_DEPLOYED:-}" ]] && echo classes ;;
+  get) printf '%s\\n' "$FAKE_HAVE" ;;
+  template) printf '%s\\n' "$FAKE_WANT" ;;
+esac
+exit 0
+"""
+
+
+def providers_run(tmp_path, *, deployed, have, want):
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir(exist_ok=True)
+    (bin_dir / "helm").write_text(FAKE_HELM)
+    (bin_dir / "kubectl").write_text('#!/usr/bin/env bash\necho "kubectl $*" >> "$FAKE_LOG"\n')
+    for f in bin_dir.iterdir():
+        f.chmod(0o755)
+    m = tmp_path / "manifests"
+    for rel in ("cert-manager-v1/cert-manager.yaml", "baremetal-operator-v1/crds.yaml", "cluster-api-v1/core.yaml",
+                "infrastructure-proxmox-v1/infra.yaml", "ipam-in-cluster-v1/ipam.yaml"):
+        (m / rel).parent.mkdir(parents=True, exist_ok=True)
+        (m / rel).write_text("apiVersion: v1\nkind: ConfigMap\nmetadata: {name: x}\n")
+    log = tmp_path / "log"
+    log.write_text("")
+    import os
+    env = {**os.environ, "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}", "FAKE_LOG": str(log),
+           "FAKE_DEPLOYED": "1" if deployed else "", "FAKE_HAVE": have, "FAKE_WANT": want}
+    r = subprocess.run([str(ROOT / "lib" / "steps" / "capi-providers.sh"), "--with-classes", "--manifests", str(m)],
+                       capture_output=True, text=True, env=env)
+    assert r.returncode == 0, r.stderr
+    return r.stdout, [line for line in log.read_text().splitlines() if line.startswith("helm upgrade")]
+
+
+MANIFEST = "---\n# Source: capi-clusterclasses/templates/classes.yaml\nkind: ClusterClass\nmetadata:\n  name: proxmox-r1\n"
+
+
+def test_unchanged_classes_release_is_not_upgraded(tmp_path):
+    # Trailing spaces and blank lines aside, the deployed manifest is what the chart renders now.
+    out, upgrades = providers_run(tmp_path, deployed=True, have=MANIFEST.replace("r1\n", "r1  \n\n"), want=MANIFEST)
+    assert upgrades == [] and "not upgrading" in out
+
+
+@pytest.mark.parametrize("deployed,have", [(True, MANIFEST.replace("r1", "r0")), (False, MANIFEST), (True, "")])
+def test_changed_or_missing_classes_release_is_upgraded(tmp_path, deployed, have):
+    out, upgrades = providers_run(tmp_path, deployed=deployed, have=have, want=MANIFEST)
+    assert len(upgrades) == 1 and "upgrade --install classes" in upgrades[0] and "not upgrading" not in out
+
+
+# dciab seed --remove, against a fake host
+
+
+class FakeHost:
+    """kind, podman, ip, firewall-cmd and kubectl over a little in-memory host."""
+
+    def __init__(self):
+        self.kind = {"dciab-bootstrap"}
+        self.containers = {"dciab-registry": "c0ffee" + "0" * 58}
+        self.pods = {"dciab-services"}
+        self.addrs = {"eth0": {"10.30.110.5/24", "10.30.110.53/24", "10.30.110.54/24"}}
+        self.ports = {("public", "53/udp"), ("public", "53/tcp"), ("public", "22/tcp")}
+        self.firewalld = True
+        self.capi_clusters = []
+        self.calls = []
+
+    def __call__(self, cmd, check=False, **kw):
+        cmd = [str(c) for c in cmd]
+        self.calls.append(cmd)
+        rc, out = 0, ""
+        if cmd[:3] == ["kind", "get", "clusters"]:
+            out = "\n".join(sorted(self.kind))
+        elif cmd[:3] == ["kind", "delete", "cluster"]:
+            self.kind.discard(cmd[-1])
+        elif cmd[0] == "kubectl":
+            out = "\n".join(self.capi_clusters)
+        elif cmd[:3] == ["podman", "ps", "-a"]:
+            name = cmd[cmd.index("--filter") + 1].split("^")[1].rstrip("$")
+            out = self.containers.get(name, "")
+        elif cmd[:2] == ["podman", "rm"]:
+            self.containers = {n: i for n, i in self.containers.items() if i != cmd[-1]}
+        elif cmd[:3] == ["podman", "pod", "exists"]:
+            rc = 0 if cmd[3] in self.pods else 1
+        elif cmd[:3] == ["podman", "pod", "rm"]:
+            self.pods.discard(cmd[-1])
+        elif cmd[:2] == ["ip", "-o"]:
+            out = " ".join(f"2: {cmd[-1]} inet {a} scope global" for a in sorted(self.addrs.get(cmd[-1], ())))
+        elif cmd[:3] == ["ip", "addr", "del"]:
+            self.addrs[cmd[-1]].discard(cmd[3])
+        elif cmd[0] == "firewall-cmd":
+            if not self.firewalld:
+                rc = 252
+            elif cmd[1] != "--state":
+                zone, (op, port) = cmd[1].split("=")[1], cmd[2].lstrip("-").split("=")
+                if op == "query-port":
+                    rc = 0 if (zone, port) in self.ports else 1
+                elif op == "remove-port":
+                    self.ports.discard((zone, port))
+        else:
+            raise AssertionError(f"unexpected command {cmd}")
+        if check and rc:
+            raise subprocess.CalledProcessError(rc, cmd, out, "")
+        return subprocess.CompletedProcess(cmd, rc, out, "")
+
+
+def seeded_state(tmp_path, services=True):
+    state = tmp_path / "state"
+    (state / "services").mkdir(parents=True)
+    (state / "pki").mkdir()
+    (state / "pki" / "ca.key.age").write_text("sealed\n")
+    created = {"kind": "dciab-bootstrap", "registry": "c0ffee" + "0" * 58}
+    if services:
+        created["services"] = "dns-only"
+    cli.save_created(state, created)
+    (state / "services" / "created").write_text(
+        "address eth0 10.30.110.53/24\naddress eth0 10.30.110.54/24\nport public 53/udp\nport public 53/tcp\n"
+        "pod dciab-services\n")
+    (state / "services" / "applied").write_text("fingerprint\n")
+    return state
+
+
+@pytest.fixture
+def host(monkeypatch):
+    h = FakeHost()
+    monkeypatch.setattr(cli.subprocess, "run", h)
+    return h
+
+
+def test_remove_undoes_what_seed_created_and_keeps_the_state(tmp_path, host, capsys):
+    state = seeded_state(tmp_path)
+    assert cli.remove(state, purge=False, force=False) == 0
+    assert host.kind == set() and host.containers == {} and host.pods == set()
+    assert host.addrs["eth0"] == {"10.30.110.5/24"}          # the bootstrap address was never seed's
+    assert host.ports == {("public", "22/tcp")}
+    assert (state / "pki" / "ca.key.age").read_text() == "sealed\n"
+    assert not (state / cli.CREATED).exists() and not (state / "services" / "created").exists()
+    assert not (state / "services" / "applied").exists()
+    assert "kept the state folder" in capsys.readouterr().out
+    # Idempotent: a second run finds nothing to do and touches nothing.
+    host.calls.clear()
+    assert cli.remove(state, purge=False, force=False) == 0
+    assert host.calls == []
+
+
+def test_remove_skips_what_is_already_gone(tmp_path, host):
+    state = seeded_state(tmp_path)
+    host.kind.clear()
+    host.containers.clear()
+    host.pods.clear()
+    host.addrs["eth0"].discard("10.30.110.53/24")
+    host.firewalld = False
+    assert cli.remove(state, purge=False, force=False) == 0
+    assert host.addrs["eth0"] == {"10.30.110.5/24"}
+    assert not any(c[:3] in (["kind", "delete", "cluster"], ["podman", "pod", "rm"]) for c in host.calls)
+
+
+def test_remove_leaves_a_registry_container_seed_did_not_create(tmp_path, host, capsys):
+    state = seeded_state(tmp_path)
+    host.containers["dciab-registry"] = "beef" + "1" * 60   # replaced by someone else
+    assert cli.remove(state, purge=True, force=False) == 1
+    assert host.containers == {"dciab-registry": "beef" + "1" * 60}
+    assert "isn't the one seed created" in capsys.readouterr().err
+    assert state.is_dir() and cli.load_created(state) == {"registry": "c0ffee" + "0" * 58}  # retried next time
+
+
+def test_remove_without_records_touches_nothing(tmp_path, host, capsys):
+    state = tmp_path / "state"
+    state.mkdir()
+    (state / "services").mkdir()
+    (state / "services" / "created").write_text("address eth0 10.30.110.53/24\n")  # services run on its own
+    assert cli.remove(state, purge=False, force=False) == 0
+    assert host.calls == [] and "10.30.110.53/24" in host.addrs["eth0"]
+    assert "lists nothing" in capsys.readouterr().out
+
+
+def test_remove_leaves_services_it_did_not_run(tmp_path, host):
+    state = seeded_state(tmp_path, services=False)   # a site with spec.hypervisors: services is its own
+    assert cli.remove(state, purge=False, force=False) == 0
+    assert host.pods == {"dciab-services"} and "10.30.110.53/24" in host.addrs["eth0"]
+    assert ("public", "53/udp") in host.ports and (state / "services" / "created").exists()
+
+
+def test_remove_refuses_a_bootstrap_cluster_that_still_manages_clusters(tmp_path, host, capsys):
+    state = seeded_state(tmp_path)
+    host.capi_clusters = ["cluster.cluster.x-k8s.io/mgmt"]
+    assert cli.remove(state, purge=True, force=False) == 1
+    assert host.kind == {"dciab-bootstrap"} and state.is_dir()
+    assert "still holds cluster.cluster.x-k8s.io/mgmt" in capsys.readouterr().err
+    assert cli.remove(state, purge=False, force=True) == 0 and host.kind == set()
+
+
+def test_remove_purge_state_deletes_it_with_a_warning(tmp_path, host, capsys):
+    state = seeded_state(tmp_path)
+    assert cli.remove(state, purge=True, force=False) == 0
+    assert not state.exists()
+    assert "WARNING: deleting the state folder" in capsys.readouterr().err
+
+
+def test_cli_remove_and_purge_flags(tmp_path, monkeypatch, capsys):
+    cfg = tmp_path / "dciab.yaml"
+    cfg.write_text("spec: {}\n")
+    with pytest.raises(SystemExit):
+        cli.main([str(cfg), "--root", str(ROOT), "--purge-state"])
+    assert "go with --remove" in capsys.readouterr().err
+    monkeypatch.setattr(cli.os, "geteuid", lambda: 0)
+    seen = {}
+    monkeypatch.setattr(cli, "remove", lambda state, purge, force: seen.update(state=state, purge=purge) or 0)
+    # No state folder: nothing to remove, and none is made.
+    assert cli.main([str(cfg), "--root", str(ROOT), "--state", str(tmp_path / "s"), "--remove"]) == 0
+    assert not (tmp_path / "s").exists() and seen == {}
+    (tmp_path / "s").mkdir()
+    monkeypatch.setattr(cli.os, "access", lambda *a: False)
+    assert cli.main([str(cfg), "--root", str(ROOT), "--payload", str(tmp_path / "none"), "--state",
+                     str(tmp_path / "s"), "--remove", "--purge-state"]) == 0
+    assert seen == {"state": tmp_path / "s", "purge": True}
+
+
+def test_seed_prints_elapsed_time_per_step(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(cli.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(cli.os, "access", lambda *a: False)
+    monkeypatch.setattr(cli, "verify_payload_tools", lambda payload: None)
+    monkeypatch.setattr(cli, "load_settings", lambda config: None)
+    monkeypatch.setattr(cli, "step_preflight", lambda *a: None)
+    monkeypatch.setattr(cli.pki, "ensure", lambda *a, **k: [])
+    cfg = tmp_path / "dciab.yaml"
+    cfg.write_text("spec: {}\n")
+    assert cli.main([str(cfg), "--root", str(tmp_path), "--state", str(tmp_path / "s"), "--until", "pki"]) == 0
+    out = capsys.readouterr().out
+    assert "== seed: preflight done in 0s" in out and "== seed: pki done in 0s" in out
+
+
+def test_services_prints_elapsed_time_per_step():
+    step = (ROOT / "lib" / "steps" / "services.sh").read_text()
+    funcs = step[step.index('current="" started=0'):step.index("\n# Read the plan")]
+    script = f'set -euo pipefail\nuntil=b\n{funcs}\nstep a\necho work\nstep b\nfinish_if b\necho unreachable\n'
+    r = subprocess.run(["bash", "-c", script], capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
+    assert r.stdout.split("\n") == ["", "== services: a", "work", "== services: a done in 0s", "",
+                                    "== services: b", "== services: b done in 0s",
+                                    "dciab services: stopped after 'b' (--until)", ""]
+    assert step.rstrip().endswith("helper check\nstep_done")

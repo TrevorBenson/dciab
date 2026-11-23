@@ -8,7 +8,8 @@
 # manifests (the archive payload's providers/ folder) instead of downloading them. Provider ${VARIABLES} come
 # from bundle.lock (clusterAPI.variables); the environment overrides declared ones.
 # Without --manifests, they come from hack/fetch_crds.py, checked against bundle.lock's
-# checksums.
+# checksums. The classes release is upgraded only when the chart renders something other
+# than what is deployed.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -73,10 +74,26 @@ kubectl wait --for=condition=Available deployment --all -A --timeout=10m
 kubectl get deployments -A
 endgroup
 
+# The classes release, deployed, renders exactly what this chart renders now: an upgrade
+# would only add a Helm revision. Compared line by line, ignoring trailing spaces and blank lines.
+classes_unchanged() {
+  local chart="$1" normalize='s/[[:space:]]*$//; /^$/d'
+  [[ "$(helm list --namespace "$CLASS_NS" --filter '^classes$' --deployed -q 2>/dev/null)" == classes ]] || return 1
+  local have want
+  have="$(helm get manifest classes --namespace "$CLASS_NS" 2>/dev/null | sed -e "$normalize")" || return 1
+  want="$(helm template classes "$chart" --namespace "$CLASS_NS" | sed -e "$normalize")" || return 1
+  [[ -n "$want" && "$have" == "$want" ]]
+}
+
 if [[ "$with_classes" == true ]]; then
   group "ClusterClasses"
-  retry 10 15 helm upgrade --install classes "$ROOT/charts/capi-clusterclasses" \
-    --namespace "$CLASS_NS" --create-namespace --wait
+  chart="$ROOT/charts/capi-clusterclasses"
+  if classes_unchanged "$chart"; then
+    echo "release classes already deployed with these manifests; not upgrading"
+  else
+    retry 10 15 helm upgrade --install classes "$chart" \
+      --namespace "$CLASS_NS" --create-namespace --wait
+  fi
   kubectl -n "$CLASS_NS" get clusterclasses
   endgroup
 fi

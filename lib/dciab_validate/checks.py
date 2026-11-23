@@ -85,6 +85,7 @@ class Checker:
         self.check_cidrs()
         self.check_baremetal()
         self.check_bootstrap_notes()
+        self.check_resolvers()
         self.check_time()
         self.check_hypervisors()
         self.check_failure_domains()
@@ -418,6 +419,23 @@ class Checker:
         if "managementVLAN" not in self.spec["bootstrap"]:
             self.notes.append("spec.bootstrap.managementVLAN isn't set; the DCiaB bootstrap appliance needs it "
                               "(tagged or untagged) to configure its own network")
+
+    def check_resolvers(self) -> None:
+        """network.upstreamResolvers. The seed DNS (network.dnsServiceIPs) is every node's only
+        resolver; with no upstream it answers network.domain and refuses everything else. That is
+        right for an isolated site and a silent stall anywhere else, so it must be said."""
+        net = self.spec["network"]
+        base = ("spec", "network")
+        isolated = net.get("isolated", False)
+        if not net["upstreamResolvers"] and not isolated:
+            self.warn(base + ("upstreamResolvers",), "[] and network.isolated isn't true",
+                      "list the site's DNS servers, or set network.isolated: true if the site has none. Without "
+                      "upstream resolvers the nodes resolve only network.domain: any name outside it (an image "
+                      "registry the seed registry doesn't mirror, an NTP pool, package mirrors) fails, and "
+                      "kubeadm init can stall waiting for images")
+        elif net["upstreamResolvers"] and isolated:
+            self.warn(base + ("isolated",), "true, but upstreamResolvers lists servers",
+                      "remove isolated: true (the seed DNS forwards to upstreamResolvers), or empty the list")
 
     def check_time(self) -> None:
         """spec.time. With servedBy dciab the bootstrap host serves NTP on the DNS service IPs,

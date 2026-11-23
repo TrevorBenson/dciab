@@ -46,7 +46,7 @@ spec:
 
   network:
     domain: dc1.example.com              # zone the site delegates to DCiaB
-    upstreamResolvers: [10.0.0.53, 10.0.1.53]   # explicit [] = isolated site
+    upstreamResolvers: [10.0.0.53, 10.0.1.53]   # the seed DNS forwards other names here; [] needs isolated: true
     nodes:
       cidr: 10.20.110.0/24
       gateway: 10.20.110.1

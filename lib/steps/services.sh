@@ -27,7 +27,9 @@
 # default spec.bootstrap.workDisk.path/isos, else <state>/isos; per-host installer ISOs from <state>/host-isos.
 # DCIAB_CHRONY_IMAGE names a chrony image already in local storage instead of the pinned one
 # (building and testing DCiaB); the step warns when it is set.
-# Teardown: podman kube down <state>/services/pod.yaml.
+# What it adds to the host (addresses, firewalld ports, the pod) is listed in
+# <state>/services/created. Teardown: dciab seed --remove for the DNS-only services seed ran;
+# otherwise podman kube down <state>/services/pod.yaml, and undo the listed addresses and ports.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -74,8 +76,13 @@ helper() {
   [[ -n "$payload" ]] && args+=(--payload "$payload")
   python3 -m dciab_services "${args[@]}" "$config" "$@"
 }
-step() { echo; echo "== services: $1"; }
-finish_if() { if [[ "$until" == "$1" ]]; then echo "dciab services: stopped after '$1' (--until)"; exit 0; fi; }
+current="" started=0
+step_done() {   # "== services: <step> done in Ns" for the step that just finished
+  if [[ -n "$current" ]]; then echo "== services: $current done in $(( SECONDS - started ))s"; fi
+  current=""
+}
+step() { step_done; echo; echo "== services: $1"; current="$1"; started=$SECONDS; }
+finish_if() { if [[ "$until" == "$1" ]]; then step_done; echo "dciab services: stopped after '$1' (--until)"; exit 0; fi; }
 
 # Read the plan: shell assignments from the helper, which validates the config.
 MODE="" INTERFACE="" PREFIX="" SERVICE_IPS="" BOOTSTRAP_ADDRESS="" NTP="" IMAGES=""
@@ -108,6 +115,12 @@ pod_running() {   # every container of the pod is running
   [[ -n "$states" ]] && ! grep -qv '^running$' < <(tr ' ' '\n' <<<"$states" | sed '/^$/d')
 }
 applied() { [[ -f "$CONF_DIR/applied" && "$(cat "$CONF_DIR/applied")" == "$FINGERPRINT" ]]; }
+# What this step added to the host, one line each, so it can be undone (dciab seed --remove):
+# "address <nic> <ip>/<prefix>", "port <zone> <port>", "pod <name>".
+record() {
+  local f="$CONF_DIR/created"
+  if ! grep -qxF "$*" "$f" 2>/dev/null; then echo "$*" >> "$f"; chmod 600 "$f"; fi
+}
 
 if (( print )); then
   echo "dciab services plan (--print: nothing is changed)"
@@ -162,6 +175,7 @@ for ip in $SERVICE_IPS; do
     echo "$ip already on $nic"
   else
     ip addr add "$ip/$PREFIX" dev "$nic"
+    record address "$nic" "$ip/$PREFIX"
     echo "added $ip/$PREFIX to $nic"
   fi
 done
@@ -176,6 +190,7 @@ if command -v firewall-cmd >/dev/null && firewall-cmd --state >/dev/null 2>&1; t
   for p in "${ports[@]}"; do
     if ! firewall-cmd --zone="$zone" --query-port="$p" >/dev/null; then
       firewall-cmd --zone="$zone" --add-port="$p" >/dev/null || die "firewalld refused to open $p in zone $zone"
+      record port "$zone" "$p"
       echo "opened $p in zone $zone (runtime only)"
     fi
   done
@@ -212,6 +227,7 @@ step pod
 if applied && pod_running; then
   echo "pod $POD already runs this config"
 else
+  record pod "$POD"
   podman kube play --replace "$CONF_DIR/pod.yaml" 9>&-
   echo "$FINGERPRINT" > "$CONF_DIR/applied"
   chmod 600 "$CONF_DIR/applied"
@@ -220,3 +236,4 @@ finish_if pod
 
 step ready
 helper check
+step_done

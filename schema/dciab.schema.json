@@ -217,7 +217,11 @@
           "type": "array",
           "uniqueItems": true,
           "items": {"$ref": "#/$defs/ipv4"},
-          "description": "upstream DNS servers; an explicit empty list means an isolated site"
+          "description": "upstream DNS servers the seed DNS forwards other names to; an empty list forwards nothing (set isolated: true to say that is intended)"
+        },
+        "isolated": {
+          "type": "boolean",
+          "description": "optional, default false. true: the site has no upstream DNS on purpose, and upstreamResolvers is empty. Nodes resolve only network.domain, so everything they pull must come through the seed registry. Without it, an empty upstreamResolvers is a warning"
         },
         "nodes": {
           "type": "object",
