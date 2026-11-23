@@ -22,6 +22,26 @@ spec:
         apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
         kind: VSphereMachineTemplate
         name: dciab-vsphere-r1-controlplane
+    # Remediation: a Machine whose Node stays NotReady or unreachable for 5 minutes, or
+    # that never gets a Node, is replaced. VMs clone, boot and join well within this.
+    # KubeadmControlPlane never remediates in a way that loses etcd quorum, and only one
+    # control plane machine at a time here; workers stop remediating when more than 40%
+    # of a pool is unhealthy, which is an outage to look at, not a node to replace.
+    healthCheck:
+      checks:
+        nodeStartupTimeoutSeconds: 1200
+        unhealthyNodeConditions:
+          - {type: Ready, status: Unknown, timeoutSeconds: 300}
+          - {type: Ready, status: "False", timeoutSeconds: 300}
+      remediation:
+        triggerIf:
+          unhealthyLessThanOrEqualTo: 1
+    # Draining waits at most 30 minutes (Longhorn may need that to move a replica off the
+    # node), and detaching volumes at most 10, so a stuck pod or volume never blocks an
+    # upgrade or a remediation forever.
+    deletion:
+      nodeDrainTimeoutSeconds: 1800
+      nodeVolumeDetachTimeoutSeconds: 600
   infrastructure:
     templateRef:
       apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
@@ -40,6 +60,18 @@ spec:
             apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
             kind: VSphereMachineTemplate
             name: dciab-vsphere-r1-worker
+        healthCheck:
+          checks:
+            nodeStartupTimeoutSeconds: 1200
+            unhealthyNodeConditions:
+              - {type: Ready, status: Unknown, timeoutSeconds: 300}
+              - {type: Ready, status: "False", timeoutSeconds: 300}
+          remediation:
+            triggerIf:
+              unhealthyLessThanOrEqualTo: 40%
+        deletion:
+          nodeDrainTimeoutSeconds: 1800
+          nodeVolumeDetachTimeoutSeconds: 600
   variables:
     - name: apiVIP
       required: true
@@ -63,8 +95,37 @@ spec:
           type: string
           minLength: 1
           description: >-
-            Host (and optional port) of the registry mirror. Nodes pull docker.io, quay.io,
-            ghcr.io and registry.k8s.io through https://<registryMirror>/v2/<upstream>/.
+            Host (and optional port) of the registry mirror. Nodes pull every registry in
+            mirroredRegistries through https://<registryMirror>/v2/<upstream>/.
+    - name: mirroredRegistries
+      required: true
+      schema:
+        openAPIV3Schema:
+          type: array
+          minItems: 1
+          uniqueItems: true
+          items:
+            type: string
+            pattern: '^[a-z0-9]([a-z0-9.-]*[a-z0-9])?(:[0-9]+)?$'
+          description: >-
+            Upstream registries (such as docker.io) that nodes pull through registryMirror.
+            Each one gets a containerd hosts.toml and a CRI-O mirror entry. A list, so a
+            new upstream needs no new class revision.
+    - name: podSecurityExemptNamespaces
+      required: true
+      schema:
+        openAPIV3Schema:
+          type: array
+          minItems: 1
+          uniqueItems: true
+          items:
+            type: string
+            pattern: '^[a-z0-9]([-a-z0-9]*[a-z0-9])?$'
+          description: >-
+            Namespaces Pod Security admission leaves alone: kube-system and the namespaces
+            of the CNI and CSI pods that must run privileged. Every other namespace gets
+            baseline enforced and restricted as warnings and audit annotations, unless its
+            own pod-security.kubernetes.io labels say otherwise.
     - name: trustBundle
       required: true
       schema:
@@ -155,7 +216,7 @@ spec:
 
   patches:
     - name: nodeBase
-      description: Trust bundle, registry mirrors, NTP and the break-glass user on every node.
+      description: Trust bundle, a registry mirror per mirroredRegistries entry, NTP and the break-glass user on every node.
       definitions:
         - selector:
             apiVersion: controlplane.cluster.x-k8s.io/v1beta2
@@ -172,86 +233,27 @@ spec:
                     permissions: "0644"
                     content: |
                     {{- .trustBundle | nindent 6 }}
-            - op: add
-              path: /spec/template/spec/kubeadmConfigSpec/files/-
-              valueFrom:
-                template: |
-                  path: /etc/containerd/certs.d/docker.io/hosts.toml
-                  owner: root:root
-                  permissions: "0644"
-                  content: |
-                    server = "https://registry-1.docker.io"
-                    [host."https://{{ .registryMirror }}/v2/docker.io"]
-                      capabilities = ["pull", "resolve"]
-                      override_path = true
-            - op: add
-              path: /spec/template/spec/kubeadmConfigSpec/files/-
-              valueFrom:
-                template: |
-                  path: /etc/containerd/certs.d/quay.io/hosts.toml
-                  owner: root:root
-                  permissions: "0644"
-                  content: |
-                    server = "https://quay.io"
-                    [host."https://{{ .registryMirror }}/v2/quay.io"]
-                      capabilities = ["pull", "resolve"]
-                      override_path = true
-            - op: add
-              path: /spec/template/spec/kubeadmConfigSpec/files/-
-              valueFrom:
-                template: |
-                  path: /etc/containerd/certs.d/ghcr.io/hosts.toml
-                  owner: root:root
-                  permissions: "0644"
-                  content: |
-                    server = "https://ghcr.io"
-                    [host."https://{{ .registryMirror }}/v2/ghcr.io"]
-                      capabilities = ["pull", "resolve"]
-                      override_path = true
-            - op: add
-              path: /spec/template/spec/kubeadmConfigSpec/files/-
-              valueFrom:
-                template: |
-                  path: /etc/containerd/certs.d/registry.k8s.io/hosts.toml
-                  owner: root:root
-                  permissions: "0644"
-                  content: |
-                    server = "https://registry.k8s.io"
-                    [host."https://{{ .registryMirror }}/v2/registry.k8s.io"]
-                      capabilities = ["pull", "resolve"]
-                      override_path = true
-            - op: add
-              path: /spec/template/spec/kubeadmConfigSpec/files/-
-              valueFrom:
-                template: |
-                  path: /etc/containers/registries.conf.d/50-dciab-mirror.conf
-                  owner: root:root
-                  permissions: "0644"
-                  content: |
-                    [[registry]]
-                    prefix = "docker.io"
-                    location = "docker.io"
-                    [[registry.mirror]]
-                    location = "{{ .registryMirror }}/docker.io"
-
-                    [[registry]]
-                    prefix = "quay.io"
-                    location = "quay.io"
-                    [[registry.mirror]]
-                    location = "{{ .registryMirror }}/quay.io"
-
-                    [[registry]]
-                    prefix = "ghcr.io"
-                    location = "ghcr.io"
-                    [[registry.mirror]]
-                    location = "{{ .registryMirror }}/ghcr.io"
-
-                    [[registry]]
-                    prefix = "registry.k8s.io"
-                    location = "registry.k8s.io"
-                    [[registry.mirror]]
-                    location = "{{ .registryMirror }}/registry.k8s.io"
-
+                  {{- range .mirroredRegistries }}
+                  - path: /etc/containerd/certs.d/{{ . }}/hosts.toml
+                    owner: root:root
+                    permissions: "0644"
+                    content: |
+                      server = "https://{{ if eq . "docker.io" }}registry-1.docker.io{{ else }}{{ . }}{{ end }}"
+                      [host."https://{{ $.registryMirror }}/v2/{{ . }}"]
+                        capabilities = ["pull", "resolve"]
+                        override_path = true
+                  {{- end }}
+                  - path: /etc/containers/registries.conf.d/50-dciab-mirror.conf
+                    owner: root:root
+                    permissions: "0644"
+                    content: |
+                      {{- range .mirroredRegistries }}
+                      [[registry]]
+                      prefix = "{{ . }}"
+                      location = "{{ . }}"
+                      [[registry.mirror]]
+                      location = "{{ $.registryMirror }}/{{ . }}"
+                      {{- end }}
             - op: add
               path: /spec/template/spec/kubeadmConfigSpec/ntp
               valueFrom:
@@ -281,86 +283,27 @@ spec:
                     permissions: "0644"
                     content: |
                     {{- .trustBundle | nindent 6 }}
-            - op: add
-              path: /spec/template/spec/files/-
-              valueFrom:
-                template: |
-                  path: /etc/containerd/certs.d/docker.io/hosts.toml
-                  owner: root:root
-                  permissions: "0644"
-                  content: |
-                    server = "https://registry-1.docker.io"
-                    [host."https://{{ .registryMirror }}/v2/docker.io"]
-                      capabilities = ["pull", "resolve"]
-                      override_path = true
-            - op: add
-              path: /spec/template/spec/files/-
-              valueFrom:
-                template: |
-                  path: /etc/containerd/certs.d/quay.io/hosts.toml
-                  owner: root:root
-                  permissions: "0644"
-                  content: |
-                    server = "https://quay.io"
-                    [host."https://{{ .registryMirror }}/v2/quay.io"]
-                      capabilities = ["pull", "resolve"]
-                      override_path = true
-            - op: add
-              path: /spec/template/spec/files/-
-              valueFrom:
-                template: |
-                  path: /etc/containerd/certs.d/ghcr.io/hosts.toml
-                  owner: root:root
-                  permissions: "0644"
-                  content: |
-                    server = "https://ghcr.io"
-                    [host."https://{{ .registryMirror }}/v2/ghcr.io"]
-                      capabilities = ["pull", "resolve"]
-                      override_path = true
-            - op: add
-              path: /spec/template/spec/files/-
-              valueFrom:
-                template: |
-                  path: /etc/containerd/certs.d/registry.k8s.io/hosts.toml
-                  owner: root:root
-                  permissions: "0644"
-                  content: |
-                    server = "https://registry.k8s.io"
-                    [host."https://{{ .registryMirror }}/v2/registry.k8s.io"]
-                      capabilities = ["pull", "resolve"]
-                      override_path = true
-            - op: add
-              path: /spec/template/spec/files/-
-              valueFrom:
-                template: |
-                  path: /etc/containers/registries.conf.d/50-dciab-mirror.conf
-                  owner: root:root
-                  permissions: "0644"
-                  content: |
-                    [[registry]]
-                    prefix = "docker.io"
-                    location = "docker.io"
-                    [[registry.mirror]]
-                    location = "{{ .registryMirror }}/docker.io"
-
-                    [[registry]]
-                    prefix = "quay.io"
-                    location = "quay.io"
-                    [[registry.mirror]]
-                    location = "{{ .registryMirror }}/quay.io"
-
-                    [[registry]]
-                    prefix = "ghcr.io"
-                    location = "ghcr.io"
-                    [[registry.mirror]]
-                    location = "{{ .registryMirror }}/ghcr.io"
-
-                    [[registry]]
-                    prefix = "registry.k8s.io"
-                    location = "registry.k8s.io"
-                    [[registry.mirror]]
-                    location = "{{ .registryMirror }}/registry.k8s.io"
-
+                  {{- range .mirroredRegistries }}
+                  - path: /etc/containerd/certs.d/{{ . }}/hosts.toml
+                    owner: root:root
+                    permissions: "0644"
+                    content: |
+                      server = "https://{{ if eq . "docker.io" }}registry-1.docker.io{{ else }}{{ . }}{{ end }}"
+                      [host."https://{{ $.registryMirror }}/v2/{{ . }}"]
+                        capabilities = ["pull", "resolve"]
+                        override_path = true
+                  {{- end }}
+                  - path: /etc/containers/registries.conf.d/50-dciab-mirror.conf
+                    owner: root:root
+                    permissions: "0644"
+                    content: |
+                      {{- range .mirroredRegistries }}
+                      [[registry]]
+                      prefix = "{{ . }}"
+                      location = "{{ . }}"
+                      [[registry.mirror]]
+                      location = "{{ $.registryMirror }}/{{ . }}"
+                      {{- end }}
             - op: add
               path: /spec/template/spec/ntp
               valueFrom:
@@ -651,6 +594,105 @@ spec:
                       verbs: [create, update, patch, delete, deletecollection]
                       resources: [{group: rbac.authorization.k8s.io}]
                     - level: Metadata
+    - name: podSecurity
+      description: >-
+        Pod Security admission defaults on control plane nodes: baseline enforced,
+        restricted as warnings and audit annotations, podSecurityExemptNamespaces exempt.
+        The API server flag and mount are in the KubeadmControlPlaneTemplate.
+      definitions:
+        - selector:
+            apiVersion: controlplane.cluster.x-k8s.io/v1beta2
+            kind: KubeadmControlPlaneTemplate
+            matchResources:
+              controlPlane: true
+          jsonPatches:
+            - op: add
+              path: /spec/template/spec/kubeadmConfigSpec/files/-
+              valueFrom:
+                template: |
+                  path: /etc/kubernetes/admission/config.yaml
+                  owner: root:root
+                  permissions: "0644"
+                  content: |
+                    apiVersion: apiserver.config.k8s.io/v1
+                    kind: AdmissionConfiguration
+                    plugins:
+                      - name: PodSecurity
+                        configuration:
+                          apiVersion: pod-security.admission.config.k8s.io/v1
+                          kind: PodSecurityConfiguration
+                          defaults:
+                            enforce: baseline
+                            enforce-version: latest
+                            audit: restricted
+                            audit-version: latest
+                            warn: restricted
+                            warn-version: latest
+                          exemptions:
+                            usernames: []
+                            runtimeClasses: []
+                            namespaces: {{ .podSecurityExemptNamespaces | toJson }}
+    - name: secretEncryption
+      description: >-
+        Secrets encrypted at rest in etcd. The EncryptionConfiguration (secretbox, one key)
+        comes from the Secret <cluster>-encryption-config in the cluster's namespace on the
+        management cluster, which charts/capi-cluster creates once and never rotates by
+        itself. The key is never in Git or in the class. The API server flag and mount are
+        in the KubeadmControlPlaneTemplate.
+      definitions:
+        - selector:
+            apiVersion: controlplane.cluster.x-k8s.io/v1beta2
+            kind: KubeadmControlPlaneTemplate
+            matchResources:
+              controlPlane: true
+          jsonPatches:
+            - op: add
+              path: /spec/template/spec/kubeadmConfigSpec/files/-
+              valueFrom:
+                template: |
+                  path: /etc/kubernetes/encryption/config.yaml
+                  owner: root:root
+                  permissions: "0600"
+                  contentFrom:
+                    secret:
+                      name: {{ .builtin.cluster.name }}-encryption-config
+                      key: config.yaml
+    - name: kubeletServingCerts
+      description: >-
+        Kubelets request their serving certificate from the cluster CA
+        (serverTLSBootstrap) and rotate it, instead of a self-signed one. A kubeadm patch
+        file; init and join read it from /etc/kubernetes/patches. The serving CSRs are
+        approved by kubelet-csr-approver (addons/kubelet-csr-approver).
+      definitions:
+        - selector:
+            apiVersion: controlplane.cluster.x-k8s.io/v1beta2
+            kind: KubeadmControlPlaneTemplate
+            matchResources:
+              controlPlane: true
+          jsonPatches:
+            - op: add
+              path: /spec/template/spec/kubeadmConfigSpec/files/-
+              value:
+                path: /etc/kubernetes/patches/kubeletconfiguration+merge.yaml
+                owner: root:root
+                permissions: "0644"
+                content: |
+                  serverTLSBootstrap: true
+        - selector:
+            apiVersion: bootstrap.cluster.x-k8s.io/v1beta2
+            kind: KubeadmConfigTemplate
+            matchResources:
+              machineDeploymentClass:
+                names: [default]
+          jsonPatches:
+            - op: add
+              path: /spec/template/spec/files/-
+              value:
+                path: /etc/kubernetes/patches/kubeletconfiguration+merge.yaml
+                owner: root:root
+                permissions: "0644"
+                content: |
+                  serverTLSBootstrap: true
 
 ---
 apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
@@ -729,6 +771,11 @@ metadata:
 spec:
   template:
     spec:
+      # Replace control plane machines 60 days before their kubeadm certificates (one
+      # year) expire, so a cluster that is never upgraded never runs on expired ones.
+      rollout:
+        before:
+          certificatesExpiryDays: 60
       kubeadmConfigSpec:
         clusterConfiguration:
           apiServer:
@@ -740,7 +787,21 @@ spec:
               - {name: audit-log-maxage, value: "30"}
               - {name: audit-log-maxbackup, value: "10"}
               - {name: audit-log-maxsize, value: "100"}
+              # Pod Security defaults: written by the podSecurity patch.
+              - {name: admission-control-config-file, value: /etc/kubernetes/admission/config.yaml}
+              # Secret encryption at rest: written by the secretEncryption patch.
+              - {name: encryption-provider-config, value: /etc/kubernetes/encryption/config.yaml}
             extraVolumes:
+              - name: admission-config
+                hostPath: /etc/kubernetes/admission/config.yaml
+                mountPath: /etc/kubernetes/admission/config.yaml
+                readOnly: true
+                pathType: File
+              - name: encryption-config
+                hostPath: /etc/kubernetes/encryption/config.yaml
+                mountPath: /etc/kubernetes/encryption/config.yaml
+                readOnly: true
+                pathType: File
               - name: audit-policy
                 hostPath: /etc/kubernetes/audit/policy.yaml
                 mountPath: /etc/kubernetes/audit/policy.yaml
@@ -760,11 +821,16 @@ spec:
         initConfiguration:
           # Cilium replaces kube-proxy (Gateway API needs it); see addons/cilium.
           skipPhases: [addon/kube-proxy]
+          # kubeadm patches, such as the kubelet's serverTLSBootstrap (kubeletServingCerts patch).
+          patches:
+            directory: /etc/kubernetes/patches
           nodeRegistration:
             name: '{{ local_hostname }}'
             kubeletExtraArgs:
                             - {name: cloud-provider, value: "external"}
         joinConfiguration:
+          patches:
+            directory: /etc/kubernetes/patches
           nodeRegistration:
             name: '{{ local_hostname }}'
             kubeletExtraArgs:
@@ -787,6 +853,8 @@ spec:
   template:
     spec:
       joinConfiguration:
+        patches:
+          directory: /etc/kubernetes/patches
         nodeRegistration:
           name: '{{ local_hostname }}'
           kubeletExtraArgs:

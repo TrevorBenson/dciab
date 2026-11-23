@@ -8,11 +8,21 @@ The chart renders:
 
 - a `Cluster` whose topology uses `dciab-<class>-<classRevision>` from [capi-clusterclasses](../capi-clusterclasses),
 - for `vsphere`: an `InClusterIPPool` named `<cluster>-nodes`,
-- for `metal3`: an `IPPool` and a `Metal3DataTemplate` per role (`<cluster>-controlplane`, `<cluster>-<pool>`).
+- for `metal3`: an `IPPool` and a `Metal3DataTemplate` per role (`<cluster>-controlplane`, `<cluster>-<pool>`),
+- the Secret `<cluster>-encryption-config`, which holds the cluster's Secret encryption key (below).
 
 Proxmox clusters need no pool object: CAPMOX allocates node addresses from the cluster's `ipv4Config`.
 
 Values are validated by `values.schema.json`: every site-specific value is required and nothing has a default. [ci/](ci) has a complete values file for each class.
+
+## The Secret encryption key
+
+Every class encrypts Secrets at rest in etcd. The API server reads its `EncryptionConfiguration` from the Secret `<cluster>-encryption-config` in the cluster's namespace on the management cluster; Cluster API's bootstrap provider writes it to each control plane node (mode 600).
+
+- **Where it comes from.** The chart makes it on the first install: one random 32-byte `secretbox` key from Helm (`randBytes`). An upgrade looks the Secret up and keeps its key, because a new key would leave every stored Secret unreadable. Nothing about the key is in Git, the values or the class.
+- **How it is protected.** It exists only in that Secret (on the management cluster, whose own etcd encrypts it in turn on MGMT) and on the cluster's control plane nodes, readable by root only. It carries `helm.sh/resource-policy: keep` and `clusterctl.cluster.x-k8s.io/move`, so uninstalling never deletes it and `clusterctl move` takes it along with the cluster. Losing it loses every Secret in that cluster, so it belongs in the recovery bundle (ADR 0009).
+- **Renderers without the cluster.** `helm template` and Argo CD can't look the Secret up and would render a new key. Set `encryption.createSecret: false` there; the Secret must then already exist.
+- **Rotation** is by hand for now: add a second key first, roll the control plane, rewrite all Secrets, then drop the old key.
 
 ## Kept on uninstall
 

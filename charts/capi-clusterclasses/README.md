@@ -36,13 +36,19 @@ To really delete a revision:
 
 - **No kube-proxy**: kubeadm skips its kube-proxy addon. Cilium replaces it and is installed after the control plane is up ([addons/cilium](../../addons/cilium/README.md)); nodes stay `NotReady` until then.
 - **API VIP**: a kube-vip static pod in ARP mode on the control plane nodes (`apiVIP` variable).
-- **Registry mirror**: for `docker.io`, `quay.io`, `ghcr.io` and `registry.k8s.io`, nodes pull through `https://<registryMirror>/v2/<upstream>/`. The classes write the configuration for both runtimes, so either kind of node image works:
+- **Registry mirror**: for every upstream registry in `mirroredRegistries` (from `bundle.lock`), nodes pull through `https://<registryMirror>/v2/<upstream>/`. The list is a variable, so a new upstream needs no new class revision; changing it rolls the nodes. The classes write the configuration for both runtimes, so either kind of node image works:
   - **containerd:** `hosts.toml` files with `override_path`. The template's containerd must use `config_path = "/etc/containerd/certs.d"`.
   - **CRI-O:** `/etc/containers/registries.conf.d/50-dciab-mirror.conf`, with mirror location `<registryMirror>/<upstream>`.
 - **Trust**: the platform CA (`trustBundle`) in the node trust store, applied before kubeadm runs.
 - **Time**: NTP servers (`ntpServers`).
 - **Break-glass user**: `dciab` with the given SSH keys (`sshAuthorizedKeys`).
 - **OIDC** (optional): API server flags for Authentik when `oidc` is set.
+- **Pod Security admission**: `baseline` enforced, `restricted` as warnings and audit annotations, in every namespace but `podSecurityExemptNamespaces` (kube-system and the privileged CNI and CSI namespaces). A namespace's own `pod-security.kubernetes.io` labels still override the defaults.
+- **Secrets encrypted at rest**: the API server's `EncryptionConfiguration` comes from the Secret `<cluster>-encryption-config` on the management cluster, which [capi-cluster](../capi-cluster/README.md) creates. No key is in a class.
+- **Kubelet serving certificates**: `serverTLSBootstrap: true` (a kubeadm patch in `/etc/kubernetes/patches`), so serving certificates come from the cluster CA and rotate. [kubelet-csr-approver](../../addons/kubelet-csr-approver/README.md) approves their CSRs.
+- **Health checks**: a MachineHealthCheck for the control plane and each worker pool. A machine whose Node is `NotReady` or `Unknown` for 5 minutes, or that never gets a Node (20 minutes on VMs, 60 on bare metal), is replaced. The control plane replaces one machine at a time, and never so that etcd loses quorum; a worker pool stops replacing once more than 40% of it is unhealthy.
+- **Deleting machines**: draining a node stops after 30 minutes and waiting for its volumes to detach after 10, so a stuck pod can't block an upgrade or a replacement forever.
+- **Certificate expiry**: control plane machines are replaced 60 days before their kubeadm certificates expire, so a cluster that is never upgraded never runs on expired certificates.
 - **API audit log**: an audit policy at `/etc/kubernetes/audit/policy.yaml` on the control plane nodes (Metadata by default; full bodies for RBAC changes; never Secret, ConfigMap or token review bodies; no health checks, events or system leases). The API server writes `/var/log/kubernetes/audit/audit.log`, rotated at 100 MB; a rotated file is deleted after 30 days, or sooner once there are more than 10.
 
 Provider ID: vSphere nodes run with `cloud-provider: external`, so the vSphere CPI must be deployed (baseline add-ons; nothing installs it yet). Proxmox uses CAPMOX's provider-ID injection. On Metal3, CAPM3 sets the provider ID on each Node itself (`cloudProviderEnabled: false`), so kubelet gets no `provider-id`. Neither Proxmox nor Metal3 needs a cloud controller.
@@ -52,7 +58,6 @@ kube-vip mounts `admin.conf` read-only. It still holds cluster-admin credentials
 ## Not in v1 yet
 
 - Separate data disks for Longhorn (Longhorn uses the root disk).
-- MachineHealthChecks.
 
 ## Checking
 

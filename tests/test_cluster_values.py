@@ -60,12 +60,13 @@ def test_values_match_the_chart_ci_values(example_name, cluster, ci_file):
 
 @pytest.mark.skipif(not shutil.which("helm"), reason="needs helm")
 @pytest.mark.parametrize("ci_file,kinds", [
-    ("vsphere-values.yaml", {"Cluster", "InClusterIPPool"}),
-    ("proxmox-values.yaml", {"Cluster"}),
-    ("metal3-values.yaml", {"Cluster", "IPPool", "Metal3DataTemplate"}),
+    ("vsphere-values.yaml", {"Cluster", "InClusterIPPool", "Secret"}),
+    ("proxmox-values.yaml", {"Cluster", "Secret"}),
+    ("metal3-values.yaml", {"Cluster", "IPPool", "Metal3DataTemplate", "Secret"}),
 ])
 def test_rendered_objects_are_kept_by_helm(ci_file, kinds):
-    """helm uninstall must not delete the Cluster (and with it the machines) or the pools it takes addresses from."""
+    """helm uninstall must not delete the Cluster (and with it the machines), the pools it takes addresses from,
+    or the Secret encryption key."""
     out = subprocess.run(["helm", "template", "c", str(CHART), "--values", str(CHART / "ci" / ci_file)],
                          check=True, capture_output=True, text=True).stdout
     docs = [d for d in yaml.safe_load_all(out) if d]
@@ -155,3 +156,37 @@ def test_cli_lists_clusters(site, capsys):
     config.write_text((ROOT / "examples" / "metal3-cluster.yaml").read_text())
     assert cli.main([str(config), "--list", "--root", str(ROOT)]) == 0
     assert capsys.readouterr().out.split() == ["mgmt", "infra", "metal01"]
+
+
+def test_mirrored_registries_and_pod_security_come_from_the_lock_and_defaults():
+    lock = yaml.safe_load((ROOT / "bundle.lock").read_text())
+    for name in EXAMPLES:
+        doc = load_example(name)
+        for cluster in cluster_names(doc):
+            v = cluster_values(doc, cluster, CA)
+            assert v["nodes"]["mirroredRegistries"] == lock["mirroredRegistries"]
+            assert v["podSecurity"]["exemptNamespaces"][0] == "kube-system"
+            assert v["encryption"] == {"createSecret": True}
+    custom = dict(lock, mirroredRegistries=["docker.io", "code.forgejo.org"])
+    v = cluster_values(load_example("proxmox"), "mgmt", CA, custom)
+    assert v["nodes"]["mirroredRegistries"] == ["docker.io", "code.forgejo.org"]
+
+
+@pytest.mark.skipif(not shutil.which("helm"), reason="needs helm")
+def test_encryption_secret_holds_an_encryption_configuration():
+    out = subprocess.run(["helm", "template", "c", str(CHART), "--values", str(CHART / "ci" / "proxmox-values.yaml")],
+                         check=True, capture_output=True, text=True).stdout
+    import base64
+    secret = next(d for d in yaml.safe_load_all(out) if d and d["kind"] == "Secret")
+    assert secret["metadata"]["name"] == "infra-encryption-config"
+    assert secret["metadata"]["labels"]["clusterctl.cluster.x-k8s.io/move"] == ""
+    config = yaml.safe_load(base64.b64decode(secret["data"]["config.yaml"]))
+    assert config["kind"] == "EncryptionConfiguration"
+    providers = config["resources"][0]["providers"]
+    assert config["resources"][0]["resources"] == ["secrets"]
+    key = providers[0]["secretbox"]["keys"][0]["secret"]
+    assert len(base64.b64decode(key)) == 32
+    assert providers[-1] == {"identity": {}}
+    off = subprocess.run(["helm", "template", "c", str(CHART), "--values", str(CHART / "ci" / "proxmox-values.yaml"),
+                          "--set", "encryption.createSecret=false"], check=True, capture_output=True, text=True).stdout
+    assert not any(d and d["kind"] == "Secret" for d in yaml.safe_load_all(off))

@@ -4,7 +4,11 @@ Every value comes from the site config (or, for the platform CA, from what DCiaB
 or imported). The config is validated first, so this module assumes a valid document.
 
 Site-wide conventions, the same for every cluster:
-- registry mirror: registry.<network.domain>, the site registry DCiaB runs
+- registry mirror: registry.<network.domain>, the site registry DCiaB runs, for every
+  upstream registry in bundle.lock's mirroredRegistries
+- Pod Security admission exempts kube-system (kube-vip, Cilium) and longhorn-system
+  (Longhorn's manager and CSI plugin run privileged); everything else gets baseline
+- Secret encryption at rest: the capi-cluster chart makes the key (encryption.createSecret)
 - DNS servers: network.dnsServiceIPs; NTP servers: network.ntpServers
 - SSH keys: identity.initialAdmins[].sshPublicKey (the break-glass user `dciab`)
 - Metal3 images: served by Ironic at https://ironic.<network.domain>/images/<file name>,
@@ -19,9 +23,20 @@ from __future__ import annotations
 import ipaddress
 import os
 import re
-from typing import Any, Dict, List
+from pathlib import Path
+from typing import Any, Dict, List, Optional
 
 OIDC_CLIENT_ID = "kubernetes"
+# Namespaces whose pods must run privileged: kube-system (kube-vip, Cilium) and Longhorn.
+# Other components label their own namespaces when they need more than baseline.
+POD_SECURITY_EXEMPT = ["kube-system", "longhorn-system"]
+DEFAULT_LOCK = Path(__file__).resolve().parents[2] / "bundle.lock"
+
+
+def load_lock(path: Path = DEFAULT_LOCK) -> dict:
+    import yaml
+
+    return yaml.safe_load(path.read_text(encoding="utf-8"))
 
 
 CERT_BLOCK = re.compile(r"-----BEGIN CERTIFICATE-----\r?\n.*?\r?\n-----END CERTIFICATE-----", re.S)
@@ -74,9 +89,11 @@ def unsupported(site: dict, name: str) -> List[str]:
     return notes
 
 
-def cluster_values(site: dict, name: str, trust_bundle: str) -> Dict[str, Any]:
-    """Values for the capi-cluster chart. trust_bundle is the platform CA, PEM."""
+def cluster_values(site: dict, name: str, trust_bundle: str, lock: Optional[dict] = None) -> Dict[str, Any]:
+    """Values for the capi-cluster chart. trust_bundle is the platform CA, PEM; lock is
+    bundle.lock (default: the one next to lib/)."""
     spec = site["spec"]
+    lock = lock if lock is not None else load_lock()
     role, c, klass = _cluster(spec, name)
     net = spec["network"]
     domain = net["domain"]
@@ -96,11 +113,14 @@ def cluster_values(site: dict, name: str, trust_bundle: str) -> Dict[str, Any]:
         "labels": {"dciab.io/role": role},
         "nodes": {
             "registryMirror": f"registry.{domain}",
+            "mirroredRegistries": list(lock["mirroredRegistries"]),
             "trustBundle": trust_bundle,
             "ntpServers": list(net["ntpServers"]),
             "sshAuthorizedKeys": keys,
             "dnsServers": list(net["dnsServiceIPs"]),
         },
+        "podSecurity": {"exemptNamespaces": list(POD_SECURITY_EXEMPT)},
+        "encryption": {"createSecret": True},
     }
     if role == "workload":
         values["labels"]["dciab.io/baseline"] = "true"

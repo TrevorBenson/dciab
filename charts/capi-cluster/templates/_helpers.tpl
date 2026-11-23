@@ -97,3 +97,18 @@ spec:
     services:
       dns: {{ toJson .root.Values.nodes.dnsServers }}
 {{- end }}
+
+{{- /* An EncryptionConfiguration for Secrets with one secretbox key. Arg: the key, base64. */ -}}
+{{- define "capi-cluster.encryptionConfig" -}}
+apiVersion: apiserver.config.k8s.io/v1
+kind: EncryptionConfiguration
+resources:
+  - resources: [secrets]
+    providers:
+      - secretbox:
+          keys:
+            - name: key1
+              secret: {{ . }}
+      # Reads Secrets written before encryption was on; never used to write.
+      - identity: {}
+{{- end }}

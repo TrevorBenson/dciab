@@ -1,0 +1,21 @@
+# DCiaB defaults for kubelet-csr-approver on every cluster (MGMT, INFRA, workload).
+# Per-cluster values (providerIpPrefixes: the node networks) are added by install.sh from
+# the cluster's capi-cluster values. Version and chart source: bundle.lock.
+#
+# The classes turn on serverTLSBootstrap, so each kubelet asks the cluster CA for its
+# serving certificate with a kubernetes.io/kubelet-serving CSR, and Kubernetes approves
+# none of those by itself. This approves one only when the request comes from the node it
+# names, its addresses are in the node networks, and it names no more DNS names than below.
+
+# Node names are DNS labels (the VM or host name).
+providerRegex: '^[a-z0-9]([-a-z0-9]*[a-z0-9])?$'
+# A node's name isn't in DNS when the cluster is built (the platform's DNS comes later),
+# so names are not resolved; the address and requester checks still apply.
+bypassDnsResolution: true
+allowedDnsNames: 1
+
+# It must run before any worker exists, and MGMT may have none (control plane only).
+tolerations:
+  - key: node-role.kubernetes.io/control-plane
+    operator: Exists
+    effect: NoSchedule

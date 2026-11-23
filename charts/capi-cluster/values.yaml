@@ -12,8 +12,18 @@ classNamespace: dciab-clusterclasses  # where capi-clusterclasses is installed
 # serviceCIDR: 10.245.0.0/16
 labels: {}                          # extra labels on the Cluster object
 
+# Secret encryption at rest: the chart creates <name>-encryption-config, with a random
+# key, the first time and keeps it after. Set false only where the Secret already exists
+# and the renderer can't read the cluster (helm template, Argo CD). See README.md.
+encryption:
+  createSecret: true
+
+# podSecurity:                      # Pod Security admission (baseline enforced, restricted warned)
+#   exemptNamespaces: [kube-system, longhorn-system]
+
 # nodes:                            # settings shared by every node
 #   registryMirror: registry.dc1.example.com
+#   mirroredRegistries: [docker.io, quay.io, ghcr.io, registry.k8s.io]   # bundle.lock mirroredRegistries
 #   trustBundle: |                  # platform CA, PEM
 #     -----BEGIN CERTIFICATE-----
 #   ntpServers: [10.0.0.123]
