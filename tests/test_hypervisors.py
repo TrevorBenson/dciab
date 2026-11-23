@@ -1,6 +1,7 @@
 """dciab hypervisors: Proxmox VE answer files, the Redfish virtual-media driver (against a local
 fake BMC), and the CLI plan. Nothing here touches a real BMC or server."""
 
+import base64
 import copy
 import hashlib
 import json
@@ -25,8 +26,8 @@ def bare():
     return copy.deepcopy(load_example("proxmox-bare"))
 
 
-def fake_hash(host, password):
-    return f"$6$fake${host}"
+def fake_hash(password, salt):
+    return f"$6${salt}$fake"
 
 
 def host(doc, name="pve01"):
@@ -94,9 +95,9 @@ def test_a_non_sha512_hash_is_refused():
 def test_generated_root_password_is_sealed_and_stable(tmp_path):
     seen, sealed = [], {}
 
-    def hasher(host, password):
+    def hasher(password, salt):
         seen.append(password)
-        return f"$6$x${host}{len(password)}"
+        return f"$6${salt}${len(password)}"
 
     def sealer(recipients, plaintext, dest):
         assert recipients == ["age1abc"]
@@ -114,9 +115,51 @@ def test_generated_root_password_is_sealed_and_stable(tmp_path):
 
 
 def test_site_root_password_is_used_as_is(tmp_path):
-    got = answer.root_hash(tmp_path / "a", "pve01", "s3cret", [], lambda h, p: f"$6$x${h}:{p}",
+    d = tmp_path / "a"
+    got = answer.root_hash(d, "pve01", "s3cret", [], lambda p, s: f"$6${s}${p}",
                            lambda *a: pytest.fail("nothing to seal"))
-    assert got == "$6$x$pve01:s3cret" and not (tmp_path / "a").exists()
+    salt = (d / "pve01.root-salt").read_text().strip()
+    assert got == f"$6${salt}$s3cret"
+    assert (d / "pve01.root-salt").stat().st_mode & 0o777 == 0o600 and d.stat().st_mode & 0o777 == 0o700
+    assert sorted(p.name for p in d.iterdir()) == ["pve01.root-salt"]
+
+
+def _site_hash(d, name, password):
+    return answer.root_hash(d, name, password, [], lambda p, s: f"$6${s}${p}", lambda *a: pytest.fail("no seal"))
+
+
+def test_salt_is_random_per_host_and_kept(tmp_path):
+    d = tmp_path / "answers"
+    salts = {answer.host_salt(d, n) for n in ("pve01", "pve02", "pve03")}
+    assert len(salts) == 3
+    for s in salts:
+        assert len(s) == 16 and set(s) <= set(answer.SALT_CHARS)
+    assert answer.host_salt(d, "pve01") == (d / "pve01.root-salt").read_text().strip()
+    assert answer.host_salt(tmp_path / "other", "pve01") != answer.host_salt(d, "pve01")
+
+
+def test_salt_does_not_follow_the_password(tmp_path):
+    d = tmp_path / "answers"
+    first = _site_hash(d, "pve01", "s3cret")
+    assert _site_hash(d, "pve01", "s3cret") == first                     # a rerun is the same
+    salt = first.split("$")[2]
+    again = _site_hash(d, "pve01", "other-password")
+    assert again.split("$")[2] == salt and again != first                # new password, same salt
+    assert _site_hash(d, "pve02", "s3cret").split("$")[2] != salt        # another host, another salt
+    # Nothing derived from the password: not the old SHA-256 scheme, not the password itself.
+    for pw in ("s3cret", "other-password"):
+        for host_name in ("pve01", "pve02"):
+            raw = hashlib.sha256(f"dciab-answer\0{host_name}\0{pw}".encode()).digest()
+            assert base64.b64encode(raw, altchars=b"./").decode()[:16] != salt
+    assert "s3cret" not in salt
+
+
+def test_a_bad_stored_salt_is_replaced(tmp_path):
+    d = tmp_path / "answers"
+    d.mkdir()
+    (d / "pve01.root-salt").write_text("not a salt!\n")
+    salt = answer.host_salt(d, "pve01")
+    assert len(salt) == 16 and salt != "not a salt!"
 
 
 def test_no_recipients_no_generated_password(tmp_path):
@@ -144,10 +187,22 @@ def test_locale_comes_from_the_config():
 
 @pytest.mark.skipif(not shutil.which("openssl"), reason="openssl is needed")
 def test_password_hash_is_stable_and_not_the_password():
-    a = answer.hash_password("pve01", "s3cret")
-    assert a.startswith("$6$") and "s3cret" not in a
-    assert a == answer.hash_password("pve01", "s3cret")
-    assert a != answer.hash_password("pve02", "s3cret")
+    a = answer.hash_password("s3cret", "abcdefgh./012345")
+    assert a.startswith("$6$abcdefgh./012345$") and "s3cret" not in a
+    assert a == answer.hash_password("s3cret", "abcdefgh./012345")
+    assert a != answer.hash_password("s3cret", "abcdefgh./012346")
+    with pytest.raises(answer.AnswerError, match="salt"):
+        answer.hash_password("s3cret", "short")
+
+
+@pytest.mark.skipif(not shutil.which("openssl"), reason="openssl is needed")
+def test_rerun_renders_the_same_answer_file(tmp_path):
+    doc = bare()
+    d = tmp_path / "answers"
+    first = answer.render(doc, host(doc), answer.root_hash(d, "pve01", "s3cret", []))
+    assert answer.render(doc, host(doc), answer.root_hash(d, "pve01", "s3cret", [])) == first
+    other = answer.render(doc, host(doc), answer.root_hash(tmp_path / "fresh", "pve01", "s3cret", []))
+    assert other != first                                   # a new state folder draws a new salt
 
 
 def test_write_answer_is_atomic_private_and_idempotent(tmp_path):

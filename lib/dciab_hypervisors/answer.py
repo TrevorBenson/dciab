@@ -6,8 +6,6 @@ Keys use the installer's kebab-case format (the older snake_case keys are deprec
 
 from __future__ import annotations
 
-import base64
-import hashlib
 import ipaddress
 import json
 import os
@@ -60,16 +58,44 @@ def disk_setup(hints: Dict[str, object]) -> List[str]:
     return lines
 
 
-def _salt(host: str, password: str) -> str:
-    """A per-host salt derived from the password, so a rerun renders the same file."""
-    raw = hashlib.sha256(f"dciab-answer\0{host}\0{password}".encode("utf-8")).digest()
-    return base64.b64encode(raw, altchars=b"./").decode("ascii")[:16]
+# The sha512crypt salt alphabet.
+SALT_CHARS = "./0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"
+SALT_LEN = 16
 
 
-def hash_password(host: str, password: str) -> str:
+def new_salt() -> str:
+    """A random 16-character sha512crypt salt."""
+    return "".join(secrets.choice(SALT_CHARS) for _ in range(SALT_LEN))
+
+
+def _valid_salt(salt: str) -> bool:
+    return len(salt) == SALT_LEN and all(c in SALT_CHARS for c in salt)
+
+
+def host_salt(answers: Path, name: str) -> str:
+    """The host's salt, random and made once: kept in <answers>/<host>.root-salt (mode 600) so a
+    rerun renders the same answer file. It never depends on the password."""
+    path = answers / f"{name}.root-salt"
+    if path.is_file():
+        stored = path.read_text().strip()
+        if _valid_salt(stored):
+            return stored
+    answers.mkdir(parents=True, exist_ok=True)
+    os.chmod(answers, 0o700)
+    salt = new_salt()
+    fd, tmp = tempfile.mkstemp(dir=answers, prefix=f".{name}.", suffix=".tmp")   # mode 600
+    with os.fdopen(fd, "w") as f:
+        f.write(salt + "\n")
+    os.replace(tmp, path)
+    return salt
+
+
+def hash_password(password: str, salt: str) -> str:
     """SHA-512 crypt hash; the password goes to openssl on stdin, never argv."""
+    if not _valid_salt(salt):
+        raise AnswerError("the root password salt must be 16 characters from [./0-9A-Za-z]")
     try:
-        out = subprocess.run(["openssl", "passwd", "-6", "-salt", _salt(host, password), "-stdin"],
+        out = subprocess.run(["openssl", "passwd", "-6", "-salt", salt, "-stdin"],
                              input=password + "\n", capture_output=True, text=True, timeout=30, check=True)
     except FileNotFoundError:
         raise AnswerError("openssl is needed to hash the root password") from None
@@ -109,9 +135,11 @@ def root_hash(answers: Path, name: str, site_password: Optional[str], recipients
         encrypted at once to spec.bootstrap.recipients (<answers>/<host>.root-password.age;
         open it with `age -d -i <identity>`), and only its hash is kept
         (<answers>/<host>.root-hash), so reruns render the same answer file.
+    Either way the salt is random per host and kept in <answers>/<host>.root-salt, so the
+    same password gives the same hash on a rerun. hasher takes (password, salt).
     """
     if site_password:
-        return hasher(name, site_password)
+        return hasher(site_password, host_salt(answers, name))
     sealed = answers / f"{name}.root-password.age"
     path = answers / f"{name}.root-hash"
     if path.is_file() and sealed.is_file():
@@ -122,7 +150,7 @@ def root_hash(answers: Path, name: str, site_password: Optional[str], recipients
     os.chmod(answers, 0o700)
     password = secrets.token_urlsafe(32)
     sealer(recipients, password + "\n", sealed)        # sealed first: no hash without a way back in
-    digest = hasher(name, password)
+    digest = hasher(password, host_salt(answers, name))
     fd, tmp = tempfile.mkstemp(dir=answers, prefix=f".{name}.", suffix=".tmp")   # mode 600
     with os.fdopen(fd, "w") as f:
         f.write(digest + "\n")
