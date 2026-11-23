@@ -73,6 +73,7 @@ fetch_chart() {
   fi
   echo "$tgz"
 }
+# --skip-tests: the chart's test hook pulls an unpinned busybox the archive doesn't carry.
 values=(--namespace kube-system --values "$HERE/values.yaml" --values "$overrides")
 
 case "$mode" in
@@ -82,7 +83,7 @@ case "$mode" in
     ;;
   --template)
     tgz="$(fetch_chart)"
-    helm template "$NAME" "$tgz" "${values[@]}"
+    helm template "$NAME" "$tgz" "${values[@]}" --skip-tests
     ;;
   -*)
     usage
@@ -92,6 +93,6 @@ case "$mode" in
     [[ -f "$kubeconfig" ]] || { echo "install.sh: no such kubeconfig: $kubeconfig" >&2; exit 2; }
     echo "== $NAME $version on $(KUBECONFIG="$kubeconfig" kubectl config current-context)"
     tgz="$(fetch_chart)"
-    helm upgrade --install "$NAME" "$tgz" "${values[@]}" --kubeconfig "$kubeconfig" --wait --timeout 5m
+    helm upgrade --install "$NAME" "$tgz" "${values[@]}" --skip-tests --kubeconfig "$kubeconfig" --wait --timeout 5m
     ;;
 esac

@@ -621,3 +621,16 @@ def test_mirrored_registries_cover_every_pinned_node_image():
     refs = list(lock["imageDigests"]) + [lock["images"]["kubeVip"]]
     for ref in refs:
         assert ref.split("/", 1)[0] in mirrored, ref
+
+
+def test_installed_classes_require_tls12():
+    for f in _installed_class_files():
+        args = {a["name"]: a["value"] for a in _api_server(_docs(f))["extraArgs"]}
+        assert args["tls-min-version"] == "VersionTLS12", f.name
+
+
+def test_kubelet_csr_approver_skips_the_chart_test_hook():
+    """The hook pulls an unpinned busybox that the archive doesn't carry."""
+    text = (ROOT / "addons" / "kubelet-csr-approver" / "install.sh").read_text()
+    calls = [l for l in text.splitlines() if l.strip().startswith(("helm template", "helm upgrade"))]
+    assert len(calls) == 2 and all("--skip-tests" in c for c in calls)
