@@ -1,7 +1,9 @@
 """Render the Proxmox VE automated-installer answer file (answer.toml) for one host.
 
-Pure functions except hash_password, which runs `openssl passwd -6` with the password on stdin.
-Keys use the installer's kebab-case format (the older snake_case keys are deprecated).
+render and disk_setup are pure. The root password functions are not: hash_password runs
+`openssl passwd -6` and seal_with_age runs `age`, each with the secret on stdin; host_salt and
+root_hash read and write per-host files in <state>/answers/ (cli.remove_stale removes them when a
+host leaves the config). Keys use the installer's kebab-case format (the older snake_case keys are deprecated).
 """
 
 from __future__ import annotations
