@@ -32,7 +32,7 @@ Under `sudo`, `{env: VAR}` secrets are dropped: pass them through with `sudo --p
 | 1 | `sudo ./dciab seed dciab.yaml --state <state>` | Seed DNS (`registry.<domain>` on the DNS service IPs), seed registry (Zot, read-only, from the payload) and KinD with all CAPI providers ([docs/SEED.md](docs/SEED.md)) |
 | 2 | `sudo ./dciab mgmt dciab.yaml --state <state>` | MGMT built, Cilium and the providers installed, CAPI moved into it, Longhorn installed. It picks up `seed`'s kubeconfig and trust bundle from the state folder, and runs as the folder's owner (root, after `seed`). Stages: `preflight values cluster control-plane cilium providers move adopt longhorn`. Not yet proven on real infrastructure; MGMT's other services and the DNS handoff are still to come |
 
-Until `mgmt` puts the payload's tools on PATH itself (see the open issue on mgmt's PATH), run it as `sudo env "PATH=<archive>/payload/bin:$PATH" ./dciab mgmt dciab.yaml --state <state>`, where `<archive>` is the folder `dciab` runs from (`<work>/dciab-<VERSION>` after `media`).
+Until `mgmt` puts the payload's tools on PATH itself (see [issue #98](https://github.com/TrevorBenson/dciab/issues/98)), run it as `sudo env "PATH=<archive>/payload/bin:$PATH" ./dciab mgmt dciab.yaml --state <state>`, where `<archive>` is the folder `dciab` runs from (`<work>/dciab-<VERSION>` after `media`).
 | 3 | `./dciab infra` | Not built yet: INFRA with Argo CD, Forgejo, OpenBao, CloudNativePG |
 | 4 | `./dciab platform` | Not built yet: repos pushed; Argo CD and OpenTofu bring up the rest |
 | 5 | `./dciab finalize` | Not built yet: images moved to Artifact Keeper; seed torn down |
