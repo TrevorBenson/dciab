@@ -163,10 +163,25 @@ spec:
             issuers:
               type: array
               minItems: 1
+              # Each issuer's users and groups get their own prefix, so two issuers can never
+              # name the same user or group (alice from Authentik isn't alice from the site IdP).
+              x-kubernetes-validations:
+                - rule: self.all(a, self.exists_one(b, b.url == a.url))
+                  message: each issuer URL may appear once
+                - rule: self.all(a, self.exists_one(b, b.name == a.name))
+                  message: each issuer name may appear once
+                - rule: "self.all(a, self.exists_one(b, (has(b.usernamePrefix) ? b.usernamePrefix : b.name + ':') == (has(a.usernamePrefix) ? a.usernamePrefix : a.name + ':')))"
+                  message: each issuer needs its own username prefix
+                - rule: "self.all(a, self.exists_one(b, (has(b.groupsPrefix) ? b.groupsPrefix : b.name + ':') == (has(a.groupsPrefix) ? a.groupsPrefix : a.name + ':')))"
+                  message: each issuer needs its own groups prefix
               items:
                 type: object
-                required: [url, clientID]
+                required: [name, url, clientID]
                 properties:
+                  name:
+                    type: string
+                    pattern: '^[a-z0-9]([-a-z0-9]*[a-z0-9])?$'
+                    description: Short issuer name; the default username and groups prefix is <name>:.
                   url:
                     type: string
                     pattern: '^https://'
@@ -179,13 +194,15 @@ spec:
                     default: preferred_username
                   usernamePrefix:
                     type: string
-                    default: ""
+                    minLength: 1
+                    description: Default <name>:. Must differ from every other issuer's.
                   groupsClaim:
                     type: string
                     default: groups
                   groupsPrefix:
                     type: string
-                    default: ""
+                    minLength: 1
+                    description: Default <name>:. Must differ from every other issuer's.
                   certificateAuthority:
                     type: string
                     description: PEM CA bundle for the issuer's TLS certificate, when the node trust store lacks it.
@@ -526,10 +543,10 @@ spec:
                         claimMappings:
                           username:
                             claim: {{ $i.usernameClaim | default "preferred_username" | quote }}
-                            prefix: {{ $i.usernamePrefix | default "" | quote }}
+                            prefix: {{ $i.usernamePrefix | default (printf "%s:" $i.name) | quote }}
                           groups:
                             claim: {{ $i.groupsClaim | default "groups" | quote }}
-                            prefix: {{ $i.groupsPrefix | default "" | quote }}
+                            prefix: {{ $i.groupsPrefix | default (printf "%s:" $i.name) | quote }}
                     {{- end }}
             - op: add
               path: /spec/template/spec/kubeadmConfigSpec/clusterConfiguration/apiServer/extraArgs/-

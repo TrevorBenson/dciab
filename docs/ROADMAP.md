@@ -19,6 +19,11 @@ What each phase builds, against the component list in [COMPONENTS.md](COMPONENTS
 - [x] `bundle.lock` with pinned versions (digests come with the build pipeline)
 - [x] `capi-clusterclasses` chart: `r1` classes (draft until the first release; see [VERSIONING.md](VERSIONING.md)) for vSphere, Proxmox and Metal3
 - [x] `capi-cluster` chart
+- [x] `r1` structured authentication: an `AuthenticationConfiguration` with several JWT issuers, each with its own username and groups prefix (ADR 0008)
+- [x] `r1` failure domains (ADR 0010): `spec.failureDomains` with `validate` checks; worker pools per domain; vSphere zones and cluster modules; Metal3 failure domains; Proxmox workers pinned per domain, control plane not spread (reported by `validate` and `dciab status`)
+- [x] `r1` storage networks on VM nodes (`network.storage`): one NIC per network, MTU, multipath modules
+- [ ] Failure domains, next: Metal3 storage NICs, bonds and VLANs; `validate --live` capacity, vSphere tag and Proxmox shared-storage checks; multipath packages in the node image; BareMetalHost topology labels; Longhorn zone settings
+- [ ] Production NTP on MGMT (`spec.time`, ADR 0010 decision 9)
 - [x] ClusterClass end-to-end test: CAPI and all providers on kind, one Cluster per class, generated objects verified (no infrastructure)
 - [x] Node template recipe: image-builder with a Rocky 10 Proxmox target (`images/node/`)
 - [x] First Proxmox template built and verified
@@ -36,7 +41,7 @@ What each phase builds, against the component list in [COMPONENTS.md](COMPONENTS
 
 Decided in [ADR 0001](adr/0001-day0-hypervisors-and-services.md).
 
-- [x] Config: `spec.hypervisors` and `spec.bootstrap.ntp`, with `validate` checks
+- [x] Config: `spec.hypervisors` and `spec.time` (which replaced `spec.bootstrap.ntp` and `network.ntpServers`, ADR 0010), with `validate` checks
 - [x] `bundle.lock`: Proxmox VE installer pinned; ESXi entry (not shipped); Day 0 service images
 - [x] Day 0 image digests pinned (CoreDNS, Caddy, chrony base)
 - [x] DCiaB's chrony image published by CI and pinned (`day0.images.chrony`), so the archive ships it

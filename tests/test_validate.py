@@ -718,7 +718,8 @@ def test_references_name_declared_domains(site):
 
 def test_vsphere_cluster_can_not_use_a_metal_domain(site):
     doc = load_example("metal3-cluster")
-    doc["spec"]["clusters"]["infra"]["failureDomains"] = ["rack-a"]
+    doc["spec"]["failureDomains"]["domains"].append({"name": "rack-d"})   # bare metal only
+    doc["spec"]["clusters"]["infra"]["failureDomains"] = ["rack-d"]
     _, report = site.validate(doc)
     assert "vsphere cluster" in errors(report, "spec.clusters.infra.failureDomains[0]")[0]["fix"]
 
@@ -787,3 +788,24 @@ def test_unused_storage_network_is_noted(site):
     del doc["spec"]["clusters"]["infra"]["storageIPRanges"]
     _, report = site.validate(doc)
     assert any("no cluster has storageIPRanges" in n for n in report["notes"])
+
+
+def test_only_domains_mgmt_and_infra_can_use_count(site):
+    """A Proxmox node and two Metal3 racks are not three domains for a Proxmox control plane."""
+    doc = load_example("proxmox")
+    doc["spec"]["failureDomains"] = {"domains": [{"name": "pve01", "proxmox": {"node": "pve01"}},
+                                                 {"name": "rack-a"}, {"name": "rack-b"}]}
+    _, report = site.validate(doc)
+    assert "1 failure domain(s) MGMT and INFRA can use" in errors(report, "spec.failureDomains.notHighlyAvailable")[0]["found"]
+
+
+def test_generated_names_never_collide(site):
+    doc = load_example("proxmox")
+    nodes = ["c", "b-c", "pve03"]
+    doc["spec"]["platform"]["proxmox"].update(nodes=nodes, templateNode="c")
+    doc["spec"]["failureDomains"]["domains"] = [{"name": n, "proxmox": {"node": n}} for n in nodes]
+    pool = doc["spec"]["clusters"]["infra"]["workerPools"][0]
+    doc["spec"]["clusters"]["infra"]["workerPools"] = [dict(pool, name="ab", failureDomains=["b-c", "pve03"]),
+                                                       dict(pool, name="ab-b", failureDomains=["c", "pve03"])]
+    _, report = site.validate(doc)
+    assert any("also a MachineDeployment" in e["found"] for e in errors(report))

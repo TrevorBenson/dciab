@@ -596,15 +596,18 @@ class Checker:
                                f"name the domain {node}, after its PVE node: the Proxmox CSI driver reads the zone "
                                "label as the node name")
 
-        n = len(domains)
+        # What counts is the domains MGMT and INFRA can use: Metal3 racks don't spread a
+        # Proxmox control plane.
+        n = min(len(usable_domains(self.spec, self.spec["clusters"][c], ptype)) for c in ("mgmt", "infra"))
         nha = fd.get("notHighlyAvailable")
         if n < 3 and not nha:
-            self.error(base + ("notHighlyAvailable",), f"missing, with {n} failure domain(s)",
-                       "declare at least three domains, or add notHighlyAvailable: {reason: ...}: with fewer, "
-                       "losing one can stop the site (ADR 0010)")
+            self.error(base + ("notHighlyAvailable",), f"missing, with {n} failure domain(s) MGMT and INFRA can use",
+                       "declare at least three domains for the platform, or add notHighlyAvailable: {reason: ...}: "
+                       "with fewer, losing one can stop the site (ADR 0010)")
         if nha:
+            usable = usable_domains(self.spec, self.spec["clusters"]["mgmt"], ptype)
             if n <= 1:
-                what = (f"this site is one failure domain: losing {domains[0]['name'] if domains else 'it'} stops "
+                what = (f"this site is one failure domain: losing {usable[0]['name'] if usable else 'it'} stops "
                         "MGMT, INFRA and every workload cluster")
             elif n == 2:
                 what = ("this site has two failure domains: losing the one that holds two of three control plane "
@@ -654,16 +657,22 @@ class Checker:
                       "losing the busiest domain loses etcd quorum; give the cluster at least as many domains as "
                       "control plane nodes")
         pools = c.get("workerPools", [])
-        names = {p["name"] for p in pools}
+        # Every MachineDeployment name the pools turn into, generated or not, must be unique:
+        # pool a over domain b-c and pool a-b over domain c are both a-b-c.
+        owner: Dict[str, int] = {}
         for j, p in enumerate(pools):
             for placed in place_pools([p], domains):
-                if placed["name"] == p["name"]:
-                    continue
-                if len(placed["name"]) > MAX_MD_NAME or placed["name"] in names:
-                    why = ("is longer than " + str(MAX_MD_NAME) + " characters") if len(placed["name"]) > MAX_MD_NAME \
-                        else "is another pool's name"
-                    self.error(cpath + ("workerPools", j, "name"), f"{placed['name']} (pool over {placed['failureDomain']}) {why}",
+                name = placed["name"]
+                generated = name != p["name"]
+                where = f"{name} (pool over {placed['failureDomain']})" if generated else name
+                if generated and len(name) > MAX_MD_NAME:
+                    self.error(cpath + ("workerPools", j, "name"), f"{where} is longer than {MAX_MD_NAME} characters",
                                "shorten the pool or domain name: each pool becomes <pool>-<domain> per failure domain")
+                if name in owner and owner[name] != j:
+                    self.error(cpath + ("workerPools", j, "name"),
+                               f"{where} is also a MachineDeployment of workerPools[{owner[name]}]",
+                               "rename a pool: each pool becomes <pool>-<domain> per failure domain, and the names must differ")
+                owner.setdefault(name, j)
         if klass == "metal3" and domains:
             self._check_metal3_domain_hosts(cpath, c, domains)
 

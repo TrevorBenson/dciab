@@ -152,19 +152,25 @@ def check_placement(site: dict, state: Path, runner: Runner = run) -> Optional[D
     never a failure: on a single-domain site they always share one node."""
     if site.get("spec", {}).get("platform", {}).get("type") != "proxmox":
         return None
-    kc = next((k for k in (state / "mgmt.kubeconfig", state / "bootstrap.kubeconfig") if k.is_file()), None)
-    if kc is None:
-        return None
-    r = kubectl(kc, ["-n", MGMT_NS, "get", "proxmoxmachines", "-l", "cluster.x-k8s.io/control-plane",
-                     "-o", "jsonpath={range .items[*]}{.metadata.name}={.status.proxmoxNode}{\"\\n\"}{end}"], runner)
-    if r.returncode != 0:
+    # MGMT's own API once it manages itself; before the move its machines are on the
+    # bootstrap cluster, so look there too.
+    kcs = [k for k in (state / "mgmt.kubeconfig", state / "bootstrap.kubeconfig") if k.is_file()]
+    if not kcs:
         return None
     nodes: Dict[str, List[str]] = {}
-    for line in r.stdout.split():
-        name, _, node = line.partition("=")
-        nodes.setdefault(node or "(not placed yet)", []).append(name)
+    for kc in kcs:
+        r = kubectl(kc, ["-n", MGMT_NS, "get", "proxmoxmachines", "-l", "cluster.x-k8s.io/control-plane",
+                         "-o", "jsonpath={range .items[*]}{.metadata.name}={.status.proxmoxNode}{\"\\n\"}{end}"], runner)
+        if r.returncode != 0:
+            continue
+        for line in r.stdout.split():
+            name, _, node = line.partition("=")
+            nodes.setdefault(node or "(not placed yet)", []).append(name)
+        if nodes:
+            break
     if not nodes:
-        return None
+        return result("placement", "note", "no MGMT control plane machines yet; r1 doesn't spread the Proxmox "
+                                           "control plane (ADR 0010), so check here once dciab mgmt has built it")
     where = "; ".join(f"{node}: {len(ms)}" for node, ms in sorted(nodes.items()))
     shared = [n for n, ms in nodes.items() if len(ms) > 1 and n != "(not placed yet)"]
     detail = f"MGMT control plane by PVE node: {where}"

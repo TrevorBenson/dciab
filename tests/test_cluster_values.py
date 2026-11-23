@@ -256,3 +256,44 @@ def test_time_servers():
     bare = load_example("proxmox-bare")["spec"]
     assert time_servers(bare) == bare["network"]["dnsServiceIPs"]
     assert cluster_values(load_example("proxmox-bare"), "mgmt", CA)["nodes"]["ntpServers"] == ["10.30.110.53", "10.30.110.54"]
+
+
+def test_proxmox_without_domains_is_one_zone_on_the_template_node():
+    doc = load_example("proxmox")
+    doc["spec"]["failureDomains"] = {"domains": [], "notHighlyAvailable": {"reason": "one host for now"}}
+    v = cluster_values(doc, "infra", CA)
+    assert v["topology"]["zone"] == doc["spec"]["platform"]["proxmox"]["templateNode"]
+    assert v["proxmox"]["allowedNodes"] == [doc["spec"]["platform"]["proxmox"]["templateNode"]]
+
+
+def test_issuers_are_checked_like_the_class_does():
+    from dciab_cluster.values import check_issuers
+    a = {"name": "authentik", "url": "https://a/", "clientID": "k"}
+    b = {"name": "site", "url": "https://b/", "clientID": "k"}
+    assert check_issuers([a, b]) == [a, b]
+    with pytest.raises(ValuesError, match="url https://a/"):
+        check_issuers([a, dict(b, url="https://a/")])
+    with pytest.raises(ValuesError, match="usernamePrefix"):
+        check_issuers([a, dict(b, usernamePrefix="authentik:")])
+    v = cluster_values(load_example("vsphere"), "apps01", CA)
+    [issuer] = v["nodes"]["authentication"]["issuers"]
+    assert issuer["usernamePrefix"] == issuer["groupsPrefix"] == "authentik:"
+
+
+def test_vsphere_storage_ci_values_come_from_the_example():
+    """ci/vsphere-storage-values.yaml: vsphere.yaml's INFRA with storage networks and an MTU."""
+    import copy
+    doc = copy.deepcopy(load_example("vsphere"))
+    doc["spec"]["network"]["nodes"]["mtu"] = 9000
+    doc["spec"]["network"]["storage"] = [
+        {"name": "san-a", "cidr": "10.40.10.0/24", "portGroup": "dvpg-san-a", "mtu": 9000},
+        {"name": "san-b", "cidr": "10.40.20.0/24", "portGroup": "dvpg-san-b", "mtu": 9000}]
+    doc["spec"]["clusters"]["infra"]["storageIPRanges"] = {"san-a": "10.40.10.30-10.40.10.49",
+                                                           "san-b": "10.40.20.30-10.40.20.49"}
+    ci = yaml.safe_load((CHART / "ci" / "vsphere-storage-values.yaml").read_text())
+    got = cluster_values(doc, "infra", CA)
+    for key in ci:
+        if key in ("name", "nodes"):
+            continue
+        assert got[key] == ci[key], key
+    assert ci["nodes"]["mtu"] == 9000 and len(ci["storageNetworks"]) == 2

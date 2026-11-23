@@ -264,6 +264,7 @@ class Verifier:
                 dev = devices[0]
                 self.expect(f"{where}: NICs (node + storage networks)", [d.get("networkName") for d in devices],
                             [vs["network"]] + [n["portGroup"] for n in self.v.get("storageNetworks", [])])
+                self.expect(f"{where}: node NIC MTU", dev.get("mtu"), self.v["nodes"].get("mtu"))
                 self.expect(f"{where}: port group", dev.get("networkName"), vs["network"])
                 self.expect(f"{where}: node IP pool", dev.get("addressesFromPools"),
                             [{"apiGroup": "ipam.cluster.x-k8s.io", "kind": "InClusterIPPool", "name": f"{self.name}-nodes"}])

@@ -3,6 +3,10 @@
 - Status: Accepted (2026-11-23)
 - Date: 2026-11-23
 - Amended 2026-11-23: MachineHealthCheck moves from `r2` to `r1` (decision 10).
+- Amended 2026-11-23, in the implementation (decisions 2 and 10):
+  - vSphere: each cluster gets its own `VSphereFailureDomain` and `VSphereDeploymentZone` per domain (`<cluster>-<domain>`, labelled `dciab.io/cluster`), and the selector matches that label instead of `failureDomainSelector: {}`. Both kinds are cluster-scoped: `{}` would take every cluster's zones, two Helm releases can't own one object, and a cluster couldn't narrow its list. The zone tag stays the domain name.
+  - Proxmox: a cluster's `allowedNodes` are its domains' nodes, not every node; with no domains declared, the template's node. Every node then carries the zone label the Proxmox CSI driver needs.
+  - Metal3: the label-sync annotation sits in the `Metal3ClusterTemplate`'s `spec.template.metadata`, which the topology controller copies to the `Metal3Cluster`. That answers the open question in decision 10.
 
 ## Context
 

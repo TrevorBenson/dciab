@@ -37,11 +37,11 @@ spec:
     servedBy: site
     servers: [10.0.0.123]
 
-  failureDomains:                        # racks; bare-metal hosts name theirs (vSphere VMs use cluster modules)
-    domains:
-      - {name: rack-a}
-      - {name: rack-b}
-      - {name: rack-c}
+  failureDomains:                        # racks: bare-metal hosts name theirs, and each rack's ESXi hosts
+    domains:                             # are a DRS host group, so MGMT and INFRA spread over them too
+      - {name: rack-a, vsphere: {computeCluster: Compute-A, hostGroup: rack-a-hosts, vmGroup: rack-a-vms}}
+      - {name: rack-b, vsphere: {computeCluster: Compute-A, hostGroup: rack-b-hosts, vmGroup: rack-b-vms}}
+      - {name: rack-c, vsphere: {computeCluster: Compute-A, hostGroup: rack-c-hosts, vmGroup: rack-c-vms}}
 
   network:
     domain: dc2.example.com

@@ -83,6 +83,23 @@ def _prefix(cidr: str) -> int:
     return ipaddress.ip_network(cidr, strict=False).prefixlen
 
 
+def check_issuers(issuers: List[dict]) -> List[dict]:
+    """The rules the class's authentication variable enforces, checked before a render:
+    unique names and URLs (a duplicate URL makes the API server refuse the file) and a
+    username and groups prefix of its own per issuer."""
+    for key in ("name", "url"):
+        seen = [i[key] for i in issuers]
+        dup = sorted({v for v in seen if seen.count(v) > 1})
+        if dup:
+            raise ValuesError(f"authentication issuers: {key} {', '.join(dup)} appears more than once")
+    for key in ("usernamePrefix", "groupsPrefix"):
+        seen = [i.get(key, i["name"] + ":") for i in issuers]
+        dup = sorted({v for v in seen if seen.count(v) > 1})
+        if dup:
+            raise ValuesError(f"authentication issuers: {key} {', '.join(dup)} is shared; give each issuer its own")
+    return issuers
+
+
 def time_servers(spec: dict) -> List[str]:
     """The NTP servers nodes, hypervisors and BMCs use (spec.time.servers; with servedBy
     dciab and none given, the DNS service addresses, where DCiaB serves NTP)."""
@@ -177,14 +194,17 @@ def cluster_values(site: dict, name: str, trust_bundle: str, lock: Optional[dict
     }
     if role == "workload":
         values["labels"]["dciab.io/baseline"] = "true"
-        values["nodes"]["authentication"] = {"issuers": [{
+        # Users and groups carry the issuer's prefix (authentik:alice, authentik:dciab-admins),
+        # so a second issuer (the site's IdP during a pivot) can never collide with them.
+        values["nodes"]["authentication"] = {"issuers": check_issuers([{
+            "name": "authentik",
             "url": f"https://auth.{domain}/application/o/kubernetes/",
             "clientID": OIDC_CLIENT_ID,
             "usernameClaim": "preferred_username",
-            "usernamePrefix": "",
+            "usernamePrefix": "authentik:",
             "groupsClaim": "groups",
-            "groupsPrefix": "",
-        }]}
+            "groupsPrefix": "authentik:",
+        }])}
 
     if klass == "metal3":
         _metal3(values, spec, c, domain)
@@ -226,11 +246,14 @@ def _vm(values: dict, spec: dict, c: dict, klass: str, site_name: str) -> None:
         p = platform["proxmox"]
         # Proxmox CSI reads the region; the zone is the PVE node (ADR 0010, decision 3).
         values["topology"] = {"region": site_name}
-        if len(domains) == 1:
-            values["topology"]["zone"] = names[0]
+        # The cluster's domains' nodes. With none declared the site is one failure domain:
+        # the template's node, where a clone on local storage has to stay anyway. Then every
+        # node is in that one zone, which the Proxmox CSI driver needs (ADR 0010, decision 3).
+        nodes = [d["proxmox"]["node"] for d in domains] or [p["templateNode"]]
+        if len(nodes) == 1:
+            values["topology"]["zone"] = nodes[0]
         values["proxmox"] = {
-            # The cluster's domains' nodes, or every node when the site declares none.
-            "allowedNodes": [d["proxmox"]["node"] for d in domains] or list(p["nodes"]),
+            "allowedNodes": nodes,
             "templateNode": p["templateNode"],
             "templateID": p["templateID"],
             "storage": p["storage"],

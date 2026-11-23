@@ -659,7 +659,11 @@ def test_installed_classes_use_structured_authentication():
         assert "kind: AuthenticationConfiguration" in file["content"]
         var = next(v for v in cc["spec"]["variables"] if v["name"] == "authentication")
         issuers = var["schema"]["openAPIV3Schema"]["properties"]["issuers"]
-        assert issuers["type"] == "array" and set(issuers["items"]["required"]) == {"url", "clientID"}
+        assert issuers["type"] == "array" and set(issuers["items"]["required"]) == {"name", "url", "clientID"}
+        rules = " ".join(r["rule"] for r in issuers["x-kubernetes-validations"])
+        assert "b.url == a.url" in rules and "b.name == a.name" in rules
+        assert "usernamePrefix" in rules and "groupsPrefix" in rules
+        assert 'default (printf "%s:" $i.name)' in ops["files"]["valueFrom"]["template"]
 
 
 def test_proxmox_class_places_workers_and_labels_nodes():
