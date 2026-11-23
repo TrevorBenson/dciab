@@ -366,7 +366,7 @@ jobs:
           sudo "$RUNNER_TEMP/payload/bin/kubectl" --kubeconfig "$kc" get clusterclasses -A
           # Seed DNS: the registry name on both DNS service IPs, CoreDNS loaded from the payload.
           for ip in 10.30.110.53 10.30.110.54; do
-            test "$(dig +short @"$ip" registry.lab1.example.com)" = 10.30.110.5
+            test "$(dig +short @"$ip" registry.dc3.example.com)" = 10.30.110.5
           done
           # The provider images came through the seed registry.
           # (Logs to a file first: grep -q closing the pipe early would fail the step under pipefail.)
@@ -578,9 +578,9 @@ jobs:
       - name: DNS both ways, refusal outside the zones, ranged HTTP, NTP
         run: |
           set -euo pipefail
-          test "$(dig +short @10.30.110.53 pve01.lab1.example.com)" = 10.30.110.6
-          test "$(dig +short @10.30.110.54 registry.lab1.example.com)" = 10.30.110.5
-          test "$(dig +short @10.30.110.54 -x 10.30.110.7)" = pve02.lab1.example.com.
+          test "$(dig +short @10.30.110.53 pve01.dc3.example.com)" = 10.30.110.6
+          test "$(dig +short @10.30.110.54 registry.dc3.example.com)" = 10.30.110.5
+          test "$(dig +short @10.30.110.54 -x 10.30.110.7)" = pve02.dc3.example.com.
           dig @10.30.110.53 example.org | grep -q 'status: REFUSED'
           printf '0123456789' | sudo tee /tmp/site/.dciab/state/isos/test.iso >/dev/null
           test "$(curl -sS --noproxy '*' -r 2-5 http://10.30.110.5/isos/test.iso)" = 2345
