@@ -4,9 +4,10 @@
 # bootstrap host serves it on the DNS service IPs until the platform takes over).
 #
 # Limitation: the installed hosts are not clustered and only have local storage. CAPMOX
-# reaches them through one host's API and can't clone the template from local storage to
-# another host, so every VM runs on pve01. There is no hypervisor-level redundancy: losing
-# pve01 loses the platform. Proxmox VE clustering and shared storage are on the roadmap.
+# reaches them through pve01's API and can't clone the template from local storage to
+# another host, so CAPMOX places VMs on pve01 until the hosts are clustered, even though
+# nodes lists all three. There is no hypervisor-level redundancy: losing pve01 loses the
+# platform. Proxmox VE clustering and shared storage are on the roadmap.
 apiVersion: dciab.io/v1alpha1
 kind: Site
 metadata:
@@ -19,12 +20,14 @@ spec:
     proxmox:
       url: https://pve01.dc3.example.net:8006
       tlsFingerprint: "A5:A5:0B:7F:93:E9:EA:23:8D:79:7B:83:BB:72:AE:F7:AD:98:1B:66:D4:BC:FA:2A:FD:40:63:91:59:C2:8A:5A"
-      nodes: [pve01, pve02, pve03]       # PVE nodes CAPMOX may place VMs on (see the limitation above)
+      nodes: [pve01, pve02, pve03]       # PVE nodes CAPMOX may place VMs on (only pve01 until clustered: see above)
       templateNode: pve01                # the node holding the template; must be in nodes
       templateID: 9010
       storage: local-lvm                 # a fresh install's local storage
       bridge: vmbr0
-      # vlanTag: 110                     # not yet supported here: a fresh install's bridge isn't VLAN-aware
+      # vlanTag: 110                     # honoured, but not usable on a freshly installed host: DCiaB doesn't
+                                         # make its bridge VLAN-aware yet. Not needed here: vmbr0 sits on the
+                                         # access port for network.nodes.vlan
       credentials:
         tokenID: dciab@pve!capmox
         tokenSecret: {env: DCIAB_PVE_TOKEN}
@@ -34,7 +37,7 @@ spec:
 
   bootstrap:
     interface: "b8:ca:3a:00:00:05"       # server zero's NIC by MAC: its name isn't known before it boots
-    managementVLAN: tagged               # the NIC tags network.nodes.vlan (110)
+    managementVLAN: untagged             # an access port for network.nodes.vlan, like the hypervisors
     address: 10.30.110.5
     workDisk:
       disk: {serialNumber: "S6XXNX0T500001"}   # server zero's disk the appliance installs onto (wiped)

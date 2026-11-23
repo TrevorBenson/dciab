@@ -617,7 +617,9 @@ def test_arping_finds_a_conflict(fake_cmds):
 
 def test_probes_use_the_vlan_interface_when_tagged(fake_cmds):
     fake_cmds["sub"] = "eno1.110"
-    r = live.check_addresses(load_example("proxmox-bare")["spec"], 1)
+    spec = load_example("proxmox-bare")["spec"]
+    spec["bootstrap"]["managementVLAN"] = "tagged"
+    r = live.check_addresses(spec, 1)
     assert r.findings == [] and any("on eno1.110" in n for n in r.notes)
 
 
