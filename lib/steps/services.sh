@@ -14,7 +14,8 @@
 #   address     network.dnsServiceIPs added to spec.bootstrap.interface (runtime, like ip addr add)
 #   firewall    runtime-only firewalld ports, when firewalld runs
 #   images      the pinned images present: loaded from the payload's OCI layout when there is
-#               one, else pulled; DCiaB's chrony image built from images/day0-chrony
+#               one, else pulled. DCiaB's chrony image is one of them (day0.images.chrony,
+#               built and published by CI); it is never built here
 #   pod         podman kube play --replace, only when the rendered files changed or the pod isn't running
 #   ready       DNS (forward, reverse, registry.<domain>) and NTP on each service IP, HTTP on
 #               the bootstrap address
@@ -24,6 +25,8 @@
 # nothing. <state> defaults to .dciab/state next to the config (/var/lib/dciab/work/state on the
 # bootstrap appliance; lib/dciab_state). ISOs are served from --isos,
 # default spec.bootstrap.workDisk.path/isos, else <state>/isos; per-host installer ISOs from <state>/host-isos.
+# DCIAB_CHRONY_IMAGE names a chrony image already in local storage instead of the pinned one
+# (building and testing DCiaB).
 # Teardown: podman kube down <state>/services/pod.yaml.
 set -euo pipefail
 
@@ -76,7 +79,7 @@ finish_if() { if [[ "$until" == "$1" ]]; then echo "dciab services: stopped afte
 
 # Read the plan: shell assignments from the helper, which validates the config.
 MODE="" INTERFACE="" PREFIX="" SERVICE_IPS="" BOOTSTRAP_ADDRESS="" NTP="" IMAGES=""
-IMAGE_LAYOUTS="" CHRONY_IMAGE="" CHRONY_BASE="" CONF_DIR="" ISOS_DIR="" HOST_ISOS_DIR="" POD="" FINGERPRINT=""
+IMAGE_LAYOUTS="" CHRONY_IMAGE="" CONF_DIR="" ISOS_DIR="" HOST_ISOS_DIR="" POD="" FINGERPRINT=""
 plan="$(helper env)" || exit $?
 eval "$plan"
 dns_only() { [[ "$MODE" == dns ]]; }
@@ -108,7 +111,7 @@ if (( print )); then
   for ip in $SERVICE_IPS; do echo "  address:     $ip/$PREFIX (DNS$([[ "$NTP" == 1 ]] && echo ', NTP'))"; done
   dns_only || echo "  HTTP:        http://$BOOTSTRAP_ADDRESS:80 (ISOs from $ISOS_DIR, per-host ISOs from $HOST_ISOS_DIR)"
   echo "  images:      $IMAGES${payload:+ (from $payload)}"
-  [[ "$NTP" == 1 ]] && echo "  chrony:      $CHRONY_IMAGE (built from images/day0-chrony on $CHRONY_BASE)"
+  [[ "$NTP" == 1 ]] && echo "  chrony:      $CHRONY_IMAGE"
   if [[ $EUID -eq 0 ]] && command -v podman >/dev/null; then
     if applied && pod_running; then echo "  pod $POD:  running with this config (no change)"
     else echo "  pod $POD:  would be (re)created"; fi
@@ -194,9 +197,9 @@ for i in "${!refs[@]}"; do
     podman pull "$img" 9>&-
   fi
 done
+# DCiaB's chrony image comes with the others (or is a local one named by DCIAB_CHRONY_IMAGE).
 if [[ "$NTP" == 1 ]] && ! podman image exists "$CHRONY_IMAGE"; then
-  podman image exists "$CHRONY_BASE" || podman pull "$CHRONY_BASE" 9>&-
-  podman build --pull=never --build-arg BASE_IMAGE="$CHRONY_BASE" -t "$CHRONY_IMAGE" "$ROOT/images/day0-chrony" 9>&-
+  die "chrony image $CHRONY_IMAGE isn't in local storage; dciab services doesn't build it"
 fi
 finish_if images
 

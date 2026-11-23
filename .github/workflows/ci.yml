@@ -550,6 +550,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: sudo apt-get update -q && sudo apt-get install -y -q python3-yaml python3-jsonschema dnsutils
+      - name: This branch's chrony image (job day0-chrony publishes it on main)
+        run: echo "DCIAB_CHRONY_IMAGE=$(sudo images/day0-chrony/build.sh)" >> "$GITHUB_ENV"
       - name: Site and dummy interface
         run: |
           set -euo pipefail
@@ -567,11 +569,11 @@ jobs:
           sudo ip addr add 10.30.110.5/24 dev dciab0
           DCIAB_PVE_TOKEN=placeholder ./dciab services /tmp/site/dciab.yaml --print
       - name: dciab services
-        run: sudo DCIAB_PVE_TOKEN=placeholder ./dciab services /tmp/site/dciab.yaml
+        run: sudo DCIAB_PVE_TOKEN=placeholder DCIAB_CHRONY_IMAGE="$DCIAB_CHRONY_IMAGE" ./dciab services /tmp/site/dciab.yaml
       - name: A rerun changes nothing
         run: |
           set -euo pipefail
-          out="$(sudo DCIAB_PVE_TOKEN=placeholder ./dciab services /tmp/site/dciab.yaml)"
+          out="$(sudo DCIAB_PVE_TOKEN=placeholder DCIAB_CHRONY_IMAGE="$DCIAB_CHRONY_IMAGE" ./dciab services /tmp/site/dciab.yaml)"
           echo "$out"
           grep -q "already runs this config" <<<"$out"
           if grep -E "^(wrote|added|opened) " <<<"$out"; then echo "the rerun changed something"; exit 1; fi

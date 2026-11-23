@@ -8,7 +8,8 @@ from conftest import ROOT
 
 sys.path.insert(0, str(ROOT / "build"))
 
-from inventory import images_in, inventory, normalize  # noqa: E402
+from inventory import BUILT, images_in, inventory, normalize, unpublished  # noqa: E402
+from inventory import main as inventory_main  # noqa: E402
 
 
 def test_normalize_spells_out_docker_hub():
@@ -79,3 +80,34 @@ def test_lock_pins_every_kubeadm_image():
     v = lock["kubernetes"]["version"]
     for name in ("kube-apiserver", "kube-controller-manager", "kube-scheduler"):
         assert f"registry.k8s.io/{name}:{v}" in lock["imageDigests"], f"pin {name}:{v} in imageDigests"
+
+
+CHRONY = "ghcr.io/example/dciab-day0-chrony:4.6-1.el10-0123456789ab@sha256:" + "c" * 64
+
+
+def test_pinned_chrony_image_is_in_the_archive():
+    """DCiaB's chrony image is built at archive build time and shipped like any pinned image (#67)."""
+    lock = yaml.safe_load((ROOT / "bundle.lock").read_text())
+    lock["day0"]["images"]["chrony"] = CHRONY
+    found = inventory(lock, [], [], None)
+    assert found[CHRONY] == {"bundle.lock day0.images.chrony"}
+    assert "day0.images.chrony" not in unpublished(lock)
+
+
+def test_unpublished_built_images_block_the_full_archive(capsys):
+    lock = yaml.safe_load((ROOT / "bundle.lock").read_text())
+    lock["day0"]["images"]["chrony"] = ""
+    lock["images"]["pveAssistant"] = "ghcr.io/example/dciab-pve-assistant:9"   # tag only
+    assert unpublished(lock) == ["images.pveAssistant", "day0.images.chrony"]
+    assert set(BUILT) == {"images.pveAssistant", "day0.images.chrony"}
+    real = yaml.safe_load((ROOT / "bundle.lock").read_text())
+    rc = inventory_main(["--require-built"])
+    if unpublished(real):
+        assert rc == 1 and "not pinned by digest yet" in capsys.readouterr().err
+    else:
+        assert rc == 0
+
+
+def test_full_archive_requires_the_built_images():
+    workflow = (ROOT / ".github" / "workflows" / "archive.yml").read_text()
+    assert "build/inventory.py" in workflow and "--require-built" in workflow

@@ -146,8 +146,12 @@ day0:
   images:
     coredns: docker.io/coredns/coredns:1.14.6@sha256:900f9c109f7a33545d3c811516e8376df9019147b750f5ce3e254468769176ea
     caddy: docker.io/library/caddy:2.11.7@sha256:36c24ad91a7ff7bc4c87fe22bfa8df3c4b18da0773d73fc12ee2c52b98c0bb7e
-    # Base of DCiaB's chrony image (images/day0-chrony/Containerfile).
+    # Base of DCiaB's chrony image (images/day0-chrony/Containerfile). Used at build time only.
     chronyBase: docker.io/rockylinux/rockylinux:10-minimal@sha256:f819149e93579b96a7e2fb7286dae4756173de68aafcc78e7e659650c6867b7b
+    # DCiaB's chrony image: built from images/day0-chrony and published by CI on main
+    # (<chrony version>-<recipe id>); pinned by digest once published, then shipped in the
+    # archive like the images above. dciab services never builds it, and refuses an unpinned one.
+    chrony: ""
 
 # The bootstrap appliance ("server zero") and the DCiaB USB it boots from
 # (docs/adr/0002-bootstrap-appliance-on-ventoy.md). The appliance image builds on
