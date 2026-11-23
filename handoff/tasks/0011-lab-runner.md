@@ -1,10 +1,10 @@
 ---
-id: "0009"
+id: "0011"
 title: Stand up the self-hosted lab runner VM on Proxmox (Rocky 10 bootc, ephemeral JIT runner)
 status: open
 runner: workstation
 depends: ["0006"]
-report: handoff/reports/0009-lab-runner.md
+report: handoff/reports/0011-lab-runner.md
 may_change: []
 ---
 
@@ -36,12 +36,12 @@ Read first:
   - **A VMID** for the runner VM on `pve1`.
   - **Networks:** a static IP, prefix and gateway on untagged `vmbr0`, plus DNS. Also say whether to add a second NIC on VLAN 150 now (tasks 0003 and 0007 need kind to reach VIPs there) or later.
   - **His SSH public key** for the VM's admin user.
-  - **A GitHub token**, written by Trevor to `~/.dciab/0009/token` (mode 600). It must be a fine-grained personal access token limited to `TrevorBenson/dciab` only, with repository permission **Administration: Read and write**, which lets it create just-in-time runners. Record its expiry date in `LAB.md`, never the token.
+  - **A GitHub token**, written by Trevor to `~/.dciab/0011/token` (mode 600). It must be a fine-grained personal access token limited to `TrevorBenson/dciab` only, with repository permission **Administration: Read and write**, which lets it create just-in-time runners. Record its expiry date in `LAB.md`, never the token.
   - **Confirmation** that the repository's Actions setting requires approval for workflows from fork pull requests.
 
 ## Steps
 
-Keep everything outside the repo in `~/.dciab/0009/` (mode 700). Run commands with `set -o pipefail`.
+Keep everything outside the repo in `~/.dciab/0011/` (mode 700). Run commands with `set -o pipefail`.
 
 1. **Plan.** Run `images/lab-runner/build.sh --print`. Expected: the actions runner version and URL from `bundle.lock` `labRunner`, the base above, and the pinned bootc-image-builder.
 2. **Build.**
@@ -73,7 +73,7 @@ Keep everything outside the repo in `~/.dciab/0009/` (mode 700). Run commands wi
      ```bash
      printf 'DCIAB_LAB_REPO=TrevorBenson/dciab\nDCIAB_LAB_LABELS=dciab-lab\nDCIAB_LAB_BRANCH=main\n' \
        | ssh <admin>@<ip> 'sudo install -m 0600 /dev/stdin /etc/dciab-lab-runner/runner.conf'
-     ssh <admin>@<ip> 'sudo install -m 0600 /dev/stdin /etc/dciab-lab-runner/token' < ~/.dciab/0009/token
+     ssh <admin>@<ip> 'sudo install -m 0600 /dev/stdin /etc/dciab-lab-runner/token' < ~/.dciab/0011/token
      ssh <admin>@<ip> 'sudo systemctl start dciab-lab-runner'
      ```
    - Expected: `journalctl -u dciab-lab-runner` shows "runner registered for TrevorBenson/dciab", and the repository's Settings → Actions → Runners lists it as Idle, with labels `self-hosted, linux, x64, dciab-lab`.
@@ -82,12 +82,12 @@ Keep everything outside the repo in `~/.dciab/0009/` (mode 700). Run commands wi
    - Dispatch it again once the first run is done. It must pass too. Its "Nothing left from an earlier job" step proves the loop cleaned up between jobs.
    - Record each run's ID and duration, and confirm a new runner registered after each job (`journalctl`).
 7. **Refused job.**
-   - Push your handoff branch (it has the workflow), then run `gh workflow run lab-runner-smoke.yml --ref handoff/0009-lab-runner`.
-   - Expected: the job fails at "Set up runner", with the hook's message `refused: ref 'refs/heads/handoff/0009-lab-runner': only refs/heads/main runs here`, and no step after it runs.
+   - Push your handoff branch (it has the workflow), then run `gh workflow run lab-runner-smoke.yml --ref handoff/0011-lab-runner`.
+   - Expected: the job fails at "Set up runner", with the hook's message `refused: ref 'refs/heads/handoff/0011-lab-runner': only refs/heads/main runs here`, and no step after it runs.
    - Record the message, and that the runner registered again afterwards.
 8. **Clean up.**
    - **Keep the VM:** it's the lab runner.
-   - Remove `images/lab-runner/{build,output}/`, `~/.dciab/0009/token`, and any local images you don't need (keep the bootc base).
+   - Remove `images/lab-runner/{build,output}/`, `~/.dciab/0011/token`, and any local images you don't need (keep the bootc base).
    - Afterwards, `git status` must show only your `handoff/` changes.
 
 ## Stop and ask
