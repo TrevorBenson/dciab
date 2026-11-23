@@ -36,12 +36,12 @@ Read first:
   - **A VMID** for the runner VM on `pve1`.
   - **Networks:** a static IP, prefix and gateway on untagged `vmbr0`, plus DNS. Also say whether to add a second NIC on VLAN 150 now (tasks 0003 and 0007 need kind to reach VIPs there) or later.
   - **His SSH public key** for the VM's admin user.
-  - **A GitHub token**, written by Trevor to `~/.dciab/0011/token` (mode 600). It must be a fine-grained personal access token limited to `TrevorBenson/dciab` only, with repository permission **Administration: Read and write**, which lets it create just-in-time runners. Record its expiry date in `LAB.md`, never the token.
+  - **A GitHub token**, written by Trevor to `~/.dciab/lab-runner/github-token` (mode 600; see "Files outside the repo" in `LAB.md`). It must be a fine-grained personal access token limited to `TrevorBenson/dciab` only, with repository permission **Administration: Read and write**, which lets it create just-in-time runners. Record its expiry date in `LAB.md`, never the token.
   - **Confirmation** that the repository's Actions setting requires approval for workflows from fork pull requests.
 
 ## Steps
 
-Keep everything outside the repo in `~/.dciab/0011/` (mode 700). Run commands with `set -o pipefail`.
+Keep this task's scratch files in `~/.dciab/0011/` (mode 700). The token stays in `~/.dciab/lab-runner/`. Run commands with `set -o pipefail`.
 
 1. **Plan.** Run `images/lab-runner/build.sh --print`. Expected: the actions runner version and URL from `bundle.lock` `labRunner`, the base above, and the pinned bootc-image-builder.
 2. **Build.**
@@ -73,7 +73,7 @@ Keep everything outside the repo in `~/.dciab/0011/` (mode 700). Run commands wi
      ```bash
      printf 'DCIAB_LAB_REPO=TrevorBenson/dciab\nDCIAB_LAB_LABELS=dciab-lab\nDCIAB_LAB_BRANCH=main\n' \
        | ssh <admin>@<ip> 'sudo install -m 0600 /dev/stdin /etc/dciab-lab-runner/runner.conf'
-     ssh <admin>@<ip> 'sudo install -m 0600 /dev/stdin /etc/dciab-lab-runner/token' < ~/.dciab/0011/token
+     ssh <admin>@<ip> 'sudo install -m 0600 /dev/stdin /etc/dciab-lab-runner/token' < ~/.dciab/lab-runner/github-token
      ssh <admin>@<ip> 'sudo systemctl start dciab-lab-runner'
      ```
    - Expected: `journalctl -u dciab-lab-runner` shows "runner registered for TrevorBenson/dciab", and the repository's Settings → Actions → Runners lists it as Idle, with labels `self-hosted, linux, x64, dciab-lab`.
@@ -87,7 +87,7 @@ Keep everything outside the repo in `~/.dciab/0011/` (mode 700). Run commands wi
    - Record the message, and that the runner registered again afterwards.
 8. **Clean up.**
    - **Keep the VM:** it's the lab runner.
-   - Remove `images/lab-runner/{build,output}/`, `~/.dciab/0011/token`, and any local images you don't need (keep the bootc base).
+   - Remove `images/lab-runner/{build,output}/`, `~/.dciab/0011/`, and any local images you don't need (keep the bootc base). **Keep `~/.dciab/lab-runner/github-token`:** it's needed to rebuild the VM or re-register it.
    - Afterwards, `git status` must show only your `handoff/` changes.
 
 ## Stop and ask
@@ -109,4 +109,4 @@ Record in `LAB.md`:
 - the runner VM's VMID, IP and NICs
 - the token's scope and expiry date (not the token)
 - that runner config lives in `/etc/dciab-lab-runner/` on the VM
-- how to rotate the token: replace the file, then `systemctl restart dciab-lab-runner`
+- how to rotate the token: replace `~/.dciab/lab-runner/github-token` on the workstation and `/etc/dciab-lab-runner/token` on the VM, then `systemctl restart dciab-lab-runner`
