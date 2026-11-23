@@ -75,8 +75,8 @@ SKIP_SUFFIXES = (".pyc", ".pyo", ".swp", "~")
 # Defence in depth: a file under SOURCES that looks like a site secret fails the build,
 # even when it would be skipped or isn't tracked by git. The archive is signed and copied
 # to every site, so a leaked secret can't be taken back. These match what the docs tell
-# operators to create (.gitignore has the same names), and the usual key and credential
-# formats. Names are compared in lower case.
+# operators to create, and the usual key and credential formats. .gitignore covers only
+# some of them (secrets/, *.pw, *.key, *.env). Names are compared in lower case.
 SECRET_DIRS = {"secrets"}                       # the examples' ./secrets/ folder, any case
 SECRET_SUFFIXES = (".key", ".pw", ".env",       # private keys, passwords, env files
                    ".age",                      # sealed site secrets (root passwords, the CA key)

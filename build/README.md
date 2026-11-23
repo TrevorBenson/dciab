@@ -97,6 +97,13 @@ dciab-<VERSION>.tar
 
 **No secrets.** The build fails if a file under those paths, tracked or not, looks like a site secret: anything in a `secrets/` folder (in any case); a `*.key`, `*.pw`, `*.env`, `.env`, `*.age`, `kubeconfig`, `*.kubeconfig`, `*.p12`, `*.pfx`, `*.jks`, `*.ppk` or `htpasswd` file; or a file holding a private key (PEM, DER, PuTTY, a PKCS#12 bundle or a Java keystore), an age identity, an htpasswd entry, or a kubeconfig with a client key, token or password. Public certificates and public keys still ship. Keep a site's `dciab.yaml` and `secrets/` outside these paths, for example at the top of the checkout.
 
+**Known gaps.** The check is a safety net, not a guarantee. It doesn't catch:
+
+- a kubeconfig written as JSON;
+- a kubeconfig whose user holds an OIDC token (`auth-provider` with an `id-token` or `refresh-token`);
+- a DER private key with bytes after its outer SEQUENCE;
+- a PKCS#8 v2 (OneAsymmetricKey) DER key, whose version is 1.
+
 **Signing.** The site is offline, so keyless signing (which needs Fulcio and Rekor) doesn't apply: `--signing-key` takes a cosign key pair's private key, password in `COSIGN_PASSWORD`, and signs without a transparency log. Keep the private key out of the repository. The site gets the public key separately from the archive and runs:
 
 ```console
