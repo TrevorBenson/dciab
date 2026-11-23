@@ -4,7 +4,7 @@ One archive and one YAML file build a data center platform from bare power and n
 
 What a site runs, by capability and cluster: [docs/COMPONENTS.md](docs/COMPONENTS.md).
 
-**Status:** Phase 1, in progress. Built: the config schema and `dciab validate` (offline and `--live` checks), the pinned `bundle.lock`, the ClusterClass and cluster charts, the archive build and `dciab verify-archive`, and the steps up to `mgmt`: `media`, `services`, `hypervisors` (Proxmox VE, first part), `seed` and `mgmt` (MGMT's own services still to come). `infra`, `platform` and `finalize` aren't built yet. On real infrastructure, only a Proxmox VE node template has been built and verified so far; no cluster has been built on real infrastructure yet. [docs/ROADMAP.md](docs/ROADMAP.md) is the source of truth for what exists.
+**Status:** Phase 1, in progress. Done: the config schema and `dciab validate` (offline and `--live` checks), the pinned `bundle.lock`, the ClusterClass and cluster charts, `cluster-values`, `status`, `media`, `services`, `hypervisors` (Proxmox VE, first part) and `seed`. Implemented, not yet passed end to end: the archive build and `verify-archive` (node images still to come), and `mgmt` (CI runs it up to the Cluster; MGMT's own services still to come). `infra`, `platform` and `finalize` aren't built yet. A Proxmox VE node template has been built and verified; no cluster has passed on real infrastructure yet. [docs/ROADMAP.md](docs/ROADMAP.md) is the source of truth for what exists.
 
 ## The bootstrap host
 
@@ -19,7 +19,9 @@ Both run the same steps. `spec.bootstrap.workDisk` says where the payload and th
 
 Each step is safe to rerun. The steps from `media` to `mgmt` take `--until STEP` to stop after one of their own stages (listed on each step's page; `mgmt`'s are below). Steps shown with `sudo` must run as root.
 
-Give every step the same `--state DIR` (`<state>` below). Without it, a step uses `.dciab/state` next to the config; a step with another state folder doesn't see the earlier steps' work. After `media`, run every later step from the copy it made (`<work>/dciab-<VERSION>/dciab`) with `--state <work>/state`, and add `--isos <work>/isos` to `services` and `hypervisors`. `media` prints these commands when it finishes.
+Give every step the same `--state DIR` (`<state>` below). Without it, a step uses `.dciab/state` next to the config; a step with another state folder doesn't see the earlier steps' work. After `media`, run every later step from the copy it made (`<work>/dciab-<VERSION>/dciab`) with `--state <work>/state`, and add `--isos <work>/isos` to `services` and `hypervisors`. `media` prints the first of these commands when it finishes.
+
+Under `sudo`, `{env: VAR}` secrets are dropped: pass them through with `sudo --preserve-env=VAR …`, or use `{file: <path>}` references instead.
 
 | Step | Command | Result |
 | --- | --- | --- |
@@ -29,6 +31,8 @@ Give every step the same `--state DIR` (`<state>` below). Without it, a step use
 | 0c | `sudo ./dciab hypervisors dciab.yaml --state <state>` | Bare servers only (in progress, Proxmox VE): installed over Redfish virtual media ([docs/HYPERVISORS.md](docs/HYPERVISORS.md)) |
 | 1 | `sudo ./dciab seed dciab.yaml --state <state>` | Seed DNS (`registry.<domain>` on the DNS service IPs), seed registry (Zot, read-only, from the payload) and KinD with all CAPI providers ([docs/SEED.md](docs/SEED.md)) |
 | 2 | `sudo ./dciab mgmt dciab.yaml --state <state>` | MGMT built, Cilium and the providers installed, CAPI moved into it, Longhorn installed. It picks up `seed`'s kubeconfig and trust bundle from the state folder, and runs as the folder's owner (root, after `seed`). Stages: `preflight values cluster control-plane cilium providers move adopt longhorn`. Not yet proven on real infrastructure; MGMT's other services and the DNS handoff are still to come |
+
+Until `mgmt` puts the payload's tools on PATH itself (see the open issue on mgmt's PATH), run it as `sudo env "PATH=<archive>/payload/bin:$PATH" ./dciab mgmt dciab.yaml --state <state>`, where `<archive>` is the folder `dciab` runs from (`<work>/dciab-<VERSION>` after `media`).
 | 3 | `./dciab infra` | Not built yet: INFRA with Argo CD, Forgejo, OpenBao, CloudNativePG |
 | 4 | `./dciab platform` | Not built yet: repos pushed; Argo CD and OpenTofu bring up the rest |
 | 5 | `./dciab finalize` | Not built yet: images moved to Artifact Keeper; seed torn down |
@@ -40,7 +44,7 @@ Check progress at any point with `sudo ./dciab status dciab.yaml --state <state>
 - **`dciab status <config> [--state DIR] [--output text|json]`**: where the bootstrap stands, read-only: the Day 0 pod, the platform CA and registry certificate, the seed registry, the bootstrap cluster, and where MGMT's Cluster lives. Run it as root; without root the container checks report unknown. Exit code `0` when every check that applies is ok, `1` otherwise.
 - **`dciab cluster-values <config> <cluster>`**: print a cluster's `capi-cluster` chart values, generated from the config (`mgmt`, `infra` or a workload cluster; `--list` names them). `-o FILE` writes them to a file (mode 600). With `pki.mode: generate-root`, pass `--trust-bundle <state>/pki/trust-bundle.pem` once `seed` has created the platform CA.
 - **`dciab verify-archive (--key PUB | --checksums-only) [ARCHIVE]`**: check an archive (this one by default, or a `dciab-<version>.tar` or its unpacked folder) against its signed `MANIFEST`. `--checksums-only` skips the signature, for unsigned builds only. `media` runs it on its copy.
-- **`dciab help`** lists every command and option. `dciab verify` (site checks) isn't built yet.
+- **`dciab help`** lists the commands and their main options. `dciab verify` (site checks) isn't built yet.
 
 ### Starting from bare servers
 
@@ -106,7 +110,7 @@ Every TLS connection is verified: against the pinned fingerprint (`tlsFingerprin
 
 ## Layout
 
-This is the repository. The archive carries `dciab`, `README.md`, `VERSION`, `bundle.lock`, `lib/`, `schema/`, `charts/`, `addons/`, `docs/`, `examples/` and the two `hack/` scripts the steps run, plus its payload; `images/`, `build/`, `handoff/`, `tests/` and the rest of `hack/` stay in the repository.
+This is the repository layout. The archive carries the parts a site runs (the entrypoint, `lib/`, `schema/`, `charts/`, `addons/`, `docs/`, `examples/` and the pinned files), plus its payload; development-only paths such as `build/`, `handoff/` and `tests/` stay in the repository.
 
 ```text
 dciab                    entrypoint
