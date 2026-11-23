@@ -1,14 +1,14 @@
 # Roadmap
 
-What each phase builds, against the component list in [COMPONENTS.md](COMPONENTS.md). Each phase ends in a gate that must pass on both a vSphere lab and a Proxmox lab.
+What each phase builds, against the component list in [COMPONENTS.md](COMPONENTS.md). Each phase ends in a gate that must pass on both a vSphere environment and a Proxmox VE environment.
 
 | Phase | Scope | Gate |
 | --- | --- | --- |
 | 0. Spikes | The three ClusterClasses (vSphere, Proxmox, Metal3); Kea behind a LoadBalancer with DHCP relay; DNS IP handoff from the bootstrap host to MGMT; CAPMOX `v1alpha2` templates | A cluster from each class builds, survives node replacement and a Kubernetes upgrade, and moves from one class revision to the next |
-| 1. Skeleton | Config schema and `validate`; archive build pipeline (`bundle.lock`, SBOMs, signing); `seed`; `mgmt` | MGMT builds and pivots on both labs; re-running any step changes nothing |
+| 1. Skeleton | Config schema and `validate`; archive build pipeline (`bundle.lock`, SBOMs, signing); `seed`; `mgmt` | MGMT builds and pivots on both platforms; re-running any step changes nothing |
 | 2. MGMT services | Metal3 (BMO + Ironic), PowerDNS, Kea, DNS handoff | A bare-metal host provisions over Redfish virtual media; DNS answers from MGMT with the bootstrap host unplugged |
 | 3. INFRA and platform | CloudNativePG, OpenBao, Forgejo, Argo CD and adoption of script-installed releases; OpenTofu stacks; Authentik SSO; metrics and logs | `platform` from a clean MGMT ends with every application Synced and the nightly drift job clean |
-| 4. Hosts and clusters | OpenVox enrollment and profiles; standalone VMs; `finalize`; workload clusters from each class | A full run in the nested lab, with step timings recorded |
+| 4. Hosts and clusters | OpenVox enrollment and profiles; standalone VMs; `finalize`; workload clusters from each class | A full run on nested virtualization, with step timings recorded |
 | 5. Hardening and handover | Failure injection, an air-gapped rehearsal, README and troubleshooting guide | An engineer who didn't build it completes a run from the README alone |
 
 ## Phase 1 status
@@ -26,7 +26,7 @@ What each phase builds, against the component list in [COMPONENTS.md](COMPONENTS
 - [ ] Node image for the Kubernetes upgrade gate: the recipe builds it (`build.sh --upgrade-from`); not yet used in a test
 - [x] Cilium install for any cluster (`addons/cilium`), with kube-proxy replaced
 - [ ] Real-cluster spike on Proxmox from the template
-- [ ] Archive build pipeline ([build/](../build/README.md)): image inventory, image pull, charts, providers, binaries, checksums, SBOMs, packaging and signing (`dciab verify-archive`) done; node images next
+- [ ] Archive build pipeline (`build/README.md` in the source repository; not shipped in the archive): image inventory, image pull, charts, providers, binaries, checksums, SBOMs, packaging and signing (`dciab verify-archive`) done; node images next
 - [x] `dciab cluster-values`: capi-cluster values for MGMT, INFRA and workload clusters, generated from the site config
 - [x] `dciab status`: read-only report of the Day 0 pod, the platform CA and registry certificate, the seed registry, the bootstrap cluster and where MGMT's Cluster lives
 - [x] `dciab seed`: platform CA (generated with its key age-encrypted, or imported), read-only Zot loaded from the payload, kind pulling through it, providers and ClusterClasses from the payload, DNS for `registry.<domain>` ([SEED.md](SEED.md))
@@ -53,7 +53,7 @@ Decided in [ADR 0002](adr/0002-bootstrap-appliance-on-ventoy.md).
 
 - [x] Config: `bootstrap.interface` by name or MAC; `bootstrap.managementVLAN`; `bootstrap.workDisk`
 - [x] Recipes under evaluation: `images/bootstrap-bootc/` (appliance installer ISO), `images/usb/` (Ventoy stick)
-- [ ] Spike (task 0005): unattended install of server zero from the stick with Secure Boot on, first boot from `dciab.yaml`, a short end-to-end check, installers from the same stick
+- [ ] Spike: unattended install of server zero from the stick with Secure Boot on, first boot from `dciab.yaml`, a short end-to-end check, installers from the same stick
 - [ ] Day 0 images preloaded in the appliance
 - [x] `dciab media`: copy the USB payload to the work disk, and run the bootstrap's heavy state from it ([MEDIA.md](MEDIA.md))
 - [ ] Plain (non-Ventoy) stick for strict Secure Boot sites
@@ -74,5 +74,5 @@ Proposed for phases 3 and 4. Two pieces exist: `dciab cluster-values` already gi
 - **Reclaim server zero** as the last hypervisor at `finalize`.
 - **Only if a site needs them:** PXE as a second install method; a direct out-of-band interface on the bootstrap host, with DHCP for BMCs; separate NTP service addresses.
 
-- **Node image recipe: image mode (bootc) with CRI-O is the choice.** It builds and boots on Proxmox (12 s to SSH, SELinux enforcing). The image-builder recipe stays until a cluster passes on the bootc template; then it's removed, along with the classes' containerd mirror files.
-- **CRI-O instead of containerd.** It comes with the bootc recipe, which installs CRI-O. The `r1` classes already write CRI-O's mirror files next to containerd's, and kubeadm finds the only runtime socket on its own. What's left is a cluster passing on a bootc template (task 0003), then removing the containerd files and the image-builder recipe.
+- **Node image recipe: image mode (bootc) with CRI-O is the choice.** It builds and boots on Proxmox VE with SELinux enforcing. The image-builder recipe stays until a cluster passes on the bootc template; then it's removed, along with the classes' containerd mirror files.
+- **CRI-O instead of containerd.** It comes with the bootc recipe, which installs CRI-O. The `r1` classes already write CRI-O's mirror files next to containerd's, and kubeadm finds the only runtime socket on its own. What's left is a cluster passing on a bootc template (the real-cluster spike on Proxmox above), then removing the containerd files and the image-builder recipe.

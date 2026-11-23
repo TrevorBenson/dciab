@@ -82,7 +82,7 @@ HTTP listens on `bootstrap.address`: only installers and BMCs use it, and it goe
 
 - New optional config: `spec.hypervisors` and `spec.bootstrap.ntp`. `validate` checks them: the hypervisor type matches `platform.type`; host addresses sit in the node network without overlapping anything; MACs and BMCs are unique across hypervisor and Metal3 hosts; Proxmox hosts appear in `platform.proxmox.nodes`; the ESXi ISO matches its pin; NTP servers match the DNS service addresses when the bootstrap host serves NTP.
 - `bundle.lock` gains `hypervisors` and `day0` sections; the image digest check covers `day0.images`.
-- `dciab services` must handle the workstation: ports already in use (Rocky's own `chronyd` holds UDP 123, so the pod binds only to the service addresses), runtime-only firewalld rules opened for the step and closed at teardown, and a readiness check that queries DNS (both directions), NTP and ranged HTTP from the network.
+- `dciab services` must handle a bootstrap host that already runs services: ports already in use (Rocky's own `chronyd` holds UDP 123, so the pod binds only to the service addresses), runtime-only firewalld rules opened for the step and closed at teardown, and a readiness check that queries DNS (both directions), NTP and ranged HTTP from the network.
 - Before a server is installed, the hypervisor step checks or sets over Redfish: UEFI boot mode, Secure Boot per `spec.hypervisors.bootMode`, virtualization extensions, and that a disk matches `rootDeviceHints`.
 
 ## Amendment 1 (2026-11-22): answer files inside per-host ISOs; root passwords sealed with age
