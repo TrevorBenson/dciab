@@ -1,33 +1,50 @@
 # DCiaB: DataCenter in a Box
 
-One archive and one YAML file build a data center platform from bare power and network. An ephemeral KinD cluster on the bootstrap host builds a self-managing **MGMT** cluster; MGMT builds **INFRA**; INFRA's Argo CD configures everything else from Git. vSphere (CAPV), Proxmox VE (CAPMOX) and bare metal (Metal3) are all supported, one provider per cluster.
+One archive and one YAML file build a data center platform from bare power and network. An ephemeral KinD cluster on the bootstrap host builds a self-managing **MGMT** cluster; MGMT builds **INFRA**; INFRA's Argo CD configures everything else from Git. It is designed for vSphere (CAPV), Proxmox VE (CAPMOX) and bare metal (Metal3), one provider per cluster; the roadmap says what has been tested on each.
 
 What a site runs, by capability and cluster: [docs/COMPONENTS.md](docs/COMPONENTS.md).
 
-**Status:** Phase 1, in progress. The config schema, `dciab validate` (offline and `--live` checks), the pinned `bundle.lock`, and the ClusterClass and cluster charts exist; the bootstrap steps don't yet. See [docs/ROADMAP.md](docs/ROADMAP.md).
+**Status:** Phase 1, in progress. Done: the config schema and `dciab validate` (offline and `--live` checks), the pinned `bundle.lock`, the ClusterClass and cluster charts, `cluster-values`, `status`, `media`, `services`, `hypervisors` (Proxmox VE, first part) and `seed`. Implemented, not yet passed end to end: the archive build and `verify-archive` (node images still to come), and `mgmt` (CI runs it up to the Cluster; MGMT's own services still to come). `infra`, `platform` and `finalize` aren't built yet. A Proxmox VE node template has been built and verified; no cluster has passed on real infrastructure yet. [docs/ROADMAP.md](docs/ROADMAP.md) is the source of truth for what exists.
 
 ## The bootstrap host
 
 Everything from `dciab media` on runs on the bootstrap host, which must be **Rocky Linux 10 (x86_64)** with a wired NIC on the node network. Either:
 
-- **Server zero (default):** one server in the rack, installed from the DCiaB USB with the DCiaB bootstrap appliance (Rocky Linux 10). The operator's laptop, on any OS, only needs SSH and a browser. See [images/usb/](images/usb/README.md) (under evaluation).
+- **Server zero (default):** one server in the rack, installed from the DCiaB USB with the DCiaB bootstrap appliance (Rocky Linux 10). The operator's laptop, on any OS, only needs SSH and a browser. See [ADR 0002](docs/adr/0002-bootstrap-appliance-on-ventoy.md); the USB and appliance recipes are under evaluation, in the DCiaB repository (`images/usb/`, `images/bootstrap-bootc/`).
 - **A Rocky Linux 10 machine you provide**, such as a Linux laptop. It needs podman, kind, helm and kubectl at the `bundle.lock` versions (the appliance has them built in).
 
 Both run the same steps. `spec.bootstrap.workDisk` says where the payload and the bootstrap's heavy state go: `disk:` on server zero (the disk the appliance installs onto), `path:` on a host you provide. Other operating systems can edit the config and run `dciab validate`, but can't be the bootstrap host.
 
 ## Steps
 
+Each step is safe to rerun. The steps from `media` to `mgmt` take `--until STEP` to stop after one of their own stages (listed on each step's page; `mgmt`'s are below). Steps shown with `sudo` must run as root.
+
+Give every step the same `--state DIR` (`<state>` below). Without it, a step uses `.dciab/state` next to the config; a step with another state folder doesn't see the earlier steps' work. After `media`, run every later step from the copy it made (`<work>/dciab-<VERSION>/dciab`) with `--state <work>/state`, and add `--isos <work>/isos` to `services` and `hypervisors`. `media` prints the first of these commands when it finishes.
+
+Under `sudo`, `{env: VAR}` secrets are dropped: pass them through with `sudo --preserve-env=VAR …`, or use `{file: <path>}` references instead.
+
 | Step | Command | Result |
 | --- | --- | --- |
 | 0 | `./dciab validate dciab.yaml` | The config passes schema and semantic checks |
-| 0a | `./dciab media dciab.yaml --key cosign.pub` | Copy the archive to the work disk and put container storage there ([docs/MEDIA.md](docs/MEDIA.md)) |
-| 0b | `sudo ./dciab services dciab.yaml` | Bare servers only: DNS, NTP and HTTP on the bootstrap host |
-| 0c | `sudo ./dciab hypervisors dciab.yaml` | Bare servers only (in progress, Proxmox VE): installed over Redfish virtual media ([docs/HYPERVISORS.md](docs/HYPERVISORS.md)) |
-| 1 | `./dciab seed` | Seed DNS (`registry.<domain>` on the DNS service IPs), seed registry (Zot, read-only, from the payload) and KinD with all CAPI providers ([docs/SEED.md](docs/SEED.md)) |
-| 2 | `./dciab mgmt` | MGMT built, Cilium installed, CAPI moved into it (in progress: DNS handoff and MGMT services still to come) |
-| 3 | `./dciab infra` | INFRA built with Argo CD, Forgejo, OpenBao, CloudNativePG |
-| 4 | `./dciab platform` | Repos pushed; Argo CD and OpenTofu bring up the rest |
-| 5 | `./dciab finalize` | Images moved to Artifact Keeper; seed torn down |
+| 0a | `sudo ./dciab media dciab.yaml --key cosign.pub` | Copy the archive to the work disk and put container storage there ([docs/MEDIA.md](docs/MEDIA.md)) |
+| 0b | `sudo ./dciab services dciab.yaml --state <state>` | Bare servers only: DNS, NTP and HTTP on the bootstrap host |
+| 0c | `sudo ./dciab hypervisors dciab.yaml --state <state>` | Bare servers only (in progress, Proxmox VE): installed over Redfish virtual media ([docs/HYPERVISORS.md](docs/HYPERVISORS.md)) |
+| 1 | `sudo ./dciab seed dciab.yaml --state <state>` | Seed DNS (`registry.<domain>` on the DNS service IPs), seed registry (Zot, read-only, from the payload) and KinD with all CAPI providers ([docs/SEED.md](docs/SEED.md)) |
+| 2 | `sudo ./dciab mgmt dciab.yaml --state <state>` | MGMT built, Cilium and the providers installed, CAPI moved into it, Longhorn installed. It picks up `seed`'s kubeconfig and trust bundle from the state folder, and runs as the folder's owner (root, after `seed`). Stages: `preflight values cluster control-plane cilium providers move adopt longhorn`. Not yet proven on real infrastructure; MGMT's other services and the DNS handoff are still to come |
+
+Until `mgmt` puts the payload's tools on PATH itself (see [issue #98](https://github.com/TrevorBenson/dciab/issues/98)), run it as `sudo env "PATH=<archive>/payload/bin:$PATH" ./dciab mgmt dciab.yaml --state <state>`, where `<archive>` is the folder `dciab` runs from (`<work>/dciab-<VERSION>` after `media`).
+| 3 | `./dciab infra` | Not built yet: INFRA with Argo CD, Forgejo, OpenBao, CloudNativePG |
+| 4 | `./dciab platform` | Not built yet: repos pushed; Argo CD and OpenTofu bring up the rest |
+| 5 | `./dciab finalize` | Not built yet: images moved to Artifact Keeper; seed torn down |
+
+Check progress at any point with `sudo ./dciab status dciab.yaml --state <state>`.
+
+### Other commands
+
+- **`dciab status <config> [--state DIR] [--output text|json]`**: where the bootstrap stands, read-only: the Day 0 pod, the platform CA and registry certificate, the seed registry, the bootstrap cluster, and where MGMT's Cluster lives. Run it as root; without root the container checks report unknown. Exit code `0` when every check that applies is ok, `1` otherwise.
+- **`dciab cluster-values <config> <cluster>`**: print a cluster's `capi-cluster` chart values, generated from the config (`mgmt`, `infra` or a workload cluster; `--list` names them). `-o FILE` writes them to a file (mode 600). With `pki.mode: generate-root`, pass `--trust-bundle <state>/pki/trust-bundle.pem` once `seed` has created the platform CA.
+- **`dciab verify-archive (--key PUB | --checksums-only) [ARCHIVE]`**: check an archive (this one by default, or a `dciab-<version>.tar` or its unpacked folder) against its signed `MANIFEST`. `--checksums-only` skips the signature, for unsigned builds only. `media` runs it on its copy.
+- **`dciab help`** lists the commands and their main options. `dciab verify` (site checks) isn't built yet.
 
 ### Starting from bare servers
 
@@ -92,6 +109,8 @@ Every TLS connection is verified: against the pinned fingerprint (`tlsFingerprin
 `--live` sends the referenced credentials to the endpoints the config names, as the later steps do, so run it only on a config you trust.
 
 ## Layout
+
+This is the repository layout. The archive carries the parts a site runs (the entrypoint, `lib/`, `schema/`, `charts/`, `addons/`, `docs/`, `examples/` and the pinned files), plus its payload; development-only paths such as `build/`, `handoff/` and `tests/` stay in the repository.
 
 ```text
 dciab                    entrypoint
