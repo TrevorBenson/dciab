@@ -210,6 +210,21 @@ def test_cli_refuses_non_root(tmp_path, monkeypatch, capsys):
     assert rc == 1 and "run as root" in capsys.readouterr().err
 
 
+@pytest.mark.parametrize("state_arg", [True, False])
+def test_cli_non_root_creates_nothing(tmp_path, monkeypatch, capsys, state_arg):
+    cfg = tmp_path / "dciab.yaml"
+    cfg.write_text("spec: {}\n")
+    monkeypatch.setattr(cli.os, "geteuid", lambda: 1000)
+
+    def no_default_state(*a, **kw):
+        raise AssertionError("default_state (which may migrate state) ran before the root check")
+    monkeypatch.setattr(cli, "default_state", no_default_state)
+    extra = ["--state", str(tmp_path / "s")] if state_arg else []
+    rc = cli.main([str(cfg), "--root", str(ROOT), "--payload", str(tmp_path)] + extra)
+    assert rc == 1 and "run as root" in capsys.readouterr().err
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["dciab.yaml"]
+
+
 def test_capi_providers_takes_a_manifests_folder(tmp_path):
     r = subprocess.run([str(ROOT / "lib" / "steps" / "capi-providers.sh"), "--manifests", str(tmp_path / "nope")],
                        capture_output=True, text=True)

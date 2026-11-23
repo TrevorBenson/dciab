@@ -32,7 +32,7 @@ When it's done it prints the next commands, run from the copy with their state o
 
 ```console
 # <work>/dciab-<VERSION>/dciab services dciab.yaml --state <work>/state --isos <work>/isos
-# <work>/dciab-<VERSION>/dciab hypervisors dciab.yaml --state <work>/state
+# <work>/dciab-<VERSION>/dciab hypervisors dciab.yaml --state <work>/state --isos <work>/isos
 # <work>/dciab-<VERSION>/dciab seed dciab.yaml --state <work>/state
 ```
 

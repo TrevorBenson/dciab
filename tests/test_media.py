@@ -263,6 +263,19 @@ def test_printed_commands_are_quoted(tmp_path):
     assert "'/a b/dciab.yaml'" in lines[1]
 
 
+def test_printed_hypervisors_command_finds_the_copied_isos():
+    # On the appliance (workDisk.disk) hypervisors' default ISOs folder is <state>/isos, not
+    # <work>/isos where the isos step put the installers: the command must name it.
+    lines = cli.next_commands(Path("/var/lib/dciab/work/dciab-1"), Path("/var/lib/dciab/site/dciab.yaml"),
+                              Path("/var/lib/dciab/work"))
+    hv = next(line for line in lines if " hypervisors " in line)
+    assert hv.split("#")[0].split() == [
+        "/var/lib/dciab/work/dciab-1/dciab", "hypervisors", "/var/lib/dciab/site/dciab.yaml",
+        "--state", "/var/lib/dciab/work/state", "--isos", "/var/lib/dciab/work/isos"]
+    services = next(line for line in lines if " services " in line)
+    assert "--isos /var/lib/dciab/work/isos" in services
+
+
 def test_unusable_graphroot_refused():
     with pytest.raises(cli.MediaError, match="quotes"):
         cli.dropin_text(Path('/x"\n[storage.options]'))
