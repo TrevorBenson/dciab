@@ -2,6 +2,7 @@
 
 - Status: proposed
 - Date: 2026-11-22
+- Amended by: [ADR 0009](0009-backup-and-dr.md) (decision 1: where Raft snapshots go; backup-target credentials outside ESO)
 
 ## Context
 
