@@ -1,7 +1,7 @@
 ---
 id: "0003"
 title: First real cluster on Proxmox (r1 class, bootc Rocky 10 template with CRI-O, Cilium)
-status: open
+status: done
 runner: workstation
 depends: ["0006"]
 report: handoff/reports/0003-proxmox-cluster.md
