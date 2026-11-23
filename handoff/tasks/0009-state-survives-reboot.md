@@ -37,6 +37,7 @@ Read first:
    sudo /var/lib/dciab/work/dciab-src/dciab seed /var/lib/dciab/site/dciab.yaml \
      --payload /var/lib/dciab/work/payload --until pki
    ```
+   If the config references secrets as `{env: VAR}`, export them first and keep them across sudo: `sudo --preserve-env=VAR,OTHER_VAR /var/lib/dciab/work/dciab-src/dciab seed ...`. Plain `sudo` drops them.
    Passing: it ends with `stopped after 'pki'`, and `/var/lib/dciab/work/state/pki/` holds `ca.crt`, `ca.key.age` and `trust-bundle.pem`. Nothing is under `/var/lib/dciab/site/.dciab`.
 3. **Record the state.**
    ```bash

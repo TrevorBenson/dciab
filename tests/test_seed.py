@@ -325,3 +325,25 @@ def test_cli_passes_force_new_ca(tmp_path, monkeypatch):
     cfg.write_text("spec: {}\n")
     args = [str(cfg), "--root", str(tmp_path), "--state", str(tmp_path / "s"), "--until", "pki"]
     assert cli.main(args + ["--force-new-ca"]) == 0 and seen["force"] is True
+
+
+def test_ca_guard_names_state_kept_aside(tmp_path):
+    state = tmp_path / "state"
+    (state / "pki").mkdir(parents=True)
+    (state / "pki" / "trust-bundle.pem").write_text("x\n")
+    aside = tmp_path / "state.from-site-abc"
+    aside.mkdir()
+    with pytest.raises(plan.SeedError, match=f"mv {state} .*mv {aside} {state}"):
+        pki.ensure(state / "pki", settings(tmp_path, recipients=["age1unused"]), identity=None)
+
+
+@need_tools
+def test_lone_ca_key_is_kept_aside(tmp_path):
+    _, r1 = keypair(tmp_path, "a")
+    d = tmp_path / "pki"
+    d.mkdir()
+    (d / "ca.key.age").write_text("interrupted\n")    # a first run stopped before ca.crt
+    changed = pki.ensure(d, settings(tmp_path, recipients=[r1]), identity=None)
+    [bak] = d.glob("ca.key.age.*.bak")
+    assert bak.read_text() == "interrupted\n" and any("aside" in c for c in changed)
+    assert (d / "ca.key.age").read_bytes() != b"interrupted\n"

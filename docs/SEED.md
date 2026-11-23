@@ -24,4 +24,4 @@ Seed then issues the registry's TLS certificate (ECDSA P-256, 30 days). It names
 
 `<state>/pki/trust-bundle.pem` is what nodes and the bootstrap cluster trust: the root for `generate-root`, the configured chain for `import-intermediate`.
 
-With `generate-root`, seed won't create a new root CA when the state shows one was issued before (`ca.crt`, the trust bundle, the registry certificate or a kubeconfig is there) but the CA itself is incomplete. Whatever trusts the old CA wouldn't trust a new one. Restore the state from a backup, or pass `--force-new-ca`.
+With `generate-root`, seed won't create a new root CA when the state shows one was issued before (`ca.crt`, the trust bundle, the registry certificate or a kubeconfig is there) but the CA itself is incomplete. Whatever trusts the old CA wouldn't trust a new one. Restore the state from a backup (seed names a `state.from-site-*` copy when there is one), or pass `--force-new-ca`. A `ca.key.age` left without its `ca.crt` is never overwritten: seed renames it to `ca.key.age.<time>.bak` before generating a new CA.

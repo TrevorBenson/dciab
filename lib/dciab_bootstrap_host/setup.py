@@ -256,6 +256,8 @@ def apply_network(p: Dict[str, object]) -> None:
 def main(argv: Optional[List[str]] = None) -> int:
     import yaml
 
+    from dciab_state import StateMigrationError
+
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("config", nargs="?", help="path to dciab.yaml (default: SITE/dciab.yaml)")
     ap.add_argument("--usb", help="the stick's data partition; its dciab.yaml and secrets/ are copied to --site")
@@ -273,6 +275,9 @@ def main(argv: Optional[List[str]] = None) -> int:
                 say(f"copied dciab.yaml and secrets/ from {args.usb} to {args.site}")
             else:
                 say(f"no dciab.yaml on {args.usb}; using the copy in {args.site}")
+        except StateMigrationError as exc:
+            say(f"{exc}; the config wasn't copied, nothing changed. Then reboot.")
+            return 1
         except OSError as exc:
             # Applying the older copy would silently ignore the operator's change.
             say(f"couldn't copy the config from {args.usb}: {exc}; nothing changed. Fix the stick and reboot.")

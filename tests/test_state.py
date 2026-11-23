@@ -101,3 +101,23 @@ def test_shell_steps_get_the_same_default(tmp_path):
     out = subprocess.run([sys.executable, "-m", "dciab_state", "--no-migrate", str(cfg)], env=env,
                          check=True, capture_output=True, text=True).stdout.strip()
     assert out == str(tmp_path / ".dciab" / "state")
+
+
+def test_failed_migration_is_reported_as_a_state_problem(tmp_path, monkeypatch, capsys):
+    import shutil
+    import pytest
+    from dciab_state import StateMigrationError
+
+    usb, site = _usb(tmp_path), tmp_path / "site"
+    assert setup.sync_site(str(usb), str(site))
+    (site.resolve() / LEGACY).mkdir(parents=True)
+
+    def boom(*a, **k):
+        raise PermissionError("denied")
+
+    monkeypatch.setattr(shutil, "move", boom)
+    with pytest.raises(StateMigrationError, match="move it there by hand|Move it there by hand"):
+        default_state(site / "dciab.yaml", site=site)
+    assert setup.main(["--usb", str(usb), "--site", str(site)]) == 1
+    err = capsys.readouterr().err
+    assert "couldn't move dciab's state" in err and "Fix the stick" not in err

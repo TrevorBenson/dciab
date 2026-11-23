@@ -20,6 +20,7 @@ import os
 import shutil
 import subprocess
 import tempfile
+import time
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Callable, Iterator, List, Optional, Sequence
@@ -154,6 +155,12 @@ def previous_ca_evidence(pki: Path) -> List[str]:
     return [str(p) for p in found if p.exists()]
 
 
+def kept_aside_state(pki: Path) -> List[Path]:
+    """Older state that dciab_state.migrate_legacy kept aside next to this state folder."""
+    state = pki.parent
+    return sorted(state.parent.glob(f"{state.name}.from-site-*"))
+
+
 def ensure(pki: Path, s: Settings, identity: Optional[Path], runner: Runner = run,
            force_new_ca: bool = False) -> List[str]:
     """Create or reuse the CA, trust bundle and registry certificate. Returns what changed.
@@ -172,11 +179,21 @@ def ensure(pki: Path, s: Settings, identity: Optional[Path], runner: Runner = ru
             if not ((pki / "ca.crt").is_file() and (pki / "ca.key.age").is_file()):
                 evidence = previous_ca_evidence(pki)
                 if evidence and not force_new_ca:
+                    state = pki.parent
+                    restore = "Restore the state folder from a backup"
+                    for aside in kept_aside_state(pki):
+                        restore = (f"Older state was kept aside in {aside}. If it holds the CA "
+                                   f"(pki/ca.crt and pki/ca.key.age), restore it: mv {state} {state}.replaced "
+                                   f"&& mv {aside} {state}. Otherwise restore the state folder from a backup")
                     raise SeedError(
                         f"{pki} has no complete root CA (ca.crt and ca.key.age), but a CA was issued "
                         f"before: {', '.join(evidence)}. A new CA wouldn't be trusted by what trusts the old "
-                        "one. Restore the state folder from a backup, or pass --force-new-ca to generate "
-                        "a new CA and re-trust it everywhere")
+                        f"one. {restore}, or pass --force-new-ca to generate a new CA and re-trust it everywhere")
+                if (pki / "ca.key.age").exists():
+                    # An interrupted first run, or a key without its certificate: keep it.
+                    bak = pki / f"ca.key.age.{time.strftime('%Y%m%dT%H%M%S')}.bak"
+                    os.replace(pki / "ca.key.age", bak)
+                    changed.append(f"moved the existing ca.key.age, which had no ca.crt, aside to {bak}")
                 ca_key, crt = new_root_ca(s.pki["commonName"], tmp, runner)
                 # The key first, the certificate last: a run stopped in between leaves no
                 # ca.crt, so the next run starts over instead of pairing a cert with another key.

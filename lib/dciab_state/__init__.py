@@ -26,6 +26,10 @@ LEGACY = Path(".dciab") / "state"
 PathLike = Union[str, "os.PathLike[str]"]
 
 
+class StateMigrationError(Exception):
+    """State left inside a site couldn't be moved out of it."""
+
+
 def site_state(site: PathLike) -> Path:
     """The state folder of a sync'd site: work/state beside the `site` link."""
     return Path(os.path.abspath(site)).parent / "work" / "state"
@@ -35,12 +39,13 @@ def migrate_legacy(legacy: PathLike, state: PathLike) -> Optional[str]:
     """Move state from `legacy` (inside a site) to `state`. Returns what was done, or None.
 
     When `state` already holds files, the legacy folder is kept aside next to it instead,
-    so nothing is overwritten and nothing is lost."""
+    so nothing is overwritten and nothing is lost. Raises StateMigrationError when the
+    move fails."""
     legacy, state = Path(legacy), Path(state)
     if not legacy.is_dir() or legacy.is_symlink():
         return None
-    state.parent.mkdir(parents=True, exist_ok=True)
     try:
+        state.parent.mkdir(parents=True, exist_ok=True)
         if state.is_dir() and not state.is_symlink() and not any(state.iterdir()):
             state.rmdir()
         if not os.path.lexists(state):
@@ -53,7 +58,12 @@ def migrate_legacy(legacy: PathLike, state: PathLike) -> Optional[str]:
         return (f"{state} already holds state: kept the state found in {legacy} aside in {aside}; "
                 f"compare the two and keep the right one")
     except FileNotFoundError:
-        return None  # another run moved it first
+        if not legacy.exists():
+            return None  # another run moved it first
+        raise StateMigrationError(f"couldn't move dciab's state from {legacy} to {state}: a folder vanished")
+    except OSError as exc:
+        raise StateMigrationError(f"couldn't move dciab's state from {legacy} to {state}: {exc}. "
+                                  f"Move it there by hand before anything else") from exc
 
 
 def default_state(config: PathLike, site: PathLike = SITE, migrate: bool = True) -> Path:
