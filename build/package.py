@@ -12,9 +12,10 @@
 - sboms: writes an SPDX SBOM per image in the payload (its linux/amd64 image) to
   DIR/sboms/images/<name>.spdx.json and one for DIR/bin to DIR/sboms/bin.spdx.json.
   Run archive.py sums afterwards: SHA256SUMS covers the SBOMs.
-- package: writes DIR/dciab-<VERSION>.tar: dciab, its libraries, charts, add-ons, docs,
-  examples and bundle.lock, with the payload under payload/, all in one folder
-  dciab-<VERSION>/. Its MANIFEST lists the sha256 of every other file. With
+- package: writes DIR/dciab-<VERSION>.tar: the repository paths in SOURCES (dciab, its
+  libraries, charts, add-ons, docs, examples, bundle.lock), with the payload under
+  payload/, all in one folder dciab-<VERSION>/. A file under SOURCES that looks like a
+  site secret fails the build. Its MANIFEST lists the sha256 of every other file. With
   --signing-key (a cosign key; its password in COSIGN_PASSWORD) MANIFEST.sig and
   payload/SHA256SUMS.sig sign MANIFEST and SHA256SUMS. Entries are sorted, owned by
   0:0 and dated SOURCE_DATE_EPOCH (or the last commit), so the same inputs give the same
@@ -51,16 +52,40 @@ from archive import ArchiveError, Runner, replace_dir, sha256_file, staging  # n
 from dciab_archive import verify as verify_mod  # noqa: E402
 from dciab_archive.verify import MANIFEST, SIGNATURE, manifest_text  # noqa: E402
 
-# What the archive carries from this repository, relative to its root.
+# The allowlist: everything the archive carries from this repository, relative to its
+# root. Nothing else ships. Each entry is something the shipped dciab reads at run time,
+# or the operator docs and examples. tests/test_package.py checks that every path the
+# CLI and its steps open under the archive root is covered.
 SOURCES = [
-    "dciab", "README.md", "VERSION", "bundle.lock",
-    "lib", "schema", "charts", "addons", "docs", "examples",
+    "dciab",                    # the entrypoint
+    "VERSION", "bundle.lock",   # read by validate, seed, services, hypervisors, the steps
+    "lib",                      # every dciab command and lib/steps/*.sh
+    "schema",                   # dciab validate
+    "charts", "addons",         # lib/steps/mgmt.sh, capi-providers.sh
     # Run at the site by lib/steps/capi-providers.sh.
     "hack/fetch_crds.py", "hack/render_components.py",
+    # dciab services reads the base image from its Containerfile and builds it.
+    "images/day0-chrony",
+    "README.md", "docs", "examples",
 ]
-# Development files never ship: version control, caches, tests, the planner/runner handoff.
-EXCLUDE_DIRS = {".git", "__pycache__", ".cache", ".pytest_cache", "tests", "handoff", "node_modules"}
-EXCLUDE_SUFFIXES = (".pyc", ".pyo", ".swp", "~")
+# Inside those paths, files a checkout or a run leaves behind are skipped: caches, byte
+# code, editor files, dot files, tests.
+SKIP_DIRS = {"__pycache__", "tests"}
+SKIP_SUFFIXES = (".pyc", ".pyo", ".swp", "~")
+# Defence in depth: a file under SOURCES that looks like a site secret fails the build,
+# even when it would be skipped. The archive is signed and copied to every site, so a
+# leaked secret can't be taken back. These match what the docs tell operators to create
+# (.gitignore has the same names):
+SECRET_DIRS = {"secrets"}                       # the examples' ./secrets/ folder
+SECRET_SUFFIXES = (".key", ".pw", ".env",       # private keys, passwords, env files
+                   ".age",                      # sealed site secrets (root passwords, the CA key)
+                   ".kubeconfig")
+SECRET_NAMES = {".env", "kubeconfig"}
+# Matched in the file's contents, so a public certificate (ca.crt, a .pem holding only
+# certificates) still ships while a private key in any file doesn't.
+SECRET_MARKERS = (b"PRIVATE KEY-----",          # PEM private keys: RSA, EC, OpenSSH, PKCS#8
+                  b"AGE-SECRET-KEY-1",          # an age identity
+                  b"client-key-data:")          # a kubeconfig with a client key
 PLATFORM = {"os": "linux", "architecture": "amd64"}
 
 
@@ -173,26 +198,43 @@ def write_sboms(payload: Path, syft: str, runner: Runner = run_syft) -> List[Pat
 
 # ---------------------------------------------------------------- package
 
-def excluded(rel: Path) -> bool:
-    return (any(part in EXCLUDE_DIRS or part.startswith(".") for part in rel.parts)
-            or rel.name.endswith(EXCLUDE_SUFFIXES))
+def skipped(rel: Path) -> bool:
+    return (any(part in SKIP_DIRS or part.startswith(".") for part in rel.parts)
+            or rel.name.endswith(SKIP_SUFFIXES))
+
+
+def secret_reason(path: Path, rel: Path) -> Optional[str]:
+    """Why path looks like a site secret, or None. Contents are read only for files that ship."""
+    if any(part in SECRET_DIRS for part in rel.parts[:-1]):
+        return "in a secrets/ folder"
+    name = rel.name.lower()
+    if name in SECRET_NAMES or name.endswith(SECRET_SUFFIXES):
+        return "a secret's file name"
+    if skipped(rel):
+        return None
+    with path.open("rb") as f:
+        data = f.read()
+    for marker in SECRET_MARKERS:
+        if marker in data:
+            return f"contains {marker.decode()!r}"
+    return None
 
 
 def walk(base: Path, rel: Path) -> List[Path]:
-    """Files under base/rel (or rel itself), minus development files. Links are refused."""
+    """Files under base/rel (or rel itself), minus skipped files. Links are refused."""
     top = base / rel
     if top.is_symlink():
         raise ArchiveError(f"{top}: symbolic links aren't packaged")
     if top.is_file():
-        return [] if excluded(rel) else [rel]
+        return [] if skipped(rel) else [rel]
     if not top.is_dir():
         raise ArchiveError(f"{top}: missing")
     out = []
     for path in sorted(top.rglob("*")):
         r = path.relative_to(base)
-        if excluded(r):
-            continue
         if path.is_symlink():
+            if skipped(r):
+                continue
             raise ArchiveError(f"{path}: symbolic links aren't packaged")
         if path.is_file():
             out.append(r)
@@ -200,11 +242,23 @@ def walk(base: Path, rel: Path) -> List[Path]:
 
 
 def source_files(root: Path = ROOT) -> Dict[str, Path]:
-    """Archive path -> file, for the repository's part of the archive."""
+    """Archive path -> file, for the repository's part of the archive.
+
+    Refuses to build if any file under SOURCES, skipped or not, looks like a secret.
+    """
     files: Dict[str, Path] = {}
+    secrets = []
     for item in SOURCES:
         for rel in walk(root, Path(item)):
-            files[rel.as_posix()] = root / rel
+            reason = secret_reason(root / rel, rel)
+            if reason:
+                secrets.append(f"{rel.as_posix()} ({reason})")
+            elif not skipped(rel):
+                files[rel.as_posix()] = root / rel
+    if secrets:
+        raise ArchiveError("files that look like site secrets are under a packaged path; move them out "
+                           "of the packaged paths (a site's dciab.yaml and secrets/ never ship):\n  "
+                           + "\n  ".join(secrets))
     return files
 
 

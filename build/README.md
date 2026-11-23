@@ -82,6 +82,7 @@ $ COSIGN_PASSWORD=... python3 build/package.py package --payload payload --out d
 dciab-<VERSION>.tar
   dciab-<VERSION>/
     dciab  lib/  schema/  charts/  addons/  docs/  examples/  hack/ (the scripts steps run)
+    images/day0-chrony/ (dciab services builds it)
     README.md  VERSION  bundle.lock
     payload/     the payload above, plus sboms/ and SHA256SUMS.sig
     MANIFEST     sha256 of every other file (sha256sum format)
@@ -90,7 +91,11 @@ dciab-<VERSION>.tar
 
 **SBOMs.** syft reads an OCI layout that holds exactly one image manifest, so each image is scanned from a temporary layout holding only its linux/amd64 image (blobs hard-linked from the payload's layout). `sboms/images/<name>.spdx.json` uses the image's name in the layout (`images.yaml`); `sboms/bin.spdx.json` covers the binaries.
 
-**Reproducible.** Entries are sorted, owned by 0:0 with fixed modes (755 or 644) and dated `SOURCE_DATE_EPOCH`, or the last commit's time. Development files never ship: `.git`, caches, `__pycache__`, `tests`, `handoff/`, `images/` (recipes, not runtime). The same inputs give the same tar byte for byte, except the signatures: ECDSA signatures differ on every run. The tar isn't compressed, since images already are; `--zstd` writes `.tar.zst`. `package` refuses a payload that doesn't match its `SHA256SUMS`.
+**Reproducible.** Entries are sorted, owned by 0:0 with fixed modes (755 or 644) and dated `SOURCE_DATE_EPOCH`, or the last commit's time. The same inputs give the same tar byte for byte, except the signatures: ECDSA signatures differ on every run. The tar isn't compressed, since images already are; `--zstd` writes `.tar.zst`. `package` refuses a payload that doesn't match its `SHA256SUMS`.
+
+**What ships.** Only the paths in `SOURCES` in `package.py`, an allowlist of what the shipped `dciab` reads at run time plus the docs and examples. Inside them, caches, byte code, dot files and `tests` are skipped. A test checks that every path the CLI and its steps open is in the list. Everything else stays out: `handoff/`, `build/`, `tests/`, and the image recipes other than `images/day0-chrony`.
+
+**No secrets.** The build fails if a file under those paths looks like a site secret: anything in a `secrets/` folder, a `*.key`, `*.pw`, `*.env`, `.env`, `*.age`, `kubeconfig` or `*.kubeconfig` file, or a file holding a PEM private key, an age identity or a kubeconfig client key. Public certificates still ship. Keep a site's `dciab.yaml` and `secrets/` outside these paths, for example at the top of the checkout.
 
 **Signing.** The site is offline, so keyless signing (which needs Fulcio and Rekor) doesn't apply: `--signing-key` takes a cosign key pair's private key, password in `COSIGN_PASSWORD`, and signs without a transparency log. Keep the private key out of the repository. The site gets the public key separately from the archive and runs:
 
