@@ -277,3 +277,73 @@ def test_dns_step_without_hypervisors_runs_dns_only_services(tmp_path, monkeypat
     cli.step_dns(ROOT, cfg, tmp_path / "p", tmp_path / "s", plan.load_settings(cfg))
     assert calls[0][1:] == ["services", str(cfg), "--state", str(tmp_path / "s"), "--payload", str(tmp_path / "p")]
     assert capsys.readouterr().out == "dns: pod dciab-services already runs this config\n"
+
+
+@pytest.mark.parametrize("left", ["pki/ca.crt", "pki/trust-bundle.pem", "pki/registry.crt", "mgmt.kubeconfig"])
+def test_no_new_root_ca_when_one_was_issued_before(tmp_path, left):
+    state = tmp_path / "state"
+    (state / "pki").mkdir(parents=True)
+    (state / left).write_text("x\n")
+    s = settings(tmp_path, recipients=["age1unused"])
+
+    def no_tools(cmd, **kw):
+        raise AssertionError(f"ran {cmd}")
+
+    with pytest.raises(plan.SeedError, match="--force-new-ca"):
+        pki.ensure(state / "pki", s, identity=None, runner=no_tools)
+    assert (state / left).read_text() == "x\n"
+
+
+@need_tools
+def test_force_new_ca_generates_over_a_lost_ca(tmp_path):
+    _, r1 = keypair(tmp_path, "a")
+    s = settings(tmp_path, recipients=[r1])
+    d = tmp_path / "pki"
+    pki.ensure(d, s, identity=None)
+    old = (d / "ca.crt").read_text()
+    (d / "ca.key.age").unlink()                       # the CA key is lost
+    with pytest.raises(plan.SeedError, match="--force-new-ca"):
+        pki.ensure(d, s, identity=None)
+    assert any("root CA" in c for c in pki.ensure(d, s, identity=None, force_new_ca=True))
+    assert (d / "ca.crt").read_text() != old
+
+
+def test_cli_passes_force_new_ca(tmp_path, monkeypatch):
+    seen = {}
+    monkeypatch.setattr(cli.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(cli.os, "access", lambda *a: False)  # the lock goes in the state, not /run/lock
+    monkeypatch.setattr(cli, "verify_payload_tools", lambda payload: None)
+    monkeypatch.setattr(cli, "load_settings", lambda config: None)
+    monkeypatch.setattr(cli, "step_preflight", lambda *a: None)
+
+    def ensure(pki_dir, s, identity, force_new_ca=False):
+        seen["force"] = force_new_ca
+        return []
+
+    monkeypatch.setattr(cli.pki, "ensure", ensure)
+    cfg = tmp_path / "dciab.yaml"
+    cfg.write_text("spec: {}\n")
+    args = [str(cfg), "--root", str(tmp_path), "--state", str(tmp_path / "s"), "--until", "pki"]
+    assert cli.main(args + ["--force-new-ca"]) == 0 and seen["force"] is True
+
+
+def test_ca_guard_names_state_kept_aside(tmp_path):
+    state = tmp_path / "state"
+    (state / "pki").mkdir(parents=True)
+    (state / "pki" / "trust-bundle.pem").write_text("x\n")
+    aside = tmp_path / "state.from-site-abc"
+    aside.mkdir()
+    with pytest.raises(plan.SeedError, match=f"mv {state} .*mv {aside} {state}"):
+        pki.ensure(state / "pki", settings(tmp_path, recipients=["age1unused"]), identity=None)
+
+
+@need_tools
+def test_lone_ca_key_is_kept_aside(tmp_path):
+    _, r1 = keypair(tmp_path, "a")
+    d = tmp_path / "pki"
+    d.mkdir()
+    (d / "ca.key.age").write_text("interrupted\n")    # a first run stopped before ca.crt
+    changed = pki.ensure(d, settings(tmp_path, recipients=[r1]), identity=None)
+    [bak] = d.glob("ca.key.age.*.bak")
+    assert bak.read_text() == "interrupted\n" and any("aside" in c for c in changed)
+    assert (d / "ca.key.age").read_bytes() != b"interrupted\n"

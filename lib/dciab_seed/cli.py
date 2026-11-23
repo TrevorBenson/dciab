@@ -1,6 +1,7 @@
 """dciab seed: the seed registry and the bootstrap cluster, from the archive payload alone.
 
-    dciab seed <config> [--payload DIR] [--state DIR] [--age-identity FILE] [--until STEP]
+    dciab seed <config> [--payload DIR] [--state DIR] [--age-identity FILE] [--force-new-ca]
+               [--until STEP]
 
 Steps, in order. Each is safe to re-run, and a finished run changes nothing:
   preflight  root; the config is valid; tools present (the payload's bin/ first in PATH)
@@ -41,6 +42,7 @@ from pathlib import Path
 from typing import List, Optional
 
 import yaml
+from dciab_state import default_state
 
 from . import pki
 from .plan import (KIND_CLUSTER, REGISTRY_CONTAINER, REGISTRY_PORT, SeedError, find_image, hosts_toml,
@@ -248,10 +250,14 @@ def main(argv: Optional[List[str]] = None) -> int:
     p.add_argument("config")
     p.add_argument("--root", required=True, help="the unpacked archive (set by the dciab entrypoint)")
     p.add_argument("--payload", help="the archive's payload folder (default: <root>/payload)")
-    p.add_argument("--state", help="state folder (default: .dciab/state next to the config)")
+    p.add_argument("--state", help="state folder (default: .dciab/state next to the config; "
+                                   "/var/lib/dciab/work/state on the bootstrap appliance)")
     p.add_argument("--age-identity", type=Path,
                    help="an age identity of spec.bootstrap.recipients; needed only to reissue the "
                         "registry certificate after the CA was generated")
+    p.add_argument("--force-new-ca", action="store_true",
+                   help="generate a new root CA even though the state shows a previous one was issued; "
+                        "whatever trusts the old CA must be re-trusted")
     p.add_argument("--until", choices=STEPS, help="stop after this step")
     args = p.parse_args(argv)
 
@@ -261,7 +267,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         print(f"dciab seed: no such config: {config}", file=sys.stderr)
         return 2
     payload = Path(args.payload).resolve() if args.payload else root / "payload"
-    state = Path(args.state).resolve() if args.state else config.parent / ".dciab" / "state"
+    state = Path(args.state).resolve() if args.state else default_state(config)
     state.mkdir(parents=True, exist_ok=True)
     state.chmod(0o700)
     if os.geteuid() != 0:
@@ -294,7 +300,8 @@ def main(argv: Optional[List[str]] = None) -> int:
             if step == "preflight":
                 step_preflight(root, config, payload)
             elif step == "pki":
-                for line in pki.ensure(state / "pki", s, args.age_identity) or ["unchanged"]:
+                for line in pki.ensure(state / "pki", s, args.age_identity,
+                                       force_new_ca=args.force_new_ca) or ["unchanged"]:
                     say(f"pki: {line}")
             elif step == "dns":
                 step_dns(root, config, payload, state, s)

@@ -20,6 +20,7 @@ import os
 import shutil
 import subprocess
 import tempfile
+import time
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Callable, Iterator, List, Optional, Sequence
@@ -144,8 +145,28 @@ def issue_registry_cert(pki: Path, s: Settings, ca_key: Path, tmp: Path, runner:
     (pki / "registry.crt").write_text(leaf)
 
 
-def ensure(pki: Path, s: Settings, identity: Optional[Path], runner: Runner = run) -> List[str]:
-    """Create or reuse the CA, trust bundle and registry certificate. Returns what changed."""
+def previous_ca_evidence(pki: Path) -> List[str]:
+    """Files showing that a root CA was already issued and trusted from this state folder.
+
+    ca.key.age alone isn't evidence: the key is written before ca.crt, so a run stopped in
+    between leaves it, and nothing was signed with that key yet."""
+    found = [pki / n for n in ("ca.crt", "trust-bundle.pem", "registry.crt")]
+    found += [pki.parent / n for n in ("bootstrap.kubeconfig", "mgmt.kubeconfig")]
+    return [str(p) for p in found if p.exists()]
+
+
+def kept_aside_state(pki: Path) -> List[Path]:
+    """Older state that dciab_state.migrate_legacy kept aside next to this state folder."""
+    state = pki.parent
+    return sorted(state.parent.glob(f"{state.name}.from-site-*"))
+
+
+def ensure(pki: Path, s: Settings, identity: Optional[Path], runner: Runner = run,
+           force_new_ca: bool = False) -> List[str]:
+    """Create or reuse the CA, trust bundle and registry certificate. Returns what changed.
+
+    A new root CA is generated only when there's no sign of a previous one, or with
+    force_new_ca: servers and clusters that trust the old CA would not trust a new one."""
     pki.mkdir(parents=True, exist_ok=True)
     pki.chmod(0o700)
     changed: List[str] = []
@@ -156,6 +177,23 @@ def ensure(pki: Path, s: Settings, identity: Optional[Path], runner: Runner = ru
             recipients_file = pki / "ca.key.recipients"
             wanted = "\n".join(sorted(s.recipients)) + "\n"
             if not ((pki / "ca.crt").is_file() and (pki / "ca.key.age").is_file()):
+                evidence = previous_ca_evidence(pki)
+                if evidence and not force_new_ca:
+                    state = pki.parent
+                    restore = "Restore the state folder from a backup"
+                    for aside in kept_aside_state(pki):
+                        restore = (f"Older state was kept aside in {aside}. If it holds the CA "
+                                   f"(pki/ca.crt and pki/ca.key.age), restore it: mv {state} {state}.replaced "
+                                   f"&& mv {aside} {state}. Otherwise restore the state folder from a backup")
+                    raise SeedError(
+                        f"{pki} has no complete root CA (ca.crt and ca.key.age), but a CA was issued "
+                        f"before: {', '.join(evidence)}. A new CA wouldn't be trusted by what trusts the old "
+                        f"one. {restore}, or pass --force-new-ca to generate a new CA and re-trust it everywhere")
+                if (pki / "ca.key.age").exists():
+                    # An interrupted first run, or a key without its certificate: keep it.
+                    bak = pki / f"ca.key.age.{time.strftime('%Y%m%dT%H%M%S')}.bak"
+                    os.replace(pki / "ca.key.age", bak)
+                    changed.append(f"moved the existing ca.key.age, which had no ca.crt, aside to {bak}")
                 ca_key, crt = new_root_ca(s.pki["commonName"], tmp, runner)
                 # The key first, the certificate last: a run stopped in between leaves no
                 # ca.crt, so the next run starts over instead of pairing a cert with another key.

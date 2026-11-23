@@ -109,9 +109,14 @@ def sync_site(usb: str, site: str) -> bool:
 
     `site` is a symlink to a versioned directory beside it. The new copy is written to a
     fresh directory, then the symlink is replaced in one rename, so a crash at any point
-    leaves either the old copy or the new one, never neither. A lock serializes runs."""
+    leaves either the old copy or the new one, never neither. A lock serializes runs.
+
+    dciab's state lives beside the site (dciab_state.site_state), never inside it. State an
+    older dciab left in the site is moved there first, before the old copy is removed."""
     import fcntl
     import tempfile
+
+    from dciab_state import LEGACY, migrate_legacy, site_state
 
     if not os.path.isfile(os.path.join(usb, "dciab.yaml")):
         return False
@@ -120,6 +125,10 @@ def sync_site(usb: str, site: str) -> bool:
     os.makedirs(parent, exist_ok=True)
     with open(os.path.join(parent, f".{base}.lock"), "w") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
+        if os.path.isdir(site):
+            moved = migrate_legacy(os.path.join(os.path.realpath(site), LEGACY), site_state(site))
+            if moved:
+                print(f"dciab-bootstrap-setup: {moved}", file=sys.stderr)
         staged = tempfile.mkdtemp(dir=parent, prefix=f".{base}-")
         try:
             shutil.copyfile(os.path.join(usb, "dciab.yaml"), os.path.join(staged, "dciab.yaml"))
@@ -247,6 +256,8 @@ def apply_network(p: Dict[str, object]) -> None:
 def main(argv: Optional[List[str]] = None) -> int:
     import yaml
 
+    from dciab_state import StateMigrationError
+
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("config", nargs="?", help="path to dciab.yaml (default: SITE/dciab.yaml)")
     ap.add_argument("--usb", help="the stick's data partition; its dciab.yaml and secrets/ are copied to --site")
@@ -264,6 +275,9 @@ def main(argv: Optional[List[str]] = None) -> int:
                 say(f"copied dciab.yaml and secrets/ from {args.usb} to {args.site}")
             else:
                 say(f"no dciab.yaml on {args.usb}; using the copy in {args.site}")
+        except StateMigrationError as exc:
+            say(f"{exc}; the config wasn't copied, nothing changed. Then reboot.")
+            return 1
         except OSError as exc:
             # Applying the older copy would silently ignore the operator's change.
             say(f"couldn't copy the config from {args.usb}: {exc}; nothing changed. Fix the stick and reboot.")

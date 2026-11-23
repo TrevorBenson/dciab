@@ -21,7 +21,8 @@
 #
 # --payload DIR (default: $DCIAB_PAYLOAD, else <archive>/payload when it exists) is the archive's
 # payload; nothing is pulled from the internet then. --until STEP stops after STEP. --print shows the plan and the rendered files, and changes
-# nothing. <state> defaults to .dciab/state next to the config. ISOs are served from --isos,
+# nothing. <state> defaults to .dciab/state next to the config (/var/lib/dciab/work/state on the
+# bootstrap appliance; lib/dciab_state). ISOs are served from --isos,
 # default spec.bootstrap.workDisk.path/isos, else <state>/isos; per-host installer ISOs from <state>/host-isos.
 # Teardown: podman kube down <state>/services/pod.yaml.
 set -euo pipefail
@@ -50,7 +51,10 @@ if [[ -n "$until" ]] && ! printf '%s\n' "${STEPS[@]}" | grep -qx "$until"; then
   die "--until must be one of: ${STEPS[*]}"
 fi
 config="$(cd "$(dirname "$config")" && pwd)/$(basename "$config")"
-state="${state:-$(dirname "$config")/.dciab/state}"
+if [[ -z "$state" ]]; then
+  migrate=(); (( print )) && migrate=(--no-migrate)  # --print changes nothing
+  state="$(PYTHONPATH="$ROOT/lib" python3 -m dciab_state "${migrate[@]}" "$config")"
+fi
 state="$(realpath -m "$state")"
 if [[ -z "$payload" && -f "$ROOT/payload/images.yaml" ]]; then
   payload="$ROOT/payload"

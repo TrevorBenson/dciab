@@ -8,7 +8,7 @@ $ sudo ./dciab hypervisors dciab.yaml                  # every host
 $ sudo ./dciab hypervisors dciab.yaml --host pve02 --until media
 ```
 
-Options: `--state DIR` (default `.dciab/state` next to the config, the same folder `dciab services` uses), `--host NAME` (repeatable), `--until STEP`, `--iso FILE` (the base installer ISO's file name in the ISOs folder; default the file name of the Proxmox VE ISO in `bundle.lock`), `--isos DIR` (the ISOs folder; default as for `dciab services`), `--timeout SECONDS` (per host, for `wait`; default 3600).
+Options: `--state DIR` (default `.dciab/state` next to the config, or `/var/lib/dciab/work/state` on the bootstrap appliance; the same folder `dciab services` uses), `--host NAME` (repeatable), `--until STEP`, `--iso FILE` (the base installer ISO's file name in the ISOs folder; default the file name of the Proxmox VE ISO in `bundle.lock`), `--isos DIR` (the ISOs folder; default as for `dciab services`), `--timeout SECONDS` (per host, for `wait`; default 3600).
 
 ## Steps
 
