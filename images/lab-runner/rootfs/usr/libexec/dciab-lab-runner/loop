@@ -16,6 +16,9 @@
 #      - replaces the runner directory and the runner user's home with fresh copies
 #      /var/cache/dciab is kept: jobs may cache downloads there, and must verify them
 #      against bundle.lock before use.
+#      This covers the state lab jobs are known to leave. It doesn't make the VM pristine:
+#      anything else a job writes as root (under /var/lib, say) stays until the VM is
+#      re-cloned from its template.
 #   2. Asks GitHub for a just-in-time (JIT) runner configuration: a single-use, ephemeral
 #      runner registered to one repository, with the labels from runner.conf.
 #   3. Runs that runner as dciab-runner until it has run one job (or the job-started hook
@@ -77,7 +80,10 @@ cleanup() {
   podman pod rm --all --force --time 0 >/dev/null || return 1
   podman volume prune --force >/dev/null || return 1
   podman network prune --force >/dev/null || return 1
-  [[ -z "$(podman ps --all --quiet)" && -z "$(podman pod ps --quiet)" ]] \
+  local left_containers left_pods
+  left_containers="$(podman ps --all --quiet)" || return 1
+  left_pods="$(podman pod ps --quiet)" || return 1
+  [[ -z "$left_containers" && -z "$left_pods" ]] \
     || { log "containers or pods are left after cleanup" >&2; return 1; }
   if systemctl -q is-active firewalld; then firewall-cmd --quiet --reload || return 1; fi
   while read -r ifname addr; do

@@ -33,6 +33,8 @@ When the service starts (once per boot), the loop records the VM's IPv4 addresse
    - Replace the runner directory and the job user's home with fresh copies.
 
    If any of these steps fails, the loop doesn't register a runner: it retries the cleanup with backoff. Pulled images stay cached, and so does **`/var/cache/dciab`**, which jobs may use to cache downloads (such as a payload) as long as they check every file against `bundle.lock` before using it. A reboot clears anything else a job changed at runtime, such as routes.
+
+   **Cleanup covers the state lab jobs are known to leave; it doesn't make the VM pristine.** Anything else a job writes as root, under `/var/lib` for example, stays until the VM is re-cloned from its template. That's acceptable because only code merged to the branch runs here. If a job needs a guaranteed-clean VM, re-clone the runner VM first (a later janitor can do that on a schedule).
 2. **Register.** Ask GitHub for a **just-in-time runner**: single-use, ephemeral, registered to one repository, with labels `self-hosted,linux,x64` plus `DCIAB_LAB_LABELS`.
 3. **Run one job** as `dciab-runner`, which has passwordless sudo (the jobs need root). Afterwards, delete the runner's registration.
 

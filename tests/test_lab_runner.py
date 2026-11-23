@@ -205,6 +205,9 @@ def test_cleanup_failures_stop_the_round():
         if line.strip().startswith(("podman ", "rm ", "cp ", "chown ", "install ", "find ")):
             assert line.rstrip().endswith("|| return 1"), line
     assert "|| [[ $? == 1 ]] || return 1" in clean  # pkill: no processes is fine
+    # The "nothing left" check must fail when podman can't list, not pass on empty output.
+    assert 'left_containers="$(podman ps --all --quiet)" || return 1' in clean
+    assert 'left_pods="$(podman pod ps --quiet)" || return 1' in clean
 
 
 def test_loop_removes_network_state_added_after_boot():

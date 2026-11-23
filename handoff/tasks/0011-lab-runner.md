@@ -85,6 +85,7 @@ Keep this task's scratch files in `~/.dciab/0011/` (mode 700). The token stays i
      - `sudo podman ps -a` is empty
      - `journalctl -u dciab-lab-runner` shows "removing dummy link dciab-smoke0" and a new runner registered
    - Dispatch it again. It must pass too: its "Nothing left from an earlier job" step checks the same things from inside a job.
+   - These checks cover the state lab jobs are known to leave, not every file on the VM (see the README's cleanup section). Report anything else you see survive between jobs.
    - Record each run's ID and duration.
 7. **Refused job.**
    - Push your handoff branch (it has the workflow), then run `gh workflow run lab-runner-smoke.yml --ref handoff/0011-lab-runner`.
