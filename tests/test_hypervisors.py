@@ -447,8 +447,42 @@ def test_stale_answer_files_are_removed(tmp_path):
     d = tmp_path / "answers"
     cli.write_answer(d, "pve01", "x\n")
     cli.write_answer(d, "old", "x\n")
-    assert cli.remove_stale(d, ["pve01"]) == ["old.toml"]
+    assert cli.remove_stale(d, ["pve01"], tmp_path / "installs") == (["old.toml"], [])
     assert [p.name for p in d.iterdir()] == ["pve01.toml"]
+
+
+def _sealer(recipients, plaintext, dest):
+    dest.write_text("sealed\n")
+
+
+def _host_files(d, name):
+    answer.root_hash(d, name, None, ["age1x"], hasher=fake_hash, sealer=_sealer)
+    cli.write_answer(d, name, "x\n")
+
+
+def test_stale_hosts_lose_their_password_files(tmp_path):
+    d = tmp_path / "answers"
+    for name in ("pve01", "old"):
+        _host_files(d, name)
+    (d / ".old.abc.tmp").write_text("")                       # someone else's temp file: left alone
+    removed, kept = cli.remove_stale(d, ["pve01"], tmp_path / "installs")
+    assert removed == ["old.root-hash", "old.root-password.age", "old.root-salt", "old.toml"] and kept == []
+    assert sorted(p.name for p in d.iterdir()) == [".old.abc.tmp", "pve01.root-hash", "pve01.root-password.age",
+                                                   "pve01.root-salt", "pve01.toml"]
+
+
+def test_stale_host_with_an_install_record_keeps_its_password_and_record(tmp_path):
+    d, installs = tmp_path / "answers", tmp_path / "installs"
+    _host_files(d, "old")
+    cli.write_install(installs, "old", outcome="installed")
+    removed, kept = cli.remove_stale(d, [], installs)
+    assert removed == ["old.toml"]
+    assert kept == ["old.root-hash", "old.root-password.age", "old.root-salt"]
+    assert cli.read_install(installs, "old")["outcome"] == "installed"
+    # Re-added, the host renders the same hash: the server's password and its sealed copy still match.
+    before = (d / "old.root-hash").read_text().strip()
+    assert answer.root_hash(d, "old", None, ["age1x"], hasher=fake_hash,
+                            sealer=lambda *a: pytest.fail("resealed")) == before
 
 
 def test_transitional_power_state_is_refused(fake_bmc):

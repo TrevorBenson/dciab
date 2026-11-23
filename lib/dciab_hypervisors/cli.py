@@ -70,15 +70,36 @@ def write_answer(answers: Path, name: str, text: str) -> bool:
     return True
 
 
-def remove_stale(answers: Path, names: List[str]) -> List[str]:
-    """Remove answer files of hosts no longer in the config. Returns the removed file names."""
-    removed = []
-    if answers.is_dir():
-        for p in sorted(answers.glob("*.toml")):
-            if p.stem not in names:
-                p.unlink()
-                removed.append(p.name)
-    return removed
+# Per-host files in <state>/answers/: the answer file, then the root password files (answer.root_hash).
+ANSWER_FILE = ".toml"
+PASSWORD_FILES = (".root-hash", ".root-salt", ".root-password.age")
+
+
+def remove_stale(answers: Path, names: List[str], installs: Path) -> Tuple[List[str], List[str]]:
+    """Remove the answer files of hosts no longer in the config, and their root password files.
+    Returns (removed, kept) file names.
+
+    A removed host with an install record keeps its password files, and its record: DCiaB
+    installed that server (or started to), so it may still run with that root password, and the
+    sealed copy is the only way back to it. Re-adding the host then renders the same answer file,
+    and the record still keeps it from being reinstalled without --reinstall."""
+    removed: List[str] = []
+    kept: List[str] = []
+    if not answers.is_dir():
+        return removed, kept
+    for p in sorted(answers.iterdir()):
+        if p.name.startswith(".") or not p.is_file():
+            continue
+        suffix = next((s for s in (ANSWER_FILE,) + PASSWORD_FILES if p.name.endswith(s)), None)
+        name = p.name[:-len(suffix)] if suffix else ""
+        if not name or name in names:
+            continue
+        if suffix in PASSWORD_FILES and read_install(installs, name) is not None:
+            kept.append(p.name)
+            continue
+        p.unlink()
+        removed.append(p.name)
+    return removed, kept
 
 
 def mask(text: str) -> str:
@@ -397,8 +418,13 @@ def main(argv: Optional[List[str]] = None) -> int:
         return 1
 
     print("\n== hypervisors: answer")
-    for name in remove_stale(answers, [h["name"] for h in hv["hosts"]]):
+    removed, kept = remove_stale(answers, [h["name"] for h in hv["hosts"]], installs)
+    for name in removed:
         print(f"  removed {answers / name} (no such host in the config)")
+    if kept:
+        print(f"  kept {', '.join(str(answers / n) for n in kept)}: no such host in the config, but it has an "
+              "install record, so the server may still use that root password. Delete them once the server "
+              "is wiped or retired")
     for name, text in rendered.items():
         changed = write_answer(answers, name, text)
         print(f"  {'wrote' if changed else 'unchanged'} {answers / (name + '.toml')}")
