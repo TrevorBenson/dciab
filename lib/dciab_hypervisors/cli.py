@@ -22,8 +22,8 @@ Steps, per host, in order; each is safe to re-run:
            record the install as done
 
 --until STEP stops after STEP. --print shows the plan and the answer files with the password
-hash masked, and changes nothing. <state> defaults to .dciab/state next to the config, as for
-dciab services. Exit codes: 0 done, 1 a step failed, 2 could not run.
+hash masked, and changes nothing. <state> defaults as for dciab services: .dciab/state next to
+the config, or /var/lib/dciab/work/state on the bootstrap appliance. Exit codes: 0 done, 1 a step failed, 2 could not run.
 """
 
 from __future__ import annotations
