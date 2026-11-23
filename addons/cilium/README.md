@@ -23,7 +23,8 @@ Pod addresses use Kubernetes IPAM: each node's `podCIDR` comes from the Cluster'
 
 ## Where it runs
 
-- **MGMT and INFRA:** installed by `dciab mgmt` and `dciab infra` when each control plane comes up (not implemented yet).
+- **MGMT:** `dciab mgmt`'s `cilium` step, once the first control plane node is up.
+- **INFRA:** `dciab infra`, the same way (not implemented yet).
 - **Workload clusters:** installed by the baseline add-ons (first sync wave) once INFRA's Argo CD exists, using the same values.
 
 ## Not here yet

@@ -11,7 +11,7 @@
 # ./dciab seed dciab.yaml [--payload DIR] [--state DIR] [--age-identity FILE] [--until STEP]
 ```
 
-It runs as root. Steps: `preflight`, `pki`, `dns`, `registry`, `kind`, `providers`. Each one is safe to rerun, and a finished run changes nothing. Then run `dciab mgmt` with the same `--state`: it picks up `<state>/bootstrap.kubeconfig` and `<state>/pki/trust-bundle.pem` by itself, and takes Cilium's chart and the provider manifests from the payload.
+It runs as root. Steps: `preflight`, `pki`, `dns`, `registry`, `kind`, `providers`. Each one is safe to rerun, and a finished run changes nothing. Then run `dciab mgmt` with the same `--state`: it picks up `<state>/bootstrap.kubeconfig` and `<state>/pki/trust-bundle.pem` by itself, and takes Cilium's chart and the provider manifests from the payload. `--payload` defaults to the archive's own `payload/`.
 
 ## The platform CA
 
@@ -23,7 +23,3 @@ It runs as root. Steps: `preflight`, `pki`, `dns`, `registry`, `kind`, `provider
 Seed then issues the registry's TLS certificate (ECDSA P-256, 30 days). It names `registry.<network.domain>` and `spec.bootstrap.address`, so both work. A rerun reissues it only when it is missing, no longer chains to the CA, names something else, or expires within a week. With `generate-root`, reissuing needs the CA key, so pass `--age-identity` with the identity of one of the recipients.
 
 `<state>/pki/trust-bundle.pem` is what nodes and the bootstrap cluster trust: the root for `generate-root`, the configured chain for `import-intermediate`.
-
-## Not yet
-
-- **Packaging.** `--payload` defaults to `<archive>/payload`, which the archive packaging step will create. Until then, build a payload with `build/archive.py` (see [build/README.md](../build/README.md)).

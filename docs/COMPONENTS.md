@@ -18,13 +18,14 @@ What a DCiaB site runs, grouped by capability, and where each piece runs. Versio
 
 | Capability | Components | Runs on | Status |
 | --- | --- | --- | --- |
-| Install media | Ventoy USB, DCiaB bootstrap appliance (Rocky Linux 10, bootc) | Bootstrap | Built (under evaluation, ADR 0002) |
-| Day 0 network services | CoreDNS, chrony, Caddy; dnsmasq for PXE only | Bootstrap | Built (`dciab services`); PXE planned (ADR 0001) |
+| Install media | Ventoy USB, DCiaB bootstrap appliance (Rocky Linux 10, bootc) | Bootstrap | Under evaluation: recipes in the repo, not tested in CI; the install spike is open ([ADR 0002](adr/0002-bootstrap-appliance-on-ventoy.md)) |
+| Day 0 network services | CoreDNS, chrony, Caddy; dnsmasq for PXE only | Bootstrap | Built (`dciab services`); PXE only if a site needs it (backlog, ADR 0001) |
 | Bootstrap cluster and seed registry | kind, Zot (read-only, loaded from the archive payload) | Bootstrap | Built (`dciab seed`, [SEED.md](SEED.md)) |
 | Cluster lifecycle | Cluster API with kubeadm; CAPV (vSphere), CAPMOX (Proxmox VE), CAPM3 (Metal3); in-cluster IPAM and Metal3 IPAM; DCiaB ClusterClasses | MGMT | Built |
+| Cloud provider (vSphere) | vSphere CPI (cloud controller manager): the vSphere class runs kubelet with `cloud-provider: external`, so the CPI sets each node's provider ID | Every vSphere cluster | Planned (baseline add-ons); nothing installs it yet |
 | Bare-metal provisioning | Metal3 Bare Metal Operator and Ironic, over Redfish virtual media | MGMT | Planned |
-| Node operating system | Rocky Linux 10 in image mode (bootc, from the RESF SIG/Containers recipe), built with bootc-image-builder | Every node | Built |
-| Container runtime | CRI-O | Every node | Built |
+| Node operating system | Rocky Linux 10 in image mode (bootc, from the RESF SIG/Containers recipe), built with bootc-image-builder | Every node | Recipe built, not tested in CI; boots on Proxmox VE, no cluster has passed on it yet, vSphere and Metal3 disks untested |
+| Container runtime | CRI-O | Every node | Comes with the node image; same status |
 | Control plane endpoint | kube-vip | Every cluster | Built |
 
 ## Networking and network security
@@ -67,7 +68,7 @@ What a DCiaB site runs, grouped by capability, and where each piece runs. Versio
 
 | Capability | Components | Runs on | Status |
 | --- | --- | --- | --- |
-| Block storage (CSI) | Longhorn, backed up to S3 (SeaweedFS or the site's own) or NFS | Every cluster | Planned |
+| Block storage (CSI) | Longhorn, backed up to S3 (SeaweedFS or the site's own) or NFS | Every cluster | Installer built for MGMT (`dciab mgmt`'s `longhorn` step, [addons/longhorn](../addons/longhorn/README.md)): default StorageClass and backup target, no backup schedule yet; INFRA and workload clusters planned |
 | Object storage (S3) | SeaweedFS: S3 API for platform services (backups, snapshots, IaC state, artifacts) | INFRA | Proposed |
 | Bucket provisioning (COSI) | Container Object Storage Interface: the COSI controller and the SeaweedFS COSI driver, so workloads request buckets and credentials with BucketClaim and BucketAccess. Each requesting cluster runs both, and its driver calls INFRA's SeaweedFS over the network | INFRA (SeaweedFS); every cluster that requests buckets (controller and driver) | Proposed |
 | Databases | CloudNativePG (Postgres for Forgejo, Authentik, NetBox, Artifact Keeper, OpenVoxDB, Terrakube, AWX) | INFRA | Planned |

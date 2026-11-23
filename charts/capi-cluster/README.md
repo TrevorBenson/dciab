@@ -16,7 +16,7 @@ Values are validated by `values.schema.json`: every site-specific value is requi
 
 ## Expected around it
 
-- A Secret `<cluster>-vsphere-credentials` (vSphere) or `<cluster>-proxmox-credentials` (Proxmox) in the cluster namespace. DCiaB's bootstrap creates it; External Secrets keeps it in sync afterwards.
+- A Secret `<cluster>-vsphere-credentials` (vSphere) or `<cluster>-proxmox-credentials` (Proxmox) in the cluster namespace. DCiaB's bootstrap creates it (for MGMT, `dciab mgmt`); keeping it in sync afterwards with External Secrets is planned.
 - For Metal3: BareMetalHosts labelled to match each `hostSelector`, each annotated `dciab.io/boot-mac: <boot NIC MAC>`.
 
 ## What the chart does not check
