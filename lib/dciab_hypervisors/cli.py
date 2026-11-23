@@ -183,7 +183,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         return 2
     if args.host:
         hosts = [h for h in hosts if h["name"] in args.host]
-    state = Path(args.state) if args.state else config.parent / ".dciab" / "state"
+    from dciab_state import default_state
+    state = Path(args.state) if args.state else default_state(config, migrate=not args.print_only)
     answers = _answers_dir(state)
     host_isos = Path(os.path.abspath(state)) / "host-isos"
     base_iso = Paths(doc, state, args.isos).isos / (args.iso or default_iso(root))

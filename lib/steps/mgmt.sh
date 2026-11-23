@@ -27,7 +27,8 @@
 #               to spec.storage.longhorn's target; after the move, so a storage problem
 #               never holds up the pivot, and the bootstrap cluster can go once it finishes
 #
-# --until STEP stops after STEP. <state> defaults to .dciab/state next to the config.
+# --until STEP stops after STEP. <state> defaults to .dciab/state next to the config
+# (/var/lib/dciab/work/state on the bootstrap appliance; lib/dciab_state).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -56,7 +57,7 @@ if [[ -n "$until" ]] && ! printf '%s\n' "${STEPS[@]}" | grep -qx "$until"; then
   die "--until must be one of: ${STEPS[*]}"
 fi
 config="$(cd "$(dirname "$config")" && pwd)/$(basename "$config")"
-state="${state:-$(dirname "$config")/.dciab/state}"
+state="${state:-$(PYTHONPATH="$ROOT/lib" python3 -m dciab_state "$config")}"
 mkdir -p "$state" && chmod 700 "$state"
 # The state holds kubeconfigs, whose exec plugins kubectl runs as this user: only this user
 # may own it.

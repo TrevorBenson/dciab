@@ -8,7 +8,7 @@
 - **The bootstrap cluster.** kind (`dciab-bootstrap`, on rootful podman). Its containerd pulls from every upstream registry through the seed registry, and trusts the platform CA. It runs cert-manager, Cluster API, the providers and the ClusterClasses, installed from the payload's manifests.
 
 ```console
-# ./dciab seed dciab.yaml [--payload DIR] [--state DIR] [--age-identity FILE] [--until STEP]
+# ./dciab seed dciab.yaml [--payload DIR] [--state DIR] [--age-identity FILE] [--force-new-ca] [--until STEP]
 ```
 
 It runs as root. Steps: `preflight`, `pki`, `dns`, `registry`, `kind`, `providers`. Each one is safe to rerun, and a finished run changes nothing. Then run `dciab mgmt` with the same `--state`: it picks up `<state>/bootstrap.kubeconfig` and `<state>/pki/trust-bundle.pem` by itself, and takes Cilium's chart and the provider manifests from the payload. `--payload` defaults to the archive's own `payload/`.
@@ -23,3 +23,5 @@ It runs as root. Steps: `preflight`, `pki`, `dns`, `registry`, `kind`, `provider
 Seed then issues the registry's TLS certificate (ECDSA P-256, 30 days). It names `registry.<network.domain>` and `spec.bootstrap.address`, so both work. A rerun reissues it only when it is missing, no longer chains to the CA, names something else, or expires within a week. With `generate-root`, reissuing needs the CA key, so pass `--age-identity` with the identity of one of the recipients.
 
 `<state>/pki/trust-bundle.pem` is what nodes and the bootstrap cluster trust: the root for `generate-root`, the configured chain for `import-intermediate`.
+
+With `generate-root`, seed won't create a new root CA when the state shows one was issued before (`ca.crt`, the trust bundle, the registry certificate or a kubeconfig is there) but the CA itself is incomplete. Whatever trusts the old CA wouldn't trust a new one. Restore the state from a backup, or pass `--force-new-ca`.
