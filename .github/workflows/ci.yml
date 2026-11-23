@@ -469,11 +469,12 @@ jobs:
           set -euo pipefail
           version="$(podman run --rm --entrypoint dpkg-query "$TAG" -W -f '${Version}' proxmox-auto-install-assistant)"
           dest="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/dciab-pve-assistant:$version"
+          # Log in first: skopeo reads the same auth file, so the check below also sees a private package.
+          echo "$GH_TOKEN" | podman login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
           # A version is published once: bundle.lock pins its digest, so it's never overwritten.
           if skopeo inspect --raw "docker://$dest" >/dev/null 2>&1; then
             echo "already published: $dest"; exit 0
           fi
-          echo "$GH_TOKEN" | podman login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
           podman push --digestfile "$RUNNER_TEMP/digest" "$TAG" "docker://$dest"
           echo "published: $dest@$(cat "$RUNNER_TEMP/digest")  (pin it as bundle.lock images.pveAssistant)"
 
