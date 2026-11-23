@@ -225,6 +225,14 @@ imageDigests:
 
 # sha256 of release binaries DCiaB runs, checked after download. clusterctl's version is
 # clusterAPI.core.version. Empty: the download warns and prints the sum to pin.
+# The self-hosted GitHub Actions runner image for DCiaB's infrastructure tests
+# (images/lab-runner). Test tooling: never part of the archive.
+labRunner:
+  # GitHub requires self-hosted runners to stay recent: bump with each runner release.
+  actionsRunner:
+    version: "2.338.0"
+    sha256: "af4b794c1bc41d73d40535e3fe092a39f9679cd8d965954c2aca25a05ca41d32"   # of actions-runner-linux-x64-<version>.tar.gz
+
 binarySHA256:
   clusterctl-linux-amd64: "c7301a8515ed329562b06c958463051dd55d9649fac591393f5df54a868fa79b"
   oras-linux-amd64.tar.gz: "66fb0ad7206f3f6fa77ed5b552049d364ccf4b50b1684554f731f76302b52ca0"   # tools.oras

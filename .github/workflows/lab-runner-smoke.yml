@@ -1,0 +1,56 @@
+name: lab runner smoke test
+
+# Runs only on the self-hosted lab runner (images/lab-runner), only when dispatched by hand.
+# It touches no infrastructure: it checks the VM's OS, tools and rootful podman, runs a kind
+# cluster, and checks that no state is left from an earlier job.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: [self-hosted, dciab-lab]
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: OS, SELinux, sudo
+        run: |
+          set -euo pipefail
+          . /etc/os-release
+          echo "$PRETTY_NAME"
+          [[ "$ID" == rocky && "$VERSION_ID" == 10* ]] || { echo "expected Rocky Linux 10, got $ID $VERSION_ID" >&2; exit 1; }
+          [[ "$(getenforce)" == Enforcing ]] || { echo "SELinux is $(getenforce), expected Enforcing" >&2; exit 1; }
+          sudo -n true
+          sudo bootc status --format yaml | sed -n '1,20p'
+          df -h /sysroot /var
+      - name: Nothing left from an earlier job
+        run: |
+          set -euo pipefail
+          for f in "$HOME/.dciab-smoke" /tmp/dciab-smoke; do
+            [[ ! -e "$f" ]] || { echo "$f survived from an earlier job: the runner's cleanup didn't run" >&2; exit 1; }
+          done
+          [[ -z "$(sudo podman ps -aq)" ]] || { echo "containers survived from an earlier job" >&2; sudo podman ps -a; exit 1; }
+          echo "$GITHUB_RUN_ID" > "$HOME/.dciab-smoke"
+          echo "$GITHUB_RUN_ID" > /tmp/dciab-smoke
+      - name: Tools match bundle.lock
+        run: |
+          set -euo pipefail
+          read -r kind helm k8s < <(python3 -c 'import yaml; l = yaml.safe_load(open("bundle.lock")); print(l["tools"]["kind"], l["tools"]["helm"], l["kubernetes"]["version"])')
+          kind version | grep -F "$kind"
+          helm version --short | grep -F "$helm"
+          kubectl version --client | grep -F "$k8s"
+          clusterctl version -o short; oras version | head -1; cosign version 2>&1 | grep GitVersion; age --version
+          sudo podman version --format '{{.Client.Version}}'; skopeo --version; buildah --version
+      - name: kind on rootful podman
+        run: |
+          set -euo pipefail
+          trap 'sudo KIND_EXPERIMENTAL_PROVIDER=podman kind delete cluster --name lab-smoke || true' EXIT
+          sudo KIND_EXPERIMENTAL_PROVIDER=podman kind create cluster --name lab-smoke --wait 180s
+          sudo kubectl --context kind-lab-smoke get nodes -o wide
+          sudo kubectl --context kind-lab-smoke run smoke --image=registry.k8s.io/e2e-test-images/agnhost:2.53 \
+            --restart=Never --command -- /agnhost help >/dev/null
+          sudo kubectl --context kind-lab-smoke wait --for=jsonpath='{.status.phase}'=Succeeded pod/smoke --timeout=120s
+      - name: dciab runs on the system python
+        run: ./dciab validate --help >/dev/null

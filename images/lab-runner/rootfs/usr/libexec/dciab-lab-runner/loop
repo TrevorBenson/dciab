@@ -1,0 +1,90 @@
+#!/usr/bin/env bash
+# dciab-lab-runner loop (run by dciab-lab-runner.service, as root): one job per runner.
+#
+# Each round:
+#   1. Cleans up after the last job: kills the runner user's processes, removes root's
+#      containers, pods, volumes and networks (kind nodes, the seed registry, test pods),
+#      reloads firewalld (drops runtime-only ports), and replaces the runner directory and
+#      the runner user's home with fresh copies.
+#   2. Asks GitHub for a just-in-time (JIT) runner configuration: a single-use, ephemeral
+#      runner registered to one repository, with the labels from runner.conf.
+#   3. Runs that runner as dciab-runner until it has run one job, with the job-started hook
+#      that refuses jobs not started from the default branch.
+#
+# Config: /etc/dciab-lab-runner/runner.conf (KEY=VALUE lines; written at clone time):
+#   DCIAB_LAB_REPO=owner/repo          required
+#   DCIAB_LAB_LABELS=dciab-lab         extra labels, comma-separated (self-hosted,linux,x64 are added)
+#   DCIAB_LAB_BRANCH=main              the only branch whose jobs run
+#   DCIAB_LAB_TOKEN_FILE=/etc/dciab-lab-runner/token
+# The token file holds a GitHub token allowed to create JIT runners on that repository
+# (repository Administration: write), owned by root, mode 0600 or 0400.
+set -euo pipefail
+
+CONF=/etc/dciab-lab-runner/runner.conf
+STATE=/var/lib/dciab-lab-runner
+RUNNER_USER=dciab-runner
+SRC=/usr/lib/dciab-lab-runner/actions-runner
+HOOK=/usr/libexec/dciab-lab-runner/job-started.sh
+API=https://api.github.com
+
+log() { echo "dciab-lab-runner: $*"; }
+die() { log "$*" >&2; exit 1; }
+
+conf() { sed -n "s/^$1=//p" "$CONF" | tail -n 1; }
+repo="$(conf DCIAB_LAB_REPO)"
+labels="$(conf DCIAB_LAB_LABELS)"; labels="${labels:-dciab-lab}"
+branch="$(conf DCIAB_LAB_BRANCH)"; branch="${branch:-main}"
+token_file="$(conf DCIAB_LAB_TOKEN_FILE)"; token_file="${token_file:-/etc/dciab-lab-runner/token}"
+
+[[ "$repo" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || die "$CONF: DCIAB_LAB_REPO must be owner/repo, got '$repo'"
+[[ "$labels" =~ ^[A-Za-z0-9_.-]+(,[A-Za-z0-9_.-]+)*$ ]] || die "$CONF: DCIAB_LAB_LABELS must be comma-separated names, got '$labels'"
+[[ "$branch" =~ ^[A-Za-z0-9_./-]+$ ]] || die "$CONF: DCIAB_LAB_BRANCH is not a branch name: '$branch'"
+[[ -f "$token_file" ]] || die "no token file at $token_file"
+[[ "$(stat -c '%u %a' "$token_file")" =~ ^0\ [46]00$ ]] || die "$token_file must be owned by root with mode 0600 or 0400"
+
+cleanup() {
+  pkill -KILL -u "$RUNNER_USER" 2>/dev/null || true
+  podman rm --all --force --time 0 >/dev/null 2>&1 || true
+  podman pod rm --all --force --time 0 >/dev/null 2>&1 || true
+  podman volume prune --force >/dev/null 2>&1 || true
+  podman network prune --force >/dev/null 2>&1 || true
+  if systemctl -q is-active firewalld; then firewall-cmd --quiet --reload || true; fi
+  rm -rf "${STATE:?}/runner" "${STATE:?}/home" /root/.kube /root/.dciab
+  find /tmp /var/tmp -xdev -mindepth 1 -user "$RUNNER_USER" -delete 2>/dev/null || true
+  cp -a "$SRC" "$STATE/runner"
+  chown -R "$RUNNER_USER:$RUNNER_USER" "$STATE/runner"
+  install -d -o "$RUNNER_USER" -g "$RUNNER_USER" -m 0700 "$STATE/home"
+}
+
+# Prints the encoded JIT config. The token goes to curl as a header file, never as an argument.
+mint() {
+  local name body
+  name="$(hostname -s)-$(date +%s)"
+  body="$(jq -nc --arg name "$name" --arg labels "self-hosted,linux,x64,$labels" \
+    '{name: $name, runner_group_id: 1, labels: ($labels | split(",")), work_folder: "_work"}')"
+  curl -fsS --max-time 60 -X POST \
+    -H @<(printf 'Authorization: Bearer %s\n' "$(<"$token_file")") \
+    -H 'Accept: application/vnd.github+json' -H 'X-GitHub-Api-Version: 2022-11-28' \
+    --data "$body" "$API/repos/$repo/actions/runners/generate-jitconfig" \
+  | jq -er .encoded_jit_config
+}
+
+install -d -m 0755 "$STATE"
+wait=30
+while true; do
+  cleanup
+  if ! jit="$(mint)"; then
+    log "could not create a JIT runner for $repo; retrying in ${wait}s"
+    sleep "$wait"; wait=$(( wait < 600 ? wait * 2 : 600 ))
+    continue
+  fi
+  wait=30
+  log "runner registered for $repo (labels self-hosted,linux,x64,$labels); waiting for a job"
+  rc=0
+  runuser -u "$RUNNER_USER" -- env -i \
+    HOME="$STATE/home" USER="$RUNNER_USER" LANG=C.UTF-8 PATH=/usr/local/bin:/usr/bin:/usr/sbin \
+    ACTIONS_RUNNER_HOOK_JOB_STARTED="$HOOK" DCIAB_LAB_REPO="$repo" DCIAB_LAB_BRANCH="$branch" \
+    "$STATE/runner/run.sh" --jitconfig "$jit" || rc=$?
+  unset jit
+  log "runner exited ($rc)"
+done

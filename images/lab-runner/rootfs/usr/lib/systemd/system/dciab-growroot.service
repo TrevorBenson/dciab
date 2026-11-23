@@ -1,0 +1,17 @@
+[Unit]
+Description=Grow the root partition and filesystem to fill the disk
+DefaultDependencies=no
+After=local-fs.target
+Before=cloud-init.service dciab-lab-runner.service
+ConditionPathIsMountPoint=/sysroot
+
+[Service]
+Type=oneshot
+# The node image's script (images/node-bootc), copied in by the Containerfile.
+ExecStart=/usr/libexec/dciab/growroot
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
+# Jobs must not run on the 8.5 GiB root bootc-image-builder gives the disk.
+RequiredBy=dciab-lab-runner.service

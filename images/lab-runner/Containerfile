@@ -1,0 +1,50 @@
+# DCiaB lab runner, image mode (bootc): Rocky Linux 10, the same base and OS as the
+# bootstrap appliance, with rootful podman, the archive's tools and a GitHub Actions runner.
+# It runs DCiaB's infrastructure tests (images/lab-runner/README.md). Test tooling: never
+# part of the archive. Built by build.sh; every version comes from bundle.lock.
+#
+# Build context: the repository root (build.sh passes it). build.sh first downloads and
+# verifies the binaries into images/lab-runner/build/bin/ and the Actions runner into
+# images/lab-runner/build/actions-runner/.
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE}
+
+# podman, buildah, skopeo: rootful builds, kind's provider, the seed registry, image copies.
+# bootc-image-builder itself runs as a container (nodeImages.bootc.bootcImageBuilder).
+# qemu-img, xorriso: disk images and installer ISOs. cloud-utils-growpart, xfsprogs: growroot. python3-pyyaml/jsonschema: dciab.
+# cloud-init, qemu-guest-agent: the VM gets its address, key and runner config at clone time.
+# libicu, krb5-libs, openssl-libs, zlib: the Actions runner (.NET) needs them.
+RUN dnf -y install \
+      podman buildah skopeo container-selinux \
+      git jq curl tar gzip zstd openssl ca-certificates \
+      python3 python3-pyyaml python3-jsonschema \
+      qemu-img xorriso exfatprogs cloud-utils-growpart xfsprogs \
+      NetworkManager firewalld openssh-server sudo cloud-init qemu-guest-agent \
+      iproute bind-utils procps-ng \
+      libicu krb5-libs openssl-libs zlib \
+ && dnf clean all \
+ && rm -rf /var/cache/dnf /var/log/dnf*
+
+COPY images/lab-runner/build/bin/ /usr/bin/
+# Read-only under /usr. dciab-lab-runner-loop copies it to a fresh directory under /var
+# for every job, so nothing a job (or a runner self-update) writes survives into the next.
+COPY images/lab-runner/build/actions-runner/ /usr/lib/dciab-lab-runner/actions-runner/
+# Root filesystem growth, shared with the node image: bootc-image-builder's root is 8.5 GiB,
+# and cloud-init can't grow it in image mode (it looks at the composefs overlay at /).
+COPY images/node-bootc/rootfs/usr/libexec/dciab/growroot /usr/libexec/dciab/growroot
+COPY images/node-bootc/rootfs/etc/cloud/cloud.cfg.d/90-dciab.cfg /etc/cloud/cloud.cfg.d/90-dciab.cfg
+COPY images/lab-runner/rootfs/ /
+
+# The base image's /usr/local is an absolute symlink to /var/usrlocal, which bootc's
+# `container lint` (runtime-deps, bootc 1.17) rejects. A relative link means the same thing.
+RUN ln -sfn ../var/usrlocal /usr/local
+
+# sudo refuses a sudoers file that is group- or world-writable; visudo checks the syntax.
+# The runner must start: a missing .NET dependency fails here, not on the first job.
+RUN chmod 0440 /etc/sudoers.d/dciab-lab-runner \
+ && visudo -cf /etc/sudoers.d/dciab-lab-runner \
+ && /usr/lib/dciab-lab-runner/actions-runner/bin/Runner.Listener --version
+
+# cloud-init's units are enabled by the package's systemd presets.
+RUN systemctl enable sshd NetworkManager firewalld qemu-guest-agent dciab-growroot dciab-lab-runner.service \
+ && bootc container lint

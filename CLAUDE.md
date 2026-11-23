@@ -30,6 +30,7 @@ DCiaB is built by a **planner** (Claude in a cloud session: writes the code and 
 | `charts/capi-cluster/` | One cluster: Cluster topology + node IP pools |
 | `images/node-bootc/` | Node image, the chosen recipe: Rocky 10 bootc (RESF SIG recipe) with CRI-O; disks for Proxmox and others |
 | `images/node/` | Older node template recipe (image-builder, containerd); removed once a cluster passes on bootc |
+| `images/lab-runner/` | Self-hosted Actions runner for infrastructure tests (test tooling, never in the archive) |
 | `hack/` | Checks and the kind e2e test (`hack/e2e/run.sh`) |
 | `handoff/` | Planner ↔ runner tasks and reports |
 | `docs/` | Components (what a site runs), roadmap, versioning, ADRs |
