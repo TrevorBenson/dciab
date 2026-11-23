@@ -41,10 +41,10 @@ The built-in provider is always the default, so a config that names none gets to
 
 A site runs three kinds of cluster: MGMT, INFRA and workload clusters. Each service block takes an `overrides` map keyed by tier (`mgmt`, `infra`, `workload`). An override is merged over the block for that tier's clusters.
 
-One rule limits overrides: **a tier may only use a provider that runs on the site, on the bootstrap host, or on a tier created before it.** The order is site → bootstrap → MGMT → INFRA → workload. So:
+One rule limits overrides. The tiers are created in order: site → bootstrap → MGMT → INFRA → workload. **A tier may use providers that run on itself, on the site, or on an earlier tier. Its creation and its recovery may depend only on the site and earlier tiers.** A tier never depends on a later one. So:
 
-- MGMT can't use anything that runs on INFRA: not SeaweedFS, not Authentik ([ADR 0004](0004-identity-and-sso.md), decision 4), not NetBox. Its block storage is Longhorn or a site array, and its backups go to the site's S3 or NFS, never INFRA's SeaweedFS (ADR 0009).
-- INFRA can use MGMT's DNS, but not its own Authentik for its Kubernetes API (again ADR 0004).
+- MGMT must not depend on anything that runs on INFRA: not SeaweedFS, not Authentik ([ADR 0004](0004-identity-and-sso.md), decision 4), not NetBox. Its block storage is Longhorn or a site array, and its backups go to the site target, never INFRA's SeaweedFS (ADR 0009).
+- INFRA may use what it runs itself: its own block storage, and its own SeaweedFS for INFRA-local data and as the primary copy of its backups. That copy can't be the only one: restoring INFRA can't need INFRA, so the critical set is also copied to the off-site or site target (ADR 0009). OpenBao's snapshots skip SeaweedFS entirely and go to the site target, because restoring OpenBao comes before SeaweedFS can be trusted (ADR 0009, decision 4). INFRA can use MGMT's DNS, but not its own Authentik for its Kubernetes API (again ADR 0004).
 - Workload clusters can use anything.
 
 `dciab validate` rejects a config that breaks this rule (decision 10).
@@ -150,9 +150,11 @@ These services ask for `local` when it exists and fall back to `replicated-retai
 **Not chosen:**
 
 - **Garage** (AGPLv3) replicates in three zones and has no erasure coding, and the COSI project lists no driver for it. It is built for small, geo-distributed self-hosting. It would add a second object store without adding anything DCiaB needs.
-- **MinIO.** Its community edition stopped publishing Docker images in October 2025 and went into maintenance mode at the end of 2025: no new features or pull requests, and critical security fixes only case by case. Its COSI driver is listed as deprecated. DCiaB doesn't ship it. A site that already runs MinIO uses it as `external`.
+- **MinIO.** The community repository was archived on 2026-04-25. Its README says it is no longer maintained, and that the community edition is distributed as source code only, with no new pre-built binaries. Its COSI driver is listed as deprecated. DCiaB doesn't ship it. A site that already runs MinIO (or its commercial successor) uses it as `external`.
 
-**COSI** is used only with `seaweedfs` and `rook-ceph`. Every COSI driver is still `v1alpha1`, so the controller and driver are pinned together in `bundle.lock` and bucket requests are treated as alpha. Platform buckets (CNPG backups, OpenBao snapshots, Terrakube state, OpenSearch snapshots, registry blobs) are each a `BucketClaim` against a platform `BucketClass`. Which of them must also leave the site is ADR 0009's decision.
+**COSI** is used only with `seaweedfs` and `rook-ceph`. Every COSI driver is still `v1alpha1`, so the controller and driver are pinned together in `bundle.lock` and bucket requests are treated as alpha. Platform buckets on INFRA and workload clusters (CNPG backups, Terrakube state, OpenSearch snapshots, registry blobs) are each a `BucketClaim` against a platform `BucketClass`. OpenBao snapshots and everything of MGMT's are not: they go to the site target, with credentials applied directly from the config (ADR 0009). Which buckets must also leave the site is ADR 0009's decision.
+
+**The site's S3 and ADR 0009's targets.** `storage.object.external` may be the same S3 service as ADR 0009's site target, with different buckets. INFRA's primary backup copy and the site target then share hardware, so the off-site copy is the one that protects the critical set.
 
 ### 7. DNS, IPAM and secrets
 
@@ -261,7 +263,7 @@ One row per consumer. The cells say what the consumer uses with the default prov
 | Forgejo | OIDC auth source | OIDC secret, DB, S3 | platform issuer | `replicated-retain` for repos; bucket for LFS, packages, attachments | yes | CNPG archive + repo volume (ADR 0009) | external-dns | ServiceMonitor |
 | Grafana | Generic OAuth | OIDC secret, DB | platform issuer | none (dashboards from Git) | yes | CNPG archive | external-dns | ServiceMonitor |
 | NetBox | OIDC | OIDC secret, DB, API tokens | platform issuer | bucket for media | yes | CNPG archive | external-dns | ServiceMonitor |
-| OpenBao | OIDC auth method (people) | n/a (it is the store) | platform CA, issued at the platform step | `local`, else `replicated-retain` (Raft) | none (Raft) | Raft snapshots to a bucket (ADR 0005, 0009) | external-dns | telemetry endpoint |
+| OpenBao | OIDC auth method (people) | n/a (it is the store) | platform CA, issued at the platform step | `local`, else `replicated-retain` (Raft) | none (Raft) | Raft snapshots to the site target (ADR 0009, decision 4) | external-dns | telemetry endpoint |
 | AWX | OIDC | OIDC secret, DB, tenant credentials | platform issuer | `replicated-retain` for projects | yes | CNPG archive | external-dns | ServiceMonitor |
 | Terrakube | OIDC (Dex) | OIDC secret, DB, S3 | platform issuer | bucket for state and run outputs | yes | CNPG archive; versioned state bucket | external-dns | ServiceMonitor |
 | OpenSearch | OIDC (Security plugin) | OIDC secret, internal users | platform issuer (HTTP and transport) | `local`, else `replicated` | none | snapshots to a bucket | external-dns | exporter |
@@ -282,7 +284,7 @@ Gaps the matrix exposes, each owned by the implementation of this ADR:
 
 The schema does what JSON Schema can: one `provider` per block, the chosen provider's sub-block required, the others forbidden, as in `spec.pki`. `validate` adds:
 
-1. **Tier order** (decision 2). Error when an override gives MGMT an INFRA-hosted provider (`storage.object: seaweedfs`, `ipam: netbox` with `mode: platform`, `identity` for the MGMT API), or when MGMT's backup target isn't a site target.
+1. **Tier order** (decision 2). Error when an override gives MGMT an INFRA-hosted provider (`storage.object: seaweedfs`, `ipam: netbox` with `mode: platform`, `identity` for the MGMT API), when MGMT's or OpenBao's backup target isn't the site target, or when INFRA backs up to its own object provider with no off-site or site copy of the critical set (ADR 0009).
 2. **No double replication.** Error when `longhorn` or `openebs: mayastor` with more than one replica sits on replicated storage. Offline, `validate` warns when the Proxmox storage name or the vSphere datastore is set, since it can't know its type. With `--live`, it reads the type (Proxmox `rbd` or `cephfs`, vSphere `vsan`) and errors. Today's check only hints at this (`check_resilience`).
 3. **Platform fit.** `vsphere-csi` only for `vsphere`-class clusters; `openebs: mayastor` only with at least three workers per cluster that uses it, and only on a ClusterClass revision that reserves huge pages. `openebs: lvm`, and Longhorn on VMs, need `dataDiskGiB` on the worker pools.
 4. **Required provider fields.** `ceph-csi`: monitors, cluster ID, pool, key. `vendor-csi`: a chart that is in `bundle.lock`. `existing`: a StorageClass name. Exactly one default StorageClass per cluster.
@@ -318,7 +320,7 @@ The schema does what JSON Schema can: one `provider` per block, the chosen provi
 ## Open questions for Trevor
 
 1. **OpenEBS: which engine first, and in v1 at all?** Local PV LVM is cheap and fills the `local` class on array sites. Mayastor is fast but needs huge pages and reserved cores, so it needs a node image and class revision. The proposal is LVM first, Mayastor after a lab spike. Do you want Mayastor in v1?
-2. **Default on Proxmox with Ceph.** The proposal is `ceph-csi` against the Proxmox Ceph cluster, which needs a Ceph client key from the hypervisors. The alternative is a Proxmox CSI driver, which makes VM disks on any Proxmox storage through the PVE API. Which do you prefer? (`examples/proxmox.yaml` today runs Longhorn ×2 on `ceph-vm`, which decision 4 forbids.)
+2. **Default on Proxmox with Ceph.** The proposal is `ceph-csi` against the Proxmox Ceph cluster, which needs a Ceph client key from the hypervisors. The alternative is a Proxmox CSI driver, which makes VM disks on any Proxmox storage through the PVE API. Which do you prefer? (At the time of writing, `examples/proxmox.yaml` runs Longhorn ×2 on `ceph-vm`, which decision 4 forbids; re-check once the examples are rewritten.)
 3. **Vendor CSI drivers in the archive.** Pin a fixed set (Trident, Dell CSM, Pure, HPE) in `bundle.lock`, or support a site-built overlay archive with extra charts and images? The overlay keeps product docs site-agnostic but needs its own signing and verification.
 4. **External DNS for INFRA's names.** With `dns: external`, should the platform names (`auth.`, `git.`, `registry.`) go in the site zone, or should DCiaB always own a delegated subzone (`dciab.<site domain>`) even when the site's DNS is authoritative? The subzone is simpler to automate and harder to get from some DNS teams.
 5. **`secrets: external` scope.** Is a Vault-API-only external store acceptable for v1 (decision 7), or do you need a mode where the site store holds only secrets and DCiaB still runs OpenBao for PKI and SPIRE?
@@ -328,20 +330,23 @@ The schema does what JSON Schema can: one `provider` per block, the chosen provi
 
 ## References
 
-- vCenter Server identity federation, supported providers: https://docs.vmware.com/en/VMware-vSphere/8.0/vsphere-authentication/GUID-0A3A19E6-150A-493B-8B57-37E19AB420F2.html
-- vSphere Container Storage Plug-in requirements: https://docs.vmware.com/en/VMware-vSphere/8.0/vsphere-storage/GUID-BA795112-AFC4-4FCB-B5A6-1ACDCAB79ED3.html
+Primary sources unless marked otherwise.
+
+- vCenter Server identity federation, supported providers and versions (VMware docs; Broadcom is moving these to techdocs.broadcom.com, and no equivalent URL was found there): https://docs.vmware.com/en/VMware-vSphere/8.0/vsphere-authentication/GUID-0A3A19E6-150A-493B-8B57-37E19AB420F2.html
+- Broadcom KB 435677, external federation with Okta, Entra ID or PingFederate: https://knowledge.broadcom.com/external/article/435677/external-federation-okta-microsoft-entra.html
+- vSphere Container Storage Plug-in requirements (VMware docs; same caveat as above): https://docs.vmware.com/en/VMware-vSphere/8.0/vsphere-storage/GUID-BA795112-AFC4-4FCB-B5A6-1ACDCAB79ED3.html
 - vSphere CSI driver releases (Kubernetes 1.34 to 1.36 for v3.8.0): https://github.com/kubernetes-sigs/vsphere-csi-driver/releases
 - OpenEBS releases (Replicated PV Mayastor, Local PV LVM, ZFS, Hostpath): https://github.com/openebs/openebs/releases
-- OpenEBS prerequisites (Mayastor huge pages, cores, `nvme-tcp`, three nodes; LVM `dm-snapshot`): https://gallant-pasteur-5e438c.netlify.app/docs/quickstart-guide/prerequisites
-- Longhorn 1.11 (V2 data engine in technical preview): https://longhorn.io/blog/longhorn-v1.11.0/
-- democratic-csi overview: https://simplyblock.io/glossary/what-is-democratic-csi/
+- OpenEBS prerequisites (Mayastor huge pages, cores, `nvme-tcp`, three nodes; LVM `dm-snapshot`). Secondary: openebs.io couldn't be read, so this is a Netlify build of the OpenEBS docs; check against openebs.io: https://gallant-pasteur-5e438c.netlify.app/docs/quickstart-guide/prerequisites
+- Longhorn 1.11 release post (V2 data engine in technical preview): https://longhorn.io/blog/longhorn-v1.11.0/
+- democratic-csi drivers (`freenas-*`, `zfs-generic-*`, `synology-iscsi`, `node-manual` for pre-created iSCSI volumes): https://github.com/democratic-csi/democratic-csi (the README was read through its ecosyste.ms index) and https://github.com/democratic-csi/charts
 - COSI drivers and API versions: https://container-object-storage-interface.sigs.k8s.io/drivers
-- Rook COSI driver: https://oneuptime.com/blog/post/2026-03-31-rook-cosi-container-object-storage/view
+- Rook's CephCOSIDriver controller (source): https://pkg.go.dev/github.com/rook/rook@v1.14.3/pkg/operator/ceph/object/cosi, and the Rook COSI guide: https://rook.io/docs/rook/v1.18/Storage-Configuration/Object-Storage-RGW/cosi/
 - SeaweedFS README (replication, 10+4 EC, license): https://raw.githubusercontent.com/chrislusf/seaweedfs/master/README.md
 - Garage README (AGPLv3, small-to-medium scale): https://github.com/deuxfleurs-org/garage
 - Garage site (three-zone replication): https://garagehq.deuxfleurs.fr/
-- MinIO maintenance mode: https://linuxiac.com/minio-ends-active-development/ and https://www.infoq.com/news/2025/12/minio-s3-api-alternatives
+- MinIO community repository (archived 2026-04-25; README on maintenance and source-only distribution): https://github.com/minio/minio
 - ExternalDNS providers (in-tree and webhook): https://kubernetes-sigs.github.io/external-dns/latest
 - NetBox CAPI IPAM provider (v0.1.0-alpha.1): https://beta.pkg.go.dev/github.com/erwin-kok/cluster-api-ipam-provider-netbox/internal/ipam
 - Authentik blueprints: https://docs.goauthentik.io/customize/blueprints/
-- Proxmox VE OpenID groups patch: https://lists.proxmox.com/pipermail/pve-devel/2025-March/069397.html
+- Proxmox VE OpenID groups patch (pve-devel, March 2025): https://lists.proxmox.com/pipermail/pve-devel/2025-March/069397.html
