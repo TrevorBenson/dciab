@@ -33,6 +33,9 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 OIDC_CLIENT_ID = "kubernetes"
+# The classes' authentication variable takes at most this many issuers (its maxItems, which
+# keeps the API server's CEL cost estimate for the uniqueness rules small).
+MAX_ISSUERS = 4
 # Namespaces whose pods must run privileged: kube-system (kube-vip, Cilium) and Longhorn.
 # Other components label their own namespaces when they need more than baseline.
 POD_SECURITY_EXEMPT = ["kube-system", "longhorn-system"]
@@ -87,6 +90,8 @@ def check_issuers(issuers: List[dict]) -> List[dict]:
     """The rules the class's authentication variable enforces, checked before a render:
     unique names and URLs (a duplicate URL makes the API server refuse the file) and a
     username and groups prefix of its own per issuer."""
+    if not 1 <= len(issuers) <= MAX_ISSUERS:
+        raise ValuesError(f"authentication issuers: {len(issuers)} given; the classes take 1 to {MAX_ISSUERS}")
     for key in ("name", "url"):
         seen = [i[key] for i in issuers]
         dup = sorted({v for v in seen if seen.count(v) > 1})

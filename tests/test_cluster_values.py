@@ -275,6 +275,8 @@ def test_issuers_are_checked_like_the_class_does():
         check_issuers([a, dict(b, url="https://a/")])
     with pytest.raises(ValuesError, match="usernamePrefix"):
         check_issuers([a, dict(b, usernamePrefix="authentik:")])
+    with pytest.raises(ValuesError, match="1 to 4"):
+        check_issuers([dict(a, name=f"i{n}", url=f"https://{n}/") for n in range(5)])
     v = cluster_values(load_example("vsphere"), "apps01", CA)
     [issuer] = v["nodes"]["authentication"]["issuers"]
     assert issuer["usernamePrefix"] == issuer["groupsPrefix"] == "authentik:"

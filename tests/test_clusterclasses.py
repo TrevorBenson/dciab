@@ -723,3 +723,37 @@ def test_vm_classes_add_a_nic_per_storage_network(provider):
 def test_cluster_modules_are_on_for_vsphere():
     lock = yaml.safe_load((ROOT / "bundle.lock").read_text())
     assert lock["clusterAPI"]["variables"]["EXP_NODE_ANTI_AFFINITY"] == "true"
+
+
+def _bounded(schema, path):
+    """Every array has maxItems and every string maxLength, so CEL rules on them have a bounded cost."""
+    if schema.get("type") == "array":
+        assert "maxItems" in schema, f"{path}: array without maxItems"
+        _bounded(schema["items"], path + "[]")
+    elif schema.get("type") == "string":
+        assert "maxLength" in schema, f"{path}: string without maxLength"
+    for k, sub in (schema.get("properties") or {}).items():
+        _bounded(sub, f"{path}.{k}")
+
+
+def test_variables_with_cel_rules_are_bounded():
+    """The API server rejects a ClusterClass whose CEL rules have an unbounded estimated cost
+    (it did, for the issuer uniqueness rules, before maxItems and maxLength were set)."""
+    from dciab_cluster.values import MAX_ISSUERS
+    for f in _installed_class_files():
+        cc = _kind(_docs(f), "ClusterClass")
+        found = 0
+        for var in cc["spec"]["variables"]:
+            def walk(schema, path):
+                nonlocal found
+                if schema.get("x-kubernetes-validations"):
+                    found += 1
+                    _bounded(schema, path)
+                for k, sub in (schema.get("properties") or {}).items():
+                    walk(sub, f"{path}.{k}")
+                if isinstance(schema.get("items"), dict):
+                    walk(schema["items"], path + "[]")
+            walk(var["schema"]["openAPIV3Schema"], f"{f.name}:{var['name']}")
+        assert found, f.name
+        auth = next(v for v in cc["spec"]["variables"] if v["name"] == "authentication")
+        assert auth["schema"]["openAPIV3Schema"]["properties"]["issuers"]["maxItems"] == MAX_ISSUERS

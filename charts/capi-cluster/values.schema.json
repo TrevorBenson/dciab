@@ -125,36 +125,45 @@
                 "properties": {
                   "name": {
                     "type": "string",
-                    "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
+                    "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$",
+                    "maxLength": 63
                   },
                   "url": {
                     "type": "string",
-                    "pattern": "^https://"
+                    "pattern": "^https://",
+                    "maxLength": 512
                   },
                   "clientID": {
                     "type": "string",
-                    "minLength": 1
+                    "minLength": 1,
+                    "maxLength": 256
                   },
                   "usernameClaim": {
-                    "type": "string"
+                    "type": "string",
+                    "maxLength": 256
                   },
                   "usernamePrefix": {
                     "type": "string",
-                    "minLength": 1
+                    "minLength": 1,
+                    "maxLength": 63
                   },
                   "groupsClaim": {
-                    "type": "string"
+                    "type": "string",
+                    "maxLength": 256
                   },
                   "groupsPrefix": {
                     "type": "string",
-                    "minLength": 1
+                    "minLength": 1,
+                    "maxLength": 63
                   },
                   "certificateAuthority": {
                     "type": "string",
-                    "pattern": "-----BEGIN CERTIFICATE-----"
+                    "pattern": "-----BEGIN CERTIFICATE-----",
+                    "maxLength": 65536
                   }
                 }
-              }
+              },
+              "maxItems": 4
             }
           },
           "description": "optional: JWT issuers the API server trusts (structured authentication)"
