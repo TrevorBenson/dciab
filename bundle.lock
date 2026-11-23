@@ -217,6 +217,7 @@ imageDigests:
   quay.io/jetstack/cert-manager-controller:v1.21.3: "sha256:9f4f96a33c7774cef24466fcd85031997531a03a8d117f151126baa8d1290dcc"
   quay.io/jetstack/cert-manager-webhook:v1.21.3: "sha256:055ac8e9de6a0ba6763794838fe38944acc650f68ebe1b01dd8be079e580f458"
   registry.k8s.io/capi-ipam-ic/cluster-api-ipam-in-cluster-controller:v1.1.1: "sha256:49a4cc0c5d7cd8deef20105e71ce168407ddcaab612f5819947163bd4b66ff0b"
+  registry.k8s.io/cloud-pv-vsphere/cloud-provider-vsphere:v1.36.0: "sha256:c0f3933f69006683bed53a67976bbb9106d52b910727492a0bb04c9d6a0bb8ac"
   registry.k8s.io/cluster-api-vsphere/cluster-api-vsphere-controller:v1.17.0: "sha256:1f5a163b32e48e1fcaeee5ddc3e3aa93dc6fcdace85501d9078f014ab516d374"
   registry.k8s.io/cluster-api/cluster-api-controller:v1.14.4: "sha256:ee7b274a4c237d7831840c1a05a950c383f11a1755d3cca6292103cabb00bd26"
   registry.k8s.io/cluster-api/kubeadm-bootstrap-controller:v1.14.4: "sha256:674dd5e666d209c7bdb72525dd3bb40a670c068bd12d610b596b532a84463e62"
