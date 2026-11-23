@@ -9,6 +9,7 @@ metadata:
   name: dciab-proxmox-r1
   annotations:
     helm.sh/resource-policy: keep
+    argocd.argoproj.io/sync-options: Prune=false,Delete=false
     dciab.io/description: "Proxmox VE (CAPMOX) machines for control plane and workers"
 spec:
   controlPlane:
@@ -674,6 +675,7 @@ metadata:
   name: dciab-proxmox-r1
   annotations:
     helm.sh/resource-policy: keep
+    argocd.argoproj.io/sync-options: Prune=false,Delete=false
 spec:
   template:
     spec:
@@ -694,6 +696,7 @@ metadata:
   name: dciab-proxmox-r1-controlplane
   annotations:
     helm.sh/resource-policy: keep
+    argocd.argoproj.io/sync-options: Prune=false,Delete=false
 spec:
   template:
     spec:
@@ -718,6 +721,7 @@ metadata:
   name: dciab-proxmox-r1-worker
   annotations:
     helm.sh/resource-policy: keep
+    argocd.argoproj.io/sync-options: Prune=false,Delete=false
 spec:
   template:
     spec:
@@ -742,6 +746,7 @@ metadata:
   name: dciab-proxmox-r1-controlplane
   annotations:
     helm.sh/resource-policy: keep
+    argocd.argoproj.io/sync-options: Prune=false,Delete=false
 spec:
   template:
     spec:
@@ -802,6 +807,7 @@ metadata:
   name: dciab-proxmox-r1-worker
   annotations:
     helm.sh/resource-policy: keep
+    argocd.argoproj.io/sync-options: Prune=false,Delete=false
 spec:
   template:
     spec:

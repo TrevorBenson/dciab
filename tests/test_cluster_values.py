@@ -71,7 +71,9 @@ def test_rendered_objects_are_kept_by_helm(ci_file, kinds):
     docs = [d for d in yaml.safe_load_all(out) if d]
     assert {d["kind"] for d in docs} == kinds
     for d in docs:
-        assert (d["metadata"].get("annotations") or {}).get("helm.sh/resource-policy") == "keep", d["kind"]
+        annotations = d["metadata"].get("annotations") or {}
+        assert annotations.get("helm.sh/resource-policy") == "keep", d["kind"]
+        assert annotations.get("argocd.argoproj.io/sync-options") == "Prune=false,Delete=false", d["kind"]
 
 
 def test_roles_labels_and_oidc():

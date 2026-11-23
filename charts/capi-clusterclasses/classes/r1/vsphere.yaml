@@ -9,6 +9,7 @@ metadata:
   name: dciab-vsphere-r1
   annotations:
     helm.sh/resource-policy: keep
+    argocd.argoproj.io/sync-options: Prune=false,Delete=false
     dciab.io/description: "vSphere (CAPV) machines for control plane and workers"
 spec:
   controlPlane:
@@ -658,6 +659,7 @@ metadata:
   name: dciab-vsphere-r1
   annotations:
     helm.sh/resource-policy: keep
+    argocd.argoproj.io/sync-options: Prune=false,Delete=false
 spec:
   template:
     spec:
@@ -669,6 +671,7 @@ metadata:
   name: dciab-vsphere-r1-controlplane
   annotations:
     helm.sh/resource-policy: keep
+    argocd.argoproj.io/sync-options: Prune=false,Delete=false
 spec:
   template:
     spec:
@@ -695,6 +698,7 @@ metadata:
   name: dciab-vsphere-r1-worker
   annotations:
     helm.sh/resource-policy: keep
+    argocd.argoproj.io/sync-options: Prune=false,Delete=false
 spec:
   template:
     spec:
@@ -721,6 +725,7 @@ metadata:
   name: dciab-vsphere-r1-controlplane
   annotations:
     helm.sh/resource-policy: keep
+    argocd.argoproj.io/sync-options: Prune=false,Delete=false
 spec:
   template:
     spec:
@@ -777,6 +782,7 @@ metadata:
   name: dciab-vsphere-r1-worker
   annotations:
     helm.sh/resource-policy: keep
+    argocd.argoproj.io/sync-options: Prune=false,Delete=false
 spec:
   template:
     spec:

@@ -18,15 +18,20 @@ Values are validated by `values.schema.json`: every site-specific value is requi
 
 Every object the chart renders carries `helm.sh/resource-policy: keep`. Deleting the `Cluster` deletes its machines, and deleting a pool leaves the cluster without node addresses. So `helm uninstall`, or an upgrade that stops rendering an object, leaves it in place.
 
-To really delete a cluster, delete the `Cluster` itself, then the pools once its machines are gone:
+They also carry `argocd.argoproj.io/sync-options: Prune=false,Delete=false`. Argo CD ignores Helm's annotation; this one does the same for Argo CD once it adopts these objects. It does nothing without Argo CD.
+
+To really delete a cluster, delete the `Cluster` and wait: CAPI deletes its machines first. Then uninstall the release and delete the pools:
 
 ```console
-$ kubectl -n <namespace> delete cluster <cluster>
+$ kubectl -n <namespace> delete cluster <cluster> --wait
 $ helm uninstall <release> -n <namespace>
-$ kubectl -n <namespace> delete inclusterippools,ippools,metal3datatemplates -l cluster.x-k8s.io/cluster-name=<cluster>
+$ kubectl -n <namespace> delete inclusterippools.ipam.cluster.x-k8s.io -l cluster.x-k8s.io/cluster-name=<cluster>          # vSphere
+$ kubectl -n <namespace> delete ippools.ipam.metal3.io,metal3datatemplates -l cluster.x-k8s.io/cluster-name=<cluster>     # Metal3
 ```
 
-When Argo CD adopts these objects, also set `argocd.argoproj.io/sync-options: Prune=false,Delete=false` on them. Argo CD does not read Helm's annotation.
+A self-managed cluster (MGMT) runs the controllers that delete it. `clusterctl move` it to a bootstrap cluster first, or expect leftovers.
+
+Kept objects keep Helm's `meta.helm.sh/release-*` annotations. Installing again with the same release name and namespace adopts them; another release name fails with "invalid ownership metadata".
 
 ## Expected around it
 

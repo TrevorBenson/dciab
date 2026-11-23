@@ -25,10 +25,11 @@ app.kubernetes.io/managed-by: {{ .Release.Service }}
 app.kubernetes.io/part-of: dciab
 {{- end }}
 
-{{- /* Helm leaves these objects in place on uninstall or when they leave the chart: deleting
-the Cluster deletes its machines. See README.md. */ -}}
+{{- /* Helm, and Argo CD once it adopts them, leave these objects in place on uninstall or
+when they leave the chart: deleting the Cluster deletes its machines. See README.md. */ -}}
 {{- define "capi-cluster.annotations" -}}
 helm.sh/resource-policy: keep
+argocd.argoproj.io/sync-options: Prune=false,Delete=false
 {{- end }}
 
 {{- /* The first and last address of an "a-b" range. */ -}}

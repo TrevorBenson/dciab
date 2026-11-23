@@ -18,11 +18,19 @@ There has been no release yet, so `r1` is a draft.
 
 ## Kept on uninstall
 
-Every ClusterClass and template carries `helm.sh/resource-policy: keep`, set in the class files. Clusters that use a deleted class stop reconciling, so `helm uninstall` or dropping a revision from `revisions` leaves its objects in place.
+Every ClusterClass and template carries `helm.sh/resource-policy: keep` and `argocd.argoproj.io/sync-options: Prune=false,Delete=false`, set in the class files. Clusters that use a deleted class stop reconciling, so `helm uninstall`, dropping a revision from `revisions`, or an Argo CD prune leaves its objects in place. Argo CD ignores Helm's annotation, hence the second one; it does nothing without Argo CD. Because the chart serves class files as they are, both annotations are part of a revision and freeze with it.
 
-To really delete a revision, first make sure no `Cluster` still uses it (`kubectl get clusters -A -o yaml | grep -- '-rN'`), drop it from `revisions` and upgrade. Then delete its objects by hand: the ClusterClasses `dciab-<provider>-rN` and every template named `dciab-<provider>-rN*` in the class namespace.
+To really delete a revision:
 
-When Argo CD adopts these objects, also set `argocd.argoproj.io/sync-options: Prune=false,Delete=false` on them. Argo CD does not read Helm's annotation.
+1. Check that no `Cluster` still uses it:
+
+   ```console
+   $ kubectl get clusters -A -o jsonpath='{range .items[*]}{.metadata.namespace}/{.metadata.name} {.spec.topology.classRef.name}{"\n"}{end}'
+   ```
+
+2. Drop it from `revisions` and upgrade the release.
+3. Delete its ClusterClasses (`dciab-<provider>-rN`) first: CAPI refuses to delete a class a Cluster still references, which catches a missed one.
+4. Then delete its templates (every object named `dciab-<provider>-rN*`) in the class namespace.
 
 ## What every class sets up
 

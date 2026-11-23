@@ -113,7 +113,7 @@ def test_class_names_carry_their_revision():
                     assert name.startswith(f"dciab-{f.stem}-{v}"), name
 
 
-KEEP = {"helm.sh/resource-policy": "keep"}
+KEEP = {"helm.sh/resource-policy": "keep", "argocd.argoproj.io/sync-options": "Prune=false,Delete=false"}
 
 
 def test_installed_classes_are_kept_by_helm():
