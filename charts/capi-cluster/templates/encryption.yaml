@@ -1,9 +1,9 @@
 {{- /*
 The EncryptionConfiguration the API server encrypts Secrets with (the class's
 secretEncryption patch reads it). The key is made here, once: an upgrade finds the Secret
-and keeps its key, because a new key would make every stored Secret unreadable. It lives
-only in this Secret on the management cluster (and in etcd, which encrypts it in turn on
-MGMT), never in Git or in the values. clusterctl move carries it with the cluster.
+and keeps its key, because a new key would make every stored Secret unreadable. It is
+never in Git or in the values; README.md lists every place it does exist. clusterctl move
+carries it with the cluster.
 With encryption.createSecret false the chart leaves the Secret alone, for a renderer that
 can't read the cluster (helm template, Argo CD): it must then already exist. See README.md.
 */ -}}

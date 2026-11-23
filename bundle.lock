@@ -206,7 +206,7 @@ chartDigests:
   cilium: "0c7592eb75179ecf46dd3ec22145916f0164c4401214ea15afb5b230b1d11a21"
   longhorn: "e57f010d2a8bcf0da5b8b03ffecf49c5bc35ddc2663588ce8f22b7567b6133ed"
   vsphere-cpi: "657f29b3409645592a6183c5199bb672dce7bb3b9e3ecbe70df7564d5e722752"
-  kubelet-csr-approver: ""   # fill from the first pull (addons/kubelet-csr-approver/install.sh prints it)
+  kubelet-csr-approver: "2058b0f8e78ae1b8bee4a48fb39152bb6be4986486d73592ad2649c6f72cb268"
 
 # Digests for images their source manifests name by tag only (the Cluster API, provider
 # and cert-manager manifests, and kubeadm's control plane images). The archive pulls these

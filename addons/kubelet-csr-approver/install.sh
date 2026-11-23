@@ -27,8 +27,9 @@ workdir="$(mktemp -d)"
 trap 'rm -rf "$workdir"' EXIT
 overrides="$workdir/overrides.yaml"
 
-# The networks a serving certificate may name addresses in: every node network of the
-# cluster, from the cluster values. The chart pin from bundle.lock.
+# The addresses a serving certificate may name: the cluster's node IP ranges only, as
+# CIDRs. Never the whole node subnet, which also holds the API VIP, the load balancer pool
+# and the DNS service addresses. The chart pin from bundle.lock.
 read -r version repo digest < <(python3 - "$ROOT/bundle.lock" "$cluster_values" "$overrides" <<'PY'
 import ipaddress
 import sys
@@ -42,10 +43,10 @@ networks = [cluster["network"]] if "network" in cluster else (
     [cluster["controlPlane"]["network"]] + [p["network"] for p in cluster.get("workerPools", [])])
 prefixes = []
 for n in networks:
-    start = n["nodeIPRange"].split("-")[0]
-    net = str(ipaddress.ip_network(f"{start}/{n['prefix']}", strict=False))
-    if net not in prefixes:
-        prefixes.append(net)
+    first, last = (ipaddress.ip_address(a) for a in n["nodeIPRange"].split("-"))
+    for net in ipaddress.summarize_address_range(first, last):
+        if str(net) not in prefixes:
+            prefixes.append(str(net))
 yaml.safe_dump({"providerIpPrefixes": prefixes}, open(sys.argv[3], "w"), sort_keys=False)
 print(lock["charts"]["kubelet-csr-approver"], lock["chartRepositories"]["kubelet-csr-approver"],
       lock.get("chartDigests", {}).get("kubelet-csr-approver") or "-")

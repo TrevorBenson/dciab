@@ -24,9 +24,11 @@ spec:
         name: dciab-proxmox-r1-controlplane
     # Remediation: a Machine whose Node stays NotReady or unreachable for 5 minutes, or
     # that never gets a Node, is replaced. VMs clone, boot and join well within this.
-    # KubeadmControlPlane never remediates in a way that loses etcd quorum, and only one
-    # control plane machine at a time here; workers stop remediating when more than 40%
-    # of a pool is unhealthy, which is an outage to look at, not a node to replace.
+    # Only one unhealthy machine at a time is replaced, in the control plane and in each
+    # worker pool: two or more at once is an outage to look at, not a node to replace. An
+    # absolute 1, not a percentage, so pools of one or two machines are repaired too.
+    # KubeadmControlPlane never remediates in a way that loses etcd quorum; its retry
+    # limits are in the KubeadmControlPlaneTemplate.
     healthCheck:
       checks:
         nodeStartupTimeoutSeconds: 1200
@@ -36,9 +38,10 @@ spec:
       remediation:
         triggerIf:
           unhealthyLessThanOrEqualTo: 1
-    # Draining waits at most 30 minutes (Longhorn may need that to move a replica off the
-    # node), and detaching volumes at most 10, so a stuck pod or volume never blocks an
-    # upgrade or a remediation forever.
+    # Draining waits at most 30 minutes, and detaching volumes at most 10, so a stuck pod or
+    # volume never blocks an upgrade or a remediation forever. Longhorn's drain policy
+    # (block-for-eviction-if-contains-last-replica, addons/longhorn) moves a last replica
+    # off the node within that time instead of only blocking.
     deletion:
       nodeDrainTimeoutSeconds: 1800
       nodeVolumeDetachTimeoutSeconds: 600
@@ -68,7 +71,7 @@ spec:
               - {type: Ready, status: "False", timeoutSeconds: 300}
           remediation:
             triggerIf:
-              unhealthyLessThanOrEqualTo: 40%
+              unhealthyLessThanOrEqualTo: 1
         deletion:
           nodeDrainTimeoutSeconds: 1800
           nodeVolumeDetachTimeoutSeconds: 600
@@ -106,9 +109,9 @@ spec:
           uniqueItems: true
           items:
             type: string
-            pattern: '^[a-z0-9]([a-z0-9.-]*[a-z0-9])?(:[0-9]+)?$'
+            pattern: '^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$'
           description: >-
-            Upstream registries (such as docker.io) that nodes pull through registryMirror.
+            Upstream registries (such as docker.io; no port) that nodes pull through registryMirror.
             Each one gets a containerd hosts.toml and a CRI-O mirror entry. A list, so a
             new upstream needs no new class revision.
     - name: podSecurityExemptNamespaces
@@ -797,11 +800,19 @@ spec:
       rollout:
         before:
           certificatesExpiryDays: 60
+      # A control plane machine that keeps failing (a bad template, no free address) is
+      # recreated at most 3 times, 10 minutes apart; a machine healthy for an hour starts
+      # the count again.
+      remediation:
+        maxRetry: 3
+        retryPeriodSeconds: 600
+        minHealthyPeriodSeconds: 3600
       kubeadmConfigSpec:
         clusterConfiguration:
           apiServer:
             extraArgs:
               - {name: profiling, value: "false"}
+              - {name: tls-min-version, value: VersionTLS12}
               # Audit policy file: written by the apiServerAudit patch.
               - {name: audit-policy-file, value: /etc/kubernetes/audit/policy.yaml}
               - {name: audit-log-path, value: /var/log/kubernetes/audit/audit.log}

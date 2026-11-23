@@ -20,9 +20,20 @@ Values are validated by `values.schema.json`: every site-specific value is requi
 Every class encrypts Secrets at rest in etcd. The API server reads its `EncryptionConfiguration` from the Secret `<cluster>-encryption-config` in the cluster's namespace on the management cluster; Cluster API's bootstrap provider writes it to each control plane node (mode 600).
 
 - **Where it comes from.** The chart makes it on the first install: one random 32-byte `secretbox` key from Helm (`randBytes`). An upgrade looks the Secret up and keeps its key, because a new key would leave every stored Secret unreadable. Nothing about the key is in Git, the values or the class.
-- **How it is protected.** It exists only in that Secret (on the management cluster, whose own etcd encrypts it in turn on MGMT) and on the cluster's control plane nodes, readable by root only. It carries `helm.sh/resource-policy: keep` and `clusterctl.cluster.x-k8s.io/move`, so uninstalling never deletes it and `clusterctl move` takes it along with the cluster. Losing it loses every Secret in that cluster, so it belongs in the recovery bundle (ADR 0009).
+- **Where it exists.** Like the kubeadm CA keys, which take the same path, the key is in:
+  - the Secret itself, in the cluster's namespace on the management cluster (the kind bootstrap cluster first, then MGMT after `clusterctl move`). It carries `helm.sh/resource-policy: keep` and `clusterctl.cluster.x-k8s.io/move`, so uninstalling never deletes it and the move takes it along;
+  - every Helm release record of the release (`sh.helm.release.v1.<release>.vN` Secrets, up to the history limit), on the bootstrap cluster and on MGMT;
+  - the bootstrap cluster's etcd, which isn't encrypted (it lives on the bootstrap host's work disk until the bootstrap cluster is deleted);
+  - each control plane machine's bootstrap-data Secret, which Cluster API's kubeadm bootstrap provider writes in the same namespace;
+  - the hypervisor's copy of that cloud-init data (CAPMOX's cloud-init ISO on the Proxmox storage, vSphere `guestinfo`), and on each control plane node at `/etc/kubernetes/encryption/config.yaml`, mode 600.
+
+  On MGMT, MGMT's etcd encrypts the Secrets that hold it (its own key included, read from its nodes' files).
+- **Recovery.** Losing it loses every Secret in that cluster, and an etcd snapshot can't be restored without it. Nothing puts it in ADR 0009's recovery bundle yet: that is a follow-up, with the bundle itself.
 - **Renderers without the cluster.** `helm template` and Argo CD can't look the Secret up and would render a new key. Set `encryption.createSecret: false` there; the Secret must then already exist.
-- **Rotation** is by hand for now: add a second key first, roll the control plane, rewrite all Secrets, then drop the old key.
+- **Rotation** is by hand for now, in three rolls of the control plane, because during each roll old and new nodes must both read every key in use:
+  1. Add the new key as the second `secretbox` key in the Secret, and roll the control plane. Editing the Secret doesn't roll it by itself (the class only references the Secret): set `rollout.after` on the KubeadmControlPlane, or run `clusterctl alpha rollout restart`.
+  2. Move the new key first, and roll again. New writes now use it.
+  3. Rewrite every Secret (`kubectl get secrets -A -o json | kubectl replace -f -`), drop the old key, and roll a third time.
 
 ## Kept on uninstall
 

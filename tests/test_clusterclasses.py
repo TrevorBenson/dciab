@@ -458,13 +458,14 @@ def test_installed_classes_health_check_control_plane_and_workers():
         spec = _kind(_docs(f), "ClusterClass")["spec"]
         cp = spec["controlPlane"]
         mds = spec["workers"]["machineDeployments"]
-        for where, block, guard in [("control plane", cp, 1)] + [(md["class"], md, "40%") for md in mds]:
+        for where, block, guard in [("control plane", cp, 1)] + [(md["class"], md, 1) for md in mds]:
             hc = block["healthCheck"]
             conditions = {(c["type"], c["status"]): c["timeoutSeconds"] for c in hc["checks"]["unhealthyNodeConditions"]}
             assert set(conditions) == {("Ready", "Unknown"), ("Ready", "False")}, f"{f.name} {where}"
             assert all(60 <= s <= 900 for s in conditions.values()), f"{f.name} {where}"
             assert hc["checks"]["nodeStartupTimeoutSeconds"] >= 600, f"{f.name} {where}"
-            # A guard, so a site-wide outage never turns into mass replacement.
+            # An absolute guard: a site-wide outage never turns into mass replacement, and pools
+            # of one or two machines still repair (a percentage rounds down to 0 there).
             assert hc["remediation"]["triggerIf"]["unhealthyLessThanOrEqualTo"] == guard, f"{f.name} {where}"
             deletion = block["deletion"]
             assert 0 < deletion["nodeDrainTimeoutSeconds"] <= 3600, f"{f.name} {where}"
@@ -476,6 +477,14 @@ def test_installed_classes_roll_control_planes_before_certificates_expire():
         kcp = _kind(_docs(f), "KubeadmControlPlaneTemplate")["spec"]["template"]["spec"]
         # kubeadm certificates last a year; CAPI's minimum is 7 days.
         assert 30 <= kcp["rollout"]["before"]["certificatesExpiryDays"] <= 90, f.name
+        # A machine that fails every time is not recreated forever.
+        assert kcp["remediation"] == {"maxRetry": 3, "retryPeriodSeconds": 600, "minHealthyPeriodSeconds": 3600}, f.name
+
+
+def test_longhorn_moves_last_replicas_before_the_drain_timeout():
+    """CAPI deletes a machine once nodeDrainTimeoutSeconds passes; a blocked drain would lose the last replica."""
+    values = yaml.safe_load((ROOT / "addons" / "longhorn" / "values.yaml").read_text())
+    assert values["defaultSettings"]["nodeDrainPolicy"] == "block-for-eviction-if-contains-last-replica"
 
 
 ADMISSION_CONFIG = "/etc/kubernetes/admission/config.yaml"
@@ -561,15 +570,25 @@ def test_kubelet_csr_approver_is_pinned():
     assert any(t["key"] == "node-role.kubernetes.io/control-plane" for t in values["tolerations"])
 
 
-@pytest.mark.parametrize("ci_file,prefixes", [
-    ("proxmox-values.yaml", ["10.30.110.0/24"]),
-    ("metal3-values.yaml", ["10.20.120.0/24"]),
-])
-def test_kubelet_csr_approver_takes_the_node_networks(ci_file, prefixes):
-    r = subprocess.run([str(ROOT / "addons" / "kubelet-csr-approver" / "install.sh"),
-                        str(ROOT / "charts" / "capi-cluster" / "ci" / ci_file), "--print-values"],
+@pytest.mark.parametrize("ci_file", ["proxmox-values.yaml", "vsphere-values.yaml", "metal3-values.yaml"])
+def test_kubelet_csr_approver_allows_only_the_node_ranges(ci_file):
+    """A node must never get a cluster-CA certificate for the API VIP or another address in the subnet."""
+    import ipaddress
+    path = ROOT / "charts" / "capi-cluster" / "ci" / ci_file
+    v = yaml.safe_load(path.read_text())
+    r = subprocess.run([str(ROOT / "addons" / "kubelet-csr-approver" / "install.sh"), str(path), "--print-values"],
                        check=True, capture_output=True, text=True)
-    assert yaml.safe_load(r.stdout)["providerIpPrefixes"] == prefixes
+    nets = [ipaddress.ip_network(p) for p in yaml.safe_load(r.stdout)["providerIpPrefixes"]]
+    allowed = {ip for n in nets for ip in n}
+    ranges = [v["network"]] if "network" in v else [v["controlPlane"]["network"]] + [p["network"] for p in v["workerPools"]]
+    want = set()
+    for n in ranges:
+        first, last = (int(ipaddress.ip_address(a)) for a in n["nodeIPRange"].split("-"))
+        want |= {ipaddress.ip_address(i) for i in range(first, last + 1)}
+    assert allowed == want
+    assert ipaddress.ip_address(v["apiVIP"]) not in allowed
+    gateway = ranges[0]["gateway"]
+    assert ipaddress.ip_address(gateway) not in allowed
 
 
 @pytest.mark.parametrize("replicas,operators", [(1, 1), (3, 2), (5, 2)])

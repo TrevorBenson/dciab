@@ -14,8 +14,11 @@ defaultSettings:
   defaultDataPath: /var/lib/longhorn
   # Don't schedule replicas on a disk with less than this much free space (percent).
   storageMinimalAvailablePercentage: 15
-  # Don't let a node drain take down the last healthy replica of a volume.
-  nodeDrainPolicy: block-if-contains-last-replica
+  # A drain that would take the last healthy replica of a volume first moves that replica
+  # to another node, then lets the drain go on. Cluster API stops draining after the
+  # class's nodeDrainTimeoutSeconds (30 minutes) and deletes the machine anyway, so the
+  # replica must move, not just block the drain until the timeout.
+  nodeDrainPolicy: block-for-eviction-if-contains-last-replica
 
 csi:
   kubeletRootDir: /var/lib/kubelet
