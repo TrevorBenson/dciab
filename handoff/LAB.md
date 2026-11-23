@@ -52,6 +52,8 @@ One user and privilege-separated token per purpose, each with only the privilege
 
 GitHub Environments (created 2026-11-23, deployable from `main` only): **`lab-read`** (no reviewers) holds the audit token as secrets `PVE_TOKEN_ID` and `PVE_TOKEN_SECRET`; **`lab-write`** (required reviewer: TrevorBenson) holds the publisher token as `PVE_TOKEN_ID`/`PVE_TOKEN_SECRET`, the capmox token as `CAPMOX_TOKEN_ID`/`CAPMOX_TOKEN_SECRET` and the janitor token as `JANITOR_TOKEN_ID`/`JANITOR_TOKEN_SECRET`. Both have the variables `PVE_URL` and `PVE_TLS_FINGERPRINT`. `PVE_URL` is `pve1`'s Tailscale name; the lab runner VM must resolve it, or the variable must change to the LAN address. The netadmin token is in no environment.
 
+The lab CI workflows that use these tokens are described in `handoff/lab/README.md`; their addresses and ID ranges are in `handoff/lab/network.yaml`. **One-time prerequisite:** the `local` storage needs the content type `import` for the API template publish (`pvesm set local --content backup,vztmpl,iso,snippets,import`); it is not set yet.
+
 Roles created: `DCiaBNodes`, `DCiaBVMs`, `DCiaBStorage`, `DCiaBBootstrapISO`, `DCiaBNetwork`, `DCiaBJanitorVMs`, `DCiaBJanitorISO`, `DCiaBNetAdmin`. Other users and tokens on this Proxmox (`claude@pam`, `tofu@pve`, `illuminatus@*`, `root@pam`) were not touched. Not yet granted: datacenter firewall edits (`Sys.Modify` on `/`); add them to netadmin when that task needs them.
 
 ## Bootstrap USB tests (task 0005)

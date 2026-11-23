@@ -1,0 +1,36 @@
+# The lab's fixed, non-secret addresses and IDs, read by the lab CI scripts (hack/lab/).
+# One lab, one set of addresses: lab jobs run one at a time (the dciab-lab concurrency
+# group), and hand runs by the runner use the same ranges, so ask before running both.
+# Secrets are not here: they come from the lab-read and lab-write Environments.
+proxmox:
+  node: pve1
+  storage: pool0          # VM disks
+  import_storage: local   # needs the content type "import" (see handoff/LAB.md)
+  bridge: vmbr0           # untagged
+network:
+  prefix: 24
+  gateway: 192.168.186.1
+  dns: [192.168.186.1]    # the seed forwards to this (upstreamResolvers)
+  ntp: [pool.ntp.org]
+vmid:                      # Proxmox VMIDs CI may use; manual work stays below 900
+  template: {first: 9000, last: 9099}
+  test: {first: 9100, last: 9199}
+testVM:
+  ip: 192.168.186.210     # one test clone at a time
+clusters:                  # lab01 (0003) and mgmt (0007) never run at the same time
+  lab01: &c
+    apiVIP: 192.168.186.199
+    nodeIPRange: 192.168.186.200-192.168.186.209
+    podCIDR: 10.250.0.0/16
+    serviceCIDR: 10.251.0.0/16
+  mgmt: *c
+site:                      # fillers for sections `dciab mgmt` requires but never builds
+  domain: lab.invalid
+  lbPool: 192.168.186.180-192.168.186.189
+  dnsServiceIPs: [192.168.186.170, 192.168.186.171]
+  infra:
+    apiVIP: 192.168.186.198
+    nodeIPRange: 192.168.186.211-192.168.186.219
+    lbPool: 192.168.186.220-192.168.186.229
+    podCIDR: 10.252.0.0/16
+    serviceCIDR: 10.253.0.0/16

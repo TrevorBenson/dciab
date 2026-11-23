@@ -1,0 +1,55 @@
+name: lab
+
+# The entry point for the lab's infrastructure tests, run by hand from the Actions tab (main
+# only: the runner refuses every other ref). It chains the reusable workflows:
+#   template  build and publish the node template, test a clone      (task 0006)
+#   cluster   a real cluster on that template                        (task 0003)
+#   mgmt      dciab seed and dciab mgmt                              (task 0007)
+# "all" runs them in that order; each later job needs the one before, and skipped earlier
+# stages are fine when you name an existing template. One lab, one set of addresses: the
+# concurrency group serializes whole runs, and the stages never overlap.
+on:
+  workflow_dispatch:
+    inputs:
+      run:
+        description: What to run
+        type: choice
+        options: [template, cluster, mgmt, all]
+        default: template
+      template-name:
+        description: An existing template, for cluster or mgmt without building one
+        type: string
+        default: ""
+      untaint-control-plane:
+        description: mgmt - remove the control plane taint after Cilium (workaround for issue 112)
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dciab-lab
+  cancel-in-progress: false
+
+jobs:
+  template:
+    if: ${{ contains(fromJSON('["template","all"]'), inputs.run) }}
+    uses: ./.github/workflows/lab-template.yml
+    with:
+      name: ${{ inputs.template-name }}
+
+  cluster:
+    needs: [template]
+    if: ${{ !cancelled() && needs.template.result != 'failure' && contains(fromJSON('["cluster","all"]'), inputs.run) }}
+    uses: ./.github/workflows/lab-cluster.yml
+    with:
+      template-name: ${{ needs.template.outputs.template-name || inputs.template-name }}
+
+  mgmt:
+    needs: [template, cluster]
+    if: ${{ !cancelled() && needs.template.result != 'failure' && needs.cluster.result != 'failure' && contains(fromJSON('["mgmt","all"]'), inputs.run) }}
+    uses: ./.github/workflows/lab-mgmt.yml
+    with:
+      template-name: ${{ needs.template.outputs.template-name || inputs.template-name }}
+      untaint-control-plane: ${{ inputs.untaint-control-plane }}
