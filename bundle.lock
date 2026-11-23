@@ -84,6 +84,13 @@ images:
   # published (dciab hypervisors refuses an unpinned one).
   pveAssistant: ghcr.io/trevorbenson/dciab-pve-assistant:9.2.9@sha256:e133e61033fedd95f187d9e4393470b2e225c9d03a53e1c22ac6af335d8a5509
 
+# Upstream registries nodes pull through the site registry (registry.<domain>/v2/<upstream>/).
+# dciab cluster-values passes them to the mirroredRegistries ClusterClass variable, which
+# gives each one a containerd and a CRI-O mirror entry, so adding a registry here needs no
+# new class revision (it does roll the nodes). Every image a node pulls must come from one
+# of them; tests/test_clusterclasses.py checks the images pinned in this file.
+mirroredRegistries: [docker.io, quay.io, ghcr.io, registry.k8s.io]
+
 # Node images: VM templates cluster nodes are cloned from, built with Kubernetes
 # image-builder (images/node/README.md). Built artifacts are never committed.
 nodeImages:
@@ -182,6 +189,8 @@ charts:
   # vSphere cloud provider (CPI), installed on vSphere clusters only. Its releases follow
   # Kubernetes minor versions: bump it with kubernetes.version.
   vsphere-cpi: 1.36.0
+  # Approves kubelet serving-certificate CSRs (the classes set serverTLSBootstrap).
+  kubelet-csr-approver: 1.2.16
 
 # Where the charts above come from. The archive build (build/archive.py charts) vendors
 # each chart listed here. cert-manager is installed from its release manifest instead.
@@ -189,6 +198,7 @@ chartRepositories:
   cilium: https://helm.cilium.io
   longhorn: https://charts.longhorn.io
   vsphere-cpi: https://kubernetes.github.io/cloud-provider-vsphere
+  kubelet-csr-approver: https://postfinance.github.io/kubelet-csr-approver
 
 # sha256 of each chart .tgz, checked before install and by the archive build. Empty: the
 # installer warns and prints the sum to pin; the archive build refuses the chart.
@@ -196,6 +206,7 @@ chartDigests:
   cilium: "0c7592eb75179ecf46dd3ec22145916f0164c4401214ea15afb5b230b1d11a21"
   longhorn: "e57f010d2a8bcf0da5b8b03ffecf49c5bc35ddc2663588ce8f22b7567b6133ed"
   vsphere-cpi: "657f29b3409645592a6183c5199bb672dce7bb3b9e3ecbe70df7564d5e722752"
+  kubelet-csr-approver: "2058b0f8e78ae1b8bee4a48fb39152bb6be4986486d73592ad2649c6f72cb268"
 
 # Digests for images their source manifests name by tag only (the Cluster API, provider
 # and cert-manager manifests, and kubeadm's control plane images). The archive pulls these
@@ -217,6 +228,7 @@ imageDigests:
   docker.io/longhornio/longhorn-ui:v1.13.0: "sha256:f22fb0254ae50195c1635ce428dfae26375956b3d7bd39640fae8fe33a236023"
   docker.io/longhornio/support-bundle-kit:v0.0.98: "sha256:e64a01db35396f967175adcfd0177d2a50e75765c51efe86e55f13f49095d1ae"
   ghcr.io/ionos-cloud/cluster-api-provider-proxmox:v0.9.2: "sha256:682df819bb9a3b42eb12b784e47a29044555cc4d98178c71e220d97a84183252"
+  ghcr.io/postfinance/kubelet-csr-approver:v1.2.16: "sha256:3a09df2f9e1e628863fccbe5479e63b11bbc1f411c82134ee975778e1a25b5e6"
   quay.io/jetstack/cert-manager-cainjector:v1.21.3: "sha256:083d0e906f8eb44e255fe4ff817ae54e49f9ed82e22f1011bb4e9e4f4b8a641f"
   quay.io/jetstack/cert-manager-controller:v1.21.3: "sha256:9f4f96a33c7774cef24466fcd85031997531a03a8d117f151126baa8d1290dcc"
   quay.io/jetstack/cert-manager-webhook:v1.21.3: "sha256:055ac8e9de6a0ba6763794838fe38944acc650f68ebe1b01dd8be079e580f458"

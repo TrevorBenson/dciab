@@ -7,8 +7,13 @@ podCIDR: 10.244.0.0/16
 serviceCIDR: 10.245.0.0/16
 labels:
   dciab.io/baseline: "true"
+podSecurity:
+  exemptNamespaces: [kube-system, longhorn-system]
+encryption:
+  createSecret: true
 nodes:
   registryMirror: registry.dc1.example.com
+  mirroredRegistries: [docker.io, quay.io, ghcr.io, registry.k8s.io]
   trustBundle: |
     -----BEGIN CERTIFICATE-----
     MIIBdummyCertificateForCIOnly

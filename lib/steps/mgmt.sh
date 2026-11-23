@@ -28,6 +28,8 @@
 #               until the CPI has initialized every node). Nodes get DCIAB_NODE_WAIT_MINUTES
 #               to register: default 20, 45 on vSphere, where each control plane node joins
 #               only after the CPI has initialized the one before
+#               Then addons/kubelet-csr-approver/install.sh (kubelet serving certificates),
+#               once every node is Ready and, on vSphere, has its CPI addresses
 #   providers   cert-manager, Cluster API and the providers on MGMT
 #   move        clusterctl move: every CAPI object, MGMT's own Cluster and the
 #               ClusterClasses, from the bootstrap cluster to MGMT
@@ -186,6 +188,7 @@ fi
 if [[ "$platform" == vsphere ]]; then
   "$ROOT/addons/vsphere-cpi/install.sh" "$config" --wait "$mgmt_kubeconfig"
 fi
+"$ROOT/addons/kubelet-csr-approver/install.sh" "$values" "$mgmt_kubeconfig"
 finish_if cilium
 
 step providers

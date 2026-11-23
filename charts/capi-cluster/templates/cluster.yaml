@@ -49,6 +49,10 @@ spec:
         value: {{ $v.apiVIP | quote }}
       - name: registryMirror
         value: {{ $v.nodes.registryMirror | quote }}
+      - name: mirroredRegistries
+        value: {{ toJson $v.nodes.mirroredRegistries }}
+      - name: podSecurityExemptNamespaces
+        value: {{ toJson $v.podSecurity.exemptNamespaces }}
       - name: trustBundle
         value: {{ $v.nodes.trustBundle | toJson }}
       - name: ntpServers

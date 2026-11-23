@@ -12,6 +12,8 @@
     "podCIDR",
     "serviceCIDR",
     "nodes",
+    "podSecurity",
+    "encryption",
     "controlPlane",
     "workerPools"
   ],
@@ -56,6 +58,7 @@
       "additionalProperties": false,
       "required": [
         "registryMirror",
+        "mirroredRegistries",
         "trustBundle",
         "ntpServers",
         "sshAuthorizedKeys",
@@ -65,6 +68,16 @@
         "registryMirror": {
           "type": "string",
           "minLength": 1
+        },
+        "mirroredRegistries": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$"
+          },
+          "description": "upstream registries nodes pull through registryMirror (bundle.lock mirroredRegistries)"
         },
         "trustBundle": {
           "type": "string",
@@ -118,6 +131,38 @@
           "type": "string",
           "pattern": "^[A-Za-z0-9._-]{1,15}$",
           "description": "optional: the interface kube-vip announces the API VIP on (default: the interface holding the default route)"
+        }
+      }
+    },
+    "podSecurity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "exemptNamespaces"
+      ],
+      "properties": {
+        "exemptNamespaces": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"
+          },
+          "description": "namespaces Pod Security admission leaves alone (kube-system and the privileged CNI/CSI namespaces)"
+        }
+      }
+    },
+    "encryption": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "createSecret"
+      ],
+      "properties": {
+        "createSecret": {
+          "type": "boolean",
+          "description": "create the <name>-encryption-config Secret (random key, kept on upgrade); false: it must already exist"
         }
       }
     },

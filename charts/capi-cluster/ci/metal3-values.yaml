@@ -5,8 +5,13 @@ kubernetesVersion: v1.36.6
 apiVIP: 10.20.120.10
 podCIDR: 10.246.0.0/16
 serviceCIDR: 10.247.0.0/16
+podSecurity:
+  exemptNamespaces: [kube-system, longhorn-system]
+encryption:
+  createSecret: true
 nodes:
   registryMirror: registry.dc2.example.com
+  mirroredRegistries: [docker.io, quay.io, ghcr.io, registry.k8s.io]
   trustBundle: |
     -----BEGIN CERTIFICATE-----
     MIIBdummyCertificateForCIOnly
