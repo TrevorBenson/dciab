@@ -3,6 +3,7 @@
 import hashlib
 import json
 import os
+import re
 import subprocess
 import sys
 import tarfile
@@ -36,7 +37,8 @@ def make_repo(tmp: Path) -> Path:
         "charts/c/Chart.yaml": "name: c\n", "addons/a/install.sh": "#!/bin/sh\n", "docs/d.md": "d\n",
         "examples/e.yaml": "e: 1\n", "hack/fetch_crds.py": "", "hack/render_components.py": "",
         "hack/check_manifests.py": "", "handoff/README.md": "", ".git/config": "", ".cache/x": "",
-        "tests/test_y.py": "", "images/node/build.sh": "",
+        "tests/test_y.py": "", "images/node/build.sh": "", "images/day0-chrony/Containerfile": "FROM x\n",
+        "images/usb/README.md": "", "build/README.md": "", "secrets/site.pw": "pw", "dciab.yaml": "",
     }.items():
         p = repo / rel
         p.parent.mkdir(parents=True, exist_ok=True)
@@ -99,10 +101,10 @@ def test_entries_sorted_owned_by_root_dated_epoch_without_dev_files(tree):
     assert all(m.uid == 0 and m.gid == 0 and m.mtime == EPOCH for m in members)
     rel = {n.split("/", 1)[1] for n in names if "/" in n}
     for kept in ["dciab", "lib/dciab_x/__init__.py", "charts/c/Chart.yaml", "hack/fetch_crds.py",
-                 "payload/bin/oras", "payload/SHA256SUMS", "MANIFEST"]:
+                 "images/day0-chrony/Containerfile", "payload/bin/oras", "payload/SHA256SUMS", "MANIFEST"]:
         assert kept in rel
-    for dropped in ["handoff", "tests", ".git", ".cache", "images", "hack/check_manifests.py",
-                    "lib/tests", "payload/.lock"]:
+    for dropped in ["handoff", "tests", ".git", ".cache", "images/node", "images/usb", "build",
+                    "hack/check_manifests.py", "lib/tests", "payload/.lock", "secrets", "dciab.yaml"]:
         assert not any(r == dropped or r.startswith(dropped + "/") for r in rel), dropped
     assert not any("__pycache__" in r or r.endswith(".pyc") for r in rel)
     modes = {m.name.split("/", 1)[-1]: m.mode for m in members}
@@ -130,6 +132,65 @@ def test_payload_must_match_its_sums(tree):
     (tree / "payload" / "SHA256SUMS").unlink()
     with pytest.raises(archive.ArchiveError, match="no SHA256SUMS"):
         build(tree)
+
+
+@pytest.mark.parametrize("rel,content", [
+    ("examples/secrets/x.key", "k"),
+    ("examples/secrets/notes.txt", "anything in a secrets folder"),
+    ("docs/site.pw", "pw"),
+    ("examples/.env", "TOKEN=x"),
+    ("lib/dciab_x/.env", "TOKEN=x"),
+    ("examples/mgmt.kubeconfig", "apiVersion: v1"),
+    ("examples/root.age", "age-encrypted"),
+    ("examples/tls.pem", "-----BEGIN EC PRIVATE KEY-----\nx\n-----END EC PRIVATE KEY-----\n"),
+    ("charts/c/id", "-----BEGIN OPENSSH PRIVATE KEY-----\n"),
+    ("examples/identity.txt", "# created: now\nAGE-SECRET-KEY-1QQQ\n"),
+    ("examples/admin.yaml", "users:\n- user:\n    client-key-data: abc\n"),
+])
+def test_secrets_under_a_packaged_path_fail_the_build(tree, rel, content):
+    p = tree / "repo" / rel
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(content)
+    with pytest.raises(archive.ArchiveError, match=re.escape(rel)):
+        build(tree)
+    assert not (tree / "out" / "dciab-9.9.9.tar").exists()
+
+
+def test_public_certificates_ship(tree):
+    cert = "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n"
+    (tree / "repo" / "examples" / "ca.crt").write_text(cert)
+    (tree / "repo" / "examples" / "ca.pem").write_text(cert)
+    (tree / "repo" / "docs" / "cosign.pub").write_text("-----BEGIN PUBLIC KEY-----\n")
+    with tarfile.open(build(tree)) as tar:
+        names = tar.getnames()
+    for kept in ["examples/ca.crt", "examples/ca.pem", "docs/cosign.pub"]:
+        assert "dciab-9.9.9/" + kept in names
+
+
+def runtime_paths(root: Path):
+    """Every path under the archive root that dciab, its steps and its modules open."""
+    found = {}
+    for f in [root / "dciab"] + sorted(root.glob("lib/**/*.sh")) + sorted(root.glob("addons/**/*.sh")):
+        for m in re.finditer(r'\$\{?ROOT\}?/([\w./-]+)', f.read_text()):
+            found.setdefault(m.group(1).rstrip("/"), f)
+    for f in sorted(root.glob("lib/**/*.py")) + sorted(root.glob("addons/**/*.py")):
+        if "tests" in f.parts:
+            continue
+        for m in re.finditer(r'\broot\s*((?:/\s*"[^"]+"\s*)+)', f.read_text()):
+            found.setdefault("/".join(re.findall(r'"([^"]+)"', m.group(1))), f)
+    # payload/ is the build's payload; os-images/ is an optional folder of the archive.
+    return {p: f for p, f in found.items() if p.split("/")[0] not in ("payload", "os-images")}
+
+
+def test_every_runtime_path_ships():
+    shipped = set(package.source_files(ROOT))
+    paths = runtime_paths(ROOT)
+    for must in ["lib/steps/services.sh", "images/day0-chrony/Containerfile", "hack/fetch_crds.py",
+                 "charts/capi-cluster", "schema/dciab.schema.json", "bundle.lock"]:
+        assert must in paths, f"the scan no longer finds {must}"
+    missing = {p: str(f.relative_to(ROOT)) for p, f in paths.items()
+               if p not in shipped and not any(s.startswith(p + "/") for s in shipped)}
+    assert not missing, f"used at run time but not packaged (add to package.SOURCES): {missing}"
 
 
 def test_symlinks_refused(tree):
