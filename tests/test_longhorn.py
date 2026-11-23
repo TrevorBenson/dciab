@@ -34,7 +34,7 @@ def test_replica_count_comes_from_the_config():
 def test_nfs_target_has_no_credentials_secret(tmp_path):
     site = load_example("proxmox")
     v = lv.site_values(site)
-    assert v["defaultBackupStore"] == {"backupTarget": "nfs://nas01.lab1.example.net:/exports/longhorn"}
+    assert v["defaultBackupStore"] == {"backupTarget": "nfs://nas01.dc3.example.net:/exports/longhorn"}
     assert lv.secret(site, "longhorn-system", tmp_path) is None
 
 

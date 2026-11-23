@@ -23,7 +23,7 @@ def test_network_by_name_untagged():
         "address": "10.30.110.5/24",
         "gateway": "10.30.110.1",
         "dns": [],                          # isolated site
-        "dnsSearch": "lab1.example.com",
+        "dnsSearch": "dc3.example.com",
     }
 
 

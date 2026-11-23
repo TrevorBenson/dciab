@@ -3,8 +3,8 @@ name: metal01
 class: metal3
 kubernetesVersion: v1.36.6
 apiVIP: 10.20.120.10
-podCIDR: 10.250.0.0/16
-serviceCIDR: 10.251.0.0/16
+podCIDR: 10.246.0.0/16
+serviceCIDR: 10.247.0.0/16
 nodes:
   registryMirror: registry.dc2.example.com
   trustBundle: |
