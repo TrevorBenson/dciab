@@ -5,6 +5,7 @@ import base64
 import copy
 import hashlib
 import json
+import os
 import shutil
 import ssl
 import subprocess
@@ -751,3 +752,148 @@ def test_no_boot_options_offered_installs_with_a_note(fake_bmc, tmp_path):
     f = fake_bmc(power="Off")
     failed, held, _, out = guard(f, tmp_path)
     assert (failed, held) == ([], []) and "lists no boot options" in out and f.power == "On"
+
+
+# --- after the install (cli.detach) ------------------------------------------------------------
+
+def detach(f, tmp_path, bmc_for=None):
+    logs = []
+    outcome = cli.detach(host(bare()), tmp_path / "installs", bmc_for or (lambda h: f.bmc),
+                         log=logs.append, err=logs.append)
+    return outcome, "\n".join(logs)
+
+
+def _installed(tmp_path, **fields):
+    fields = dict({"media": "attached", "boot_override": "Cd"}, **fields)   # as media() records it
+    cli.write_install(tmp_path / "installs", "pve01", started="2026-11-22T10:00:00+00:00", iso=HOST_ISO,
+                      outcome="installed", **fields)
+
+
+@pytest.mark.parametrize("actions", [True, False])
+def test_installed_host_iso_is_ejected_and_override_cleared(fake_bmc, tmp_path, actions):
+    _installed(tmp_path)
+    f = fake_bmc(actions=actions, inserted=HOST_ISO)
+    f.boot = {"BootSourceOverrideTarget": "Cd", "BootSourceOverrideEnabled": "Once"}
+    outcome, out = detach(f, tmp_path)
+    assert outcome == "detached" and f"ejected {HOST_ISO}" in out and "cleared the boot override" in out
+    assert f.slot == {"Inserted": False, "Image": None}
+    assert f.boot["BootSourceOverrideEnabled"] == "Disabled"
+    assert not any(c[1].endswith("ComputerSystem.Reset") for c in f.calls)
+    record = cli.read_install(tmp_path / "installs", "pve01")
+    assert record["outcome"] == "installed" and record["media"] == "detached"
+    f.calls.clear()
+    assert detach(f, tmp_path)[0] is None and f.calls == []     # done once, not on every rerun
+
+
+def test_other_media_is_left_alone_and_checked_again(fake_bmc, tmp_path):
+    _installed(tmp_path)
+    f = fake_bmc(inserted="http://old/other.iso")
+    f.boot = {"BootSourceOverrideTarget": "Pxe", "BootSourceOverrideEnabled": "Once"}
+    outcome, out = detach(f, tmp_path)
+    assert outcome == "detach-unverified" and "left http://old/other.iso" in out and "by hand" in out
+    assert not [c for c in f.calls if c[0] in CHANGES]
+    record = cli.read_install(tmp_path / "installs", "pve01")
+    assert record["media"] == "detach-unverified" and record["media_other"] == "http://old/other.iso"
+    f.slot = {"Inserted": False, "Image": None}               # the operator ejected it
+    assert detach(f, tmp_path)[0] == "detached"
+
+
+def test_a_cd_override_dciab_didnt_set_is_left_alone(fake_bmc, tmp_path):
+    cli.write_install(tmp_path / "installs", "pve01", iso=HOST_ISO, outcome="installed")   # no boot_override
+    f = fake_bmc(inserted=HOST_ISO)
+    f.boot = {"BootSourceOverrideTarget": "Cd", "BootSourceOverrideEnabled": "Continuous"}
+    assert detach(f, tmp_path)[0] == "detached"
+    assert f.slot["Inserted"] is False and f.boot["BootSourceOverrideEnabled"] == "Continuous"
+    assert not [c for c in f.calls if c[0] == "PATCH"]
+
+
+@pytest.mark.parametrize("actions", [True, False])
+def test_reinstall_then_wait_ejects_again(fake_bmc, tmp_path, actions):
+    _installed(tmp_path, media="detached", media_log=[f"ejected {HOST_ISO}"])
+    f = fake_bmc(actions=actions, power="On")
+    assert guard(f, tmp_path, reinstall=["pve01"])[:3] == ([], [], [])
+    assert f.slot == {"Inserted": True, "Image": HOST_ISO}
+    record = cli.read_install(tmp_path / "installs", "pve01")
+    assert record["media"] == "attached" and record["media_log"] == [] and record["boot_override"] == "Cd"
+    cli.write_install(tmp_path / "installs", "pve01", outcome="installed")   # what wait records
+    assert detach(f, tmp_path)[0] == "detached"
+    assert f.slot == {"Inserted": False, "Image": None} and f.boot["BootSourceOverrideEnabled"] == "Disabled"
+
+
+def test_host_dciab_didnt_attach_media_to_is_not_touched(fake_bmc, tmp_path):
+    cli.write_install(tmp_path / "installs", "pve01", outcome="installed")   # seen installed, no ISO
+    f = fake_bmc(inserted=HOST_ISO)
+    assert detach(f, tmp_path)[0] is None and f.calls == []
+
+
+def test_failed_eject_is_logged_recorded_and_retried(fake_bmc, tmp_path):
+    _installed(tmp_path)
+    f = fake_bmc(inserted=HOST_ISO, overrides={"/redfish/v1/Managers/1/VirtualMedia/CD": 500})
+    outcome, out = detach(f, tmp_path)
+    assert outcome == "detach-failed" and "HTTP 500" in out and "by hand" in out and "EjectMedia" in out
+    assert cli.read_install(tmp_path / "installs", "pve01")["media"] == "detach-failed"
+    f2 = fake_bmc(inserted=HOST_ISO)
+    assert detach(f2, tmp_path)[0] == "detached" and f2.slot["Inserted"] is False
+
+
+def test_unreachable_bmc_never_raises(tmp_path):
+    _installed(tmp_path)
+
+    def broken(h):
+        raise OSError("no such file: bmc-password")
+    outcome, out = detach(None, tmp_path, bmc_for=broken)
+    assert outcome == "detach-failed" and "bmc-password" in out and "by hand" in out
+
+
+@pytest.fixture
+def run_main(tmp_path, monkeypatch, capsys):
+    """main() as root through every step, with the ISO build, the reset and the ports faked: the
+    media step records an install the way media() does, and wait sees 22 and 8006 answer at once."""
+    Site(tmp_path, monkeypatch, capsys)
+    cfg = tmp_path / "dciab.yaml"
+    cfg.write_text(yaml.safe_dump(bare(), sort_keys=False))
+    state = tmp_path / "state"
+    monkeypatch.setattr(cli.os, "geteuid", lambda: 0)
+    real_stat = Path.stat
+
+    def stat(self, *a, **k):   # the state folder is root's, as on the bootstrap host
+        st = real_stat(self, *a, **k)
+        return os.stat_result(st[:4] + (0,) + st[5:]) if self == state else st
+    monkeypatch.setattr(Path, "stat", stat)
+    monkeypatch.setattr(answer, "root_hash", lambda answers, name, *a, **k: f"$6$fake${name}")
+    monkeypatch.setattr(cli, "assistant_image", lambda *a, **k: "img")
+    from dciab_hypervisors import iso
+    monkeypatch.setattr(iso, "check_base", lambda *a, **k: None)
+    monkeypatch.setattr(iso, "build", lambda *a, **k: False)
+
+    def media(hosts, doc, installs, *a, **k):
+        for h in hosts:
+            cli.write_install(installs, h["name"], started=cli._now(), iso=cli.host_iso_url(doc, h["name"]),
+                              outcome="in-progress", media="attached", boot_override="Cd")
+        return [], [], []
+    monkeypatch.setattr(cli, "media", media)
+    monkeypatch.setattr(cli, "wait_for", lambda *a, **k: None)
+
+    def go(bmc_for):
+        monkeypatch.setattr(cli, "_bmc", lambda h, config_dir: bmc_for(h))
+        code = cli.main(["--root", str(ROOT), "--state", str(state), "--host", "pve01", str(cfg)])
+        out = capsys.readouterr()
+        return code, out.out + out.err, cli.read_install(state / "installs", "pve01")
+    return go
+
+
+def test_main_ejects_after_wait(fake_bmc, run_main):
+    f = fake_bmc(inserted=HOST_ISO)
+    f.boot = {"BootSourceOverrideTarget": "Cd", "BootSourceOverrideEnabled": "Once"}
+    code, out, record = run_main(lambda h: f.bmc)
+    assert code == 0 and f"ejected {HOST_ISO}" in out and "installed: pve01" in out
+    assert f.slot["Inserted"] is False and f.boot["BootSourceOverrideEnabled"] == "Disabled"
+    assert record["outcome"] == "installed" and record["media"] == "detached"
+
+
+def test_main_exits_0_when_the_eject_fails(run_main):
+    def broken(h):
+        raise OSError("no such file: bmc-password")
+    code, out, record = run_main(broken)
+    assert code == 0 and "by hand" in out and "installed: pve01" in out
+    assert record["outcome"] == "installed" and record["media"] == "detach-failed"

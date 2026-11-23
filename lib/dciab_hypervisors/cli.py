@@ -19,7 +19,8 @@ Steps, per host, in order; each is safe to re-run:
            again: the run goes on to wait for it. If the reset fails, the ISO is ejected and
            the boot override cleared
   wait     wait for SSH (22) and then the Proxmox VE API (8006) on the host's address, and
-           record the install as done
+           record the install as done. Then eject the host's ISO and clear the boot override
+           from Cd that DCiaB set; a failure there is logged and never fails the run
 
 --until STEP stops after STEP. --print shows the plan and the answer files with the password
 hash masked, and changes nothing. <state> defaults as for dciab services: .dciab/state next to
@@ -244,7 +245,8 @@ def media(hosts: List[dict], doc: dict, installs: Path, reinstall: List[str], bm
                 log(f"  {name}: {line}")
             try:
                 # Recorded before the reset: from here on a rerun never resets this host by accident.
-                write_install(installs, name, started=_now(), iso=url, outcome="in-progress")
+                write_install(installs, name, started=_now(), iso=url, outcome="in-progress",
+                              media="attached", media_log=[], media_other=None, boot_override="Cd")
                 log(f"  {name}: reset ({bmc.reset()})")
             except (RedfishError, OSError):
                 # Disarm, so the next power-on doesn't start the installer unasked; then hold the host.
@@ -262,6 +264,42 @@ def media(hosts: List[dict], doc: dict, installs: Path, reinstall: List[str], bm
             if name in live:
                 live.remove(name)
     return failed, held, live
+
+
+def detach(h: dict, installs: Path, bmc_for: Callable, log=print, err=None) -> Optional[str]:
+    """After wait: eject the host's installer ISO and, if DCiaB set it, clear a boot override that
+    still points at Cd, so the server never boots the installer again if its boot order falls back
+    to CD. Only for a host DCiaB attached the ISO to (its record names it) and not yet detached.
+    Best effort: a failure is logged with how to do it by hand, recorded (the next run tries
+    again) and never fails the run. Returns the outcome recorded: "detached", "detach-failed", or
+    "detach-unverified" (other media is in the slot; the next run checks again); None when
+    nothing was tried."""
+    err = err or (lambda msg: print(msg, file=sys.stderr))
+    name = h["name"]
+    record = read_install(installs, name) or {}
+    if not record.get("iso") or record.get("media") == "detached":
+        return None
+    url = record["iso"]
+    try:
+        done, failed, other = bmc_for(h).release(url, clear_override=record.get("boot_override") == "Cd")
+    except Exception as exc:   # noqa: BLE001 - the BMC's credentials or trust; the host is installed anyway
+        done, failed, other = [], [f"couldn't reach the BMC ({exc})"], None
+    for line in done:
+        log(f"  {name}: {line}")
+    hand = (f"eject {url} and clear any boot override from Cd by hand, in the BMC's virtual media and boot "
+            "settings (Redfish: VirtualMedia.EjectMedia on the CD slot, and Boot.BootSourceOverrideEnabled = "
+            "Disabled). The next run tries again")
+    for line in failed:
+        err(f"dciab hypervisors: {name}: {line}. The host is installed; {hand}")
+    if other is not None:
+        err(f"dciab hypervisors: {name}: left {other} in the CD slot: not {url} as DCiaB attached it. If it is "
+            f"the installer ISO all the same, {hand}")
+    outcome = "detach-failed" if failed else "detach-unverified" if other is not None else "detached"
+    try:
+        write_install(installs, name, media=outcome, media_log=done + failed, media_other=other)
+    except OSError as exc:
+        err(f"dciab hypervisors: {name}: couldn't record the media outcome: {exc}")
+    return outcome
 
 
 def host_iso_url(doc: dict, name: str) -> str:
@@ -481,6 +519,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             failed.append(h["name"])
         else:
             write_install(installs, h["name"], outcome="installed")
+            detach(h, installs, lambda x: _bmc(x, config_dir))
     if held:
         print(f"dciab hypervisors: {', '.join(held)}: held, not reinstalled; each needs the operator "
               "(see above)", file=sys.stderr)
