@@ -28,7 +28,9 @@ Then: dciab mgmt <config> --bootstrap-kubeconfig <state>/bootstrap.kubeconfig
 the DNS-only services seed ran, <state>/services/created) says it created: the kind cluster,
 the registry container, the services pod, the service IPs on the NIC and the runtime firewalld
 ports. It refuses to delete a bootstrap cluster that still holds Cluster API Clusters unless
---force is given. The state folder stays (it holds the CA) unless --purge-state is also given.
+--force is given. The state folder stays (it holds the CA) unless --purge-state is also given;
+even then, it stays while a kind cluster dciab-bootstrap, a dciab-registry container or the
+dciab-services pod is still on the host, recorded or not.
 
 Exit codes: 0 done, 1 a step failed, 2 could not run.
 """
@@ -39,6 +41,7 @@ import argparse
 import fcntl
 import json
 import os
+import secrets
 import shutil
 import ssl
 import subprocess
@@ -79,23 +82,48 @@ def run_live(cmd, **kw) -> None:
 
 
 CREATED = "seed-created.json"
+SEED_TOKEN_LABEL = "dciab.io/seed-token"
+SERVICES_POD = "dciab-services"   # dciab_services.render.POD
 
 
 def load_created(state: Path) -> dict:
-    """What seed created on this host (<state>/seed-created.json), for --remove."""
+    """What seed created on this host (<state>/seed-created.json), for --remove. A record
+    that can't be read is kept aside with a warning and counts as no record: --remove then
+    removes nothing it can't prove is seed's, and --purge-state checks the host itself."""
     path = state / CREATED
-    return json.loads(path.read_text()) if path.is_file() else {}
+    if not path.is_file():
+        return {}
+    try:
+        created = json.loads(path.read_text())
+        if isinstance(created, dict):
+            return created
+    except (OSError, ValueError):
+        pass
+    aside = path.with_name(f"{CREATED}.{int(time.time())}.corrupt")
+    path.replace(aside)
+    print(f"dciab seed: warning: {path} couldn't be read; kept it as {aside.name} and carried on "
+          "as if seed had recorded nothing", file=sys.stderr)
+    return {}
 
 
 def save_created(state: Path, created: dict) -> None:
+    """Written to a temporary file and renamed over the record: a crash leaves the old one or the new one."""
     path = state / CREATED
-    if created:
-        pki.write_private(path, json.dumps(created, indent=2, sort_keys=True) + "\n")
-    elif path.exists():
-        path.unlink()
+    if not created:
+        if path.exists():
+            path.unlink()
+        return
+    tmp = path.with_name(f".{CREATED}.{os.getpid()}.tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, "w") as f:
+        f.write(json.dumps(created, indent=2, sort_keys=True) + "\n")
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, path)
 
 
 def record_created(state: Path, key: str, value) -> None:
+    """Called before the change it records: a record of something never made is harmless."""
     created = load_created(state)
     if created.get(key) != value:
         created[key] = value
@@ -207,11 +235,14 @@ def step_registry(root: Path, payload: Path, state: Path, s) -> None:
     if have != [want, "running"]:
         if have:
             run(["podman", "rm", "-f", REGISTRY_CONTAINER])
-        cid = run(["podman", "run", "-d", "--name", REGISTRY_CONTAINER, "--restart=always", "--user", "0:0",
-                   "--label", f"dciab.io/spec={want}",
-                   "-p", f"{s.address}:{REGISTRY_PORT}:5000",
-                   "-v", f"{data}:/var/lib/registry:Z", "-v", f"{etc}:/etc/zot:ro,Z", image_id]).stdout.strip()
-        record_created(state, "registry", (cid.split() or [""])[-1])
+        # Recorded before the run: the container carries the token, so --remove knows it as seed's.
+        rec = load_created(state).get("registry")
+        token = rec.get("token") if isinstance(rec, dict) and rec.get("token") else secrets.token_hex(16)
+        record_created(state, "registry", {"name": REGISTRY_CONTAINER, "token": token})
+        run(["podman", "run", "-d", "--name", REGISTRY_CONTAINER, "--restart=always", "--user", "0:0",
+             "--label", f"dciab.io/spec={want}", "--label", f"{SEED_TOKEN_LABEL}={token}",
+             "-p", f"{s.address}:{REGISTRY_PORT}:5000",
+             "-v", f"{data}:/var/lib/registry:Z", "-v", f"{etc}:/etc/zot:ro,Z", image_id])
         say(f"registry: started {REGISTRY_CONTAINER} on https://{s.address}:{REGISTRY_PORT}")
     else:
         say("registry: already serving")
@@ -311,15 +342,16 @@ def remove_kind(state: Path, force: bool) -> None:
         say(f"remove: kind cluster {KIND_CLUSTER} is already gone")
 
 
-def remove_registry(recorded: str) -> None:
+def remove_registry(recorded) -> None:
+    token = recorded.get("token", "") if isinstance(recorded, dict) else ""
     have = run(["podman", "ps", "-a", "--no-trunc", "--filter", f"name=^{REGISTRY_CONTAINER}$",
-                "--format", "{{.ID}}"]).stdout.split()
+                "--format", f'{{{{.ID}}}} {{{{index .Labels "{SEED_TOKEN_LABEL}"}}}}']).stdout.split()
     if not have:
         say(f"remove: container {REGISTRY_CONTAINER} is already gone")
         return
-    if not recorded or not have[0].startswith(recorded):
+    if not token or have[1:2] != [token]:
         raise SeedError(f"container {REGISTRY_CONTAINER} ({have[0][:12]}) isn't the one seed created "
-                        f"({recorded[:12] or 'none recorded'}); leaving it")
+                        "(its seed token doesn't match the record); leaving it")
     run(["podman", "rm", "-f", "-t", "10", have[0]])
     say(f"remove: removed container {REGISTRY_CONTAINER}")
 
@@ -365,6 +397,28 @@ def remove_services(state: Path) -> List[str]:
     return left
 
 
+def leftovers(state: Path) -> List[tuple]:
+    """The kind cluster, registry container and services pod still on the host, whoever made
+    them, each with the commands that remove it by hand."""
+    left = []
+    env = dict(os.environ, KIND_EXPERIMENTAL_PROVIDER="podman")
+    if KIND_CLUSTER in probe_cmd(["kind", "get", "clusters"], env=env).stdout.split():
+        kubeconfig = state / "bootstrap.kubeconfig"
+        r = probe_cmd(["kubectl", "--kubeconfig", kubeconfig, "get", "clusters.cluster.x-k8s.io", "-A",
+                       "-o", "name", "--request-timeout=20s"])
+        held = f" (it still holds {', '.join(r.stdout.split())}: move them first, with dciab mgmt)" \
+            if r.stdout.strip() else ""
+        left.append((f"kind cluster {KIND_CLUSTER}{held}",
+                     f"kubectl --kubeconfig {kubeconfig} get clusters.cluster.x-k8s.io -A   # must list none; then\n"
+                     f"    KIND_EXPERIMENTAL_PROVIDER=podman kind delete cluster --name {KIND_CLUSTER}"))
+    if probe_cmd(["podman", "ps", "-a", "--filter", f"name=^{REGISTRY_CONTAINER}$",
+                  "--format", "{{.ID}}"]).stdout.strip():
+        left.append((f"container {REGISTRY_CONTAINER}", f"podman rm -f {REGISTRY_CONTAINER}"))
+    if probe_cmd(["podman", "pod", "exists", SERVICES_POD]).returncode == 0:
+        left.append((f"pod {SERVICES_POD}", f"podman kube down {state / 'services' / 'pod.yaml'}"))
+    return left
+
+
 def remove(state: Path, purge: bool, force: bool) -> int:
     """dciab seed --remove. Each part is dropped from the record once undone, so a rerun
     picks up where a failed one stopped, and a finished one changes nothing."""
@@ -379,7 +433,7 @@ def remove(state: Path, purge: bool, force: bool) -> int:
             if key == "kind":
                 remove_kind(state, force)
             elif key == "registry":
-                remove_registry(str(created[key]))
+                remove_registry(created[key])
             elif remove_services(state):
                 failed = True
                 continue
@@ -399,6 +453,25 @@ def remove(state: Path, purge: bool, force: bool) -> int:
         print("dciab seed: --remove left something behind (above); fix it and run it again"
               + ("; the state folder is kept" if purge else ""), file=sys.stderr)
         return 1
+    # Recorded or not: the fixed-name parts still on the host (a seed from before the record,
+    # a lost record, or dciab services run on its own) keep the state in use.
+    left = leftovers(state)
+    if left:
+        print("dciab seed: still on this host, and not recorded as seed's, so left alone:", file=sys.stderr)
+        for what, how in left:
+            print(f"  {what}\n    {how}", file=sys.stderr)
+        listing = state / "services" / "created"
+        if listing.is_file():
+            print(f"  addresses and firewalld ports listed in {listing}\n"
+                  "    ip addr del <ip>/<prefix> dev <nic>; firewall-cmd --zone=<zone> --remove-port=<port>",
+                  file=sys.stderr)
+        if purge:
+            print(f"dciab seed: not deleting {state}: what is left above uses it (the registry's storage, "
+                  "the kubeconfig, the services' files). Remove it first, then run --remove --purge-state again",
+                  file=sys.stderr)
+            return 1
+        say("dciab seed: removed what seed recorded; see above for what is left")
+        return 0
     if purge:
         print(f"dciab seed: WARNING: deleting the state folder {state}. It holds the platform CA "
               "(encrypted key and certificate), the registry's storage and every kubeconfig; whatever trusts "

@@ -74,15 +74,18 @@ kubectl wait --for=condition=Available deployment --all -A --timeout=10m
 kubectl get deployments -A
 endgroup
 
-# The classes release, deployed, renders exactly what this chart renders now: an upgrade
-# would only add a Helm revision. Compared line by line, ignoring trailing spaces and blank lines.
+# The classes release, deployed, renders exactly what this chart renders now, and every object
+# in it is still in the cluster: an upgrade would only add a Helm revision. Compared line by
+# line, ignoring trailing spaces and blank lines. A deleted ClusterClass makes it upgrade, and
+# the upgrade re-creates it.
 classes_unchanged() {
   local chart="$1" normalize='s/[[:space:]]*$//; /^$/d'
   [[ "$(helm list --namespace "$CLASS_NS" --filter '^classes$' --deployed -q 2>/dev/null)" == classes ]] || return 1
   local have want
   have="$(helm get manifest classes --namespace "$CLASS_NS" 2>/dev/null | sed -e "$normalize")" || return 1
   want="$(helm template classes "$chart" --namespace "$CLASS_NS" | sed -e "$normalize")" || return 1
-  [[ -n "$want" && "$have" == "$want" ]]
+  [[ -n "$want" && "$have" == "$want" ]] || return 1
+  kubectl --namespace "$CLASS_NS" get -f - -o name >/dev/null 2>&1 <<<"$want"
 }
 
 if [[ "$with_classes" == true ]]; then

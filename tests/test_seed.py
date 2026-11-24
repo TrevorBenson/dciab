@@ -380,11 +380,12 @@ exit 0
 """
 
 
-def providers_run(tmp_path, *, deployed, have, want):
+def providers_run(tmp_path, *, deployed, have, want, missing=False):
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir(exist_ok=True)
     (bin_dir / "helm").write_text(FAKE_HELM)
-    (bin_dir / "kubectl").write_text('#!/usr/bin/env bash\necho "kubectl $*" >> "$FAKE_LOG"\n')
+    (bin_dir / "kubectl").write_text('#!/usr/bin/env bash\necho "kubectl $*" >> "$FAKE_LOG"\n'
+                                     '[[ "$*" == *"get -f -"* && -n "${FAKE_MISSING:-}" ]] && exit 1\nexit 0\n')
     for f in bin_dir.iterdir():
         f.chmod(0o755)
     m = tmp_path / "manifests"
@@ -396,7 +397,8 @@ def providers_run(tmp_path, *, deployed, have, want):
     log.write_text("")
     import os
     env = {**os.environ, "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}", "FAKE_LOG": str(log),
-           "FAKE_DEPLOYED": "1" if deployed else "", "FAKE_HAVE": have, "FAKE_WANT": want}
+           "FAKE_DEPLOYED": "1" if deployed else "", "FAKE_HAVE": have, "FAKE_WANT": want,
+           "FAKE_MISSING": "1" if missing else ""}
     r = subprocess.run([str(ROOT / "lib" / "steps" / "capi-providers.sh"), "--with-classes", "--manifests", str(m)],
                        capture_output=True, text=True, env=env)
     assert r.returncode == 0, r.stderr
@@ -410,6 +412,12 @@ def test_unchanged_classes_release_is_not_upgraded(tmp_path):
     # Trailing spaces and blank lines aside, the deployed manifest is what the chart renders now.
     out, upgrades = providers_run(tmp_path, deployed=True, have=MANIFEST.replace("r1\n", "r1  \n\n"), want=MANIFEST)
     assert upgrades == [] and "not upgrading" in out
+
+
+def test_deleted_clusterclass_is_recreated(tmp_path):
+    # The release still says deployed, but a ClusterClass in it was deleted: upgrade re-creates it.
+    out, upgrades = providers_run(tmp_path, deployed=True, have=MANIFEST, want=MANIFEST, missing=True)
+    assert len(upgrades) == 1 and "not upgrading" not in out
 
 
 @pytest.mark.parametrize("deployed,have", [(True, MANIFEST.replace("r1", "r0")), (False, MANIFEST), (True, "")])
@@ -426,7 +434,7 @@ class FakeHost:
 
     def __init__(self):
         self.kind = {"dciab-bootstrap"}
-        self.containers = {"dciab-registry": "c0ffee" + "0" * 58}
+        self.containers = {"dciab-registry": ("c0ffee" + "0" * 58, "tok1")}   # name: (ID, seed token)
         self.pods = {"dciab-services"}
         self.addrs = {"eth0": {"10.30.110.5/24", "10.30.110.53/24", "10.30.110.54/24"}}
         self.ports = {("public", "53/udp"), ("public", "53/tcp"), ("public", "22/tcp")}
@@ -446,9 +454,11 @@ class FakeHost:
             out = "\n".join(self.capi_clusters)
         elif cmd[:3] == ["podman", "ps", "-a"]:
             name = cmd[cmd.index("--filter") + 1].split("^")[1].rstrip("$")
-            out = self.containers.get(name, "")
+            if name in self.containers:
+                cid, token = self.containers[name]
+                out = f"{cid} {token}" if "seed-token" in cmd[-1] else cid
         elif cmd[:2] == ["podman", "rm"]:
-            self.containers = {n: i for n, i in self.containers.items() if i != cmd[-1]}
+            self.containers = {n: c for n, c in self.containers.items() if c[0] != cmd[-1]}
         elif cmd[:3] == ["podman", "pod", "exists"]:
             rc = 0 if cmd[3] in self.pods else 1
         elif cmd[:3] == ["podman", "pod", "rm"]:
@@ -478,7 +488,7 @@ def seeded_state(tmp_path, services=True):
     (state / "services").mkdir(parents=True)
     (state / "pki").mkdir()
     (state / "pki" / "ca.key.age").write_text("sealed\n")
-    created = {"kind": "dciab-bootstrap", "registry": "c0ffee" + "0" * 58}
+    created = {"kind": "dciab-bootstrap", "registry": {"name": "dciab-registry", "token": "tok1"}}
     if services:
         created["services"] = "dns-only"
     cli.save_created(state, created)
@@ -509,7 +519,7 @@ def test_remove_undoes_what_seed_created_and_keeps_the_state(tmp_path, host, cap
     # Idempotent: a second run finds nothing to do and touches nothing.
     host.calls.clear()
     assert cli.remove(state, purge=False, force=False) == 0
-    assert host.calls == []
+    assert mutated(host) == []
 
 
 def test_remove_skips_what_is_already_gone(tmp_path, host):
@@ -526,21 +536,106 @@ def test_remove_skips_what_is_already_gone(tmp_path, host):
 
 def test_remove_leaves_a_registry_container_seed_did_not_create(tmp_path, host, capsys):
     state = seeded_state(tmp_path)
-    host.containers["dciab-registry"] = "beef" + "1" * 60   # replaced by someone else
+    host.containers["dciab-registry"] = ("beef" + "1" * 60, "")   # replaced by someone else
     assert cli.remove(state, purge=True, force=False) == 1
-    assert host.containers == {"dciab-registry": "beef" + "1" * 60}
+    assert host.containers == {"dciab-registry": ("beef" + "1" * 60, "")}
     assert "isn't the one seed created" in capsys.readouterr().err
-    assert state.is_dir() and cli.load_created(state) == {"registry": "c0ffee" + "0" * 58}  # retried next time
+    assert state.is_dir() and cli.load_created(state)["registry"]["token"] == "tok1"  # retried next time
 
 
-def test_remove_without_records_touches_nothing(tmp_path, host, capsys):
+MUTATING = (["kind", "delete"], ["podman", "rm"], ["podman", "pod", "rm"], ["ip", "addr", "del"])
+
+
+def mutated(host):
+    return [c for c in host.calls if any(c[:len(m)] == m for m in MUTATING) or "--remove-port" in " ".join(c)]
+
+
+def test_remove_without_records_touches_nothing_and_says_what_is_left(tmp_path, host, capsys):
     state = tmp_path / "state"
     state.mkdir()
     (state / "services").mkdir()
     (state / "services" / "created").write_text("address eth0 10.30.110.53/24\n")  # services run on its own
     assert cli.remove(state, purge=False, force=False) == 0
-    assert host.calls == [] and "10.30.110.53/24" in host.addrs["eth0"]
-    assert "lists nothing" in capsys.readouterr().out
+    assert mutated(host) == [] and "10.30.110.53/24" in host.addrs["eth0"]
+    out, err = capsys.readouterr()
+    assert "lists nothing" in out and "see above for what is left" in out
+    for cmd in ("kind delete cluster --name dciab-bootstrap", "podman rm -f dciab-registry",
+                f"podman kube down {state}/services/pod.yaml", "ip addr del", "--remove-port"):
+        assert cmd in err
+
+
+@pytest.mark.parametrize("record", [None, "{not json", "[]"])
+def test_purge_refuses_while_unrecorded_parts_still_run(tmp_path, host, capsys, record):
+    """A seed from before the record, or a lost or corrupt one: the state is still in use."""
+    state = tmp_path / "state"
+    state.mkdir()
+    if record is not None:
+        (state / cli.CREATED).write_text(record)
+    host.capi_clusters = ["cluster.cluster.x-k8s.io/mgmt"]
+    assert cli.remove(state, purge=True, force=True) == 1
+    assert state.is_dir() and mutated(host) == []
+    assert host.kind and host.containers and host.pods
+    err = capsys.readouterr().err
+    assert "not deleting" in err and "still holds cluster.cluster.x-k8s.io/mgmt" in err
+    if record not in (None,):
+        assert "couldn't be read" in err and list(state.glob("seed-created.json.*.corrupt"))
+    # Once they are gone by hand, the purge goes ahead.
+    host.kind.clear(), host.containers.clear(), host.pods.clear()
+    assert cli.remove(state, purge=True, force=False) == 0 and not state.exists()
+
+
+def test_recorded_but_absent_parts_count_as_removed(tmp_path, host):
+    state = seeded_state(tmp_path)
+    host.kind.clear()
+    host.containers.clear()
+    assert cli.remove(state, purge=True, force=False) == 0 and not state.exists()
+
+
+def test_records_are_written_atomically_and_privately(tmp_path):
+    cli.record_created(tmp_path, "kind", "dciab-bootstrap")
+    cli.record_created(tmp_path, "services", "dns-only")
+    assert cli.load_created(tmp_path) == {"kind": "dciab-bootstrap", "services": "dns-only"}
+    assert (tmp_path / cli.CREATED).stat().st_mode & 0o777 == 0o600
+    assert sorted(p.name for p in tmp_path.iterdir()) == [cli.CREATED]   # no temporary file left
+    (tmp_path / cli.CREATED).write_text("")                               # truncated by a crash
+    cli.record_created(tmp_path, "kind", "dciab-bootstrap")              # seed carries on
+    assert cli.load_created(tmp_path) == {"kind": "dciab-bootstrap"}
+
+
+def test_registry_is_recorded_before_it_is_started(tmp_path, monkeypatch):
+    seen = []
+
+    def fake_run(cmd, **kw):
+        cmd = [str(c) for c in cmd]
+        if cmd[:2] == ["podman", "run"]:
+            rec = cli.load_created(tmp_path)["registry"]
+            seen.append(rec)
+            assert f"dciab.io/seed-token={rec['token']}" in cmd
+        out = "sha256:img\n" if cmd[:2] == ["podman", "pull"] else ""
+        return subprocess.CompletedProcess(cmd, 0, out, "")
+    monkeypatch.setattr(cli, "run", fake_run)
+    monkeypatch.setattr(cli, "wait_registry", lambda *a: None)
+    monkeypatch.setattr(cli, "payload_images", lambda p: [])
+    monkeypatch.setattr(cli, "missing_images", lambda i, d: [])
+    monkeypatch.setattr(cli, "find_image", lambda i, ref: {"name": "zot"})
+    (tmp_path / "pki").mkdir()
+    for f in ("registry.crt", "registry.key"):
+        (tmp_path / "pki" / f).write_text("x")
+    root = tmp_path / "root"
+    root.mkdir()
+    (root / "bundle.lock").write_text("images: {zot: z}\n")
+
+    class S:
+        address = "10.0.0.5"
+    cli.step_registry(root, tmp_path, tmp_path, S())
+    assert seen and seen[0]["name"] == "dciab-registry"
+    cli.step_registry(root, tmp_path, tmp_path, S())       # a rerun that recreates it keeps the token
+    assert seen[1]["token"] == seen[0]["token"]
+
+
+def test_services_pod_name_matches_services():
+    from dciab_services import render
+    assert cli.SERVICES_POD == render.POD
 
 
 def test_remove_leaves_services_it_did_not_run(tmp_path, host):

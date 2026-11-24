@@ -174,8 +174,8 @@ for ip in $SERVICE_IPS; do
   if has_addr "$nic" "$ip"; then
     echo "$ip already on $nic"
   else
+    record address "$nic" "$ip/$PREFIX"   # before the change: a crash can't leave it unlisted
     ip addr add "$ip/$PREFIX" dev "$nic"
-    record address "$nic" "$ip/$PREFIX"
     echo "added $ip/$PREFIX to $nic"
   fi
 done
@@ -189,8 +189,8 @@ if command -v firewall-cmd >/dev/null && firewall-cmd --state >/dev/null 2>&1; t
   [[ "$NTP" == 1 ]] && ports+=(123/udp)
   for p in "${ports[@]}"; do
     if ! firewall-cmd --zone="$zone" --query-port="$p" >/dev/null; then
-      firewall-cmd --zone="$zone" --add-port="$p" >/dev/null || die "firewalld refused to open $p in zone $zone"
       record port "$zone" "$p"
+      firewall-cmd --zone="$zone" --add-port="$p" >/dev/null || die "firewalld refused to open $p in zone $zone"
       echo "opened $p in zone $zone (runtime only)"
     fi
   done
