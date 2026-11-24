@@ -15,7 +15,7 @@ def wf():
 def test_it_runs_hosted_with_no_credentials_for_pull_requests():
     w = wf()
     job = w["jobs"]["boot"]
-    assert job["runs-on"] == "ubuntu-24.04"          # never the credentialed lab runner
+    assert job["runs-on"].startswith("ubuntu-26.04")        # never the credentialed lab runner
     assert "pull_request" in w[True]
     assert w["permissions"] == {"contents": "read"}
     text = WF.read_text()

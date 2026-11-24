@@ -33,7 +33,7 @@ concurrency:
 jobs:
   boot:
     name: node image boots under KVM (Rocky 10 bootc)
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04   # podman 5.x: the node Containerfile uses heredocs (24.04 has podman 4.9)
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
