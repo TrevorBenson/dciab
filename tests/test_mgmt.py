@@ -129,3 +129,35 @@ def test_mgmt_puts_the_payload_bin_first_in_path(tmp_path):
     assert "not on PATH" not in r.stderr, r.stderr
     # Past the tools check and clusterctl's version: the fake kubectl finds no Cluster API.
     assert r.returncode == 1 and "has no Cluster API" in r.stderr, r.stderr
+
+
+def test_credentials_leave_no_last_applied_copy(tmp_path):
+    """A client-side kubectl apply would store the token or password in last-applied-configuration.
+    apply_credentials applies the Secret server-side, then removes an annotation an older dciab left."""
+    text = (ROOT / "lib" / "steps" / "mgmt.sh").read_text()
+    func = text.split("apply_credentials() {", 1)[1].split("\n}\n", 1)[0]
+    log = tmp_path / "kubectl.log"
+    fake = tmp_path / "kubectl"
+    fake.write_text('#!/bin/sh\necho "$*" >> "$LOG"\n[ "$1" = apply ] && cat > /dev/null\nexit 0\n')
+    fake.chmod(0o755)
+    script = (f'set -euo pipefail\npython3() {{ echo "{{}}"; }}\nNS=cluster-mgmt config=c platform=proxmox\n'
+              f'apply_credentials() {{{func}\n}}\napply_credentials kc\n')
+    r = subprocess.run(["bash", "-c", script], capture_output=True, text=True,
+                       env={"PATH": f"{tmp_path}:/usr/bin:/bin", "LOG": str(log)})
+    assert r.returncode == 0, r.stderr
+    calls = log.read_text().splitlines()
+    # Only the namespace is applied client-side; the annotation is removed after the Secret's apply.
+    applies = [c for c in calls if c.startswith("apply ")]
+    assert sorted(applies) == ["apply --server-side --force-conflicts --field-manager=dciab -f -", "apply -f -"]
+    assert calls.index("apply --server-side --force-conflicts --field-manager=dciab -f -") < len(calls) - 1
+    assert calls[-1] == ("-n cluster-mgmt annotate secret mgmt-proxmox-credentials "
+                         "kubectl.kubernetes.io/last-applied-configuration-")
+    assert len(calls) == 4   # create namespace --dry-run, apply namespace, apply Secret, annotate
+
+
+@pytest.mark.parametrize("example", ["proxmox", "vsphere"])
+def test_credentials_secret_has_no_annotations(monkeypatch, tmp_path, example):
+    monkeypatch.setenv("DCIAB_PVE_TOKEN", "s3cret")
+    (tmp_path / "secrets").mkdir()
+    (tmp_path / "secrets" / "vsphere.pw").write_text("pw\n")
+    assert "annotations" not in secret(load_example(example), "mgmt", "cluster-mgmt", tmp_path)["metadata"]

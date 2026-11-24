@@ -16,7 +16,9 @@
 #               ClusterClasses (dciab seed installs them)
 #   values      dciab cluster-values for mgmt -> <state>/mgmt-values.yaml
 #   cluster     the platform credentials Secret and the capi-cluster release "mgmt" in
-#               namespace cluster-mgmt, on the bootstrap cluster
+#               namespace cluster-mgmt, on the bootstrap cluster. The Secret is applied
+#               server-side; a last-applied annotation an older dciab left on it is removed
+#               (the adopt step does the same on MGMT)
 #   control-plane
 #               wait for the first control plane node; save <state>/mgmt.kubeconfig
 #   cpi         vSphere only: addons/vsphere-cpi/install.sh, the cloud provider the vSphere
@@ -167,7 +169,14 @@ finish_if values
 
 apply_credentials() {   # apply_credentials <kubeconfig>
   KUBECONFIG="$1" kubectl create namespace "$NS" --dry-run=client -o yaml | KUBECONFIG="$1" kubectl apply -f -
-  python3 -m dciab_cluster.credentials "$config" mgmt "$NS" | KUBECONFIG="$1" kubectl apply -f -
+  # Server-side apply: a client-side apply would keep a copy of the Secret, token or password
+  # included, in the last-applied-configuration annotation.
+  python3 -m dciab_cluster.credentials "$config" mgmt "$NS" \
+    | KUBECONFIG="$1" kubectl apply --server-side --force-conflicts --field-manager=dciab -f -
+  # A Secret an older dciab applied client-side still has that annotation, and server-side
+  # apply keeps it up to date where it exists: remove it, after the apply. No-op once gone.
+  KUBECONFIG="$1" kubectl -n "$NS" annotate secret "mgmt-$platform-credentials" \
+    kubectl.kubernetes.io/last-applied-configuration- >/dev/null
 }
 
 if [[ "$pivot" == mgmt ]]; then
