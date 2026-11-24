@@ -276,6 +276,44 @@ def test_printed_hypervisors_command_finds_the_copied_isos():
     assert "--isos /var/lib/dciab/work/isos" in services
 
 
+def appliance_site(tmp_path):
+    # The appliance layout sync_site makes: `site` links to a versioned folder beside it.
+    versioned = tmp_path / ".site-abc123"
+    versioned.mkdir()
+    (versioned / "dciab.yaml").write_text("spec: {}\n")
+    site = tmp_path / "site"
+    site.symlink_to(versioned.name)
+    return site, versioned
+
+
+@pytest.mark.parametrize("via", ["site", "versioned", "cwd"])
+def test_config_printed_by_the_stable_site_path(tmp_path, monkeypatch, via):
+    # The next boot's sync replaces the versioned folder: printed commands must name `site`.
+    site, versioned = appliance_site(tmp_path)
+    if via == "cwd":
+        monkeypatch.chdir(site)  # the kernel reports the resolved folder as the cwd
+        given = "dciab.yaml"
+    else:
+        given = str((site if via == "site" else versioned) / "dciab.yaml")
+    assert cli.stable_config(given, site) == site / "dciab.yaml"
+
+
+def test_config_outside_the_site_keeps_its_path(tmp_path):
+    site, _ = appliance_site(tmp_path)
+    assert cli.stable_config(str(tmp_path / "x.yaml"), site) == tmp_path / "x.yaml"
+    assert cli.stable_config(str(tmp_path / "x.yaml"), tmp_path / "no-site") == tmp_path / "x.yaml"
+
+
+def test_run_prints_the_site_path(site, capsys, monkeypatch, tmp_path):
+    src, work, _ = site
+    link, versioned = appliance_site(tmp_path)
+    write_config(versioned, work)
+    monkeypatch.setattr(cli, "SITE", link)
+    assert cli.main(args(src, versioned / "dciab.yaml")) == 0
+    out = capsys.readouterr().out
+    assert f" seed {link / 'dciab.yaml'} --state" in out and versioned.name not in out
+
+
 def test_unusable_graphroot_refused():
     with pytest.raises(cli.MediaError, match="quotes"):
         cli.dropin_text(Path('/x"\n[storage.options]'))
