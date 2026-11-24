@@ -55,18 +55,30 @@ LONGHORN = {
 
 
 def longhorn_example(name: str) -> dict:
-    """An example with Longhorn as its block storage (and, on vSphere, a data disk on every
-    node group Longhorn runs on)."""
+    """An example with Longhorn as INFRA's block storage (and, on vSphere, a data disk on every
+    INFRA and vSphere workload node group Longhorn could run on). MGMT keeps no volumes."""
     doc = load_example(name)
     spec = doc["spec"]
     spec["storage"] = {"block": {"provider": "longhorn", "longhorn": copy.deepcopy(LONGHORN[spec["platform"]["type"]])}}
     if spec["platform"]["type"] == "vsphere":
-        clusters = [spec["clusters"]["mgmt"], spec["clusters"]["infra"]] + \
+        clusters = [spec["clusters"]["infra"]] + \
             [wc for wc in spec.get("workloadClusters", []) if wc["class"] == "vsphere"]
         for c in clusters:
             pools = [p for p in c["workerPools"] if p["replicas"] > 0]
             for g in pools or [c["controlPlane"]]:
                 g["dataDiskGiB"] = 500 if g is not c["controlPlane"] else 200
+    return doc
+
+
+def mgmt_longhorn(doc: dict) -> dict:
+    """Opt MGMT in to Longhorn with overrides.mgmt (ADR 0008, decision 4a), written in full
+    from block's Longhorn settings, and on vSphere a data disk on its control plane."""
+    spec = doc["spec"]
+    block = spec["storage"]["block"]
+    lh = copy.deepcopy(block.get("longhorn") or LONGHORN[spec["platform"]["type"]])
+    block.setdefault("overrides", {})["mgmt"] = {"provider": "longhorn", "longhorn": lh}
+    if spec["platform"]["type"] == "vsphere":
+        spec["clusters"]["mgmt"]["controlPlane"]["dataDiskGiB"] = 200
     return doc
 
 

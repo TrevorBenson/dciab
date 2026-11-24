@@ -26,7 +26,7 @@ Each core service is a block under `spec` with a `provider` key. Each provider h
 | Service | Built-in provider | Site-provided providers | Default |
 | --- | --- | --- | --- |
 | Identity (`spec.identity`) | `authentik` | `external` (OIDC, plus LDAP for hosts) | `authentik` |
-| Block storage (`spec.storage.block`) | `longhorn` | `vsphere-csi`, `proxmox-csi`, `ceph-csi`, `vendor-csi`, `existing` | none: required for MGMT and INFRA; optional and not enforced for workload clusters (decision 4) |
+| Block storage (`spec.storage.block`) | `longhorn` | `vsphere-csi`, `proxmox-csi`, `ceph-csi`, `vendor-csi`, `existing` | none: required for INFRA; MGMT keeps no volumes unless `overrides.mgmt` asks (decision 4a); optional and not enforced for workload clusters (decision 4) |
 | Object storage (`spec.storage.object`) | `seaweedfs` | `rook-ceph`, `external` | `seaweedfs` |
 | DNS (`spec.dns`) | `powerdns` | `external` | `powerdns` |
 | IPAM (`spec.ipam`) | `in-cluster` | `netbox` (DCiaB's or the site's) | `in-cluster` |
@@ -35,17 +35,17 @@ Each core service is a block under `spec` with a `provider` key. Each provider h
 
 `spec.pki` keeps its `mode` key; renaming it buys nothing. Every new block uses `provider`.
 
-The built-in provider is always the default, so a config that names none gets today's behaviour. Block storage is the exception: it has no default. Its provider is required for MGMT and INFRA, and optional and not enforced for workload clusters (decision 4).
+The built-in provider is always the default, so a config that names none gets today's behaviour. Block storage is the exception: it has no default. Its provider is required for INFRA. MGMT gets block storage only when `overrides.mgmt` asks for it (decision 4a), and for workload clusters it's optional and not enforced (decision 4).
 
 **Providers can be pivoted.** A site that starts on a built-in provider can move to its own service once that service exists (identity, DNS, object storage, secrets). In config that is a change of `provider` and its sub-block. Each service's migration steps (moving records, buckets, clients or secrets) belong to that service's implementation, not this ADR.
 
 ### 2. Tiers can override, but only downwards
 
-A site runs three kinds of cluster: MGMT, INFRA and workload clusters. Each service block takes an `overrides` map keyed by tier (`mgmt`, `infra`, `workload`). An override is merged over the block for that tier's clusters. Block storage's `workload` override is the exception: it stands alone, because workload clusters don't inherit MGMT and INFRA's block storage (decision 4). Overrides for one workload cluster at a time come after v1; in v1 every workload cluster gets the `workload` override.
+A site runs three kinds of cluster: MGMT, INFRA and workload clusters. Each service block takes an `overrides` map keyed by tier (`mgmt`, `infra`, `workload`). An override is merged over the block for that tier's clusters. Block storage's `mgmt` and `workload` overrides are the exception: each stands alone, because neither MGMT nor workload clusters inherit INFRA's block storage (decisions 4 and 4a). Overrides for one workload cluster at a time come after v1; in v1 every workload cluster gets the `workload` override.
 
 One rule limits overrides. The tiers are created in order: site → bootstrap → MGMT → INFRA → workload. **A tier may use providers that run on itself, on the site, or on an earlier tier. Its creation and its recovery may depend only on the site and earlier tiers.** A tier never depends on a later one. So:
 
-- MGMT must not depend on anything that runs on INFRA: not SeaweedFS, not Authentik ([ADR 0004](0004-identity-and-sso.md), decision 4), not NetBox. Its block storage is Longhorn or a site array, and its backups go to the site target, never INFRA's SeaweedFS (ADR 0009).
+- MGMT must not depend on anything that runs on INFRA: not SeaweedFS, not Authentik ([ADR 0004](0004-identity-and-sso.md), decision 4), not NetBox. It keeps no volumes by default (decision 4a); when `overrides.mgmt` gives it block storage, that is Longhorn or a site array. Its backups go to the site target, never INFRA's SeaweedFS (ADR 0009).
 - INFRA may use what it runs itself: its own block storage, and its own SeaweedFS for INFRA-local data and as the primary copy of its backups. That copy can't be the only one: restoring INFRA can't need INFRA, so the critical set is also copied to the off-site or site target (ADR 0009). OpenBao's snapshots skip SeaweedFS entirely and go to the site target, because restoring OpenBao comes before SeaweedFS can be trusted (ADR 0009, decision 4). INFRA can use MGMT's DNS, but not its own Authentik for its Kubernetes API (again ADR 0004).
 - Workload clusters can use anything.
 
@@ -111,7 +111,7 @@ Tenant groups are added on top of these, per tenant, through Git.
 
 The v1 block providers are Longhorn, the vSphere CSI driver, the Proxmox CSI driver, ceph-csi (when the site supplies a Ceph key) and a small set of pinned vendor SAN drivers. OpenEBS is not in v1 (Alternatives considered).
 
-**`block.provider` is required for MGMT and INFRA.** There is no platform default. The usual choice follows from the platform, and `dciab validate` suggests it when the provider is missing:
+**`block.provider` is required, and it is INFRA's.** There is no platform default. MGMT doesn't inherit it: it keeps no volumes unless `overrides.mgmt` asks for them (decision 4a). The usual choice follows from the platform, and `dciab validate` suggests it when the provider is missing:
 
 | Platform and datastore | Usual `block.provider` |
 | --- | --- |
@@ -120,7 +120,7 @@ The v1 block providers are Longhorn, the vSphere CSI driver, the Proxmox CSI dri
 | Proxmox VE with local storage only (`local-lvm`, ZFS) | `longhorn`, on the worker data disk |
 | Metal3 (bare metal) | `longhorn`, on the node's data disks |
 
-**For workload clusters it's optional and not enforced.** They don't inherit MGMT and INFRA's block. Without `overrides.workload`, DCiaB imposes no block storage on workload clusters: each tenant brings its own. With it, every workload cluster gets that provider and its settings, written in full; nothing is merged from `block`.
+**For workload clusters it's optional and not enforced.** They don't inherit INFRA's block. Without `overrides.workload`, DCiaB imposes no block storage on workload clusters: each tenant brings its own. With it, every workload cluster gets that provider and its settings, written in full; nothing is merged from `block`.
 
 > **Amended 2026-11-24.** As accepted on 2026-11-23, this decision gave block storage a default by platform, applied to every cluster. Now the provider is required for MGMT and INFRA, and optional and not enforced for workload clusters. Why:
 > - **No hidden site-specific defaults.** Every site-specific field in the config is required; a storage default that silently differs by platform breaks that rule.
@@ -196,7 +196,7 @@ The provider decides where both come from: on vSphere the datastore through the 
 
 ### 5. A local class for services that replicate themselves
 
-CloudNativePG, OpenSearch, OpenBao (Raft) and SeaweedFS volume servers keep their own copies. On a replicated class they double-replicate inside the cluster too. So MGMT and INFRA, and workload clusters that opt in, also have two **local** classes:
+CloudNativePG, OpenSearch, OpenBao (Raft) and SeaweedFS volume servers keep their own copies. On a replicated class they double-replicate inside the cluster too. So INFRA, and MGMT and workload clusters that opt in, also have two **local** classes:
 
 - **`local-retain`** (`reclaimPolicy: Retain`) for platform data that keeps its own copies: the services above.
 - **`local`** (`reclaimPolicy: Delete`) for scratch data.
@@ -369,7 +369,7 @@ The schema does what JSON Schema can: one `provider` per block, the chosen provi
 1. **Tier order** (decision 2). Error when an override gives MGMT an INFRA-hosted provider (`storage.object: seaweedfs`, `ipam: netbox` with `mode: platform`, `identity` for the MGMT API), when MGMT's or OpenBao's backup target isn't the site target, or when INFRA backs up to its own object provider with no off-site or site copy of the critical set (ADR 0009).
 2. **No double replication.** Error when `longhorn` with more than one replica sits on replicated storage. Offline, `validate` warns when the Proxmox storage name or the vSphere datastore is set, since it can't know its type. With `--live`, it reads the type (Proxmox `rbd` or `cephfs`, vSphere `vsan`) and errors. Today's check only hints at this (`check_resilience`).
 3. **Platform fit.** `vsphere-csi` only for `vsphere`-class clusters, `proxmox-csi` only for `proxmox`-class clusters. Longhorn on VMs needs `dataDiskGiB` on the worker pools. With `--live`, the `proxmox-csi` token's privileges are checked like the CAPMOX token's.
-4. **Required provider fields.** `block.provider` for MGMT and INFRA; when it's missing, the error names the platform's usual choice (decision 4). `proxmox-csi`: a storage and its token. `ceph-csi`: monitors, cluster ID, pool, key. `vendor-csi`: a chart that is in `bundle.lock`. `existing`: a StorageClass name. Exactly one default StorageClass per cluster, and the four class names of decisions 4 and 5 present on every cluster DCiaB gives block storage.
+4. **Required provider fields.** `block.provider` for INFRA (MGMT's only in `overrides.mgmt`, decision 4a); when it's missing, the error names the platform's usual choice (decision 4). `proxmox-csi`: a storage and its token. `ceph-csi`: monitors, cluster ID, pool, key. `vendor-csi`: a chart that is in `bundle.lock`. `existing`: a StorageClass name. Exactly one default StorageClass per cluster, and the four class names of decisions 4 and 5 present on every cluster DCiaB gives block storage.
 5. **COSI.** `cosi: true` only with `seaweedfs` or `rook-ceph`. With `external`, every enabled consumer needs a bucket entry.
 6. **Identity.** `external.issuer` is `https`. Every name in `consumers` has a client entry with `external`. A secret is required for every client except the public `kubernetes` one. `openvox` in `consumers` with no `external.ldap` is a warning (hosts get break-glass only). `vcenter` in `consumers` needs LDAP (Authentik outpost or `external.ldap`), or the note that the site federates vCenter itself. `roles.operator` and `roles.viewer`, when set, differ from `adminGroup` and from each other.
 7. **DNS.** With `external.mode: delegated`, `network.domain` is the delegated zone or inside it, and `validate --live` checks that the parent zone's NS records point at DCiaB's DNS addresses. With `records`, the zone is `network.domain` or a parent of it; `rfc2136` needs a TSIG key; `webhook` needs a provider pinned in `bundle.lock`.

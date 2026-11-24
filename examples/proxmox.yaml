@@ -80,7 +80,7 @@ spec:
         san-a: 10.40.10.30-10.40.10.49
         san-b: 10.40.20.30-10.40.20.49
 
-  storage:
+  storage:                               # INFRA's block storage. MGMT keeps no volumes: [opt] block.overrides.mgmt (ADR 0008, 4a)
     block:
       provider: proxmox-csi              # volumes are VM disks on a Proxmox storage; Ceph replicates them
       proxmoxCSI:

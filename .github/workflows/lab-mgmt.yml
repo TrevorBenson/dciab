@@ -2,7 +2,8 @@ name: lab mgmt
 
 # Reusable: dciab seed and dciab mgmt on Proxmox (task 0007's steps): the payload (cached on
 # the runner by bundle.lock), seed twice, mgmt with each step timed, checks that MGMT manages
-# itself, a replacement on MGMT, and a re-run that must change nothing. It always cleans up.
+# itself and keeps no volumes (ADR 0008, decision 4a: no StorageClass, PVC or storage driver),
+# a replacement on MGMT, and a re-run that must change nothing. It always cleans up.
 # The caller sets the concurrency group.
 on:
   workflow_call:
@@ -50,7 +51,7 @@ jobs:
         run: hack/lab/mgmt.sh seed
       - name: dciab mgmt
         run: hack/lab/mgmt.sh mgmt
-      - name: MGMT manages itself, and replaces a node
+      - name: MGMT manages itself, keeps no volumes, and replaces a node
         run: hack/lab/mgmt.sh checks
       - name: dciab mgmt again changes nothing
         run: hack/lab/mgmt.sh rerun

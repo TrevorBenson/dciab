@@ -9,7 +9,15 @@ $ sudo ./dciab mgmt dciab.yaml --state <state> --until values
 
 ## Clusters without workers
 
-When MGMT has no worker nodes (`workerPools: []`), its control plane nodes run its workloads: cert-manager, the Cluster API controllers, Longhorn. Their nodes then carry no `node-role.kubernetes.io/control-plane:NoSchedule` taint. See [charts/capi-cluster](../charts/capi-cluster/README.md#clusters-without-workers).
+When MGMT has no worker nodes (`workerPools: []`), its control plane nodes run its workloads: cert-manager, the Cluster API controllers, and Longhorn when `overrides.mgmt` gives MGMT block storage. Their nodes then carry no `node-role.kubernetes.io/control-plane:NoSchedule` taint. See [charts/capi-cluster](../charts/capi-cluster/README.md#clusters-without-workers).
+
+## MGMT keeps no volumes
+
+MGMT's state is the Cluster API objects in etcd, and its backups are the etcd snapshots and CAPI exports on the site target ([BACKUP.md](BACKUP.md)). Nothing DCiaB runs on MGMT asks for a volume, so MGMT gets no block storage by default ([ADR 0008](adr/0008-provider-pattern.md), decision 4a): the `storage` step installs no Longhorn, no CSI driver and no StorageClass, and prints `block storage: none`. `spec.storage.block` describes INFRA's storage. MGMT needs no Proxmox CSI token, vCenter CSI Secret or Longhorn settings.
+
+A site that runs something of its own on MGMT that needs volumes sets `spec.storage.block.overrides.mgmt`, written in full (a provider and its settings; nothing comes from `block`). The `storage` step then installs that provider and the four StorageClasses, as before. `--until storage` (or its old name, `longhorn`) still works either way.
+
+An earlier `dciab mgmt` may have installed Longhorn or a CSI driver on MGMT. A run without `overrides.mgmt` leaves them, their StorageClasses and their volumes in place, and names the classes it finds. Once nothing uses them, remove them by hand: delete the PVCs, then the driver (`helm uninstall longhorn -n longhorn-system` after setting Longhorn's `deleting-confirmation-flag`, or the CSI driver's namespace), then the four StorageClasses.
 
 ## The move
 

@@ -5,10 +5,10 @@
     longhorn_values.py secret <config> <namespace> [<cluster>]   # backup credentials Secret YAML (S3 only)
     longhorn_values.py images <chart values> <values>  # every image the release runs, one per line
 
-The Longhorn settings are the cluster's tier block (spec.storage.block with its override, or
-the old spec.storage.longhorn; lib/dciab_storage). <cluster> defaults to mgmt. The backup
-target is the cluster's from spec.backup (lib/dciab_backup): for MGMT, always the site
-target. A config without spec.backup still uses the Longhorn settings' backupTarget.
+The Longhorn settings are the cluster's tier block (lib/dciab_storage): for INFRA,
+spec.storage.block with overrides.infra, or the old spec.storage.longhorn; for MGMT, only
+overrides.mgmt. <cluster> defaults to mgmt. The backup target is the cluster's from
+spec.backup (lib/dciab_backup): for MGMT, always the site target. A config without spec.backup still uses the Longhorn settings' backupTarget.
 
 The Secret goes to stdout so install.sh can pipe it into kubectl apply --server-side -f -:
 credentials never land on disk, in a process's arguments, or in a last-applied annotation. `secret` prints nothing for an NFS target.
@@ -49,8 +49,8 @@ REQUIRED_KEYS = ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY")
 def longhorn(site: dict, cluster: str = "mgmt") -> dict:
     block = cluster_block(site["spec"], cluster)
     if block is None:
-        raise ValueError(f"cluster {cluster} has no block storage from DCiaB "
-                         "(workload clusters get it only through spec.storage.block.overrides.workload)")
+        raise ValueError(f"cluster {cluster} has no block storage from DCiaB (MGMT and workload clusters get it "
+                         "only through spec.storage.block.overrides.mgmt or overrides.workload)")
     if block["provider"] != "longhorn":
         raise ValueError(f"cluster {cluster} uses {block['provider']} for block storage, not longhorn")
     return block["settings"]

@@ -58,7 +58,11 @@ def load_lock() -> dict:
 
 
 def driver(spec: dict, cluster: str) -> str:
-    provider = cluster_block(spec, cluster)["provider"]
+    block = cluster_block(spec, cluster)
+    if block is None:
+        raise CSIError(f"cluster {cluster} gets no block storage from DCiaB "
+                       f"(spec.storage.block.overrides.{tier_of(spec, cluster)[0]} names none)")
+    provider = block["provider"]
     if provider not in NAMESPACES:
         raise CSIError(f"cluster {cluster} uses {provider}, not an array CSI driver DCiaB installs")
     return provider

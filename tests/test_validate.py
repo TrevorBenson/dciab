@@ -8,15 +8,15 @@ from conftest import ROOT, errors, load_example, longhorn_example, warnings
 
 # Warnings an example is meant to show on every run (ADR 0010): a site that isn't highly
 # available says so, and so does a Proxmox control plane that r1 can't spread.
-# proxmox-bare runs Longhorn, for its backups, on VM root disks (CAPMOX gives no data disk),
-# which warns for MGMT and INFRA.
-# metal3-cluster runs Longhorn on MGMT and INFRA VMs on a vSAN datastore, which replicates
-# twice: the example keeps it to show Longhorn on VMs with data disks.
+# proxmox-bare runs Longhorn on INFRA, for its backups, on VM root disks (CAPMOX gives no
+# data disk), which warns. MGMT keeps no volumes (ADR 0008, decision 4a), so it doesn't.
+# metal3-cluster runs Longhorn on INFRA VMs on a vSAN datastore, which replicates twice: the
+# example keeps it to show Longhorn on VMs with data disks.
 EXPECTED_WARNINGS = {
     "metal3-cluster": {"spec.storage.block.longhorn.replicaCount"},
     "proxmox": {"spec.failureDomains.domains"},
     "proxmox-bare": {"spec.failureDomains.notHighlyAvailable", "spec.time.serveLocalClock",
-                     "spec.clusters.mgmt", "spec.clusters.infra"},
+                     "spec.clusters.infra"},
 }
 
 

@@ -40,5 +40,5 @@ Volumes are First Class Disks through vCenter's Cloud Native Storage, on the dat
 
 ## Where it runs
 
-- **MGMT:** `dciab mgmt`'s `storage` step, when MGMT's block provider is `proxmox-csi` or `vsphere-csi`.
+- **MGMT:** `dciab mgmt`'s `storage` step, only when `spec.storage.block.overrides.mgmt` names `proxmox-csi` or `vsphere-csi`. MGMT keeps no volumes otherwise ([ADR 0008](../../docs/adr/0008-provider-pattern.md), decision 4a), so neither the driver's token (Proxmox) nor its Secret (vSphere) is needed there.
 - **INFRA and workload clusters:** not yet.

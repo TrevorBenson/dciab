@@ -336,7 +336,7 @@
       "additionalProperties": false,
       "properties": {
         "block": {"$ref": "#/$defs/blockStorage"},
-        "longhorn": {"$ref": "#/$defs/longhorn", "description": "the old form of block: {provider: longhorn, longhorn: {...}}, accepted for one minor release"}
+        "longhorn": {"$ref": "#/$defs/longhorn", "description": "the old form of block: {provider: longhorn, longhorn: {...}}, accepted for one minor release. It describes INFRA; MGMT gets no block storage from it (ADR 0008, decision 4a)"}
       },
       "oneOf": [{"required": ["block"]}, {"required": ["longhorn"]}],
       "description": "give block (ADR 0008); longhorn alone is the old form, accepted for one minor release. Not both"
@@ -350,7 +350,7 @@
       "additionalProperties": false,
       "required": ["provider"],
       "properties": {
-        "provider": {"$ref": "#/$defs/blockProvider", "description": "required, no default: the block storage provider. Usually vsphere-csi on vSphere, proxmox-csi on Proxmox, longhorn on bare metal (Metal3)"},
+        "provider": {"$ref": "#/$defs/blockProvider", "description": "required, no default: INFRA's block storage provider. Usually vsphere-csi on vSphere, proxmox-csi on Proxmox, longhorn on bare metal (Metal3)"},
         "longhorn": {"$ref": "#/$defs/longhorn"},
         "vsphereCSI": {"$ref": "#/$defs/vsphereCSI"},
         "proxmoxCSI": {"$ref": "#/$defs/proxmoxCSI"},
@@ -362,11 +362,11 @@
           "additionalProperties": false,
           "minProperties": 1,
           "properties": {
-            "mgmt": {"$ref": "#/$defs/blockOverride"},
+            "mgmt": {"$ref": "#/$defs/mgmtBlock"},
             "infra": {"$ref": "#/$defs/blockOverride"},
             "workload": {"$ref": "#/$defs/workloadBlock"}
           },
-          "description": "optional, per tier: mgmt or infra, merged over block; workload (every workload cluster), which stands alone. Overrides for one cluster come after v1"
+          "description": "optional, per tier: infra, merged over block; mgmt and workload (every workload cluster), which stand alone. Overrides for one cluster come after v1"
         }
       },
       "allOf": [
@@ -377,12 +377,17 @@
         {"if": {"properties": {"provider": {"const": "vendor-csi"}}, "required": ["provider"]}, "then": {"description": "with provider vendor-csi, keep only its vendorCSI block and remove the others", "not": {"anyOf": [{"required": ["longhorn"]}, {"required": ["vsphereCSI"]}, {"required": ["proxmoxCSI"]}, {"required": ["cephCSI"]}, {"required": ["existing"]}]}, "required": ["vendorCSI"]}},
         {"if": {"properties": {"provider": {"const": "existing"}}, "required": ["provider"]}, "then": {"description": "with provider existing, keep only its existing block and remove the others", "not": {"anyOf": [{"required": ["longhorn"]}, {"required": ["vsphereCSI"]}, {"required": ["proxmoxCSI"]}, {"required": ["cephCSI"]}, {"required": ["vendorCSI"]}]}, "required": ["existing"]}}
       ],
-      "description": "block storage for MGMT and INFRA: the provider and its settings (ADR 0008, decisions 1 and 4). Workload clusters don't inherit it"
+      "description": "INFRA's block storage: the provider and its settings (ADR 0008, decisions 1, 4 and 4a). MGMT and workload clusters don't inherit it"
     },
     "workloadBlock": {
       "allOf": [{"$ref": "#/$defs/blockStorage"}],
       "not": {"required": ["overrides"]},
       "description": "optional: block storage for every workload cluster, a provider and its settings, as under block but with no overrides. Nothing comes from block: without it, DCiaB imposes no block storage on workload clusters and tenants bring their own"
+    },
+    "mgmtBlock": {
+      "allOf": [{"$ref": "#/$defs/blockStorage"}],
+      "not": {"required": ["overrides"]},
+      "description": "optional: block storage for MGMT, a provider and its settings, as under block but with no overrides. Nothing comes from block: without it, MGMT keeps no volumes and gets no StorageClass (ADR 0008, decision 4a)"
     },
     "blockOverride": {
       "type": "object",
@@ -405,7 +410,7 @@
         {"if": {"properties": {"provider": {"const": "vendor-csi"}}, "required": ["provider"]}, "then": {"description": "with provider vendor-csi, keep only its vendorCSI block and remove the others", "not": {"anyOf": [{"required": ["longhorn"]}, {"required": ["vsphereCSI"]}, {"required": ["proxmoxCSI"]}, {"required": ["cephCSI"]}, {"required": ["existing"]}]}}},
         {"if": {"properties": {"provider": {"const": "existing"}}, "required": ["provider"]}, "then": {"description": "with provider existing, keep only its existing block and remove the others", "not": {"anyOf": [{"required": ["longhorn"]}, {"required": ["vsphereCSI"]}, {"required": ["proxmoxCSI"]}, {"required": ["cephCSI"]}, {"required": ["vendorCSI"]}]}}}
       ],
-      "description": "merged over block for this tier's clusters: a provider and its settings block, or a settings block for block's provider. A settings block is complete, as under block"
+      "description": "merged over block for INFRA: a provider and its settings block, or a settings block for block's provider. A settings block is complete, as under block"
     },
     "backupTarget": {
       "type": "object",

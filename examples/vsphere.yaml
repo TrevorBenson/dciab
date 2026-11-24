@@ -79,7 +79,7 @@ spec:
       workerPools:
         - {name: general, replicas: 4, cpu: 16, memoryGiB: 64, diskGiB: 150}
 
-  storage:
+  storage:                               # INFRA's block storage. MGMT keeps no volumes: [opt] block.overrides.mgmt (ADR 0008, 4a)
     block:
       provider: vsphere-csi              # longhorn | vsphere-csi | proxmox-csi | ceph-csi | vendor-csi | existing
       vsphereCSI:                        # [opt] storagePolicy or datastoreURL; neither: vCenter picks

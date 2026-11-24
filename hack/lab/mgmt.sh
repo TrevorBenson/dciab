@@ -5,7 +5,7 @@
 #   hack/lab/mgmt.sh config TEMPLATE_NAME       write dciab.yaml for the lab and validate it
 #   hack/lab/mgmt.sh seed                       dciab seed (root), then again: nothing may change
 #   hack/lab/mgmt.sh mgmt                       dciab mgmt (root), each step line timed
-#   hack/lab/mgmt.sh checks                     MGMT manages itself; replace a control plane Machine
+#   hack/lab/mgmt.sh checks                     MGMT manages itself and keeps no volumes; replace a control plane Machine
 #   hack/lab/mgmt.sh rerun                      dciab mgmt again: no step changes, no Machine rolls
 #   hack/lab/mgmt.sh down                       delete MGMT, the bootstrap cluster and what seed added
 #
@@ -66,8 +66,12 @@ px.update(url=os.environ["PVE_URL"] + "", tlsFingerprint=os.environ["PVE_TLS_FIN
 px.pop("vlanTag", None); px["credentials"]["tokenID"] = os.environ["CAPMOX_TOKEN_ID"]
 s["bootstrap"].update(interface=os.environ["IFACE"], address=os.environ["ADDR"], managementVLAN="untagged",
                       recipients=[os.environ["R1"], os.environ["R2"]])
-s["network"].update(domain=site["domain"], ntpServers=net["ntp"], upstreamResolvers=net["dns"],
-                    dnsServiceIPs=site["dnsServiceIPs"])
+s["network"].update(domain=site["domain"], upstreamResolvers=net["dns"], dnsServiceIPs=site["dnsServiceIPs"])
+s["network"].pop("isolated", None); s["network"].pop("storage", None)
+s["time"] = {"servedBy": "site", "servers": net["ntp"]}
+node = n["proxmox"]["node"]
+s["failureDomains"] = {"domains": [{"name": node, "proxmox": {"node": node}}],
+                       "notHighlyAvailable": {"reason": "the lab has one Proxmox node"}}
 s["network"]["nodes"] = {"cidr": ".".join(net["gateway"].split(".")[:3]) + ".0/%d" % net["prefix"], "gateway": net["gateway"], "vlan": 1}
 s["clusters"]["mgmt"].update(apiVIP=m["apiVIP"], nodeIPRange=m["nodeIPRange"], lbPool=site["lbPool"],
                              podCIDR=m["podCIDR"], serviceCIDR=m["serviceCIDR"],
@@ -75,9 +79,13 @@ s["clusters"]["mgmt"].update(apiVIP=m["apiVIP"], nodeIPRange=m["nodeIPRange"], l
 i = s["clusters"]["infra"]
 i.update(apiVIP=site["infra"]["apiVIP"], nodeIPRange=site["infra"]["nodeIPRange"], lbPool=site["infra"]["lbPool"],
          podCIDR=site["infra"]["podCIDR"], serviceCIDR=site["infra"]["serviceCIDR"])
+i.pop("storageIPRanges", None)
 s["pki"] = {"mode": "generate-root", "commonName": "DCiaB lab root CA"}
 s["identity"]["initialAdmins"] = [{"username": "ci", "email": "ci@lab.invalid", "sshPublicKey": os.environ["PUB"]}]
-s["storage"]["longhorn"]["backupTarget"] = "nfs://%s:/exports/longhorn" % net["gateway"]
+# INFRA's block storage (INFRA isn't built here): Longhorn needs no token of its own. MGMT
+# gets none (ADR 0008, decision 4a); checks verifies that.
+s["storage"] = {"block": {"provider": "longhorn", "longhorn": {"replicaCount": 2}}}
+s["backup"]["targets"]["site"] = {"url": "nfs://%s:/exports/longhorn" % net["gateway"]}
 print(yaml.safe_dump(c, sort_keys=False))
 PY
   DCIAB_PVE_TOKEN="$CAPMOX_TOKEN_SECRET" "$ROOT/dciab" validate "$CONFIG"
@@ -105,7 +113,7 @@ mgmt() {
     timed mgmt_run --until cilium
     sk mgmt taint nodes --all node-role.kubernetes.io/control-plane- || true
   fi
-  timed mgmt_run
+  timed mgmt_run | tee "$LAB_DIR/mgmt1.log"
 }
 
 checks() {
@@ -114,6 +122,7 @@ checks() {
   [[ -z "$(sk bootstrap get clusters -A --no-headers)" ]] || lab_die "the bootstrap cluster still holds a Cluster: the move did not happen"
   sudo env "KUBECONFIG=$STATE/mgmt.kubeconfig" helm list -A | tee "$LAB_DIR/helm.txt"
   grep -q '^classes' "$LAB_DIR/helm.txt" && grep -q '^mgmt' "$LAB_DIR/helm.txt"
+  no_volumes
   local machine start
   machine="$(sk mgmt -n cluster-mgmt get machines --no-headers | awk 'NR==1 {print $1}')"
   [[ -n "$machine" ]] || lab_die "MGMT holds no Machines"
@@ -123,6 +132,19 @@ checks() {
     (( $(date +%s) - start < 1500 )) || lab_die "MGMT did not replace $machine in 25 minutes"; sleep 10
   done
   echo "MGMT replaced $machine in $(( $(date +%s) - start ))s"
+}
+
+# MGMT keeps no volumes (ADR 0008, decision 4a): the config sets no overrides.mgmt, so the
+# storage step installs no driver and MGMT has no StorageClass, PVC or PV.
+no_volumes() {
+  local log="$LAB_DIR/mgmt1.log" left
+  grep -q "block storage: none" "$log" || lab_die "dciab mgmt's storage step didn't report 'block storage: none'"
+  left="$(sk mgmt get storageclass,pvc,pv -A --no-headers 2>/dev/null || true)"
+  [[ -z "$left" ]] || lab_die "MGMT has storage objects, but the config gives it none: $left"
+  for ns in longhorn-system csi-proxmox vmware-system-csi; do
+    ! sk mgmt get namespace "$ns" >/dev/null 2>&1 || lab_die "MGMT has namespace $ns: a storage driver was installed"
+  done
+  echo "MGMT keeps no volumes: no StorageClass, PVC, PV or storage driver"
 }
 
 rerun() {
