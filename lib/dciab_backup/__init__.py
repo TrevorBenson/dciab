@@ -7,14 +7,15 @@ holds the copy that survives losing the site: S3 or NFS at another location (mod
 the site target's own replication (site-replicated), media the site carries away
 (removable), or nothing, with a reason (none).
 
-A config without spec.backup is the old form: the site target is MGMT's Longhorn
-backupTarget (spec.storage.block.longhorn, or spec.storage.longhorn), and there is no
-off-site target. dciab validate warns and prints the new form.
+A config without spec.backup is the old form: the site target is the Longhorn backupTarget
+(MGMT's, when overrides.mgmt gives MGMT Longhorn; otherwise spec.storage.block.longhorn, or
+spec.storage.longhorn), and there is no off-site target. dciab validate warns and prints the
+new form.
 
 Layout on the site target (every DCiaB path is under dciab/, so it never meets the site's
 other data; Longhorn keeps its own layout, backupstore/, at the target's root):
 
-    backupstore/...                          Longhorn's volume backups (MGMT)
+    backupstore/...                          Longhorn's volume backups (clusters that run Longhorn and back up here)
     dciab/<cluster>/etcd/...                 etcd snapshots, age-encrypted
     dciab/mgmt/capi/...                      clusterctl move --to-directory exports, age-encrypted
     dciab/recovery/...                       the backup key's private half, sealed to the recipients
@@ -91,11 +92,16 @@ def legacy(spec: dict) -> bool:
 
 
 def site_target(spec: dict) -> Optional[dict]:
-    """{url, credentials?, caBundle?} of the site target. The old form reads MGMT's Longhorn
-    backupTarget and backupCredentials. None when there is neither (validate errors)."""
+    """{url, credentials?, caBundle?} of the site target. The old form reads a Longhorn
+    backupTarget and backupCredentials: MGMT's, when MGMT runs Longhorn, else block's (MGMT
+    keeps no volumes by default, ADR 0008 decision 4a, and its etcd snapshots and CAPI exports
+    still need the target). None when there is neither (validate errors)."""
     if not legacy(spec):
         return copy.deepcopy(spec["backup"]["targets"]["site"])
     block = st.tier_block(spec, "mgmt")
+    if not block or block["provider"] != "longhorn" or "backupTarget" not in block["settings"]:
+        base = st.base_block(spec)
+        block = {"provider": base["provider"], "settings": base.get("longhorn") or {}}
     if block["provider"] != "longhorn" or "backupTarget" not in block["settings"]:
         return None
     lh = block["settings"]

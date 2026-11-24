@@ -1,6 +1,7 @@
 """addons/csi: the Proxmox CSI plugin and the vSphere CSI driver from their pinned upstream
 manifests, their credentials Secrets, and what validate says about them."""
 
+import copy
 import base64
 import hashlib
 import importlib.util
@@ -66,12 +67,19 @@ def test_a_changed_manifest_is_refused(tmp_path):
         csi.load_manifests(LOCK, "proxmox-csi", tmp_path)
 
 
+def mgmt_csi(doc):
+    """Opt MGMT in to block's Proxmox CSI settings with overrides.mgmt, written in full."""
+    block = doc["spec"]["storage"]["block"]
+    block["overrides"] = {"mgmt": {"provider": "proxmox-csi", "proxmoxCSI": copy.deepcopy(block["proxmoxCSI"])}}
+    return doc
+
+
 # --- rendering ------------------------------------------------------------------------------
 
 @needs_manifests
 def test_proxmox_render():
     spec = load_example("proxmox")["spec"]
-    docs = csi.render(spec, "mgmt", csi.load_manifests(LOCK, "proxmox-csi", CRDS))
+    docs = csi.render(spec, "infra", csi.load_manifests(LOCK, "proxmox-csi", CRDS))
     [ns] = by_kind(docs, "Namespace")
     assert ns["metadata"]["name"] == "csi-proxmox"
     assert ns["metadata"]["labels"]["pod-security.kubernetes.io/enforce"] == "privileged"
@@ -90,7 +98,7 @@ def test_proxmox_render():
 @needs_manifests
 def test_vsphere_render_drops_what_dciab_doesnt_use():
     spec = load_example("vsphere")["spec"]
-    docs = csi.render(spec, "mgmt", csi.load_manifests(LOCK, "vsphere-csi", CRDS))
+    docs = csi.render(spec, "infra", csi.load_manifests(LOCK, "vsphere-csi", CRDS))
     assert [d["metadata"]["name"] for d in by_kind(docs, "DaemonSet")] == ["vsphere-csi-node"]
     [ctrl] = by_kind(docs, "Deployment", "vsphere-csi-controller")
     names = [c["name"] for c in ctrl["spec"]["template"]["spec"]["containers"]]
@@ -98,9 +106,9 @@ def test_vsphere_render_drops_what_dciab_doesnt_use():
     assert ctrl["spec"]["replicas"] == 3
     prov = next(c for c in ctrl["spec"]["template"]["spec"]["containers"] if c["name"] == "csi-provisioner")
     assert "--feature-gates=Topology=true" in prov["args"]   # the example has vSphere zones
-    spec["clusters"]["mgmt"]["controlPlane"]["replicas"] = 1
+    spec["clusters"]["infra"]["controlPlane"]["replicas"] = 1
     spec["failureDomains"]["domains"] = []
-    docs = csi.render(spec, "mgmt", csi.load_manifests(LOCK, "vsphere-csi", CRDS))
+    docs = csi.render(spec, "infra", csi.load_manifests(LOCK, "vsphere-csi", CRDS))
     [ctrl] = by_kind(docs, "Deployment", "vsphere-csi-controller")
     assert ctrl["spec"]["replicas"] == 1
     prov = next(c for c in ctrl["spec"]["template"]["spec"]["containers"] if c["name"] == "csi-provisioner")
@@ -109,7 +117,11 @@ def test_vsphere_render_drops_what_dciab_doesnt_use():
 
 def test_render_needs_an_array_driver():
     with pytest.raises(csi.CSIError, match="not an array CSI driver"):
-        csi.driver(load_example("metal3-cluster")["spec"], "mgmt")
+        csi.driver(load_example("metal3-cluster")["spec"], "infra")
+    # MGMT keeps no volumes (ADR 0008, decision 4a): no driver without overrides.mgmt.
+    with pytest.raises(csi.CSIError, match="overrides.mgmt"):
+        csi.driver(load_example("proxmox")["spec"], "mgmt")
+    assert csi.driver(mgmt_csi(load_example("proxmox"))["spec"], "mgmt") == "proxmox-csi"
 
 
 # --- secrets --------------------------------------------------------------------------------
@@ -149,15 +161,15 @@ def test_vsphere_secret(tmp_path):
     (tmp_path / "secrets").mkdir()
     (tmp_path / "secrets" / "vsphere.pw").write_text("pw\n")
     site = load_example("vsphere")
-    conf = decoded(csi.secret(site, "mgmt", tmp_path))["csi-vsphere.conf"]
+    conf = decoded(csi.secret(site, "infra", tmp_path))["csi-vsphere.conf"]
     v = site["spec"]["platform"]["vsphere"]
     assert f'[VirtualCenter "{v["server"]}"]' in conf
     assert f'thumbprint = "{v["thumbprint"]}"' in conf and 'password = "pw"' in conf
-    assert 'cluster-id = "dc1-mgmt"' in conf
+    assert 'cluster-id = "dc1-infra"' in conf
     assert 'topology-categories = "k8s-region,k8s-zone"' in conf
     (tmp_path / "secrets" / "vsphere.pw").write_text('p"w\n')
     with pytest.raises(csi.CSIError, match="quote"):
-        csi.secret(site, "mgmt", tmp_path)
+        csi.secret(site, "infra", tmp_path)
 
 
 # --- install.sh and dciab mgmt ------------------------------------------------------------
@@ -165,11 +177,11 @@ def test_vsphere_secret(tmp_path):
 @needs_manifests
 def test_install_template_needs_no_cluster_and_shows_no_secret(tmp_path):
     env = {**os.environ, "DCIAB_PVE_CSI_TOKEN": "csi-SECRET"}
-    r = subprocess.run([str(INSTALL), str(ROOT / "examples" / "proxmox.yaml"), "mgmt", "--template"],
+    r = subprocess.run([str(INSTALL), str(ROOT / "examples" / "proxmox.yaml"), "infra", "--template"],
                        capture_output=True, text=True, env=env)
     assert r.returncode == 0, r.stderr
     # vSphere: the password file isn't there, and --template doesn't read it.
-    v = subprocess.run([str(INSTALL), str(ROOT / "examples" / "vsphere.yaml"), "mgmt", "--template"],
+    v = subprocess.run([str(INSTALL), str(ROOT / "examples" / "vsphere.yaml"), "infra", "--template"],
                        capture_output=True, text=True)
     assert v.returncode == 0, v.stderr
     assert by_kind([d for d in yaml.safe_load_all(v.stdout) if d], "CSIDriver")
@@ -180,9 +192,12 @@ def test_install_template_needs_no_cluster_and_shows_no_secret(tmp_path):
 
 def test_install_usage():
     assert subprocess.run([str(INSTALL)], capture_output=True).returncode == 2
-    r = subprocess.run([str(INSTALL), str(ROOT / "examples" / "metal3-cluster.yaml"), "mgmt", "--template"],
+    r = subprocess.run([str(INSTALL), str(ROOT / "examples" / "metal3-cluster.yaml"), "infra", "--template"],
                        capture_output=True, text=True)
     assert r.returncode == 1 and "not an array CSI driver" in r.stderr
+    r = subprocess.run([str(INSTALL), str(ROOT / "examples" / "proxmox.yaml"), "mgmt", "--template"],
+                       capture_output=True, text=True)
+    assert r.returncode == 1 and "overrides.mgmt" in r.stderr
 
 
 def test_install_applies_secrets_server_side():
@@ -192,9 +207,9 @@ def test_install_applies_secrets_server_side():
     assert "lib/steps/storage-classes.sh" in text
 
 
-def test_mgmt_installs_array_drivers():
-    step = (ROOT / "lib" / "steps" / "mgmt.sh").read_text().split("step storage", 1)[1]
-    assert "vsphere-csi|proxmox-csi)" in step and 'addons/csi/install.sh" "$config" mgmt "$mgmt_kubeconfig"' in step
+def test_block_storage_installs_array_drivers():
+    text = (ROOT / "lib" / "steps" / "block-storage.sh").read_text()
+    assert "vsphere-csi|proxmox-csi)" in text and 'addons/csi/install.sh" "$config" "$cluster" "$kubeconfig"' in text
 
 
 # --- validate ------------------------------------------------------------------------------
@@ -208,10 +223,14 @@ def test_array_examples_validate_without_storage_warnings(site):
 
 def test_proxmox_csi_on_local_storage_needs_a_zone_on_the_nodes_that_hold_volumes(site):
     doc = load_example("proxmox")
+    doc["spec"]["storage"]["block"]["proxmoxCSI"].update(storage="local-lvm", shared=False)
+    _, report = site.validate(copy.deepcopy(doc))   # MGMT holds no volumes: no zone needed
+    assert not errors(report, "spec.clusters.mgmt.workerPools")
+    doc = mgmt_csi(load_example("proxmox"))
     assert doc["spec"]["clusters"]["mgmt"]["workerPools"] == []
     _, report = site.validate(doc)   # ceph-vm is shared: the plugin needs no zone
     assert not errors(report, "spec.clusters.mgmt.workerPools")
-    doc["spec"]["storage"]["block"]["proxmoxCSI"].update(storage="local-lvm", shared=False)
+    doc["spec"]["storage"]["block"]["overrides"]["mgmt"]["proxmoxCSI"].update(storage="local-lvm", shared=False)
     _, report = site.validate(doc)
     assert "ADR 0010" in errors(report, "spec.clusters.mgmt.workerPools")[0]["fix"]
     doc["spec"]["clusters"]["mgmt"]["failureDomains"] = ["pve01"]
@@ -220,8 +239,8 @@ def test_proxmox_csi_on_local_storage_needs_a_zone_on_the_nodes_that_hold_volume
 
 
 def test_proxmox_csi_shared_is_explicit_not_guessed_from_the_name(site):
-    doc = load_example("proxmox")
-    csi = doc["spec"]["storage"]["block"]["proxmoxCSI"]
+    doc = mgmt_csi(load_example("proxmox"))
+    csi = doc["spec"]["storage"]["block"]["overrides"]["mgmt"]["proxmoxCSI"]
     csi.update(storage="local-ceph", shared=True)   # a shared storage whose name starts with local
     _, report = site.validate(doc)
     assert not errors(report, "spec.clusters.mgmt.workerPools")
@@ -230,7 +249,7 @@ def test_proxmox_csi_shared_is_explicit_not_guessed_from_the_name(site):
     assert errors(report, "spec.clusters.mgmt.workerPools")
     del csi["shared"]
     _, report = site.validate(doc)
-    assert errors(report, "spec.storage.block.proxmoxCSI.shared")[0]["found"] == "missing"
+    assert errors(report, "spec.storage.block.overrides.mgmt.proxmoxCSI.shared")[0]["found"] == "missing"
 
 
 def test_proxmox_csi_on_local_storage_says_volumes_stay_on_their_node(site):

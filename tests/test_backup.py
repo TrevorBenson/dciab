@@ -9,7 +9,7 @@ import sys
 import pytest
 import yaml
 
-from conftest import ROOT, errors, load_example, longhorn_example, warnings
+from conftest import ROOT, errors, load_example, longhorn_example, mgmt_longhorn, warnings
 
 import dciab_backup as bk  # noqa: E402
 import dciab_storage as st  # noqa: E402
@@ -51,14 +51,24 @@ def test_removable_defaults_to_every_seven_days():
     assert bk.offsite(spec)["everyDays"] == 7
 
 
-def test_old_form_reads_mgmts_longhorn_target():
+def test_old_form_reads_the_longhorn_target():
+    """Without spec.backup the site target is block's Longhorn backupTarget, though MGMT runs
+    no Longhorn now (ADR 0008, decision 4a): MGMT's etcd snapshots and CAPI exports still go
+    there. With overrides.mgmt on Longhorn, MGMT's own target comes first."""
     spec = longhorn_example("proxmox")["spec"]
     del spec["backup"]
     spec["storage"]["block"]["longhorn"]["backupTarget"] = "nfs://nas:/lh"
     assert bk.legacy(spec)
+    assert st.cluster_block(spec, "mgmt") is None
     assert bk.site_target(spec) == {"url": "nfs://nas:/lh"}
     assert bk.offsite(spec) is None
-    assert bk.longhorn_target(spec, "mgmt") == {"url": "nfs://nas:/lh"}
+    assert bk.longhorn_target(spec, "infra") == {"url": "nfs://nas:/lh"}
+    legacy = {**spec, "storage": {"longhorn": spec["storage"]["block"]["longhorn"]}}
+    assert bk.site_target(legacy) == {"url": "nfs://nas:/lh"}
+    spec["storage"]["block"]["overrides"] = {"mgmt": {"provider": "longhorn",
+                                                      "longhorn": {"replicaCount": 2, "backupTarget": "nfs://m:/lh"}}}
+    assert bk.site_target(spec) == {"url": "nfs://m:/lh"}
+    assert bk.longhorn_target(spec, "mgmt") == {"url": "nfs://m:/lh"}
     # An array provider has no Longhorn target to fall back on.
     spec = load_example("proxmox")["spec"]
     del spec["backup"]
@@ -66,7 +76,7 @@ def test_old_form_reads_mgmts_longhorn_target():
 
 
 def test_mgmts_longhorn_always_uses_the_site_target():
-    spec = longhorn_example("vsphere")["spec"]
+    spec = mgmt_longhorn(longhorn_example("vsphere"))["spec"]
     spec["storage"]["block"]["longhorn"]["backupTarget"] = "s3://other@s3.example.net"
     assert bk.longhorn_target(spec, "mgmt")["url"] == spec["backup"]["targets"]["site"]["url"]
     # INFRA on the object provider, which isn't built: its own target, else an error.
@@ -81,7 +91,7 @@ def test_mgmts_longhorn_always_uses_the_site_target():
 # --- Longhorn ----------------------------------------------------------------------------
 
 def test_longhorn_classes_name_their_groups():
-    classes = {c["metadata"]["name"]: c["parameters"] for c in st.storage_classes(longhorn_example("vsphere")["spec"], "mgmt")}
+    classes = {c["metadata"]["name"]: c["parameters"] for c in st.storage_classes(longhorn_example("vsphere")["spec"], "infra")}
     assert "recurringJobSelector" not in classes["replicated"]   # Longhorn's default group
     groups = {n: json.loads(p["recurringJobSelector"]) for n, p in classes.items() if n != "replicated"}
     assert groups == {"replicated-retain": [{"name": "platform", "isGroup": True}],
@@ -90,7 +100,7 @@ def test_longhorn_classes_name_their_groups():
 
 
 def test_array_classes_have_no_selector():
-    for c in st.storage_classes(load_example("vsphere")["spec"], "mgmt"):
+    for c in st.storage_classes(load_example("vsphere")["spec"], "infra"):
         assert "recurringJobSelector" not in c["parameters"]
 
 
@@ -99,7 +109,7 @@ def jobs(spec, cluster="mgmt"):
 
 
 def test_mgmt_jobs():
-    spec = longhorn_example("vsphere")["spec"]
+    spec = mgmt_longhorn(longhorn_example("vsphere"))["spec"]
     j = jobs(spec)
     assert set(j) == {"snapshot", "backup"}
     snap, backup = j["snapshot"], j["backup"]
@@ -124,12 +134,19 @@ def test_workload_volume_backups_are_opt_in():
 
 def test_array_providers_get_no_longhorn_jobs():
     with pytest.raises(bk.BackupError, match="decision 6"):
-        bk.longhorn_jobs(load_example("vsphere")["spec"], "mgmt")
+        bk.longhorn_jobs(load_example("vsphere")["spec"], "infra")
+
+
+def test_mgmt_without_longhorn_gets_no_longhorn_jobs():
+    """Longhorn's recurring jobs only on clusters that run Longhorn: by default not MGMT."""
+    for name in ("vsphere", "proxmox", "proxmox-bare", "metal3-cluster"):
+        with pytest.raises(bk.BackupError, match="isn't longhorn"):
+            bk.longhorn_jobs(load_example(name)["spec"], "mgmt")
 
 
 def test_cli_prints_the_jobs(tmp_path):
     cfg = tmp_path / "dciab.yaml"
-    cfg.write_text(yaml.safe_dump(longhorn_example("proxmox")))
+    cfg.write_text(yaml.safe_dump(mgmt_longhorn(longhorn_example("proxmox"))))
     env = {**os.environ, "PYTHONPATH": str(ROOT / "lib")}
     r = subprocess.run([sys.executable, "-m", "dciab_backup", "longhorn-jobs", str(cfg), "mgmt"],
                        capture_output=True, text=True, env=env)
@@ -164,7 +181,7 @@ def test_longhorn_install_for_another_cluster():
     assert v["defaultBackupStore"]["backupTarget"] == "s3://dciab-backup@us-east-1/dc2"
     r = subprocess.run([str(ROOT / "addons" / "longhorn" / "install.sh"), str(ROOT / "examples" / "vsphere.yaml"),
                         "--print-values", "--cluster", "mgmt"], capture_output=True, text=True)
-    assert r.returncode == 1 and "not longhorn" in r.stderr
+    assert r.returncode == 1 and "overrides.mgmt" in r.stderr
 
 
 # --- validate ----------------------------------------------------------------------------
@@ -260,14 +277,14 @@ def test_old_form_warns_with_the_new_form(site):
 
 
 def test_old_longhorn_target_beside_spec_backup(site):
-    doc = longhorn_example("proxmox")
-    lh = doc["spec"]["storage"]["block"]["longhorn"]
+    doc = mgmt_longhorn(longhorn_example("proxmox"))
+    lh = doc["spec"]["storage"]["block"]["overrides"]["mgmt"]["longhorn"]
     lh["backupTarget"] = doc["spec"]["backup"]["targets"]["site"]["url"]
     _, report = site.validate(doc)
-    assert warnings(report, "spec.storage.block.longhorn.backupTarget")
+    assert warnings(report, "spec.storage.block.overrides.mgmt.longhorn.backupTarget")
     lh["backupTarget"] = "nfs://elsewhere:/lh"
     _, report = site.validate(doc)
-    assert "always backs up" in errors(report, "spec.storage.block.longhorn.backupTarget")[0]["fix"]
+    assert "always backs up" in errors(report, "spec.storage.block.overrides.mgmt.longhorn.backupTarget")[0]["fix"]
 
 
 def test_workload_etcd_snapshots_off_warns(site):

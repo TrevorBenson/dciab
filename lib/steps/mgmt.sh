@@ -43,18 +43,20 @@
 #   adopt       the classes and mgmt Helm releases on MGMT take over the moved objects; it
 #               refuses to run unless the moved Cluster is on MGMT. Then it exports MGMT's
 #               CAPI state from MGMT once; a later run retries a failed export
-#   storage     MGMT's block storage (spec.storage.block, with its mgmt override) and the
-#               four StorageClasses, replicated the default (lib/steps/storage-classes.sh).
-#               longhorn: addons/longhorn/install.sh, with recurring snapshots and backups
-#               to the site target (spec.backup, docs/BACKUP.md); vsphere-csi
-#               and proxmox-csi: addons/csi/install.sh, the site's array; existing: the
-#               classes copy the StorageClass the config names. After the move, so a storage
-#               problem never holds up the pivot, and the bootstrap cluster can go once it
-#               finishes
+#   storage     nothing, unless spec.storage.block.overrides.mgmt is set: MGMT keeps no
+#               volumes (ADR 0008, decision 4a), so by default it gets no Longhorn, no CSI
+#               driver and no StorageClass, and the step says so. With overrides.mgmt:
+#               that provider and the four StorageClasses, replicated the default
+#               (lib/steps/block-storage.sh). longhorn: addons/longhorn/install.sh, with
+#               recurring snapshots and backups to the site target (spec.backup,
+#               docs/BACKUP.md); vsphere-csi and proxmox-csi: addons/csi/install.sh, the
+#               site's array; existing: the classes copy the StorageClass the config names.
+#               After the move, so a storage problem never holds up the pivot
 #   backups     MGMT's backup jobs (spec.backup, docs/BACKUP.md): the site target's
 #               credentials Secret (server-side) and CronJobs for etcd snapshots and CAPI
 #               exports, encrypted to the recipients and the backup key. Needs bundle.lock
-#               images.backup pinned
+#               images.backup pinned. The jobs stage on the node's disk (emptyDir) and write
+#               to the target, so they need no StorageClass
 #
 # A Cluster left on both clusters (a move that stopped part-way, or a second Cluster on MGMT
 # from an earlier run whose move moved nothing), or paused on the bootstrap cluster, stops
@@ -276,25 +278,9 @@ fi
 finish_if adopt
 
 step storage
-provider="$(python3 -m dciab_storage provider "$config" mgmt)"
-echo "block storage: $provider"
-case "$provider" in
-  longhorn)
-    # The chart comes from $DCIAB_PAYLOAD/charts when DCIAB_PAYLOAD is set.
-    "$ROOT/addons/longhorn/install.sh" "$config" "$mgmt_kubeconfig" --cluster mgmt
-    ;;
-  vsphere-csi|proxmox-csi)
-    # The manifest comes from $DCIAB_PAYLOAD/providers when DCIAB_PAYLOAD is set.
-    "$ROOT/addons/csi/install.sh" "$config" mgmt "$mgmt_kubeconfig"
-    echo "volume backups: none by DCiaB on $provider; the array's own snapshots and the services' own backups cover it (docs/BACKUP.md)"
-    ;;
-  existing)
-    "$ROOT/lib/steps/storage-classes.sh" "$config" mgmt "$mgmt_kubeconfig"
-    ;;
-  *)
-    die "block storage $provider isn't installed by DCiaB yet (dciab validate says so); choose longhorn, vsphere-csi, proxmox-csi or existing for MGMT"
-    ;;
-esac
+# Nothing on MGMT by default: it keeps no volumes (ADR 0008, decision 4a). Only
+# spec.storage.block.overrides.mgmt gives it block storage and the four StorageClasses.
+"$ROOT/lib/steps/block-storage.sh" "$config" mgmt "$mgmt_kubeconfig"
 finish_if storage
 
 step backups

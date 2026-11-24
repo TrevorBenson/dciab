@@ -16,11 +16,12 @@ _NOT_FIXES = {
     "loadBalancer": "remove bgp: it is only used when mode is bgp",
     "pki": "remove certificate, key and chain: they are only used when mode is import-intermediate",
     "workload": "remove overrides: the workload override is complete on its own and takes no overrides",
+    "mgmt": "remove overrides: the mgmt override is complete on its own and takes no overrides",
 }
 
 
-# The usual block storage provider for MGMT and INFRA, by platform. A hint only: the provider
-# is required and has no default (ADR 0008, decisions 1 and 4).
+# The usual block storage provider for INFRA, by platform. A hint only: the provider is
+# required and has no default (ADR 0008, decisions 1, 4 and 4a).
 USUAL_BLOCK_PROVIDER = {"vsphere": ("vSphere", "vsphere-csi"), "proxmox": ("Proxmox", "proxmox-csi"),
                         "metal3": ("Metal3", "longhorn")}
 
@@ -51,7 +52,7 @@ def _block_provider_hint(doc: Any, f: Finding) -> Finding:
     platform = spec.get("platform") if isinstance(spec, dict) else None
     ptype = platform.get("type") if isinstance(platform, dict) else None
     usual = USUAL_BLOCK_PROVIDER.get(ptype) if isinstance(ptype, str) else None
-    fix = ("add provider: required for MGMT and INFRA, with no default (ADR 0008). "
+    fix = ("add provider: INFRA's block storage, required, with no default (ADR 0008). "
            + (f"On {usual[0]}, the usual choice is {usual[1]}, with its settings block" if usual else
               "Usually vsphere-csi on vSphere, proxmox-csi on Proxmox, longhorn on bare metal (Metal3)"))
     return Finding(f.severity, f.path, f.found, fix, f.line)

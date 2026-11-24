@@ -1,7 +1,7 @@
 """Block storage for one cluster of a site config.
 
-    python3 -m dciab_storage provider <config> <cluster>            the cluster's block provider; none for a
-                                                                    workload cluster DCiaB gives none
+    python3 -m dciab_storage provider <config> <cluster>            the cluster's block provider; none for MGMT
+                                                                    or a workload cluster DCiaB gives none
     python3 -m dciab_storage existing <config> <cluster>            provider existing: the StorageClass it copies
     python3 -m dciab_storage classes <config> <cluster> [--source FILE]
                                                                     the four StorageClasses, as a YAML stream;

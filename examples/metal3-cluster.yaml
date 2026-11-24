@@ -65,7 +65,7 @@ spec:
       lbPool: 10.20.110.200-10.20.110.209
       podCIDR: 10.240.0.0/16
       serviceCIDR: 10.241.0.0/16
-      controlPlane: {replicas: 3, cpu: 4, memoryGiB: 16, diskGiB: 100, dataDiskGiB: 200}   # Longhorn's disk: no workers here
+      controlPlane: {replicas: 3, cpu: 4, memoryGiB: 16, diskGiB: 100}   # MGMT keeps no volumes: no data disk
       workerPools: []
     infra:
       apiVIP: 10.20.110.11
@@ -77,9 +77,9 @@ spec:
       workerPools:
         - {name: general, replicas: 4, cpu: 16, memoryGiB: 64, diskGiB: 150, dataDiskGiB: 500}   # Longhorn's own disk
 
-  storage:
+  storage:                               # INFRA's block storage. MGMT keeps no volumes: [opt] block.overrides.mgmt (ADR 0008, 4a)
     block:
-      provider: longhorn                 # MGMT and INFRA on vSphere VMs, each node with a Longhorn disk
+      provider: longhorn                 # INFRA on vSphere VMs, each worker with a Longhorn disk
       longhorn:
         replicaCount: 3
       overrides:                         # [opt] workload clusters don't inherit block; without this, tenants bring their own

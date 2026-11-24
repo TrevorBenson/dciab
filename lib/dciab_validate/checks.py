@@ -568,13 +568,14 @@ class Checker:
                 out[item[key]] = item
         return out
 
-    # -- block storage (ADR 0008, decisions 4 and 5) ----------------------------------
+    # -- block storage (ADR 0008, decisions 4, 4a and 5) ------------------------------
 
     def _tiers(self) -> List[str]:
-        """The tiers DCiaB gives block storage: MGMT and INFRA always, workload clusters only
-        through overrides.workload (tenants otherwise bring their own)."""
+        """The tiers DCiaB gives block storage: INFRA always, MGMT only through overrides.mgmt
+        (it keeps no volumes otherwise), workload clusters only through overrides.workload
+        (tenants otherwise bring their own)."""
         over = (st.base_block(self.spec).get("overrides") or {})
-        return ["mgmt", "infra"] + (["workload"] if "workload" in over else [])
+        return [t for t in st.TIERS if t == "infra" or t in over]
 
     def _tier_clusters(self, tier: str):
         """(path, cluster, class) of each cluster in a tier."""
@@ -589,9 +590,9 @@ class Checker:
         if st.legacy(self.spec):
             return ("spec", "storage", "longhorn") + ((field,) if field else ())
         base = ("spec", "storage", "block")
-        if tier == "workload":
-            # The workload override stands alone: nothing in it comes from block.
-            return base + ("overrides", "workload", key or "provider") + ((field,) if field else ())
+        if tier in st.STANDALONE:
+            # The mgmt and workload overrides stand alone: nothing in them comes from block.
+            return base + ("overrides", tier, key or "provider") + ((field,) if field else ())
         over = (self.spec["storage"]["block"].get("overrides") or {}).get(tier) or {}
         if key is None:
             return base + (("overrides", tier, "provider") if "provider" in over else ("provider",))
@@ -608,7 +609,10 @@ class Checker:
                                                         "longhorn": self.spec["storage"]["longhorn"]}}},
                                  sort_keys=False, default_flow_style=None).strip().replace("\n", "; ")
             self.warn(("spec", "storage", "longhorn"), "the old form of block storage",
-                      f"write it as {new} (ADR 0008); the old form is accepted for one minor release")
+                      f"write it as {new} (ADR 0008); the old form is accepted for one minor release. "
+                      "It is INFRA's storage now: MGMT keeps no volumes unless spec.storage.block.overrides.mgmt "
+                      "asks for them (decision 4a), and dciab mgmt leaves a Longhorn an earlier run installed "
+                      "on MGMT in place (docs/MGMT.md)")
         else:
             over = self.spec["storage"]["block"].get("overrides") or {}
             base_provider = self.spec["storage"]["block"]["provider"]
@@ -618,6 +622,9 @@ class Checker:
                     if key in o and key != st.SETTINGS[provider]:
                         self.error(("spec", "storage", "block", "overrides", tier, key), f"set for provider {provider}",
                                    "remove it, or set provider in this override to the one it belongs to")
+        if "mgmt" not in self._tiers():
+            self.notes.append("storage: MGMT keeps no volumes (ADR 0008, decision 4a); dciab mgmt installs no Longhorn, "
+                              "CSI driver or StorageClass there. spec.storage.block is INFRA's")
         for tier in self._tiers():
             self._check_tier_storage(tier)
         for cpath, c, klass in self._all_clusters():
@@ -749,7 +756,7 @@ class Checker:
         import yaml
 
         new = {"backup": {"targets": {"site": target, "offsite": {"mode": "copy", "url": "<another location>"}}}}
-        self.warn(("spec", "backup"), "missing: the backup target is read from MGMT's Longhorn settings",
+        self.warn(("spec", "backup"), "missing: the backup target is read from the Longhorn settings' backupTarget",
                   "move it to spec.backup (ADR 0009): " +
                   yaml.safe_dump(new, sort_keys=False, default_flow_style=None).strip().replace("\n", "; ") +
                   ". Without it there is no off-site copy")
@@ -886,8 +893,10 @@ class Checker:
                 self.error(dpath, str(g["dataDiskGiB"]),
                            "remove it: CAPMOX can't give a machine a second disk yet; use provider proxmox-csi")
             elif provider is None:
-                self.warn(dpath, f"{g['dataDiskGiB']}, on a workload cluster DCiaB gives no block storage",
-                          "remove it, or opt in with spec.storage.block.overrides.workload {provider: longhorn, ...}: "
+                what = "MGMT, which keeps no volumes" if tier == "mgmt" else \
+                    "a workload cluster DCiaB gives no block storage"
+                self.warn(dpath, f"{g['dataDiskGiB']}, on {what}",
+                          f"remove it, or opt in with spec.storage.block.overrides.{tier} {{provider: longhorn, ...}}: "
                           "the data disk is only for Longhorn, so these machines don't get it")
             elif provider != "longhorn":
                 self.warn(dpath, f"{g['dataDiskGiB']}, with block storage {provider}",
