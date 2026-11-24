@@ -75,6 +75,17 @@ jobs:
           oras=images/lab-runner/build/bin/oras
           echo "$GH_TOKEN" | sudo podman login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
           echo "$GH_TOKEN" | "$oras" login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          # The Rocky bootc base (the SIG recipe), once per recipe commit and manifest. Hosted
+          # runners can't build it, but they can pull it: pin the digest as
+          # nodeImages.bootc.baseImage and every other build (and pull request job) uses it.
+          read -r manifest commit < <(python3 -c 'import yaml;b=yaml.safe_load(open("bundle.lock"))["nodeImages"]["bootc"];print(b["manifest"],b["sigRecipe"]["commit"][:12])')
+          base="ghcr.io/$owner/dciab-rocky-bootc-base:$manifest-$commit"
+          base_note="base: already published \`$base\`"
+          if ! skopeo inspect --raw "docker://$base" >/dev/null 2>&1; then
+            sudo podman push --digestfile "$RUNNER_TEMP/base.digest" "localhost/dciab-rocky-bootc-base:$manifest" "docker://$base"
+            base_note="base: \`$base@$(cat "$RUNNER_TEMP/base.digest")\` (pin as nodeImages.bootc.baseImage)"
+          fi
+          echo "- $base_note" >> "$GITHUB_STEP_SUMMARY"
           # A tag is published once: bundle.lock pins its digests, so it is never overwritten.
           if skopeo inspect --raw "docker://$image" >/dev/null 2>&1 || "$oras" manifest fetch "$disk" >/dev/null 2>&1; then
             echo "already published: $TAG"; exit 0

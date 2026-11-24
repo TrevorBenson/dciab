@@ -90,3 +90,10 @@ def test_fetch_script_needs_a_tag_and_oras():
 def test_ci_shellchecks_the_new_scripts():
     ci = (ROOT / ".github/workflows/ci.yml").read_text()
     assert "hack/lab/runner-image-id.sh" in ci and "hack/lab/fetch-runner-disk.sh" in ci
+
+
+def test_the_published_base_is_pushed_once_per_recipe_commit():
+    publish = next(s for s in wf()["jobs"]["image"]["steps"] if s.get("name", "").startswith("Publish"))
+    run = publish["run"]
+    assert "dciab-rocky-bootc-base:$manifest-$commit" in run
+    assert "skopeo inspect" in run.split("dciab-rocky-bootc-base:$manifest-$commit", 1)[1].split("podman push", 1)[0]
