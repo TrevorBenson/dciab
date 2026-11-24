@@ -164,7 +164,7 @@ See also: [ADR 0010, decision 9](adr/0010-failure-domains.md).
 
 | Key | Type | Required | Default | Allowed | Description |
 | --- | --- | --- | --- | --- | --- |
-| `spec.time.servedBy` | string | required |  | `dciab`, `site` | dciab: DCiaB serves time on the node-facing addresses (the bootstrap host on Day 0, the platform after); site: the site's own NTP servers |
+| `spec.time.servedBy` | string | required |  | `dciab`, `site` | dciab: DCiaB serves time on the node-facing addresses (the bootstrap host on Day 0, the platform after); for now it needs spec.hypervisors, whose dciab services runs the Day 0 NTP. site: the site's own NTP servers |
 | `spec.time.upstream` | array of string | required when `servedBy: dciab` |  | no duplicates | servedBy dciab: the NTP servers DCiaB syncs from; an explicit empty list means none (an isolated site) |
 | `spec.time.serveLocalClock` | boolean | required when `servedBy: dciab` |  |  | servedBy dciab: true only with no upstream; DCiaB's own clock is then the site's time |
 | `spec.time.servers` | array of string | required when `servedBy: site` |  | at least 1 item; no duplicates | what nodes, hypervisors and BMCs use. servedBy site: the site's NTP servers (required). servedBy dciab: optional, the DNS service addresses (network.dnsServiceIPs), where DCiaB serves NTP |
@@ -238,9 +238,9 @@ See also: [Backups](BACKUP.md), [ADR 0009: backup and DR](adr/0009-backup-and-dr
 | `spec.backup.tiers.mgmt` | object | optional |  |  | MGMT's backups |
 | `spec.backup.tiers.mgmt.target` | string | optional | `site` | `site`, `objectStore` | site, always: MGMT never backs up to INFRA (validate rejects anything else) |
 | `spec.backup.tiers.infra` | object | optional |  |  | INFRA's backups |
-| `spec.backup.tiers.infra.target` | string | optional | `objectStore` | `site`, `objectStore` | objectStore (the default: storage.object, SeaweedFS on INFRA) or site |
+| `spec.backup.tiers.infra.target` | string | optional | `objectStore` | `site`, `objectStore` | objectStore (the default: INFRA's object store, SeaweedFS by default; spec.storage.object is planned) or site |
 | `spec.backup.tiers.workloads` | object | optional |  |  | every workload cluster's backups |
-| `spec.backup.tiers.workloads.target` | string | optional | `objectStore` | `site`, `objectStore` | objectStore (the default) or site |
+| `spec.backup.tiers.workloads.target` | string | optional | `objectStore` | `site`, `objectStore` | objectStore (the default: INFRA's object store; spec.storage.object is planned) or site |
 | `spec.backup.tiers.workloads.etcdSnapshots` | boolean | optional | `true` |  | default true: every workload cluster's etcd is snapshotted |
 | `spec.backup.tiers.workloads.volumeBackups` | boolean | optional | `false` |  | default false: tenants opt volumes in; true backs up every volume of the replicated classes |
 | `spec.backup.key` | object | optional |  |  | optional: the backup key's public half (ADR 0009, decision 10). Without it, DCiaB generates one and seals its private half to spec.bootstrap.recipients |
@@ -530,7 +530,7 @@ Used at: `spec.workloadClusters[].controlPlane`, `controlPlane` in [vmCluster](#
 | `cpu` | integer | required |  | at least 2 | vCPUs per control plane VM, at least 2 |
 | `memoryGiB` | integer | required |  | at least 4 | memory per control plane VM, in GiB, at least 4 |
 | `diskGiB` | integer | required |  | at least 25 | the root disk, in GiB, at least 25. It holds the OS, the container images and etcd |
-| `dataDiskGiB` | integer | optional |  | at least 10 | optional, vSphere only: a second disk, in GiB (at least 10), mounted at /var/lib/longhorn so Longhorn never writes to the root disk etcd uses. Applied only when the cluster's block storage is Longhorn; ignored, with a note from validate and cluster-values, on Proxmox (CAPMOX can't add a second disk) and with other providers |
+| `dataDiskGiB` | integer | optional |  | at least 10 | optional, vSphere only: a second disk, in GiB (at least 10), mounted at /var/lib/longhorn so Longhorn never writes to the root disk etcd uses. Applied only when the cluster's block storage is Longhorn. On Proxmox validate rejects it (CAPMOX can't add a second disk); with no block storage or another provider, validate warns and the machines don't get it |
 
 ### vmWorkerPool
 
@@ -543,7 +543,7 @@ Used at: `spec.workloadClusters[].workerPools[]`, `workerPools[]` in [vmCluster]
 | `cpu` | integer | required |  | at least 2 | vCPUs per worker VM, at least 2 |
 | `memoryGiB` | integer | required |  | at least 4 | memory per worker VM, in GiB, at least 4 |
 | `diskGiB` | integer | required |  | at least 25 | the root disk, in GiB, at least 25 |
-| `dataDiskGiB` | integer | optional |  | at least 10 | optional, vSphere only: a second disk, in GiB (at least 10), mounted at /var/lib/longhorn so Longhorn never writes to the root disk. Applied only when the cluster's block storage is Longhorn; ignored, with a note, on Proxmox and with other providers |
+| `dataDiskGiB` | integer | optional |  | at least 10 | optional, vSphere only: a second disk, in GiB (at least 10), mounted at /var/lib/longhorn so Longhorn never writes to the root disk. Applied only when the cluster's block storage is Longhorn. On Proxmox validate rejects it; with no block storage or another provider, validate warns and the machines don't get it |
 | `failureDomains` | [domainList](#types) | optional |  |  | optional: the failure domains this pool uses (default: the cluster's) |
 
 ### vsphereCSI

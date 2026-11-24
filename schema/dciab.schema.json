@@ -310,7 +310,7 @@
         "cpu": {"type": "integer", "minimum": 2, "description": "vCPUs per control plane VM, at least 2"},
         "memoryGiB": {"type": "integer", "minimum": 4, "description": "memory per control plane VM, in GiB, at least 4"},
         "diskGiB": {"type": "integer", "minimum": 25, "description": "the root disk, in GiB, at least 25. It holds the OS, the container images and etcd"},
-        "dataDiskGiB": {"type": "integer", "minimum": 10, "description": "optional, vSphere only: a second disk, in GiB (at least 10), mounted at /var/lib/longhorn so Longhorn never writes to the root disk etcd uses. Applied only when the cluster's block storage is Longhorn; ignored, with a note from validate and cluster-values, on Proxmox (CAPMOX can't add a second disk) and with other providers"}
+        "dataDiskGiB": {"type": "integer", "minimum": 10, "description": "optional, vSphere only: a second disk, in GiB (at least 10), mounted at /var/lib/longhorn so Longhorn never writes to the root disk etcd uses. Applied only when the cluster's block storage is Longhorn. On Proxmox validate rejects it (CAPMOX can't add a second disk); with no block storage or another provider, validate warns and the machines don't get it"}
       }
     },
     "vmWorkerPool": {
@@ -323,7 +323,7 @@
         "cpu": {"type": "integer", "minimum": 2, "description": "vCPUs per worker VM, at least 2"},
         "memoryGiB": {"type": "integer", "minimum": 4, "description": "memory per worker VM, in GiB, at least 4"},
         "diskGiB": {"type": "integer", "minimum": 25, "description": "the root disk, in GiB, at least 25"},
-        "dataDiskGiB": {"type": "integer", "minimum": 10, "description": "optional, vSphere only: a second disk, in GiB (at least 10), mounted at /var/lib/longhorn so Longhorn never writes to the root disk. Applied only when the cluster's block storage is Longhorn; ignored, with a note, on Proxmox and with other providers"},
+        "dataDiskGiB": {"type": "integer", "minimum": 10, "description": "optional, vSphere only: a second disk, in GiB (at least 10), mounted at /var/lib/longhorn so Longhorn never writes to the root disk. Applied only when the cluster's block storage is Longhorn. On Proxmox validate rejects it; with no block storage or another provider, validate warns and the machines don't get it"},
         "failureDomains": {"$ref": "#/$defs/domainList", "description": "optional: the failure domains this pool uses (default: the cluster's)"}
       }
     },
@@ -503,9 +503,9 @@
           "additionalProperties": false,
           "properties": {
             "mgmt": {"type": "object", "additionalProperties": false, "properties": {"target": {"enum": ["site", "objectStore"], "description": "site, always: MGMT never backs up to INFRA (validate rejects anything else)", "default": "site"}}, "description": "MGMT's backups"},
-            "infra": {"type": "object", "additionalProperties": false, "properties": {"target": {"enum": ["site", "objectStore"], "description": "objectStore (the default: storage.object, SeaweedFS on INFRA) or site", "default": "objectStore"}}, "description": "INFRA's backups"},
+            "infra": {"type": "object", "additionalProperties": false, "properties": {"target": {"enum": ["site", "objectStore"], "description": "objectStore (the default: INFRA's object store, SeaweedFS by default; spec.storage.object is planned) or site", "default": "objectStore"}}, "description": "INFRA's backups"},
             "workloads": {"type": "object", "additionalProperties": false, "description": "every workload cluster's backups", "properties": {
-              "target": {"enum": ["site", "objectStore"], "description": "objectStore (the default) or site", "default": "objectStore"},
+              "target": {"enum": ["site", "objectStore"], "description": "objectStore (the default: INFRA's object store; spec.storage.object is planned) or site", "default": "objectStore"},
               "etcdSnapshots": {"type": "boolean", "description": "default true: every workload cluster's etcd is snapshotted", "default": true},
               "volumeBackups": {"type": "boolean", "description": "default false: tenants opt volumes in; true backs up every volume of the replicated classes", "default": false}
             }}
@@ -953,7 +953,7 @@
       "additionalProperties": false,
       "required": ["servedBy"],
       "properties": {
-        "servedBy": {"enum": ["dciab", "site"], "description": "dciab: DCiaB serves time on the node-facing addresses (the bootstrap host on Day 0, the platform after); site: the site's own NTP servers"},
+        "servedBy": {"enum": ["dciab", "site"], "description": "dciab: DCiaB serves time on the node-facing addresses (the bootstrap host on Day 0, the platform after); for now it needs spec.hypervisors, whose dciab services runs the Day 0 NTP. site: the site's own NTP servers"},
         "upstream": {
           "type": "array",
           "uniqueItems": true,

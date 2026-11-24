@@ -160,3 +160,54 @@ def test_docs_index_links_every_doc():
 
 def test_readme_links_the_docs_index():
     assert "(docs/README.md)" in (ROOT / "README.md").read_text(encoding="utf-8")
+
+
+def test_isolated_and_cluster_modules_defaults_match_the_code(site):
+    """Leaving the key out acts as the schema's default does."""
+    from conftest import load_example, warnings
+    from dciab_cluster.values import cluster_values
+
+    net = SCHEMA["$defs"]["network"]["properties"]
+    vs = SCHEMA["$defs"]["vsphere"]["properties"]
+
+    doc = load_example("proxmox")
+    doc["spec"]["network"]["upstreamResolvers"] = []
+    doc["spec"]["network"]["isolated"] = net["isolated"]["default"]
+    _, explicit = site.validate(doc)
+    del doc["spec"]["network"]["isolated"]
+    _, absent = site.validate(doc)
+    assert warnings(absent, "spec.network.upstreamResolvers")
+    assert warnings(absent) == warnings(explicit)
+
+    ca = "-----BEGIN CERTIFICATE-----\nMIIBdummy\n-----END CERTIFICATE-----\n"
+    doc = load_example("vsphere")
+    doc["spec"]["platform"]["vsphere"].pop("clusterModules", None)
+    absent = cluster_values(doc, "infra", ca)
+    doc["spec"]["platform"]["vsphere"]["clusterModules"] = vs["clusterModules"]["default"]
+    assert cluster_values(doc, "infra", ca) == absent
+
+
+def test_dependent_required_finding():
+    from dciab_validate.schema_check import check
+
+    domain = {"name": "az1", "vsphere": {"computeCluster": "c1", "hostGroup": "az1-hosts"}}
+    doc = {"apiVersion": "dciab.io/v1alpha1", "kind": "Site", "metadata": {"name": "dc1"},
+           "spec": {"failureDomains": {"domains": [domain]}}}
+    path = ("spec", "failureDomains", "domains", 0, "vsphere")
+    [f] = [f for f in check(doc, SCHEMA) if f.path == path]
+    assert f.found == "a field without the one it needs"
+    assert "vmGroup" in f.fix and "hostGroup" in f.fix
+
+
+def test_fix_hints_stay_short():
+    """A missing key's or a wrong type's fix carries the first sentence of the description only."""
+    from dciab_validate.schema_check import check
+
+    doc = {"apiVersion": "dciab.io/v1alpha1", "kind": "Site", "metadata": {"name": "dc1"},
+           "spec": {"bootstrap": {"interface": "eth0", "recipients": []},
+                    "platform": {"type": "proxmox", "proxmox": {"vlanTag": "a"}}}}
+    found = {f.path: f.fix for f in check(doc, SCHEMA)}
+    assert found[("spec", "bootstrap", "address")] == \
+        "add address: the bootstrap host's IPv4 address on the node network"
+    assert found[("spec", "platform", "proxmox", "vlanTag")] == \
+        "must be a whole number: the VLAN tag on node VMs' NIC, 1-4094, for a VLAN-aware bridge"
