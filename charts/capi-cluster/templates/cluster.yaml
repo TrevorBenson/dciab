@@ -33,6 +33,13 @@ spec:
         - class: default
           name: {{ .name | quote }}
           replicas: {{ .replicas }}
+          {{- if .failureDomain }}
+          {{- if eq $v.class "metal3" }}
+          failureDomain: {{ .failureDomain | quote }}
+          {{- else if eq $v.class "vsphere" }}
+          failureDomain: {{ printf "%s-%s" $v.name .failureDomain | quote }}
+          {{- end }}
+          {{- end }}
           variables:
             overrides:
               {{- if $vm }}
@@ -42,6 +49,11 @@ spec:
               - name: hostSelector
                 value: {{ toJson .hostSelector }}
               {{- end }}
+              {{- if and .failureDomain (eq $v.class "proxmox") }}
+              # CAPMOX has no failure domains yet: the class pins the pool to the domain's node.
+              - name: failureDomain
+                value: {{ .failureDomain | quote }}
+              {{- end }}
         {{- end }}
     {{- end }}
     variables:
@@ -49,6 +61,10 @@ spec:
         value: {{ $v.apiVIP | quote }}
       - name: registryMirror
         value: {{ $v.nodes.registryMirror | quote }}
+      - name: mirroredRegistries
+        value: {{ toJson $v.nodes.mirroredRegistries }}
+      - name: podSecurityExemptNamespaces
+        value: {{ toJson $v.podSecurity.exemptNamespaces }}
       - name: trustBundle
         value: {{ $v.nodes.trustBundle | toJson }}
       - name: ntpServers
@@ -59,8 +75,13 @@ spec:
       - name: vipInterface
         value: {{ . | quote }}
       {{- end }}
-      {{- with $v.nodes.oidc }}
-      - name: oidc
+      {{- if $v.controlPlane.schedulable }}
+      # No worker nodes: the control plane nodes run the workloads.
+      - name: controlPlaneSchedulable
+        value: true
+      {{- end }}
+      {{- with $v.nodes.authentication }}
+      - name: authentication
         value: {{ toJson . }}
       {{- end }}
       {{- if $vm }}
@@ -69,10 +90,42 @@ spec:
         value: {{ toJson $v.controlPlane.machine }}
       - name: dnsServers
         value: {{ toJson $v.nodes.dnsServers }}
+      {{- with $v.nodes.mtu }}
+      - name: mtu
+        value: {{ . }}
+      {{- end }}
+      {{- with $v.storageNetworks }}
+      - name: storageNetworks
+        value:
+          {{- range . }}
+          - name: {{ .name | quote }}
+            {{- if eq $v.class "proxmox" }}
+            {{- with .bridge }}
+            bridge: {{ . | quote }}
+            {{- end }}
+            {{- with .vlan }}
+            vlan: {{ . }}
+            {{- end }}
+            {{- else }}
+            portGroup: {{ .portGroup | quote }}
+            {{- end }}
+            {{- with .mtu }}
+            mtu: {{ . }}
+            {{- end }}
+          {{- end }}
+      {{- end }}
       {{- end }}
       {{- if eq $v.class "vsphere" }}
       - name: vsphere
         value: {{ toJson $v.vsphere }}
+      {{- if $v.vsphereFailureDomains }}
+      - name: zones
+        value: true
+      {{- end }}
+      {{- if and (hasKey $v "clusterModules") (not $v.clusterModules) }}
+      - name: disableClusterModule
+        value: true
+      {{- end }}
       {{- end }}
       {{- if eq $v.class "proxmox" }}
       - name: proxmox
@@ -82,6 +135,10 @@ spec:
           addresses: [{{ $v.network.nodeIPRange | quote }}]
           prefix: {{ $v.network.prefix }}
           gateway: {{ $v.network.gateway | quote }}
+      {{- with $v.topology }}
+      - name: topology
+        value: {{ toJson . }}
+      {{- end }}
       {{- end }}
       {{- if eq $v.class "metal3" }}
       - name: image
@@ -89,4 +146,8 @@ spec:
       # Cluster-level host selector: the control plane's. Worker pools override it.
       - name: hostSelector
         value: {{ toJson $v.controlPlane.hostSelector }}
+      {{- with $v.metal3.failureDomains }}
+      - name: failureDomains
+        value: {{ toJson . }}
+      {{- end }}
       {{- end }}

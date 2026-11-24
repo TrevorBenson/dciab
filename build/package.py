@@ -14,8 +14,9 @@
   Run archive.py sums afterwards: SHA256SUMS covers the SBOMs.
 - package: writes DIR/dciab-<VERSION>.tar: the repository paths in SOURCES (dciab, its
   libraries, charts, add-ons, docs, examples, bundle.lock), with the payload under
-  payload/, all in one folder dciab-<VERSION>/. A file under SOURCES that looks like a
-  site secret fails the build. Its MANIFEST lists the sha256 of every other file. With
+  payload/, all in one folder dciab-<VERSION>/. In a git checkout only files git tracks
+  ship. A file under SOURCES, tracked or not, that looks like a site secret fails the
+  build. Its MANIFEST lists the sha256 of every other file. With
   --signing-key (a cosign key; its password in COSIGN_PASSWORD) MANIFEST.sig and
   payload/SHA256SUMS.sig sign MANIFEST and SHA256SUMS. Entries are sorted, owned by
   0:0 and dated SOURCE_DATE_EPOCH (or the last commit), so the same inputs give the same
@@ -33,13 +34,14 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
 import tarfile
 import tempfile
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence, Set, Tuple
 
 import yaml
 
@@ -64,8 +66,6 @@ SOURCES = [
     "charts", "addons",         # lib/steps/mgmt.sh, capi-providers.sh
     # Run at the site by lib/steps/capi-providers.sh.
     "hack/fetch_crds.py", "hack/render_components.py",
-    # dciab services reads the base image from its Containerfile and builds it.
-    "images/day0-chrony",
     "README.md", "docs", "examples",
 ]
 # Inside those paths, files a checkout or a run leaves behind are skipped: caches, byte
@@ -73,19 +73,34 @@ SOURCES = [
 SKIP_DIRS = {"__pycache__", "tests"}
 SKIP_SUFFIXES = (".pyc", ".pyo", ".swp", "~")
 # Defence in depth: a file under SOURCES that looks like a site secret fails the build,
-# even when it would be skipped. The archive is signed and copied to every site, so a
-# leaked secret can't be taken back. These match what the docs tell operators to create
-# (.gitignore has the same names):
-SECRET_DIRS = {"secrets"}                       # the examples' ./secrets/ folder
+# even when it would be skipped or isn't tracked by git. The archive is signed and copied
+# to every site, so a leaked secret can't be taken back. These match what the docs tell
+# operators to create, and the usual key and credential formats. .gitignore lists the same
+# names, so git doesn't track them either. Names are compared in lower case.
+SECRET_DIRS = {"secrets"}                       # the examples' ./secrets/ folder, any case
 SECRET_SUFFIXES = (".key", ".pw", ".env",       # private keys, passwords, env files
                    ".age",                      # sealed site secrets (root passwords, the CA key)
-                   ".kubeconfig")
-SECRET_NAMES = {".env", "kubeconfig"}
+                   ".kubeconfig",
+                   ".p12", ".pfx", ".jks",      # PKCS#12 and Java keystores
+                   ".ppk",                      # PuTTY private keys
+                   ".htpasswd")
+SECRET_NAMES = {".env", "kubeconfig", "htpasswd", ".htpasswd"}
 # Matched in the file's contents, so a public certificate (ca.crt, a .pem holding only
-# certificates) still ships while a private key in any file doesn't.
+# certificates, a .pub key) still ships while a private key in any file doesn't.
 SECRET_MARKERS = (b"PRIVATE KEY-----",          # PEM private keys: RSA, EC, OpenSSH, PKCS#8
                   b"AGE-SECRET-KEY-1",          # an age identity
-                  b"client-key-data:")          # a kubeconfig with a client key
+                  b"client-key-data:",          # a kubeconfig with a client key
+                  b"PuTTY-User-Key-File-")      # a PuTTY private key
+SECRET_MAGIC = (b"\xfe\xed\xfe\xed",            # a Java keystore (JKS)
+                b"\xce\xce\xce\xce")            # a JCEKS keystore
+# An htpasswd line: user:hash, with a bcrypt, Apache MD5 or SHA-1 hash.
+HTPASSWD_LINE = re.compile(rb"^[^\s:#]+:(\$2[aby]\$\d\d\$|\$apr1\$|\{SHA\})", re.MULTILINE)
+# DER private keys start with a version INTEGER: 0 for PKCS#1 and PKCS#8, 1 then the key's
+# OCTET STRING for SEC1 (EC), 3 for a PKCS#12 bundle. Certificates and public keys don't.
+DER_KEY_STARTS = (b"\x02\x01\x00", b"\x02\x01\x01\x04", b"\x02\x01\x03")
+# An encrypted PKCS#8 key starts with its encryption algorithm: PBES2 or a PKCS#12 PBE.
+DER_PBE_OIDS = (b"\x06\x09\x2a\x86\x48\x86\xf7\x0d\x01\x05\x0d",
+                b"\x06\x0a\x2a\x86\x48\x86\xf7\x0d\x01\x0c\x01")
 PLATFORM = {"os": "linux", "architecture": "amd64"}
 
 
@@ -203,9 +218,52 @@ def skipped(rel: Path) -> bool:
             or rel.name.endswith(SKIP_SUFFIXES))
 
 
+def der_sequence(data: bytes, whole: bool = True) -> Optional[bytes]:
+    """The body of the DER SEQUENCE data starts with, or None. whole: it must span all of data."""
+    if len(data) < 2 or data[0] != 0x30:
+        return None
+    n, start = data[1], 2
+    if n & 0x80:
+        width = n & 0x7F
+        if not 1 <= width <= 4 or len(data) < 2 + width:
+            return None
+        n, start = int.from_bytes(data[2:2 + width], "big"), 2 + width
+    if (start + n != len(data)) if whole else (start + n > len(data)):
+        return None
+    return data[start:start + n]
+
+
+def der_private_key(data: bytes) -> bool:
+    """data is a DER private key or PKCS#12 bundle, plain or encrypted."""
+    body = der_sequence(data)
+    if body is None:
+        return False
+    if body.startswith(DER_KEY_STARTS):
+        return True
+    algorithm = der_sequence(body, whole=False)
+    return algorithm is not None and algorithm.startswith(DER_PBE_OIDS)
+
+
+def kubeconfig_credential(data: bytes) -> bool:
+    """data is a kubeconfig with a token or password under users."""
+    if b"users:" not in data or not (b"token:" in data or b"password:" in data):
+        return False
+    try:
+        docs = list(yaml.safe_load_all(data))
+    except yaml.YAMLError:
+        return False
+    for doc in docs:
+        users = doc.get("users") if isinstance(doc, dict) else None
+        for entry in users if isinstance(users, list) else []:
+            user = entry.get("user") if isinstance(entry, dict) else None
+            if isinstance(user, dict) and (user.get("token") or user.get("password")):
+                return True
+    return False
+
+
 def secret_reason(path: Path, rel: Path) -> Optional[str]:
     """Why path looks like a site secret, or None. Contents are read only for files that ship."""
-    if any(part in SECRET_DIRS for part in rel.parts[:-1]):
+    if any(part.lower() in SECRET_DIRS for part in rel.parts[:-1]):
         return "in a secrets/ folder"
     name = rel.name.lower()
     if name in SECRET_NAMES or name.endswith(SECRET_SUFFIXES):
@@ -217,6 +275,14 @@ def secret_reason(path: Path, rel: Path) -> Optional[str]:
     for marker in SECRET_MARKERS:
         if marker in data:
             return f"contains {marker.decode()!r}"
+    if data.startswith(SECRET_MAGIC):
+        return "a Java keystore"
+    if der_private_key(data):
+        return "a DER private key or PKCS#12 bundle"
+    if HTPASSWD_LINE.search(data):
+        return "an htpasswd entry"
+    if kubeconfig_credential(data):
+        return "a kubeconfig with a token or password"
     return None
 
 
@@ -241,24 +307,53 @@ def walk(base: Path, rel: Path) -> List[Path]:
     return out
 
 
-def source_files(root: Path = ROOT) -> Dict[str, Path]:
+def tracked_files(root: Path, runner: Runner = archive.run_bytes) -> Optional[Set[str]]:
+    """The files git tracks under root, or None when root isn't a git checkout.
+
+    A file someone left in a packaged folder (a real site config in examples/, say) is
+    untracked, so it doesn't ship. Without git, every file under SOURCES ships.
+    """
+    if not (root / ".git").exists():
+        return None
+    try:
+        out = runner(["git", "-C", str(root), "ls-files", "-z", "--cached"]).stdout
+    except (subprocess.CalledProcessError, FileNotFoundError) as exc:
+        detail = getattr(exc, "stderr", None) or b""
+        detail = (detail.decode(errors="replace") if isinstance(detail, bytes) else detail).strip()
+        raise ArchiveError(f"{root} has .git but git can't list its files: {detail or exc}") from exc
+    return {p.decode("utf-8", "surrogateescape") for p in out.split(b"\0") if p}
+
+
+def source_files(root: Path = ROOT, runner: Runner = archive.run_bytes) -> Dict[str, Path]:
     """Archive path -> file, for the repository's part of the archive.
 
-    Refuses to build if any file under SOURCES, skipped or not, looks like a secret.
+    In a git checkout, only tracked files. Refuses to build if any file under SOURCES,
+    skipped, untracked or not, looks like a secret.
     """
+    tracked = tracked_files(root, runner)
+    if tracked is None:
+        print(f"package: {root} isn't a git checkout; every file under the packaged paths ships",
+              file=sys.stderr)
     files: Dict[str, Path] = {}
     secrets = []
+    untracked = []
     for item in SOURCES:
         for rel in walk(root, Path(item)):
             reason = secret_reason(root / rel, rel)
             if reason:
                 secrets.append(f"{rel.as_posix()} ({reason})")
-            elif not skipped(rel):
+            elif skipped(rel):
+                continue
+            elif tracked is not None and rel.as_posix() not in tracked:
+                untracked.append(rel.as_posix())
+            else:
                 files[rel.as_posix()] = root / rel
     if secrets:
         raise ArchiveError("files that look like site secrets are under a packaged path; move them out "
                            "of the packaged paths (a site's dciab.yaml and secrets/ never ship):\n  "
                            + "\n  ".join(secrets))
+    for rel in untracked:
+        print(f"package: not tracked by git, left out: {rel}", file=sys.stderr)
     return files
 
 

@@ -22,6 +22,29 @@ spec:
         apiVersion: infrastructure.cluster.x-k8s.io/v1alpha2
         kind: ProxmoxMachineTemplate
         name: dciab-proxmox-r1-controlplane
+    # Remediation: a Machine whose Node stays NotReady or unreachable for 5 minutes, or
+    # that never gets a Node, is replaced. VMs clone, boot and join well within this.
+    # Only one unhealthy machine at a time is replaced, in the control plane and in each
+    # worker pool: two or more at once is an outage to look at, not a node to replace. An
+    # absolute 1, not a percentage, so pools of one or two machines are repaired too.
+    # KubeadmControlPlane never remediates in a way that loses etcd quorum; its retry
+    # limits are in the KubeadmControlPlaneTemplate.
+    healthCheck:
+      checks:
+        nodeStartupTimeoutSeconds: 1200
+        unhealthyNodeConditions:
+          - {type: Ready, status: Unknown, timeoutSeconds: 300}
+          - {type: Ready, status: "False", timeoutSeconds: 300}
+      remediation:
+        triggerIf:
+          unhealthyLessThanOrEqualTo: 1
+    # Draining waits at most 30 minutes, and detaching volumes at most 10, so a stuck pod or
+    # volume never blocks an upgrade or a remediation forever. Longhorn's drain policy
+    # (block-for-eviction-if-contains-last-replica, addons/longhorn) moves a last replica
+    # off the node within that time instead of only blocking.
+    deletion:
+      nodeDrainTimeoutSeconds: 1800
+      nodeVolumeDetachTimeoutSeconds: 600
   infrastructure:
     templateRef:
       apiVersion: infrastructure.cluster.x-k8s.io/v1alpha2
@@ -40,6 +63,18 @@ spec:
             apiVersion: infrastructure.cluster.x-k8s.io/v1alpha2
             kind: ProxmoxMachineTemplate
             name: dciab-proxmox-r1-worker
+        healthCheck:
+          checks:
+            nodeStartupTimeoutSeconds: 1200
+            unhealthyNodeConditions:
+              - {type: Ready, status: Unknown, timeoutSeconds: 300}
+              - {type: Ready, status: "False", timeoutSeconds: 300}
+          remediation:
+            triggerIf:
+              unhealthyLessThanOrEqualTo: 1
+        deletion:
+          nodeDrainTimeoutSeconds: 1800
+          nodeVolumeDetachTimeoutSeconds: 600
   variables:
     - name: apiVIP
       required: true
@@ -63,8 +98,37 @@ spec:
           type: string
           minLength: 1
           description: >-
-            Host (and optional port) of the registry mirror. Nodes pull docker.io, quay.io,
-            ghcr.io and registry.k8s.io through https://<registryMirror>/v2/<upstream>/.
+            Host (and optional port) of the registry mirror. Nodes pull every registry in
+            mirroredRegistries through https://<registryMirror>/v2/<upstream>/.
+    - name: mirroredRegistries
+      required: true
+      schema:
+        openAPIV3Schema:
+          type: array
+          minItems: 1
+          uniqueItems: true
+          items:
+            type: string
+            pattern: '^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$'
+          description: >-
+            Upstream registries (such as docker.io; no port) that nodes pull through registryMirror.
+            Each one gets a containerd hosts.toml and a CRI-O mirror entry. A list, so a
+            new upstream needs no new class revision.
+    - name: podSecurityExemptNamespaces
+      required: true
+      schema:
+        openAPIV3Schema:
+          type: array
+          minItems: 1
+          uniqueItems: true
+          items:
+            type: string
+            pattern: '^[a-z0-9]([-a-z0-9]*[a-z0-9])?$'
+          description: >-
+            Namespaces Pod Security admission leaves alone: kube-system and the namespaces
+            of the CNI and CSI pods that must run privileged. Every other namespace gets
+            baseline enforced and restricted as warnings and audit annotations, unless its
+            own pod-security.kubernetes.io labels say otherwise.
     - name: trustBundle
       required: true
       schema:
@@ -89,24 +153,84 @@ spec:
           items:
             type: string
           description: Public keys for the break-glass user 'dciab' on every node.
-    - name: oidc
+    - name: controlPlaneSchedulable
+      required: false
+      schema:
+        openAPIV3Schema:
+          type: boolean
+          default: false
+          description: >-
+            Register the control plane nodes without kubeadm's
+            node-role.kubernetes.io/control-plane:NoSchedule taint, so ordinary pods run on
+            them. For a cluster without worker nodes, which otherwise has nowhere to run them.
+    - name: authentication
       required: false
       schema:
         openAPIV3Schema:
           type: object
-          required: [issuerURL, clientID]
+          required: [issuers]
           properties:
-            issuerURL:
-              type: string
-            clientID:
-              type: string
-            usernameClaim:
-              type: string
-              default: preferred_username
-            groupsClaim:
-              type: string
-              default: groups
-          description: API server OIDC settings (Authentik). Leave unset to disable.
+            issuers:
+              type: array
+              minItems: 1
+              # Bounded, so the API server's CEL cost estimate for the rules below stays small.
+              maxItems: 4
+              # Each issuer's users and groups get their own prefix, so two issuers can never
+              # name the same user or group (alice from Authentik isn't alice from the site IdP).
+              x-kubernetes-validations:
+                - rule: self.all(a, self.exists_one(b, b.url == a.url))
+                  message: each issuer URL may appear once
+                - rule: self.all(a, self.exists_one(b, b.name == a.name))
+                  message: each issuer name may appear once
+                - rule: "self.all(a, self.exists_one(b, (has(b.usernamePrefix) ? b.usernamePrefix : b.name + ':') == (has(a.usernamePrefix) ? a.usernamePrefix : a.name + ':')))"
+                  message: each issuer needs its own username prefix
+                - rule: "self.all(a, self.exists_one(b, (has(b.groupsPrefix) ? b.groupsPrefix : b.name + ':') == (has(a.groupsPrefix) ? a.groupsPrefix : a.name + ':')))"
+                  message: each issuer needs its own groups prefix
+              items:
+                type: object
+                required: [name, url, clientID]
+                properties:
+                  name:
+                    type: string
+                    pattern: '^[a-z0-9]([-a-z0-9]*[a-z0-9])?$'
+                    maxLength: 63
+                    description: Short issuer name; the default username and groups prefix is <name>:.
+                  url:
+                    type: string
+                    pattern: '^https://'
+                    maxLength: 512
+                  clientID:
+                    type: string
+                    minLength: 1
+                    maxLength: 256
+                    description: The audience the issuer's ID tokens carry.
+                  usernameClaim:
+                    type: string
+                    maxLength: 256
+                    default: preferred_username
+                  usernamePrefix:
+                    type: string
+                    minLength: 1
+                    maxLength: 63
+                    description: Default <name>:. Must differ from every other issuer's.
+                  groupsClaim:
+                    type: string
+                    maxLength: 256
+                    default: groups
+                  groupsPrefix:
+                    type: string
+                    minLength: 1
+                    maxLength: 63
+                    description: Default <name>:. Must differ from every other issuer's.
+                  certificateAuthority:
+                    type: string
+                    maxLength: 65536
+                    description: PEM CA bundle for the issuer's TLS certificate, when the node trust store lacks it.
+          description: >-
+            JWT issuers the API server trusts, written to an AuthenticationConfiguration file
+            (structured authentication). Several may be listed at once, for example Authentik
+            and the site's IdP while people move from one to the other. Leave unset for
+            certificate-only clusters (MGMT and INFRA).
     - name: machine
       required: true
       schema:
@@ -133,6 +257,44 @@ spec:
           items:
             type: string
           description: DNS resolvers for the nodes (the PowerDNS recursor service IPs).
+    - name: mtu
+      required: false
+      schema:
+        openAPIV3Schema:
+          type: integer
+          minimum: 1280
+          maximum: 9216
+          description: MTU of the node NIC. Leave unset for the platform's default (usually 1500).
+    - name: storageNetworks
+      required: false
+      schema:
+        openAPIV3Schema:
+          type: array
+          default: []
+          items:
+            type: object
+            required: [name]
+            properties:
+              name:
+                type: string
+                pattern: '^[a-z0-9]([-a-z0-9]*[a-z0-9])?$'
+                description: The network.storage entry; addresses come from the pool <cluster>-storage-<name>.
+              bridge:
+                type: string
+                minLength: 1
+                description: Bridge on the PVE nodes. Default, the node network's bridge.
+              vlan:
+                type: integer
+                minimum: 1
+                maximum: 4094
+              mtu:
+                type: integer
+                minimum: 1280
+                maximum: 9216
+          description: >-
+            Storage networks (iSCSI or NVMe-oF, one per path for multipathing): one extra NIC
+            per entry on every node, with an address from the cluster's pool for it and no
+            gateway. Empty by default.
     - name: proxmox
       required: true
       schema:
@@ -158,6 +320,36 @@ spec:
               type: integer
               minimum: 1
               maximum: 4094
+    - name: topology
+      required: false
+      schema:
+        openAPIV3Schema:
+          type: object
+          required: [region]
+          properties:
+            region:
+              type: string
+              minLength: 1
+              description: topology.kubernetes.io/region on every node (the site name; the Proxmox CSI driver needs it).
+            zone:
+              type: string
+              minLength: 1
+              description: >-
+                topology.kubernetes.io/zone on every node: set only when the site is one
+                failure domain (its one PVE node). Worker pools placed in a domain take
+                their zone from failureDomain instead.
+          description: The topology labels each kubelet sets on its own Node (--node-labels).
+    - name: failureDomain
+      required: false
+      schema:
+        openAPIV3Schema:
+          type: string
+          minLength: 1
+          description: >-
+            Set per MachineDeployment: the failure domain (one PVE node, named after it) a
+            worker pool is placed in. Its machines go only to that node (allowedNodes) and
+            their Nodes get topology.kubernetes.io/zone=<it>. The control plane isn't spread
+            in r1: CAPMOX v0.9 has no failure domains (ADR 0010).
     - name: nodeNetwork
       required: true
       schema:
@@ -179,7 +371,7 @@ spec:
 
   patches:
     - name: nodeBase
-      description: Trust bundle, registry mirrors, NTP and the break-glass user on every node.
+      description: Trust bundle, a registry mirror per mirroredRegistries entry, NTP and the break-glass user on every node.
       definitions:
         - selector:
             apiVersion: controlplane.cluster.x-k8s.io/v1beta2
@@ -196,86 +388,27 @@ spec:
                     permissions: "0644"
                     content: |
                     {{- .trustBundle | nindent 6 }}
-            - op: add
-              path: /spec/template/spec/kubeadmConfigSpec/files/-
-              valueFrom:
-                template: |
-                  path: /etc/containerd/certs.d/docker.io/hosts.toml
-                  owner: root:root
-                  permissions: "0644"
-                  content: |
-                    server = "https://registry-1.docker.io"
-                    [host."https://{{ .registryMirror }}/v2/docker.io"]
-                      capabilities = ["pull", "resolve"]
-                      override_path = true
-            - op: add
-              path: /spec/template/spec/kubeadmConfigSpec/files/-
-              valueFrom:
-                template: |
-                  path: /etc/containerd/certs.d/quay.io/hosts.toml
-                  owner: root:root
-                  permissions: "0644"
-                  content: |
-                    server = "https://quay.io"
-                    [host."https://{{ .registryMirror }}/v2/quay.io"]
-                      capabilities = ["pull", "resolve"]
-                      override_path = true
-            - op: add
-              path: /spec/template/spec/kubeadmConfigSpec/files/-
-              valueFrom:
-                template: |
-                  path: /etc/containerd/certs.d/ghcr.io/hosts.toml
-                  owner: root:root
-                  permissions: "0644"
-                  content: |
-                    server = "https://ghcr.io"
-                    [host."https://{{ .registryMirror }}/v2/ghcr.io"]
-                      capabilities = ["pull", "resolve"]
-                      override_path = true
-            - op: add
-              path: /spec/template/spec/kubeadmConfigSpec/files/-
-              valueFrom:
-                template: |
-                  path: /etc/containerd/certs.d/registry.k8s.io/hosts.toml
-                  owner: root:root
-                  permissions: "0644"
-                  content: |
-                    server = "https://registry.k8s.io"
-                    [host."https://{{ .registryMirror }}/v2/registry.k8s.io"]
-                      capabilities = ["pull", "resolve"]
-                      override_path = true
-            - op: add
-              path: /spec/template/spec/kubeadmConfigSpec/files/-
-              valueFrom:
-                template: |
-                  path: /etc/containers/registries.conf.d/50-dciab-mirror.conf
-                  owner: root:root
-                  permissions: "0644"
-                  content: |
-                    [[registry]]
-                    prefix = "docker.io"
-                    location = "docker.io"
-                    [[registry.mirror]]
-                    location = "{{ .registryMirror }}/docker.io"
-
-                    [[registry]]
-                    prefix = "quay.io"
-                    location = "quay.io"
-                    [[registry.mirror]]
-                    location = "{{ .registryMirror }}/quay.io"
-
-                    [[registry]]
-                    prefix = "ghcr.io"
-                    location = "ghcr.io"
-                    [[registry.mirror]]
-                    location = "{{ .registryMirror }}/ghcr.io"
-
-                    [[registry]]
-                    prefix = "registry.k8s.io"
-                    location = "registry.k8s.io"
-                    [[registry.mirror]]
-                    location = "{{ .registryMirror }}/registry.k8s.io"
-
+                  {{- range .mirroredRegistries }}
+                  - path: /etc/containerd/certs.d/{{ . }}/hosts.toml
+                    owner: root:root
+                    permissions: "0644"
+                    content: |
+                      server = "https://{{ if eq . "docker.io" }}registry-1.docker.io{{ else }}{{ . }}{{ end }}"
+                      [host."https://{{ $.registryMirror }}/v2/{{ . }}"]
+                        capabilities = ["pull", "resolve"]
+                        override_path = true
+                  {{- end }}
+                  - path: /etc/containers/registries.conf.d/50-dciab-mirror.conf
+                    owner: root:root
+                    permissions: "0644"
+                    content: |
+                      {{- range .mirroredRegistries }}
+                      [[registry]]
+                      prefix = "{{ . }}"
+                      location = "{{ . }}"
+                      [[registry.mirror]]
+                      location = "{{ $.registryMirror }}/{{ . }}"
+                      {{- end }}
             - op: add
               path: /spec/template/spec/kubeadmConfigSpec/ntp
               valueFrom:
@@ -305,86 +438,27 @@ spec:
                     permissions: "0644"
                     content: |
                     {{- .trustBundle | nindent 6 }}
-            - op: add
-              path: /spec/template/spec/files/-
-              valueFrom:
-                template: |
-                  path: /etc/containerd/certs.d/docker.io/hosts.toml
-                  owner: root:root
-                  permissions: "0644"
-                  content: |
-                    server = "https://registry-1.docker.io"
-                    [host."https://{{ .registryMirror }}/v2/docker.io"]
-                      capabilities = ["pull", "resolve"]
-                      override_path = true
-            - op: add
-              path: /spec/template/spec/files/-
-              valueFrom:
-                template: |
-                  path: /etc/containerd/certs.d/quay.io/hosts.toml
-                  owner: root:root
-                  permissions: "0644"
-                  content: |
-                    server = "https://quay.io"
-                    [host."https://{{ .registryMirror }}/v2/quay.io"]
-                      capabilities = ["pull", "resolve"]
-                      override_path = true
-            - op: add
-              path: /spec/template/spec/files/-
-              valueFrom:
-                template: |
-                  path: /etc/containerd/certs.d/ghcr.io/hosts.toml
-                  owner: root:root
-                  permissions: "0644"
-                  content: |
-                    server = "https://ghcr.io"
-                    [host."https://{{ .registryMirror }}/v2/ghcr.io"]
-                      capabilities = ["pull", "resolve"]
-                      override_path = true
-            - op: add
-              path: /spec/template/spec/files/-
-              valueFrom:
-                template: |
-                  path: /etc/containerd/certs.d/registry.k8s.io/hosts.toml
-                  owner: root:root
-                  permissions: "0644"
-                  content: |
-                    server = "https://registry.k8s.io"
-                    [host."https://{{ .registryMirror }}/v2/registry.k8s.io"]
-                      capabilities = ["pull", "resolve"]
-                      override_path = true
-            - op: add
-              path: /spec/template/spec/files/-
-              valueFrom:
-                template: |
-                  path: /etc/containers/registries.conf.d/50-dciab-mirror.conf
-                  owner: root:root
-                  permissions: "0644"
-                  content: |
-                    [[registry]]
-                    prefix = "docker.io"
-                    location = "docker.io"
-                    [[registry.mirror]]
-                    location = "{{ .registryMirror }}/docker.io"
-
-                    [[registry]]
-                    prefix = "quay.io"
-                    location = "quay.io"
-                    [[registry.mirror]]
-                    location = "{{ .registryMirror }}/quay.io"
-
-                    [[registry]]
-                    prefix = "ghcr.io"
-                    location = "ghcr.io"
-                    [[registry.mirror]]
-                    location = "{{ .registryMirror }}/ghcr.io"
-
-                    [[registry]]
-                    prefix = "registry.k8s.io"
-                    location = "registry.k8s.io"
-                    [[registry.mirror]]
-                    location = "{{ .registryMirror }}/registry.k8s.io"
-
+                  {{- range .mirroredRegistries }}
+                  - path: /etc/containerd/certs.d/{{ . }}/hosts.toml
+                    owner: root:root
+                    permissions: "0644"
+                    content: |
+                      server = "https://{{ if eq . "docker.io" }}registry-1.docker.io{{ else }}{{ . }}{{ end }}"
+                      [host."https://{{ $.registryMirror }}/v2/{{ . }}"]
+                        capabilities = ["pull", "resolve"]
+                        override_path = true
+                  {{- end }}
+                  - path: /etc/containers/registries.conf.d/50-dciab-mirror.conf
+                    owner: root:root
+                    permissions: "0644"
+                    content: |
+                      {{- range .mirroredRegistries }}
+                      [[registry]]
+                      prefix = "{{ . }}"
+                      location = "{{ . }}"
+                      [[registry.mirror]]
+                      location = "{{ $.registryMirror }}/{{ . }}"
+                      {{- end }}
             - op: add
               path: /spec/template/spec/ntp
               valueFrom:
@@ -455,9 +529,12 @@ spec:
                             path: /etc/kubernetes/admin.conf
                             type: FileOrCreate
 
-    - name: oidc
-      description: API server OIDC flags, when the oidc variable is set.
-      enabledIf: '{{ if .oidc }}true{{ end }}'
+    - name: authentication
+      description: >-
+        Structured authentication when the authentication variable is set: the
+        AuthenticationConfiguration file, and the API server flag and mount that read it.
+        Replaces the --oidc-* flags. Comes after nodeBase, which creates the files list.
+      enabledIf: '{{ if .authentication }}true{{ end }}'
       definitions:
         - selector:
             apiVersion: controlplane.cluster.x-k8s.io/v1beta2
@@ -466,29 +543,42 @@ spec:
               controlPlane: true
           jsonPatches:
             - op: add
-              path: /spec/template/spec/kubeadmConfigSpec/clusterConfiguration/apiServer/extraArgs/-
+              path: /spec/template/spec/kubeadmConfigSpec/files/-
               valueFrom:
                 template: |
-                  name: oidc-issuer-url
-                  value: {{ .oidc.issuerURL | quote }}
+                  path: /etc/kubernetes/authentication/config.yaml
+                  owner: root:root
+                  permissions: "0644"
+                  content: |
+                    apiVersion: apiserver.config.k8s.io/v1
+                    kind: AuthenticationConfiguration
+                    jwt:
+                    {{- range $i := .authentication.issuers }}
+                      - issuer:
+                          url: {{ $i.url | quote }}
+                          audiences: [{{ $i.clientID | quote }}]
+                          {{- if $i.certificateAuthority }}
+                          certificateAuthority: {{ $i.certificateAuthority | quote }}
+                          {{- end }}
+                        claimMappings:
+                          username:
+                            claim: {{ $i.usernameClaim | default "preferred_username" | quote }}
+                            prefix: {{ $i.usernamePrefix | default (printf "%s:" $i.name) | quote }}
+                          groups:
+                            claim: {{ $i.groupsClaim | default "groups" | quote }}
+                            prefix: {{ $i.groupsPrefix | default (printf "%s:" $i.name) | quote }}
+                    {{- end }}
             - op: add
               path: /spec/template/spec/kubeadmConfigSpec/clusterConfiguration/apiServer/extraArgs/-
-              valueFrom:
-                template: |
-                  name: oidc-client-id
-                  value: {{ .oidc.clientID | quote }}
+              value: {name: authentication-config, value: /etc/kubernetes/authentication/config.yaml}
             - op: add
-              path: /spec/template/spec/kubeadmConfigSpec/clusterConfiguration/apiServer/extraArgs/-
-              valueFrom:
-                template: |
-                  name: oidc-username-claim
-                  value: {{ .oidc.usernameClaim | quote }}
-            - op: add
-              path: /spec/template/spec/kubeadmConfigSpec/clusterConfiguration/apiServer/extraArgs/-
-              valueFrom:
-                template: |
-                  name: oidc-groups-claim
-                  value: {{ .oidc.groupsClaim | quote }}
+              path: /spec/template/spec/kubeadmConfigSpec/clusterConfiguration/apiServer/extraVolumes/-
+              value:
+                name: authentication-config
+                hostPath: /etc/kubernetes/authentication/config.yaml
+                mountPath: /etc/kubernetes/authentication/config.yaml
+                readOnly: true
+                pathType: File
     - name: proxmoxCluster
       description: Allowed nodes, node addressing, DNS, credentials Secret and control plane endpoint.
       definitions:
@@ -523,7 +613,9 @@ spec:
                 template: |
                   name: {{ .builtin.cluster.name }}-proxmox-credentials
     - name: proxmoxMachines
-      description: Template, storage, size and network device for every machine.
+      description: >-
+        Template, storage, size and network devices for every machine (the node NIC and
+        one per storage network); worker placement by failure domain.
       definitions:
         - selector:
             apiVersion: infrastructure.cluster.x-k8s.io/v1alpha2
@@ -566,6 +658,24 @@ spec:
                       {{- if .proxmox.vlanTag }}
                       vlan: {{ .proxmox.vlanTag }}
                       {{- end }}
+                      {{- if .mtu }}
+                      mtu: {{ .mtu }}
+                      {{- end }}
+                    {{- range $i, $n := .storageNetworks }}
+                    - name: net{{ add1 $i }}
+                      bridge: {{ $n.bridge | default $.proxmox.bridge | quote }}
+                      model: virtio
+                      {{- if $n.vlan }}
+                      vlan: {{ $n.vlan }}
+                      {{- end }}
+                      {{- if $n.mtu }}
+                      mtu: {{ $n.mtu }}
+                      {{- end }}
+                      ipPoolRef:
+                        - apiGroup: ipam.cluster.x-k8s.io
+                          kind: InClusterIPPool
+                          name: {{ $.builtin.cluster.name }}-storage-{{ $n.name }}
+                    {{- end }}
         - selector:
             apiVersion: infrastructure.cluster.x-k8s.io/v1alpha2
             kind: ProxmoxMachineTemplate
@@ -576,6 +686,11 @@ spec:
             - op: add
               path: /spec/template/spec/sourceNode
               valueFrom: {variable: proxmox.templateNode}
+            # A pool placed in a failure domain runs only on that domain's PVE node.
+            - op: add
+              path: /spec/template/spec/allowedNodes
+              valueFrom:
+                template: '{{ if .failureDomain }}[{{ .failureDomain | quote }}]{{ else }}{{ .proxmox.allowedNodes | toJson }}{{ end }}'
             - op: add
               path: /spec/template/spec/templateID
               valueFrom: {variable: proxmox.templateID}
@@ -608,6 +723,24 @@ spec:
                       {{- if .proxmox.vlanTag }}
                       vlan: {{ .proxmox.vlanTag }}
                       {{- end }}
+                      {{- if .mtu }}
+                      mtu: {{ .mtu }}
+                      {{- end }}
+                    {{- range $i, $n := .storageNetworks }}
+                    - name: net{{ add1 $i }}
+                      bridge: {{ $n.bridge | default $.proxmox.bridge | quote }}
+                      model: virtio
+                      {{- if $n.vlan }}
+                      vlan: {{ $n.vlan }}
+                      {{- end }}
+                      {{- if $n.mtu }}
+                      mtu: {{ $n.mtu }}
+                      {{- end }}
+                      ipPoolRef:
+                        - apiGroup: ipam.cluster.x-k8s.io
+                          kind: InClusterIPPool
+                          name: {{ $.builtin.cluster.name }}-storage-{{ $n.name }}
+                    {{- end }}
     - name: apiServerAudit
       description: >-
         Kubernetes API audit policy file on control plane nodes. The API server flags and
@@ -667,6 +800,205 @@ spec:
                       verbs: [create, update, patch, delete, deletecollection]
                       resources: [{group: rbac.authorization.k8s.io}]
                     - level: Metadata
+    - name: podSecurity
+      description: >-
+        Pod Security admission defaults on control plane nodes: baseline enforced,
+        restricted as warnings and audit annotations, podSecurityExemptNamespaces exempt.
+        The API server flag and mount are in the KubeadmControlPlaneTemplate.
+      definitions:
+        - selector:
+            apiVersion: controlplane.cluster.x-k8s.io/v1beta2
+            kind: KubeadmControlPlaneTemplate
+            matchResources:
+              controlPlane: true
+          jsonPatches:
+            - op: add
+              path: /spec/template/spec/kubeadmConfigSpec/files/-
+              valueFrom:
+                template: |
+                  path: /etc/kubernetes/admission/config.yaml
+                  owner: root:root
+                  permissions: "0644"
+                  content: |
+                    apiVersion: apiserver.config.k8s.io/v1
+                    kind: AdmissionConfiguration
+                    plugins:
+                      - name: PodSecurity
+                        configuration:
+                          apiVersion: pod-security.admission.config.k8s.io/v1
+                          kind: PodSecurityConfiguration
+                          defaults:
+                            enforce: baseline
+                            enforce-version: latest
+                            audit: restricted
+                            audit-version: latest
+                            warn: restricted
+                            warn-version: latest
+                          exemptions:
+                            usernames: []
+                            runtimeClasses: []
+                            namespaces: {{ .podSecurityExemptNamespaces | toJson }}
+    - name: secretEncryption
+      description: >-
+        Secrets encrypted at rest in etcd. The EncryptionConfiguration (secretbox, one key)
+        comes from the Secret <cluster>-encryption-config in the cluster's namespace on the
+        management cluster, which charts/capi-cluster creates once and never rotates by
+        itself. The key is never in Git or in the class. The API server flag and mount are
+        in the KubeadmControlPlaneTemplate.
+      definitions:
+        - selector:
+            apiVersion: controlplane.cluster.x-k8s.io/v1beta2
+            kind: KubeadmControlPlaneTemplate
+            matchResources:
+              controlPlane: true
+          jsonPatches:
+            - op: add
+              path: /spec/template/spec/kubeadmConfigSpec/files/-
+              valueFrom:
+                template: |
+                  path: /etc/kubernetes/encryption/config.yaml
+                  owner: root:root
+                  permissions: "0600"
+                  contentFrom:
+                    secret:
+                      name: {{ .builtin.cluster.name }}-encryption-config
+                      key: config.yaml
+    - name: kubeletServingCerts
+      description: >-
+        Kubelets request their serving certificate from the cluster CA
+        (serverTLSBootstrap) and rotate it, instead of a self-signed one. A kubeadm patch
+        file; init and join read it from /etc/kubernetes/patches. The serving CSRs are
+        approved by kubelet-csr-approver (addons/kubelet-csr-approver).
+      definitions:
+        - selector:
+            apiVersion: controlplane.cluster.x-k8s.io/v1beta2
+            kind: KubeadmControlPlaneTemplate
+            matchResources:
+              controlPlane: true
+          jsonPatches:
+            - op: add
+              path: /spec/template/spec/kubeadmConfigSpec/files/-
+              value:
+                path: /etc/kubernetes/patches/kubeletconfiguration+merge.yaml
+                owner: root:root
+                permissions: "0644"
+                content: |
+                  serverTLSBootstrap: true
+        - selector:
+            apiVersion: bootstrap.cluster.x-k8s.io/v1beta2
+            kind: KubeadmConfigTemplate
+            matchResources:
+              machineDeploymentClass:
+                names: [default]
+          jsonPatches:
+            - op: add
+              path: /spec/template/spec/files/-
+              value:
+                path: /etc/kubernetes/patches/kubeletconfiguration+merge.yaml
+                owner: root:root
+                permissions: "0644"
+                content: |
+                  serverTLSBootstrap: true
+    - name: nodeTopology
+      description: >-
+        topology.kubernetes.io/region (and zone, on a single-domain site or for a worker
+        pool placed in a domain) through the kubelet's --node-labels.
+      enabledIf: '{{ if .topology }}true{{ end }}'
+      definitions:
+        - selector:
+            apiVersion: controlplane.cluster.x-k8s.io/v1beta2
+            kind: KubeadmControlPlaneTemplate
+            matchResources:
+              controlPlane: true
+          jsonPatches:
+            - op: add
+              path: /spec/template/spec/kubeadmConfigSpec/initConfiguration/nodeRegistration/kubeletExtraArgs/-
+              valueFrom:
+                template: |
+                  name: node-labels
+                  value: "topology.kubernetes.io/region={{ .topology.region }}{{ if .topology.zone }},topology.kubernetes.io/zone={{ .topology.zone }}{{ end }}"
+            - op: add
+              path: /spec/template/spec/kubeadmConfigSpec/joinConfiguration/nodeRegistration/kubeletExtraArgs/-
+              valueFrom:
+                template: |
+                  name: node-labels
+                  value: "topology.kubernetes.io/region={{ .topology.region }}{{ if .topology.zone }},topology.kubernetes.io/zone={{ .topology.zone }}{{ end }}"
+        - selector:
+            apiVersion: bootstrap.cluster.x-k8s.io/v1beta2
+            kind: KubeadmConfigTemplate
+            matchResources:
+              machineDeploymentClass:
+                names: [default]
+          jsonPatches:
+            - op: add
+              path: /spec/template/spec/joinConfiguration/nodeRegistration/kubeletExtraArgs/-
+              valueFrom:
+                template: |
+                  name: node-labels
+                  value: "topology.kubernetes.io/region={{ .topology.region }}{{ if .failureDomain }},topology.kubernetes.io/zone={{ .failureDomain }}{{ else if .topology.zone }},topology.kubernetes.io/zone={{ .topology.zone }}{{ end }}"
+    - name: storageInitiators
+      description: >-
+        When the nodes have storage networks: load the NVMe/TCP and multipath kernel
+        modules, and start multipathd where the node image has it. The initiators and
+        their multipath configuration come with the node image.
+      enabledIf: '{{ if .storageNetworks }}true{{ end }}'
+      definitions:
+        - selector:
+            apiVersion: controlplane.cluster.x-k8s.io/v1beta2
+            kind: KubeadmControlPlaneTemplate
+            matchResources:
+              controlPlane: true
+          jsonPatches:
+            - op: add
+              path: /spec/template/spec/kubeadmConfigSpec/files/-
+              value:
+                path: /etc/modules-load.d/dciab-storage.conf
+                owner: root:root
+                permissions: "0644"
+                content: |
+                  nvme-tcp
+                  dm_multipath
+            - op: add
+              path: /spec/template/spec/kubeadmConfigSpec/preKubeadmCommands/-
+              value: "systemctl restart systemd-modules-load.service && if systemctl cat multipathd.service >/dev/null 2>&1; then systemctl enable --now multipathd.service; fi"
+        - selector:
+            apiVersion: bootstrap.cluster.x-k8s.io/v1beta2
+            kind: KubeadmConfigTemplate
+            matchResources:
+              machineDeploymentClass:
+                names: [default]
+          jsonPatches:
+            - op: add
+              path: /spec/template/spec/files/-
+              value:
+                path: /etc/modules-load.d/dciab-storage.conf
+                owner: root:root
+                permissions: "0644"
+                content: |
+                  nvme-tcp
+                  dm_multipath
+            - op: add
+              path: /spec/template/spec/preKubeadmCommands/-
+              value: "systemctl restart systemd-modules-load.service && if systemctl cat multipathd.service >/dev/null 2>&1; then systemctl enable --now multipathd.service; fi"
+    - name: controlPlaneSchedulable
+      description: >-
+        A cluster without worker nodes runs its workloads on its control plane nodes:
+        nodeRegistration.taints is empty for kubeadm init and join, instead of kubeadm's
+        default control-plane NoSchedule taint.
+      enabledIf: '{{ if .controlPlaneSchedulable }}true{{ end }}'
+      definitions:
+        - selector:
+            apiVersion: controlplane.cluster.x-k8s.io/v1beta2
+            kind: KubeadmControlPlaneTemplate
+            matchResources:
+              controlPlane: true
+          jsonPatches:
+            - op: add
+              path: /spec/template/spec/kubeadmConfigSpec/initConfiguration/nodeRegistration/taints
+              value: []
+            - op: add
+              path: /spec/template/spec/kubeadmConfigSpec/joinConfiguration/nodeRegistration/taints
+              value: []
 
 ---
 apiVersion: infrastructure.cluster.x-k8s.io/v1alpha2
@@ -750,18 +1082,45 @@ metadata:
 spec:
   template:
     spec:
+      # Replace control plane machines 60 days before their kubeadm certificates (one
+      # year) expire, so a cluster that is never upgraded never runs on expired ones.
+      rollout:
+        before:
+          certificatesExpiryDays: 60
+      # A control plane machine that keeps failing (a bad template, no free address) is
+      # recreated at most 3 times, 10 minutes apart; a machine healthy for an hour starts
+      # the count again.
+      remediation:
+        maxRetry: 3
+        retryPeriodSeconds: 600
+        minHealthyPeriodSeconds: 3600
       kubeadmConfigSpec:
         clusterConfiguration:
           apiServer:
             extraArgs:
               - {name: profiling, value: "false"}
+              - {name: tls-min-version, value: VersionTLS12}
               # Audit policy file: written by the apiServerAudit patch.
               - {name: audit-policy-file, value: /etc/kubernetes/audit/policy.yaml}
               - {name: audit-log-path, value: /var/log/kubernetes/audit/audit.log}
               - {name: audit-log-maxage, value: "30"}
               - {name: audit-log-maxbackup, value: "10"}
               - {name: audit-log-maxsize, value: "100"}
+              # Pod Security defaults: written by the podSecurity patch.
+              - {name: admission-control-config-file, value: /etc/kubernetes/admission/config.yaml}
+              # Secret encryption at rest: written by the secretEncryption patch.
+              - {name: encryption-provider-config, value: /etc/kubernetes/encryption/config.yaml}
             extraVolumes:
+              - name: admission-config
+                hostPath: /etc/kubernetes/admission/config.yaml
+                mountPath: /etc/kubernetes/admission/config.yaml
+                readOnly: true
+                pathType: File
+              - name: encryption-config
+                hostPath: /etc/kubernetes/encryption/config.yaml
+                mountPath: /etc/kubernetes/encryption/config.yaml
+                readOnly: true
+                pathType: File
               - name: audit-policy
                 hostPath: /etc/kubernetes/audit/policy.yaml
                 mountPath: /etc/kubernetes/audit/policy.yaml
@@ -781,6 +1140,9 @@ spec:
         initConfiguration:
           # Cilium replaces kube-proxy (Gateway API needs it); see addons/cilium.
           skipPhases: [addon/kube-proxy]
+          # kubeadm patches, such as the kubelet's serverTLSBootstrap (kubeletServingCerts patch).
+          patches:
+            directory: /etc/kubernetes/patches
           nodeRegistration:
             name: '{{ local_hostname }}'
             # The Node's spec.providerID, which Cluster API matches Machines to Nodes by.
@@ -788,6 +1150,8 @@ spec:
             kubeletExtraArgs:
               - {name: provider-id, value: "proxmox://{{ ds.meta_data.instance_id }}"}
         joinConfiguration:
+          patches:
+            directory: /etc/kubernetes/patches
           nodeRegistration:
             name: '{{ local_hostname }}'
             # The Node's spec.providerID, which Cluster API matches Machines to Nodes by.
@@ -812,6 +1176,8 @@ spec:
   template:
     spec:
       joinConfiguration:
+        patches:
+          directory: /etc/kubernetes/patches
         nodeRegistration:
           name: '{{ local_hostname }}'
           kubeletExtraArgs:

@@ -4,7 +4,7 @@
 #
 #   dciab services <config> [--state DIR] [--isos DIR] [--payload DIR] [--until STEP] [--print]
 #
-# CoreDNS, chrony (only with spec.bootstrap.ntp) and Caddy run as one podman pod with host
+# CoreDNS, chrony (only with spec.time.servedBy: dciab) and Caddy run as one podman pod with host
 # networking. CoreDNS and chrony answer only on network.dnsServiceIPs, Caddy only on
 # spec.bootstrap.address. A config without spec.hypervisors (its servers exist already) gets
 # CoreDNS alone, so registry.<network.domain> resolves to the seed registry during bootstrap;
@@ -14,7 +14,8 @@
 #   address     network.dnsServiceIPs added to spec.bootstrap.interface (runtime, like ip addr add)
 #   firewall    runtime-only firewalld ports, when firewalld runs
 #   images      the pinned images present: loaded from the payload's OCI layout when there is
-#               one, else pulled; DCiaB's chrony image built from images/day0-chrony
+#               one, else pulled. DCiaB's chrony image is one of them (day0.images.chrony,
+#               built and published by CI); it is never built here
 #   pod         podman kube play --replace, only when the rendered files changed or the pod isn't running
 #   ready       DNS (forward, reverse, registry.<domain>) and NTP on each service IP, HTTP on
 #               the bootstrap address
@@ -24,7 +25,11 @@
 # nothing. <state> defaults to .dciab/state next to the config (/var/lib/dciab/work/state on the
 # bootstrap appliance; lib/dciab_state). ISOs are served from --isos,
 # default spec.bootstrap.workDisk.path/isos, else <state>/isos; per-host installer ISOs from <state>/host-isos.
-# Teardown: podman kube down <state>/services/pod.yaml.
+# DCIAB_CHRONY_IMAGE names a chrony image already in local storage instead of the pinned one
+# (building and testing DCiaB); the step warns when it is set.
+# What it adds to the host (addresses, firewalld ports, the pod) is listed in
+# <state>/services/created. Teardown: dciab seed --remove for the DNS-only services seed ran;
+# otherwise podman kube down <state>/services/pod.yaml, and undo the listed addresses and ports.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -71,15 +76,25 @@ helper() {
   [[ -n "$payload" ]] && args+=(--payload "$payload")
   python3 -m dciab_services "${args[@]}" "$config" "$@"
 }
-step() { echo; echo "== services: $1"; }
-finish_if() { if [[ "$until" == "$1" ]]; then echo "dciab services: stopped after '$1' (--until)"; exit 0; fi; }
+current="" started=0
+step_done() {   # "== services: <step> done in Ns" for the step that just finished
+  if [[ -n "$current" ]]; then echo "== services: $current done in $(( SECONDS - started ))s"; fi
+  current=""
+}
+step() { step_done; echo; echo "== services: $1"; current="$1"; started=$SECONDS; }
+finish_if() { if [[ "$until" == "$1" ]]; then step_done; echo "dciab services: stopped after '$1' (--until)"; exit 0; fi; }
 
 # Read the plan: shell assignments from the helper, which validates the config.
 MODE="" INTERFACE="" PREFIX="" SERVICE_IPS="" BOOTSTRAP_ADDRESS="" NTP="" IMAGES=""
-IMAGE_LAYOUTS="" CHRONY_IMAGE="" CHRONY_BASE="" CONF_DIR="" ISOS_DIR="" HOST_ISOS_DIR="" POD="" FINGERPRINT=""
+IMAGE_LAYOUTS="" CHRONY_IMAGE="" CONF_DIR="" ISOS_DIR="" HOST_ISOS_DIR="" POD="" FINGERPRINT=""
 plan="$(helper env)" || exit $?
 eval "$plan"
 dns_only() { [[ "$MODE" == dns ]]; }
+chrony_local=""
+if [[ "$NTP" == 1 && -n "${DCIAB_CHRONY_IMAGE:-}" ]]; then
+  chrony_local=" (DCIAB_CHRONY_IMAGE: a local image, not the pinned one)"
+  echo "dciab services: warning: DCIAB_CHRONY_IMAGE is set; chrony runs $CHRONY_IMAGE instead of bundle.lock day0.images.chrony" >&2
+fi
 
 nic_name() {   # spec.bootstrap.interface is a NIC name or its MAC
   local want="$1" dev
@@ -100,6 +115,12 @@ pod_running() {   # every container of the pod is running
   [[ -n "$states" ]] && ! grep -qv '^running$' < <(tr ' ' '\n' <<<"$states" | sed '/^$/d')
 }
 applied() { [[ -f "$CONF_DIR/applied" && "$(cat "$CONF_DIR/applied")" == "$FINGERPRINT" ]]; }
+# What this step added to the host, one line each, so it can be undone (dciab seed --remove):
+# "address <nic> <ip>/<prefix>", "port <zone> <port>", "pod <name>".
+record() {
+  local f="$CONF_DIR/created"
+  if ! grep -qxF "$*" "$f" 2>/dev/null; then echo "$*" >> "$f"; chmod 600 "$f"; fi
+}
 
 if (( print )); then
   echo "dciab services plan (--print: nothing is changed)"
@@ -108,7 +129,7 @@ if (( print )); then
   for ip in $SERVICE_IPS; do echo "  address:     $ip/$PREFIX (DNS$([[ "$NTP" == 1 ]] && echo ', NTP'))"; done
   dns_only || echo "  HTTP:        http://$BOOTSTRAP_ADDRESS:80 (ISOs from $ISOS_DIR, per-host ISOs from $HOST_ISOS_DIR)"
   echo "  images:      $IMAGES${payload:+ (from $payload)}"
-  [[ "$NTP" == 1 ]] && echo "  chrony:      $CHRONY_IMAGE (built from images/day0-chrony on $CHRONY_BASE)"
+  [[ "$NTP" == 1 ]] && echo "  chrony:      $CHRONY_IMAGE$chrony_local"
   if [[ $EUID -eq 0 ]] && command -v podman >/dev/null; then
     if applied && pod_running; then echo "  pod $POD:  running with this config (no change)"
     else echo "  pod $POD:  would be (re)created"; fi
@@ -153,6 +174,7 @@ for ip in $SERVICE_IPS; do
   if has_addr "$nic" "$ip"; then
     echo "$ip already on $nic"
   else
+    record address "$nic" "$ip/$PREFIX"   # before the change: a crash can't leave it unlisted
     ip addr add "$ip/$PREFIX" dev "$nic"
     echo "added $ip/$PREFIX to $nic"
   fi
@@ -167,6 +189,7 @@ if command -v firewall-cmd >/dev/null && firewall-cmd --state >/dev/null 2>&1; t
   [[ "$NTP" == 1 ]] && ports+=(123/udp)
   for p in "${ports[@]}"; do
     if ! firewall-cmd --zone="$zone" --query-port="$p" >/dev/null; then
+      record port "$zone" "$p"
       firewall-cmd --zone="$zone" --add-port="$p" >/dev/null || die "firewalld refused to open $p in zone $zone"
       echo "opened $p in zone $zone (runtime only)"
     fi
@@ -194,9 +217,9 @@ for i in "${!refs[@]}"; do
     podman pull "$img" 9>&-
   fi
 done
+# DCiaB's chrony image comes with the others (or is a local one named by DCIAB_CHRONY_IMAGE).
 if [[ "$NTP" == 1 ]] && ! podman image exists "$CHRONY_IMAGE"; then
-  podman image exists "$CHRONY_BASE" || podman pull "$CHRONY_BASE" 9>&-
-  podman build --pull=never --build-arg BASE_IMAGE="$CHRONY_BASE" -t "$CHRONY_IMAGE" "$ROOT/images/day0-chrony" 9>&-
+  die "chrony image $CHRONY_IMAGE isn't in local storage; dciab services doesn't build it"
 fi
 finish_if images
 
@@ -204,6 +227,7 @@ step pod
 if applied && pod_running; then
   echo "pod $POD already runs this config"
 else
+  record pod "$POD"
   podman kube play --replace "$CONF_DIR/pod.yaml" 9>&-
   echo "$FINGERPRINT" > "$CONF_DIR/applied"
   chmod 600 "$CONF_DIR/applied"
@@ -212,3 +236,4 @@ finish_if pod
 
 step ready
 helper check
+step_done

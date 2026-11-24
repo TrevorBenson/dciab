@@ -387,11 +387,12 @@ def place_isos(archive: Path, isos: Path) -> List[str]:
 
 def next_commands(dest: Path, config: Path, work: Path) -> List[str]:
     q = shlex.quote
-    dciab, state = q(str(dest / "dciab")), q(str(work / "state"))
+    dciab, state, isos = q(str(dest / "dciab")), q(str(work / "state")), q(str(work / "isos"))
+    # The isos step put the copy's installers in <work>/isos. Without --isos, services and
+    # hypervisors would look in <state>/isos when workDisk is disk: (the appliance).
     return [
-        f"{dciab} services {q(str(config))} --state {state} --isos {q(str(work / 'isos'))}   "
-        "# sites with spec.hypervisors",
-        f"{dciab} hypervisors {q(str(config))} --state {state}   # sites with spec.hypervisors",
+        f"{dciab} services {q(str(config))} --state {state} --isos {isos}   # sites with spec.hypervisors",
+        f"{dciab} hypervisors {q(str(config))} --state {state} --isos {isos}   # sites with spec.hypervisors",
         f"{dciab} seed {q(str(config))} --state {state}",
     ]
 

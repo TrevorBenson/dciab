@@ -432,3 +432,345 @@ def test_proxmox_kubelet_sets_provider_id():
     assert len(regs) == 3
     for r in regs:
         assert want in r.get("kubeletExtraArgs", [])
+
+
+# --- operational hardening (issue #77) ----------------------------------------------------
+
+def _docs(f):
+    return [d for d in yaml.safe_load_all(f.read_text()) if d]
+
+
+def _kind(docs, kind):
+    return next(d for d in docs if d["kind"] == kind)
+
+
+def _patch(cc, name):
+    return next(p for p in cc["spec"]["patches"] if p["name"] == name)
+
+
+def _api_server(docs):
+    return _kind(docs, "KubeadmControlPlaneTemplate")["spec"]["template"]["spec"]["kubeadmConfigSpec"][
+        "clusterConfiguration"]["apiServer"]
+
+
+def test_installed_classes_health_check_control_plane_and_workers():
+    for f in _installed_class_files():
+        spec = _kind(_docs(f), "ClusterClass")["spec"]
+        cp = spec["controlPlane"]
+        mds = spec["workers"]["machineDeployments"]
+        for where, block, guard in [("control plane", cp, 1)] + [(md["class"], md, 1) for md in mds]:
+            hc = block["healthCheck"]
+            conditions = {(c["type"], c["status"]): c["timeoutSeconds"] for c in hc["checks"]["unhealthyNodeConditions"]}
+            assert set(conditions) == {("Ready", "Unknown"), ("Ready", "False")}, f"{f.name} {where}"
+            assert all(60 <= s <= 900 for s in conditions.values()), f"{f.name} {where}"
+            assert hc["checks"]["nodeStartupTimeoutSeconds"] >= 600, f"{f.name} {where}"
+            # An absolute guard: a site-wide outage never turns into mass replacement, and pools
+            # of one or two machines still repair (a percentage rounds down to 0 there).
+            assert hc["remediation"]["triggerIf"]["unhealthyLessThanOrEqualTo"] == guard, f"{f.name} {where}"
+            deletion = block["deletion"]
+            assert 0 < deletion["nodeDrainTimeoutSeconds"] <= 3600, f"{f.name} {where}"
+            assert 0 < deletion["nodeVolumeDetachTimeoutSeconds"] <= 3600, f"{f.name} {where}"
+
+
+def test_installed_classes_roll_control_planes_before_certificates_expire():
+    for f in _installed_class_files():
+        kcp = _kind(_docs(f), "KubeadmControlPlaneTemplate")["spec"]["template"]["spec"]
+        # kubeadm certificates last a year; CAPI's minimum is 7 days.
+        assert 30 <= kcp["rollout"]["before"]["certificatesExpiryDays"] <= 90, f.name
+        # A machine that fails every time is not recreated forever.
+        assert kcp["remediation"] == {"maxRetry": 3, "retryPeriodSeconds": 600, "minHealthyPeriodSeconds": 3600}, f.name
+
+
+def test_longhorn_moves_last_replicas_before_the_drain_timeout():
+    """CAPI deletes a machine once nodeDrainTimeoutSeconds passes; a blocked drain would lose the last replica."""
+    values = yaml.safe_load((ROOT / "addons" / "longhorn" / "values.yaml").read_text())
+    assert values["defaultSettings"]["nodeDrainPolicy"] == "block-for-eviction-if-contains-last-replica"
+
+
+ADMISSION_CONFIG = "/etc/kubernetes/admission/config.yaml"
+ENCRYPTION_CONFIG = "/etc/kubernetes/encryption/config.yaml"
+KUBELET_PATCH = "/etc/kubernetes/patches/kubeletconfiguration+merge.yaml"
+
+
+def _appended_files(cc, patch_name, path):
+    out = []
+    for d in _patch(cc, patch_name)["definitions"]:
+        for op in d["jsonPatches"]:
+            if op["path"] == path:
+                out.append(op.get("value") or op["valueFrom"]["template"])
+    return out
+
+
+def _mounted(api, path):
+    vol = next(v for v in api["extraVolumes"] if v["mountPath"] == path)
+    return vol["hostPath"] == path and vol["readOnly"] is True
+
+
+def test_installed_classes_set_pod_security_defaults():
+    for f in _installed_class_files():
+        docs = _docs(f)
+        cc = _kind(docs, "ClusterClass")
+        names = [p["name"] for p in cc["spec"]["patches"]]
+        assert names.index("podSecurity") > names.index("nodeBase"), f.name
+        api = _api_server(docs)
+        args = {a["name"]: a["value"] for a in api["extraArgs"]}
+        assert args["admission-control-config-file"] == ADMISSION_CONFIG and _mounted(api, ADMISSION_CONFIG), f.name
+        [template] = _appended_files(cc, "podSecurity", "/spec/template/spec/kubeadmConfigSpec/files/-")
+        file = yaml.safe_load(template.replace("{{ .podSecurityExemptNamespaces | toJson }}", '["kube-system"]'))
+        assert file["path"] == ADMISSION_CONFIG
+        config = yaml.safe_load(file["content"])
+        assert config["kind"] == "AdmissionConfiguration"
+        psa = next(p["configuration"] for p in config["plugins"] if p["name"] == "PodSecurity")
+        assert psa["defaults"]["enforce"] == "baseline", f.name
+        assert psa["defaults"]["warn"] == psa["defaults"]["audit"] == "restricted", f.name
+        assert psa["exemptions"]["namespaces"] == ["kube-system"], f.name
+        var = next(v for v in cc["spec"]["variables"] if v["name"] == "podSecurityExemptNamespaces")
+        assert var["required"] is True
+
+
+def test_installed_classes_encrypt_secrets_with_a_key_from_the_management_cluster():
+    for f in _installed_class_files():
+        docs = _docs(f)
+        cc = _kind(docs, "ClusterClass")
+        api = _api_server(docs)
+        args = {a["name"]: a["value"] for a in api["extraArgs"]}
+        assert args["encryption-provider-config"] == ENCRYPTION_CONFIG and _mounted(api, ENCRYPTION_CONFIG), f.name
+        [template] = _appended_files(cc, "secretEncryption", "/spec/template/spec/kubeadmConfigSpec/files/-")
+        file = yaml.safe_load(template.replace("{{ .builtin.cluster.name }}", "c1"))
+        assert file["path"] == ENCRYPTION_CONFIG and file["permissions"] == "0600"
+        # The key never sits in the class: only a reference to the cluster's Secret.
+        assert "content" not in file
+        assert file["contentFrom"] == {"secret": {"name": "c1-encryption-config", "key": "config.yaml"}}
+        assert "EncryptionConfiguration" not in f.read_text().split("kind: ClusterClass", 1)[1].split("patches:", 1)[0]
+
+
+def test_installed_classes_bootstrap_kubelet_serving_certificates():
+    for f in _installed_class_files():
+        docs = _docs(f)
+        cc = _kind(docs, "ClusterClass")
+        names = [p["name"] for p in cc["spec"]["patches"]]
+        assert names.index("kubeletServingCerts") > names.index("nodeBase"), f.name
+        files = (_appended_files(cc, "kubeletServingCerts", "/spec/template/spec/kubeadmConfigSpec/files/-")
+                 + _appended_files(cc, "kubeletServingCerts", "/spec/template/spec/files/-"))
+        assert len(files) == 2, f.name
+        for file in files:
+            assert file["path"] == KUBELET_PATCH and yaml.safe_load(file["content"]) == {"serverTLSBootstrap": True}
+        kcp = _kind(docs, "KubeadmControlPlaneTemplate")["spec"]["template"]["spec"]["kubeadmConfigSpec"]
+        worker = _kind(docs, "KubeadmConfigTemplate")["spec"]["template"]["spec"]
+        for part in (kcp["initConfiguration"], kcp["joinConfiguration"], worker["joinConfiguration"]):
+            assert part["patches"]["directory"] == "/etc/kubernetes/patches", f.name
+
+
+def test_installed_classes_can_drop_the_control_plane_taint():
+    """#112: a cluster without workers needs a schedulable control plane, at init and join."""
+    for f in _installed_class_files():
+        cc = _kind(_docs(f), "ClusterClass")
+        var = next(v for v in cc["spec"]["variables"] if v["name"] == "controlPlaneSchedulable")
+        assert not var["required"] and var["schema"]["openAPIV3Schema"]["default"] is False, f.name
+        patch = next(p for p in cc["spec"]["patches"] if p["name"] == "controlPlaneSchedulable")
+        assert patch["enabledIf"] == "{{ if .controlPlaneSchedulable }}true{{ end }}", f.name
+        (d,) = patch["definitions"]
+        assert d["selector"]["kind"] == "KubeadmControlPlaneTemplate"
+        base = "/spec/template/spec/kubeadmConfigSpec"
+        assert [(j["op"], j["path"], j["value"]) for j in d["jsonPatches"]] == [
+            ("add", f"{base}/initConfiguration/nodeRegistration/taints", []),
+            ("add", f"{base}/joinConfiguration/nodeRegistration/taints", []),
+        ], f.name
+
+
+def test_kubelet_csr_approver_is_pinned():
+    lock = yaml.safe_load((ROOT / "bundle.lock").read_text())
+    assert lock["charts"]["kubelet-csr-approver"]
+    assert lock["chartRepositories"]["kubelet-csr-approver"].startswith("https://")
+    assert re.fullmatch(r"(|[0-9a-f]{64})", lock["chartDigests"]["kubelet-csr-approver"])
+    values = yaml.safe_load((ROOT / "addons" / "kubelet-csr-approver" / "values.yaml").read_text())
+    assert any(t["key"] == "node-role.kubernetes.io/control-plane" for t in values["tolerations"])
+
+
+@pytest.mark.parametrize("ci_file", ["proxmox-values.yaml", "vsphere-values.yaml", "metal3-values.yaml"])
+def test_kubelet_csr_approver_allows_only_the_node_ranges(ci_file):
+    """A node must never get a cluster-CA certificate for the API VIP or another address in the subnet."""
+    import ipaddress
+    path = ROOT / "charts" / "capi-cluster" / "ci" / ci_file
+    v = yaml.safe_load(path.read_text())
+    r = subprocess.run([str(ROOT / "addons" / "kubelet-csr-approver" / "install.sh"), str(path), "--print-values"],
+                       check=True, capture_output=True, text=True)
+    nets = [ipaddress.ip_network(p) for p in yaml.safe_load(r.stdout)["providerIpPrefixes"]]
+    allowed = {ip for n in nets for ip in n}
+    ranges = [v["network"]] if "network" in v else [v["controlPlane"]["network"]] + [p["network"] for p in v["workerPools"]]
+    ranges += [{"nodeIPRange": s["ipRange"]} for s in v.get("storageNetworks", [])]
+    want = set()
+    for n in ranges:
+        first, last = (int(ipaddress.ip_address(a)) for a in n["nodeIPRange"].split("-"))
+        want |= {ipaddress.ip_address(i) for i in range(first, last + 1)}
+    assert allowed == want
+    assert ipaddress.ip_address(v["apiVIP"]) not in allowed
+    gateway = ranges[0]["gateway"]
+    assert ipaddress.ip_address(gateway) not in allowed
+
+
+@pytest.mark.parametrize("replicas,operators", [(1, 1), (3, 2), (5, 2)])
+def test_cilium_operator_replicas_follow_the_control_plane(tmp_path, replicas, operators):
+    """Operator replicas never share a node: a 1-node control plane can't hold two (report 0003)."""
+    values = tmp_path / "values.yaml"
+    values.write_text(f"name: mgmt\napiVIP: 10.0.0.10\ncontrolPlane: {{replicas: {replicas}}}\n")
+    r = subprocess.run([str(ROOT / "addons" / "cilium" / "install.sh"), str(values), "--print-values"],
+                       check=True, capture_output=True, text=True)
+    assert yaml.safe_load(r.stdout)["operator"]["replicas"] == operators
+
+
+def test_installed_classes_mirror_registries_from_a_variable():
+    """No registry list is written into a class (ARCH-14): a new upstream must not need a new revision."""
+    for f in _installed_class_files():
+        cc = _kind(_docs(f), "ClusterClass")
+        node_base = _patch(cc, "nodeBase")
+        for d in node_base["definitions"]:
+            text = d["jsonPatches"][0]["valueFrom"]["template"]
+            assert text.count("range .mirroredRegistries") == 2, f.name
+            for registry in ("quay.io", "ghcr.io", "registry.k8s.io"):
+                assert registry not in text, f"{f.name}: {registry} is hard-coded"
+        var = next(v for v in cc["spec"]["variables"] if v["name"] == "mirroredRegistries")
+        assert var["required"] is True and var["schema"]["openAPIV3Schema"]["type"] == "array"
+
+
+def test_mirrored_registries_cover_every_pinned_node_image():
+    lock = yaml.safe_load((ROOT / "bundle.lock").read_text())
+    mirrored = set(lock["mirroredRegistries"])
+    refs = list(lock["imageDigests"]) + [lock["images"]["kubeVip"]]
+    for ref in refs:
+        assert ref.split("/", 1)[0] in mirrored, ref
+
+
+def test_installed_classes_require_tls12():
+    for f in _installed_class_files():
+        args = {a["name"]: a["value"] for a in _api_server(_docs(f))["extraArgs"]}
+        assert args["tls-min-version"] == "VersionTLS12", f.name
+
+
+def test_kubelet_csr_approver_skips_the_chart_test_hook():
+    """The hook pulls an unpinned busybox that the archive doesn't carry."""
+    text = (ROOT / "addons" / "kubelet-csr-approver" / "install.sh").read_text()
+    calls = [l for l in text.splitlines() if l.strip().startswith(("helm template", "helm upgrade"))]
+    assert len(calls) == 2 and all("--skip-tests" in c for c in calls)
+# --- ADR-driven r1 items: structured authentication, failure domains, storage networks ----
+
+AUTHENTICATION_CONFIG = "/etc/kubernetes/authentication/config.yaml"
+
+
+def test_installed_classes_use_structured_authentication():
+    """ADR 0008, decision 8: an AuthenticationConfiguration file with several issuers, no --oidc-* flags."""
+    for f in _installed_class_files():
+        docs = _docs(f)
+        text = f.read_text()
+        assert "oidc-issuer-url" not in text and "name: oidc" not in text, f.name
+        cc = _kind(docs, "ClusterClass")
+        names = [p["name"] for p in cc["spec"]["patches"]]
+        assert names.index("authentication") > names.index("nodeBase"), f.name
+        patch = _patch(cc, "authentication")
+        assert patch["enabledIf"] == "{{ if .authentication }}true{{ end }}"
+        ops = {op["path"].rsplit("/", 2)[-2]: op for op in patch["definitions"][0]["jsonPatches"]}
+        assert ops["extraArgs"]["value"] == {"name": "authentication-config", "value": AUTHENTICATION_CONFIG}
+        assert ops["extraVolumes"]["value"]["mountPath"] == AUTHENTICATION_CONFIG
+        file = yaml.safe_load(re.sub(r"{{.*?}}", "x", ops["files"]["valueFrom"]["template"]))
+        assert file["path"] == AUTHENTICATION_CONFIG
+        assert "kind: AuthenticationConfiguration" in file["content"]
+        var = next(v for v in cc["spec"]["variables"] if v["name"] == "authentication")
+        issuers = var["schema"]["openAPIV3Schema"]["properties"]["issuers"]
+        assert issuers["type"] == "array" and set(issuers["items"]["required"]) == {"name", "url", "clientID"}
+        rules = " ".join(r["rule"] for r in issuers["x-kubernetes-validations"])
+        assert "b.url == a.url" in rules and "b.name == a.name" in rules
+        assert "usernamePrefix" in rules and "groupsPrefix" in rules
+        assert 'default (printf "%s:" $i.name)' in ops["files"]["valueFrom"]["template"]
+
+
+def test_proxmox_class_places_workers_and_labels_nodes():
+    docs = _docs(CLASSES / "r1" / "proxmox.yaml")
+    cc = _kind(docs, "ClusterClass")
+    variables = {v["name"]: v for v in cc["spec"]["variables"]}
+    assert not variables["failureDomain"]["required"] and not variables["topology"]["required"]
+    worker = _patch(cc, "proxmoxMachines")["definitions"][1]["jsonPatches"]
+    allowed = next(op for op in worker if op["path"] == "/spec/template/spec/allowedNodes")
+    assert ".failureDomain" in allowed["valueFrom"]["template"] and ".proxmox.allowedNodes" in allowed["valueFrom"]["template"]
+    cp = _patch(cc, "proxmoxMachines")["definitions"][0]["jsonPatches"]
+    assert not any(op["path"] == "/spec/template/spec/allowedNodes" for op in cp)  # r1: the control plane isn't spread
+    topo = _patch(cc, "nodeTopology")
+    paths = [op["path"] for d in topo["definitions"] for op in d["jsonPatches"]]
+    assert all(p.endswith("/nodeRegistration/kubeletExtraArgs/-") for p in paths) and len(paths) == 3
+    templates = [op["valueFrom"]["template"] for d in topo["definitions"] for op in d["jsonPatches"]]
+    assert all("topology.kubernetes.io/region=" in t for t in templates)
+    assert "topology.kubernetes.io/zone={{ .failureDomain }}" in templates[-1]
+
+
+def test_vsphere_class_failure_domains_and_cluster_modules():
+    cc = _kind(_docs(CLASSES / "r1" / "vsphere.yaml"), "ClusterClass")
+    fd = _patch(cc, "vsphereFailureDomains")
+    assert fd["enabledIf"] == "{{ if .zones }}true{{ end }}"
+    assert "dciab.io/cluster" in fd["definitions"][0]["jsonPatches"][0]["valueFrom"]["template"]
+    cm = _patch(cc, "vsphereClusterModules")
+    assert cm["definitions"][0]["jsonPatches"][0] == {"op": "add", "path": "/spec/template/spec/disableClusterModule",
+                                                      "value": True}
+
+
+def test_metal3_class_failure_domains_and_label_sync():
+    docs = _docs(CLASSES / "r1" / "metal3.yaml")
+    cc = _kind(docs, "ClusterClass")
+    assert _patch(cc, "metal3FailureDomains")["definitions"][0]["jsonPatches"][0]["path"] == "/spec/template/spec/failureDomains"
+    tmpl = _kind(docs, "Metal3ClusterTemplate")["spec"]["template"]
+    assert tmpl["metadata"]["annotations"]["metal3.io/metal3-label-sync-prefixes"] == "topology.kubernetes.io"
+
+
+@pytest.mark.parametrize("provider", ["proxmox", "vsphere"])
+def test_vm_classes_add_a_nic_per_storage_network(provider):
+    cc = _kind(_docs(CLASSES / "r1" / f"{provider}.yaml"), "ClusterClass")
+    variables = {v["name"]: v for v in cc["spec"]["variables"]}
+    sn = variables["storageNetworks"]
+    assert sn["required"] is False and sn["schema"]["openAPIV3Schema"]["default"] == []
+    assert variables["mtu"]["required"] is False
+    machines = _patch(cc, f"{provider}Machines")
+    for d in machines["definitions"]:
+        net = next(op for op in d["jsonPatches"] if op["path"] == "/spec/template/spec/network")
+        text = net["valueFrom"]["template"]
+        assert "range" in text and ".storageNetworks" in text and "-storage-{{ $n.name }}" in text
+        assert "{{ .mtu }}" in text
+    init = _patch(cc, "storageInitiators")
+    assert init["enabledIf"] == "{{ if .storageNetworks }}true{{ end }}"
+    assert len(init["definitions"]) == 2
+
+
+def test_cluster_modules_are_on_for_vsphere():
+    lock = yaml.safe_load((ROOT / "bundle.lock").read_text())
+    assert lock["clusterAPI"]["variables"]["EXP_NODE_ANTI_AFFINITY"] == "true"
+
+
+def _bounded(schema, path):
+    """Every array has maxItems and every string maxLength, so CEL rules on them have a bounded cost."""
+    if schema.get("type") == "array":
+        assert "maxItems" in schema, f"{path}: array without maxItems"
+        _bounded(schema["items"], path + "[]")
+    elif schema.get("type") == "string":
+        assert "maxLength" in schema, f"{path}: string without maxLength"
+    for k, sub in (schema.get("properties") or {}).items():
+        _bounded(sub, f"{path}.{k}")
+
+
+def test_variables_with_cel_rules_are_bounded():
+    """The API server rejects a ClusterClass whose CEL rules have an unbounded estimated cost
+    (it did, for the issuer uniqueness rules, before maxItems and maxLength were set)."""
+    from dciab_cluster.values import MAX_ISSUERS
+    for f in _installed_class_files():
+        cc = _kind(_docs(f), "ClusterClass")
+        found = 0
+        for var in cc["spec"]["variables"]:
+            def walk(schema, path):
+                nonlocal found
+                if schema.get("x-kubernetes-validations"):
+                    found += 1
+                    _bounded(schema, path)
+                for k, sub in (schema.get("properties") or {}).items():
+                    walk(sub, f"{path}.{k}")
+                if isinstance(schema.get("items"), dict):
+                    walk(schema["items"], path + "[]")
+            walk(var["schema"]["openAPIV3Schema"], f"{f.name}:{var['name']}")
+        assert found, f.name
+        auth = next(v for v in cc["spec"]["variables"] if v["name"] == "authentication")
+        assert auth["schema"]["openAPIV3Schema"]["properties"]["issuers"]["maxItems"] == MAX_ISSUERS

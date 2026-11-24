@@ -7,7 +7,7 @@ Longhorn is DCiaB's block storage (CSI): the default StorageClass `longhorn` on 
 - **Chart, offline:** `--chart <tgz>`, else `$DCIAB_PAYLOAD/charts/longhorn-<version>.tgz` when `DCIAB_PAYLOAD` is set (the archive vendors the chart), else the pinned repository.
 - **DCiaB defaults:** `values.yaml`: Longhorn is the default StorageClass, replica data lives in `/var/lib/longhorn` (image-mode nodes have read-only `/usr` and `/opt`), and there is no ingress.
 - **Per-site values:** from the config's `spec.storage.longhorn` (`longhorn_values.py`): `replicaCount` sets the StorageClass's and Longhorn's default replica count, and `backupTarget` the default backup target.
-- **Control plane nodes:** when MGMT has no worker pools, its control plane nodes run workloads, so Longhorn tolerates the `node-role.kubernetes.io/control-plane` taint there.
+- **Control plane nodes:** when MGMT has no worker nodes, its control plane nodes run workloads: they carry no `node-role.kubernetes.io/control-plane` taint ([capi-cluster](../../charts/capi-cluster/README.md#clusters-without-workers)), and Longhorn also tolerates that taint there. Its replicas then share the control plane nodes' root disks with etcd. With 3 control plane nodes, a `replicaCount` of 3 puts one replica on each; a volume needs as many nodes as replicas, so it stays degraded while one node is down or being replaced.
 - **UI and API:** the UI and the manager's API are ClusterIP Services without authentication. Restrict them with network policy, and front the UI with the platform's gateway and SSO, when those exist.
 
 ```console

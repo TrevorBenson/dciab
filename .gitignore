@@ -1,8 +1,18 @@
 # Site secrets are referenced from the config, never committed.
-secrets/
+# Keep in step with SECRET_* in build/package.py, which fails the archive build on these.
+[Ss][Ee][Cc][Rr][Ee][Tt][Ss]/
 *.pw
 *.key
 *.env
+.env
+*.age
+kubeconfig
+*.kubeconfig
+*.p12
+*.pfx
+*.jks
+*.ppk
+htpasswd
 
 # Step state and logs written by ./dciab
 .dciab/

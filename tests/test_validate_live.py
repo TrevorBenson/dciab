@@ -143,7 +143,9 @@ def add_permissions(routes, px, drop=None, extra_root=None):
 
     from dciab_validate.proxmox_privs import grants
     for g in grants(px):
-        privs = {p: 1 for p in g.privileges if p != drop}
+        # As the API answers: each held privilege maps to the propagate flag (0 when the grant
+        # does not propagate), so a 0 must still count as held.
+        privs = {p: int(g.propagate) for p in g.privileges if p != drop}
         routes[("GET", f"/api2/json/access/permissions?path={quote(g.path, safe='')}")] = (200, {"data": {g.path: privs}})
     routes[("GET", "/api2/json/access/permissions?path=%2F")] = (200, {"data": {"/": extra_root or {}}})
 
@@ -470,13 +472,13 @@ def test_ntp_unreachable_is_an_error(udp, monkeypatch):
     assert f.severity == "error" and "no NTP answer" in f.found
 
 
-def test_ntp_targets_follow_bootstrap_ntp():
+def test_ntp_targets_follow_who_serves_time():
     bare = load_example("proxmox-bare")["spec"]
-    assert live.ntp_targets(bare) == []  # isolated: upstream is empty, ntpServers are DCiaB's own
-    bare["bootstrap"]["ntp"]["upstream"] = ["ntp.example.org"]
-    assert live.ntp_targets(bare) == [(("spec", "bootstrap", "ntp", "upstream", 0), "ntp.example.org")]
+    assert live.ntp_targets(bare) == []  # isolated: upstream is empty, the servers are DCiaB's own
+    bare["time"]["upstream"] = ["ntp.example.org"]
+    assert live.ntp_targets(bare) == [(("spec", "time", "upstream", 0), "ntp.example.org")]
     plain = load_example("vsphere")["spec"]
-    assert [p[1] for p in live.ntp_targets(plain)] == plain["network"]["ntpServers"]
+    assert [p[1] for p in live.ntp_targets(plain)] == plain["time"]["servers"]
 
 
 def dns_reply(rcode=0, answers=(1,), ra=True):
@@ -707,7 +709,9 @@ def test_cli_live_end_to_end(cert, servers, site, monkeypatch):
         h["bmc"]["tlsFingerprint"] = cert["sha256"]
     code, report, out = _validate_live(site, doc)
     assert code == 0, report
-    assert errors(report) == [] and warnings(report) == []
+    # Only the example's own acknowledgements (tests/test_validate.py EXPECTED_WARNINGS).
+    assert errors(report) == [] and {w["path"] for w in warnings(report)} == {
+        "spec.failureDomains.notHighlyAvailable", "spec.time.serveLocalClock"}
     notes = report["notes"]
     assert not any("were not run" in n for n in notes)
     assert sum("virtual media" in n for n in notes) == 3
@@ -795,3 +799,12 @@ def test_proxmox_doc_matches_the_grants():
         row = f"| `{g.role}` | `{g.path}` | {'yes' if g.propagate else 'no'} | " + \
               ", ".join(f"`{p}`" for p in g.privileges)
         assert row in doc, f"docs/PROXMOX.md is out of date for {g.role}"
+
+
+def test_compare_counts_non_propagated_privileges_as_held():
+    # The API reports a held privilege as 0 when its ACL does not propagate (issue #110).
+    from dciab_validate.proxmox_privs import Grant, compare
+    want = [Grant("R", "/storage/x", False, ("Datastore.Audit",), "")]
+    have = {"/storage/x": {"Datastore.Audit": 0, "Sys.Modify": 0}}
+    assert compare(want, have) == ([], ["/storage/x: Sys.Modify"])
+    assert compare(want, {"/storage/x": {}})[0] == ["/storage/x: Datastore.Audit"]

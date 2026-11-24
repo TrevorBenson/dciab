@@ -22,11 +22,12 @@ What a DCiaB site runs, grouped by capability, and where each piece runs. Versio
 | Day 0 network services | CoreDNS, chrony, Caddy; dnsmasq for PXE only | Bootstrap | Built (`dciab services`); PXE only if a site needs it (backlog, ADR 0001) |
 | Bootstrap cluster and seed registry | kind, Zot (read-only, loaded from the archive payload) | Bootstrap | Built (`dciab seed`, [SEED.md](SEED.md)) |
 | Cluster lifecycle | Cluster API with kubeadm; CAPV (vSphere), CAPMOX (Proxmox VE), CAPM3 (Metal3); in-cluster IPAM and Metal3 IPAM; DCiaB ClusterClasses | MGMT | Built |
-| Cloud provider (vSphere) | vSphere CPI (cloud controller manager): the vSphere class runs kubelet with `cloud-provider: external`, so the CPI sets each node's provider ID | Every vSphere cluster | Planned (baseline add-ons); nothing installs it yet |
+| Cloud provider (vSphere) | vSphere CPI (cloud controller manager): the vSphere class runs kubelet with `cloud-provider: external`, so the CPI sets each node's provider ID | Every vSphere cluster | Installed on MGMT (`dciab mgmt`'s `cpi` step, [addons/vsphere-cpi](../addons/vsphere-cpi/README.md)); INFRA and workload clusters planned |
 | Bare-metal provisioning | Metal3 Bare Metal Operator and Ironic, over Redfish virtual media | MGMT | Planned |
 | Node operating system | Rocky Linux 10 in image mode (bootc, from the RESF SIG/Containers recipe), built with bootc-image-builder | Every node | Recipe built, not tested in CI; boots on Proxmox VE, no cluster has passed on it yet, vSphere and Metal3 disks untested |
 | Container runtime | CRI-O | Every node | Comes with the node image; same status |
 | Control plane endpoint | kube-vip | Every cluster | Built |
+| Kubelet serving certificates | kubelet-csr-approver, for the classes' `serverTLSBootstrap` | Every cluster | Installer built for MGMT (`dciab mgmt`'s `cilium` step, [addons/kubelet-csr-approver](../addons/kubelet-csr-approver/README.md)); INFRA and workload clusters planned |
 
 ## Networking and network security
 

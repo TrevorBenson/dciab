@@ -19,6 +19,11 @@ What each phase builds, against the component list in [COMPONENTS.md](COMPONENTS
 - [x] `bundle.lock` with pinned versions (digests come with the build pipeline)
 - [x] `capi-clusterclasses` chart: `r1` classes (draft until the first release; see [VERSIONING.md](VERSIONING.md)) for vSphere, Proxmox and Metal3
 - [x] `capi-cluster` chart
+- [x] `r1` structured authentication: an `AuthenticationConfiguration` with several JWT issuers, each with its own username and groups prefix (ADR 0008)
+- [x] `r1` failure domains (ADR 0010): `spec.failureDomains` with `validate` checks; worker pools per domain; vSphere zones and cluster modules; Metal3 failure domains; Proxmox workers pinned per domain, control plane not spread (reported by `validate` and `dciab status`)
+- [x] `r1` storage networks on VM nodes (`network.storage`): one NIC per network, MTU, multipath modules
+- [ ] Failure domains, next: Metal3 storage NICs, bonds and VLANs; `validate --live` capacity, vSphere tag and Proxmox shared-storage checks; multipath packages in the node image; BareMetalHost topology labels; Longhorn zone settings
+- [ ] Production NTP on MGMT (`spec.time`, ADR 0010 decision 9)
 - [x] ClusterClass end-to-end test: CAPI and all providers on kind, one Cluster per class, generated objects verified (no infrastructure)
 - [x] Node template recipe: image-builder with a Rocky 10 Proxmox target (`images/node/`)
 - [x] First Proxmox template built and verified
@@ -29,16 +34,17 @@ What each phase builds, against the component list in [COMPONENTS.md](COMPONENTS
 - [ ] Archive build pipeline (`build/README.md` in the source repository; not shipped in the archive): image inventory, image pull, charts, providers, binaries, checksums, SBOMs, packaging and signing (`dciab verify-archive`) done; node images next
 - [x] `dciab cluster-values`: capi-cluster values for MGMT, INFRA and workload clusters, generated from the site config
 - [x] `dciab status`: read-only report of the Day 0 pod, the platform CA and registry certificate, the seed registry, the bootstrap cluster and where MGMT's Cluster lives
-- [x] `dciab seed`: platform CA (generated with its key age-encrypted, or imported), read-only Zot loaded from the payload, kind pulling through it, providers and ClusterClasses from the payload, DNS for `registry.<domain>` ([SEED.md](SEED.md))
-- [ ] `dciab mgmt`: builds MGMT, installs Cilium and the providers, and moves Cluster API into MGMT; picks up `dciab seed`'s kubeconfig and trust bundle and runs offline from the payload (CI runs seed then mgmt up to the Cluster; not yet proven on real infrastructure). Longhorn installer built (`addons/longhorn`, the `longhorn` step, chart and images from the payload). Still to come: MGMT's other services (Metal3, PowerDNS, Kea) and the DNS handoff
+- [x] `dciab seed`: platform CA (generated with its key age-encrypted, or imported), read-only Zot loaded from the payload, kind pulling through it, providers and ClusterClasses from the payload, DNS for `registry.<domain>`; `--remove` undoes it on the host ([SEED.md](SEED.md))
+- [ ] `dciab mgmt`: builds MGMT, installs Cilium and the providers, and moves Cluster API into MGMT; picks up `dciab seed`'s kubeconfig and trust bundle and runs offline from the payload (CI runs seed then mgmt up to the Cluster; not yet proven on real infrastructure). Longhorn installer built (`addons/longhorn`, the `longhorn` step, chart and images from the payload). On vSphere, the cloud provider (CPI) is installed before Cilium (`addons/vsphere-cpi`, the `cpi` step). Still to come: MGMT's other services (Metal3, PowerDNS, Kea) and the DNS handoff
 
 ## Day 0 for bare servers
 
 Decided in [ADR 0001](adr/0001-day0-hypervisors-and-services.md).
 
-- [x] Config: `spec.hypervisors` and `spec.bootstrap.ntp`, with `validate` checks
+- [x] Config: `spec.hypervisors` and `spec.time` (which replaced `spec.bootstrap.ntp` and `network.ntpServers`, ADR 0010), with `validate` checks
 - [x] `bundle.lock`: Proxmox VE installer pinned; ESXi entry (not shipped); Day 0 service images
 - [x] Day 0 image digests pinned (CoreDNS, Caddy, chrony base)
+- [x] DCiaB's chrony image published by CI and pinned (`day0.images.chrony`), so the archive ships it
 - [ ] ESXi build tested and pinned
 - [x] `dciab services`: CoreDNS, chrony and Caddy as one pod on the DNS service IPs
 - [x] `dciab hypervisors` for Proxmox VE, first part: answer files inside per-host installer ISOs (served only to each host's BMC), root password from the config or generated and sealed with age, Redfish virtual media boot, wait for the install ([docs/HYPERVISORS.md](HYPERVISORS.md); ADR 0001 amendment 1)

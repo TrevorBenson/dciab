@@ -1,6 +1,6 @@
 """Render the Day 0 services' configuration from a validated site config.
 
-Pure functions: they read the config, bundle.lock and the chrony Containerfile, and
+Pure functions: they read the config and bundle.lock's images, and
 return file contents. Nothing here touches the host. See ADR 0001 for what each service
 must serve:
 
@@ -8,13 +8,13 @@ must serve:
   answering only on network.dnsServiceIPs. Forward and reverse zones come from one record
   list, so they can't disagree. Other names go to network.upstreamResolvers; with an empty
   list CoreDNS forwards nothing and refuses them.
-- NTP (chrony): only when spec.bootstrap.ntp is set (the site has no NTP of its own). One
+- NTP (chrony): only with spec.time.servedBy dciab (the site has no NTP of its own). One
   chronyd per DNS service IP, because chrony binds to one IPv4 address only.
 - HTTP (Caddy): installer ISOs and per-host answer files, on spec.bootstrap.address:80.
 
 A site without spec.hypervisors gets DNS only (dns_only): CoreDNS alone in the pod, so that
 registry.<network.domain> resolves during bootstrap. Its servers exist already, so there is
-nothing to install over HTTP, and network.ntpServers is the site's own NTP.
+nothing to install over HTTP, and spec.time names the site's own NTP.
 """
 
 from __future__ import annotations
@@ -145,8 +145,8 @@ def corefile(doc: dict) -> str:
 def chrony_confs(doc: dict) -> Dict[str, str]:
     """{service IP: chrony.conf}, or {} when the site has its own NTP."""
     spec = doc["spec"]
-    ntp = spec["bootstrap"].get("ntp")
-    if not ntp or dns_only(doc):
+    ntp = spec["time"]
+    if ntp["servedBy"] != "dciab" or dns_only(doc):
         return {}
     net = spec["network"]
     out = {}
@@ -201,12 +201,6 @@ http://{addr}:80 {{
 """
 
 
-def chrony_image(containerfile: str, base: str) -> str:
-    """Local tag of DCiaB's chrony image: changes whenever its recipe or base changes."""
-    digest = hashlib.sha256((base + "\n" + containerfile).encode()).hexdigest()[:12]
-    return f"localhost/dciab/day0-chrony:{digest}"
-
-
 def pod(doc: dict, images: Dict[str, str], chrony: Optional[str], conf_dir: str,
         isos_dir: str, host_isos_dir: str) -> str:
     """The Kubernetes-style Pod for `podman kube play`: host networking, root in the containers
@@ -226,7 +220,7 @@ def pod(doc: dict, images: Dict[str, str], chrony: Optional[str], conf_dir: str,
     volumes = [host("coredns", f"{conf_dir}/coredns", "Directory")]
     for i, _ in enumerate(chrony_confs(doc), start=1):
         if not chrony:
-            raise ServicesError("spec.bootstrap.ntp is set but no chrony image was given")
+            raise ServicesError("spec.time.servedBy is dciab but no chrony image was given")
         containers.append({
             "name": f"chrony-{i}",
             "image": chrony,

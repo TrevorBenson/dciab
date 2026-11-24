@@ -27,8 +27,12 @@ def sha(b: bytes) -> str:
     return hashlib.sha256(b).hexdigest()
 
 
-def make_repo(tmp: Path) -> Path:
-    """A tiny repository with every SOURCES entry, plus development files to leave out."""
+def git(repo: Path, *args: str) -> None:
+    subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True)
+
+
+def make_repo(tmp: Path, init: bool = True) -> Path:
+    """A tiny git repository with every SOURCES entry, plus development files to leave out."""
     repo = tmp / "repo"
     for rel, text in {
         "dciab": "#!/bin/sh\n", "README.md": "r\n", "VERSION": "9.9.9\n", "bundle.lock": "tools: {}\n",
@@ -36,7 +40,7 @@ def make_repo(tmp: Path) -> Path:
         "lib/dciab_x/b.pyc": "junk", "lib/tests/test_x.py": "", "schema/s.json": "{}",
         "charts/c/Chart.yaml": "name: c\n", "addons/a/install.sh": "#!/bin/sh\n", "docs/d.md": "d\n",
         "examples/e.yaml": "e: 1\n", "hack/fetch_crds.py": "", "hack/render_components.py": "",
-        "hack/check_manifests.py": "", "handoff/README.md": "", ".git/config": "", ".cache/x": "",
+        "hack/check_manifests.py": "", "handoff/README.md": "", ".cache/x": "",
         "tests/test_y.py": "", "images/node/build.sh": "", "images/day0-chrony/Containerfile": "FROM x\n",
         "images/usb/README.md": "", "build/README.md": "", "secrets/site.pw": "pw", "dciab.yaml": "",
     }.items():
@@ -45,6 +49,9 @@ def make_repo(tmp: Path) -> Path:
         p.write_text(text)
     (repo / "dciab").chmod(0o755)
     (repo / "addons/a/install.sh").chmod(0o755)
+    if init:
+        git(repo, "init", "-q")
+        git(repo, "add", "-A")
     return repo
 
 
@@ -101,9 +108,9 @@ def test_entries_sorted_owned_by_root_dated_epoch_without_dev_files(tree):
     assert all(m.uid == 0 and m.gid == 0 and m.mtime == EPOCH for m in members)
     rel = {n.split("/", 1)[1] for n in names if "/" in n}
     for kept in ["dciab", "lib/dciab_x/__init__.py", "charts/c/Chart.yaml", "hack/fetch_crds.py",
-                 "images/day0-chrony/Containerfile", "payload/bin/oras", "payload/SHA256SUMS", "MANIFEST"]:
+                 "payload/bin/oras", "payload/SHA256SUMS", "MANIFEST"]:
         assert kept in rel
-    for dropped in ["handoff", "tests", ".git", ".cache", "images/node", "images/usb", "build",
+    for dropped in ["handoff", "tests", ".git", ".cache", "images/node", "images/usb", "images/day0-chrony", "build",
                     "hack/check_manifests.py", "lib/tests", "payload/.lock", "secrets", "dciab.yaml"]:
         assert not any(r == dropped or r.startswith(dropped + "/") for r in rel), dropped
     assert not any("__pycache__" in r or r.endswith(".pyc") for r in rel)
@@ -134,8 +141,43 @@ def test_payload_must_match_its_sums(tree):
         build(tree)
 
 
+def der(tag: int, body: bytes) -> bytes:
+    """One DER element (short or long form length)."""
+    n = len(body)
+    length = bytes([n]) if n < 0x80 else bytes([0x82]) + n.to_bytes(2, "big")
+    return bytes([tag]) + length + body
+
+
+SEQ, INT, OCTETS, OID = 0x30, 0x02, 0x04, 0x06
+RSA_OID = der(OID, bytes.fromhex("2a864886f70d010101"))
+PBES2_OID = der(OID, bytes.fromhex("2a864886f70d01050d"))
+DER_SECRETS = {
+    "examples/rsa.der": der(SEQ, der(INT, b"\x00") + der(INT, b"\x01" * 200) + der(INT, b"\x03")),  # PKCS#1
+    "examples/ec.der": der(SEQ, der(INT, b"\x01") + der(OCTETS, b"k" * 32)),                         # SEC1
+    "examples/p8.der": der(SEQ, der(INT, b"\x00") + der(SEQ, RSA_OID) + der(OCTETS, b"k" * 150)),   # PKCS#8
+    "examples/p8enc.bin": der(SEQ, der(SEQ, PBES2_OID + der(SEQ, b"")) + der(OCTETS, b"e" * 150)),   # encrypted
+    "examples/bundle.bin": der(SEQ, der(INT, b"\x03") + der(SEQ, b"x" * 20)),                        # PKCS#12
+}
+
+
 @pytest.mark.parametrize("rel,content", [
     ("examples/secrets/x.key", "k"),
+    ("examples/Secrets/notes.txt", "a secrets folder in any case"),
+    ("docs/SECRETS/a.yaml", "a: 1"),
+    ("examples/site.p12", "x"),
+    ("examples/site.PFX", "x"),
+    ("examples/trust.jks", "x"),
+    ("examples/keystore.bin", b"\xfe\xed\xfe\xed\x00\x00\x00\x02"),
+    ("examples/id.ppk", "x"),
+    ("examples/putty.txt", "PuTTY-User-Key-File-3: ssh-ed25519\n"),
+    ("examples/htpasswd", ""),
+    ("examples/.htpasswd", ""),
+    ("examples/zot.htpasswd", ""),
+    ("examples/users.txt", "admin:$2y$05$abcdefghijklmnopqrstuv\n"),
+    ("examples/users2.txt", "# registry\nbob:$apr1$salt$hash\n"),
+    ("examples/token.yaml", "apiVersion: v1\nkind: Config\nusers:\n- name: a\n  user:\n    token: eyJhbGciOi\n"),
+    ("examples/basic.yaml", "users:\n- name: a\n  user:\n    username: a\n    password: hunter2\n"),
+    *sorted(DER_SECRETS.items()),
     ("examples/secrets/notes.txt", "anything in a secrets folder"),
     ("docs/site.pw", "pw"),
     ("examples/.env", "TOKEN=x"),
@@ -150,7 +192,7 @@ def test_payload_must_match_its_sums(tree):
 def test_secrets_under_a_packaged_path_fail_the_build(tree, rel, content):
     p = tree / "repo" / rel
     p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(content)
+    p.write_bytes(content if isinstance(content, bytes) else content.encode())
     with pytest.raises(archive.ArchiveError, match=re.escape(rel)):
         build(tree)
     assert not (tree / "out" / "dciab-9.9.9.tar").exists()
@@ -158,13 +200,60 @@ def test_secrets_under_a_packaged_path_fail_the_build(tree, rel, content):
 
 def test_public_certificates_ship(tree):
     cert = "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n"
-    (tree / "repo" / "examples" / "ca.crt").write_text(cert)
-    (tree / "repo" / "examples" / "ca.pem").write_text(cert)
-    (tree / "repo" / "docs" / "cosign.pub").write_text("-----BEGIN PUBLIC KEY-----\n")
+    repo = tree / "repo"
+    (repo / "examples" / "ca.crt").write_text(cert)
+    (repo / "examples" / "ca.pem").write_text(cert)
+    (repo / "docs" / "cosign.pub").write_text("-----BEGIN PUBLIC KEY-----\n")
+    (repo / "docs" / "id_ed25519.pub").write_text("ssh-ed25519 AAAAC3Nza user@host\n")
+    # A DER certificate and public key: a SEQUENCE that doesn't start with a version INTEGER.
+    tbs = der(SEQ, der(0xA0, der(INT, b"\x02")) + der(INT, b"\x01") + der(SEQ, RSA_OID))
+    (repo / "examples" / "ca.der").write_bytes(der(SEQ, tbs + der(SEQ, RSA_OID) + der(0x03, b"\x00sig")))
+    (repo / "examples" / "pub.der").write_bytes(der(SEQ, der(SEQ, RSA_OID) + der(0x03, b"\x00" + b"k" * 140)))
+    # Words that name the formats, and a kubeconfig whose users hold no credential.
+    (repo / "docs" / "auth.md").write_text("Zot reads an htpasswd file; a token: goes under users:.\n")
+    (repo / "examples" / "exec.yaml").write_text(
+        "kind: Config\nusers:\n- name: a\n  user:\n    token: \"\"\n    tokenFile: /run/token\n")
+    git(repo, "add", "-A")
     with tarfile.open(build(tree)) as tar:
         names = tar.getnames()
-    for kept in ["examples/ca.crt", "examples/ca.pem", "docs/cosign.pub"]:
+    for kept in ["examples/ca.crt", "examples/ca.pem", "docs/cosign.pub", "docs/id_ed25519.pub",
+                 "examples/ca.der", "examples/pub.der", "docs/auth.md", "examples/exec.yaml"]:
         assert "dciab-9.9.9/" + kept in names
+
+
+def test_untracked_files_stay_out(tree, capsys):
+    repo = tree / "repo"
+    (repo / "examples" / "site.yaml").write_text("real: site\n")
+    (repo / "docs" / "new.md").write_text("n\n")
+    git(repo, "add", "docs/new.md")
+    with tarfile.open(build(tree)) as tar:
+        names = tar.getnames()
+    assert "dciab-9.9.9/docs/new.md" in names
+    assert "dciab-9.9.9/examples/site.yaml" not in names
+    assert "not tracked by git, left out: examples/site.yaml" in capsys.readouterr().err
+
+
+def test_untracked_secrets_still_fail_the_build(tree):
+    (tree / "repo" / "examples" / "Secrets").mkdir()
+    (tree / "repo" / "examples" / "Secrets" / "root.txt").write_text("pw")
+    with pytest.raises(archive.ArchiveError, match="examples/Secrets/root.txt"):
+        build(tree)
+
+
+def test_without_git_every_file_ships(tmp_path, capsys):
+    make_repo(tmp_path, init=False)
+    make_payload(tmp_path)
+    (tmp_path / "repo" / "examples" / "extra.yaml").write_text("x: 1\n")
+    with tarfile.open(build(tmp_path)) as tar:
+        assert "dciab-9.9.9/examples/extra.yaml" in tar.getnames()
+    assert "isn't a git checkout" in capsys.readouterr().err
+
+
+def test_a_broken_git_checkout_fails(tree):
+    def broken(cmd):
+        raise subprocess.CalledProcessError(128, cmd, stderr=b"fatal: detected dubious ownership")
+    with pytest.raises(archive.ArchiveError, match="dubious ownership"):
+        package.source_files(tree / "repo", runner=broken)
 
 
 def runtime_paths(root: Path):
@@ -185,7 +274,7 @@ def runtime_paths(root: Path):
 def test_every_runtime_path_ships():
     shipped = set(package.source_files(ROOT))
     paths = runtime_paths(ROOT)
-    for must in ["lib/steps/services.sh", "images/day0-chrony/Containerfile", "hack/fetch_crds.py",
+    for must in ["lib/steps/services.sh", "hack/fetch_crds.py",
                  "charts/capi-cluster", "schema/dciab.schema.json", "bundle.lock"]:
         assert must in paths, f"the scan no longer finds {must}"
     missing = {p: str(f.relative_to(ROOT)) for p, f in paths.items()

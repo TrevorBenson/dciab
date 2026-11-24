@@ -74,12 +74,14 @@ jobs:
             python hack/check_manifests.py --crds "$CRDS" --expect Cluster=1 --expect ClusterClass=3 \
               out/classes.yaml:dciab-clusterclasses "out/$name.yaml:cluster-$name"
           done
-      - name: Render Cilium for every CI cluster
+      - name: Render Cilium and kubelet-csr-approver for every CI cluster
         run: |
           set -euo pipefail
           for values in charts/capi-cluster/ci/*-values.yaml; do
             addons/cilium/install.sh "$values" --template > /dev/null
             echo "ok: cilium renders for $values"
+            addons/kubelet-csr-approver/install.sh "$values" --template > /dev/null
+            echo "ok: kubelet-csr-approver renders for $values"
           done
       - name: Render Longhorn for every example config
         run: |
@@ -89,6 +91,8 @@ jobs:
             echo "ok: longhorn renders for $config"
           done
           addons/longhorn/install.sh examples/proxmox.yaml --images
+      - name: Render the vSphere CPI
+        run: addons/vsphere-cpi/install.sh examples/vsphere.yaml --template > /dev/null
       - name: Bad values fail the render, with the expected message
         run: |
           set -uo pipefail
@@ -239,13 +243,17 @@ jobs:
           set -euo pipefail
           crds="$(python3 hack/fetch_crds.py)"
           addons/cilium/install.sh charts/capi-cluster/ci/proxmox-values.yaml --template > "$RUNNER_TEMP/cilium.yaml"
+          addons/kubelet-csr-approver/install.sh charts/capi-cluster/ci/proxmox-values.yaml --template > "$RUNNER_TEMP/kubelet-csr-approver.yaml"
           # Longhorn's manager starts most of its images itself: list them from the chart values too.
           addons/longhorn/install.sh examples/proxmox.yaml --template > "$RUNNER_TEMP/longhorn.yaml"
           addons/longhorn/install.sh examples/proxmox.yaml --images > "$RUNNER_TEMP/longhorn-images.txt"
+          addons/vsphere-cpi/install.sh examples/vsphere.yaml --template > "$RUNNER_TEMP/vsphere-cpi.yaml"
           mapfile -t longhorn < "$RUNNER_TEMP/longhorn-images.txt"
           (( ${#longhorn[@]} > 0 )) || { echo "no Longhorn images listed" >&2; exit 1; }
           "$RUNNER_TEMP/kubeadm" config images list --kubernetes-version "$K8S" > "$RUNNER_TEMP/kubeadm.txt"
           args=(--manifests "$crds" --extra "$RUNNER_TEMP/cilium.yaml" --extra "$RUNNER_TEMP/longhorn.yaml"
+                --extra "$RUNNER_TEMP/vsphere-cpi.yaml"
+                --extra "$RUNNER_TEMP/kubelet-csr-approver.yaml"
                 --kubeadm-images "$RUNNER_TEMP/kubeadm.txt")
           for ref in "${longhorn[@]}"; do args+=(--image "$ref=longhorn chart values"); done
           python3 build/inventory.py "${args[@]}"
@@ -465,11 +473,12 @@ jobs:
           set -euo pipefail
           version="$(podman run --rm --entrypoint dpkg-query "$TAG" -W -f '${Version}' proxmox-auto-install-assistant)"
           dest="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/dciab-pve-assistant:$version"
+          # Log in first: skopeo reads the same auth file, so the check below also sees a private package.
+          echo "$GH_TOKEN" | podman login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
           # A version is published once: bundle.lock pins its digest, so it's never overwritten.
           if skopeo inspect --raw "docker://$dest" >/dev/null 2>&1; then
             echo "already published: $dest"; exit 0
           fi
-          echo "$GH_TOKEN" | podman login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
           podman push --digestfile "$RUNNER_TEMP/digest" "$TAG" "docker://$dest"
           echo "published: $dest@$(cat "$RUNNER_TEMP/digest")  (pin it as bundle.lock images.pveAssistant)"
 
@@ -550,6 +559,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: sudo apt-get update -q && sudo apt-get install -y -q python3-yaml python3-jsonschema dnsutils
+      - name: This branch's chrony image (job day0-chrony publishes it on main)
+        run: echo "DCIAB_CHRONY_IMAGE=$(sudo images/day0-chrony/build.sh)" >> "$GITHUB_ENV"
       - name: Site and dummy interface
         run: |
           set -euo pipefail
@@ -567,11 +578,11 @@ jobs:
           sudo ip addr add 10.30.110.5/24 dev dciab0
           DCIAB_PVE_TOKEN=placeholder ./dciab services /tmp/site/dciab.yaml --print
       - name: dciab services
-        run: sudo DCIAB_PVE_TOKEN=placeholder ./dciab services /tmp/site/dciab.yaml
+        run: sudo DCIAB_PVE_TOKEN=placeholder DCIAB_CHRONY_IMAGE="$DCIAB_CHRONY_IMAGE" ./dciab services /tmp/site/dciab.yaml
       - name: A rerun changes nothing
         run: |
           set -euo pipefail
-          out="$(sudo DCIAB_PVE_TOKEN=placeholder ./dciab services /tmp/site/dciab.yaml)"
+          out="$(sudo DCIAB_PVE_TOKEN=placeholder DCIAB_CHRONY_IMAGE="$DCIAB_CHRONY_IMAGE" ./dciab services /tmp/site/dciab.yaml)"
           echo "$out"
           grep -q "already runs this config" <<<"$out"
           if grep -E "^(wrote|added|opened) " <<<"$out"; then echo "the rerun changed something"; exit 1; fi
@@ -602,7 +613,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: shellcheck dciab hack/e2e/run.sh hack/check_frozen_classes.sh images/node/build.sh lib/steps/mgmt.sh lib/steps/services.sh lib/steps/capi-providers.sh images/node-bootc/build.sh images/node-bootc/rootfs/usr/libexec/dciab/growroot images/bootstrap-bootc/build.sh images/usb/build.sh images/day0-chrony/build.sh images/lab-runner/build.sh images/lab-runner/rootfs/usr/libexec/dciab-lab-runner/loop images/lab-runner/rootfs/usr/libexec/dciab-lab-runner/job-started.sh addons/cilium/install.sh addons/longhorn/install.sh hack/lab/pve.sh hack/lab/check-token.sh hack/lab/template.sh hack/lab/cluster.sh hack/lab/mgmt.sh
+      - run: shellcheck dciab hack/e2e/run.sh hack/check_frozen_classes.sh images/node/build.sh lib/steps/mgmt.sh lib/steps/mgmt-pivot.sh lib/steps/services.sh lib/steps/capi-providers.sh images/node-bootc/build.sh images/node-bootc/rootfs/usr/libexec/dciab/growroot images/bootstrap-bootc/build.sh images/usb/build.sh images/day0-chrony/build.sh images/lab-runner/build.sh images/lab-runner/rootfs/usr/libexec/dciab-lab-runner/loop images/lab-runner/rootfs/usr/libexec/dciab-lab-runner/job-started.sh addons/cilium/install.sh addons/longhorn/install.sh addons/vsphere-cpi/install.sh addons/kubelet-csr-approver/install.sh hack/lab/pve.sh hack/lab/check-token.sh hack/lab/template.sh hack/lab/cluster.sh hack/lab/mgmt.sh
 
   rocky10:
     # The validator must run on the bootstrap host with distro packages only.

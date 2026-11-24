@@ -192,6 +192,34 @@ class Bmc:
             done.append(f"couldn't clear the boot override ({exc})")
         return done
 
+    def release(self, image: str, clear_override: bool) -> Tuple[List[str], List[str], Optional[str]]:
+        """After an install: eject image if it is still in the CD slot and, when clear_override
+        (DCiaB set it), clear a boot override that still points at Cd, so a fallback to CD never
+        boots the installer again. Other media are left alone. Returns (done, failed, other):
+        other is the Image of media left in the slot because it isn't image, else None. Never raises."""
+        done: List[str] = []
+        failed: List[str] = []
+        other: Optional[str] = None
+        try:
+            path, slot = self.cd_slot()
+            if slot.get("Inserted") and slot.get("Image") == image:
+                self.eject(path, slot)
+                done.append(f"ejected {image}")
+            elif slot.get("Inserted"):
+                other = str(slot.get("Image"))
+        except RedfishError as exc:
+            failed.append(f"couldn't eject {image} ({exc})")
+        if clear_override:
+            try:
+                boot = self.system().get("Boot") or {}
+                if boot.get("BootSourceOverrideTarget") == "Cd" and \
+                        boot.get("BootSourceOverrideEnabled") not in (None, "Disabled"):
+                    self._call("PATCH", self.system_path, {"Boot": {"BootSourceOverrideEnabled": "Disabled"}})
+                    done.append("cleared the boot override from Cd")
+            except RedfishError as exc:
+                failed.append(f"couldn't clear the boot override from Cd ({exc})")
+        return done, failed, other
+
     def prepare(self, image: str) -> List[str]:
         """Attach image (ejecting anything else) and set a one-time boot from it. No reset."""
         done = []

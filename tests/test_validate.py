@@ -6,11 +6,19 @@ from conftest import ROOT, errors, load_example, warnings
 
 # --- the shipped examples ---------------------------------------------------------
 
+# Warnings an example is meant to show on every run (ADR 0010): a site that isn't highly
+# available says so, and so does a Proxmox control plane that r1 can't spread.
+EXPECTED_WARNINGS = {
+    "proxmox": {"spec.failureDomains.domains"},
+    "proxmox-bare": {"spec.failureDomains.notHighlyAvailable", "spec.time.serveLocalClock"},
+}
+
+
 def test_examples_are_valid(site, example):
     name, doc = example
     code, report = site.validate(doc)
     assert errors(report) == [], f"{name}: {errors(report)}"
-    assert warnings(report) == [], f"{name}: {warnings(report)}"
+    assert {w["path"] for w in warnings(report)} == EXPECTED_WARNINGS.get(name, set()), f"{name}: {warnings(report)}"
     assert code == 0 and report["valid"] is True
 
 
@@ -55,10 +63,10 @@ def test_inline_secret_is_rejected_without_echoing_it(site):
 
 def test_missing_field_is_named(site):
     doc = load_example("vsphere")
-    del doc["spec"]["network"]["ntpServers"]
+    del doc["spec"]["time"]["servers"]
     code, report = site.validate(doc)
     assert code == 1
-    assert errors(report, "spec.network.ntpServers")[0]["found"] == "missing"
+    assert errors(report, "spec.time.servers")[0]["found"] == "missing"
 
 
 def test_unknown_field_is_rejected(site):
@@ -383,30 +391,54 @@ def test_proxmox_hypervisors_need_installer_locale(site):
     assert errors(report, "spec.hypervisors.installer")
 
 
-def test_bootstrap_ntp_needs_service_ips_as_ntp_servers(site):
+def test_time_served_by_dciab_uses_the_service_ips(site):
     doc = load_example("proxmox-bare")
-    doc["spec"]["network"]["ntpServers"] = ["10.30.0.123"]
+    doc["spec"]["time"]["servers"] = ["10.30.0.123"]
     _, report = site.validate(doc)
-    assert "10.30.110.53, 10.30.110.54" in errors(report, "spec.network.ntpServers")[0]["fix"]
+    assert "10.30.110.53, 10.30.110.54" in errors(report, "spec.time.servers")[0]["fix"]
+    doc["spec"]["time"]["servers"] = ["10.30.110.54", "10.30.110.53"]
+    _, report = site.validate(doc)
+    assert not errors(report, "spec.time.servers")
 
 
-def test_service_ips_as_ntp_servers_need_bootstrap_ntp(site):
+def test_site_time_servers_must_not_be_service_ips(site):
     doc = load_example("proxmox-bare")
-    del doc["spec"]["bootstrap"]["ntp"]
+    doc["spec"]["time"] = {"servedBy": "site", "servers": ["10.30.110.53"]}
     _, report = site.validate(doc)
-    assert "spec.bootstrap.ntp" in errors(report, "spec.network.ntpServers")[0]["fix"]
+    assert "servedBy: dciab" in errors(report, "spec.time.servers")[0]["fix"]
 
 
 def test_no_upstream_requires_serving_local_clock(site):
     doc = load_example("proxmox-bare")
-    doc["spec"]["bootstrap"]["ntp"]["serveLocalClock"] = False
+    doc["spec"]["time"]["serveLocalClock"] = False
     _, report = site.validate(doc)
-    assert errors(report, "spec.bootstrap.ntp.serveLocalClock")
+    assert errors(report, "spec.time.serveLocalClock")
 
 
-def test_no_upstream_is_noted(site):
+def test_local_clock_only_without_upstream(site):
+    doc = load_example("proxmox-bare")
+    doc["spec"]["time"]["upstream"] = ["ntp.example.org"]
+    _, report = site.validate(doc)
+    assert errors(report, "spec.time.upstream")
+
+
+def test_site_time_takes_no_upstream(site):
+    doc = load_example("proxmox")
+    doc["spec"]["time"]["upstream"] = ["ntp.example.org"]
+    _, report = site.validate(doc)
+    assert errors(report, "spec.time")
+
+
+def test_local_clock_is_a_warning(site):
     _, report = site.validate(load_example("proxmox-bare"))
-    assert any("bootstrap host's clock" in n for n in report["notes"])
+    assert "one time source" in warnings(report, "spec.time.serveLocalClock")[0]["found"]
+
+
+def test_old_ntp_fields_are_gone(site):
+    doc = load_example("proxmox")
+    doc["spec"]["network"]["ntpServers"] = ["10.30.0.123"]
+    _, report = site.validate(doc)
+    assert errors(report, "spec.network.ntpServers")
 
 
 # --- ESXi installer pin (needs its own archive root with a pinned bundle.lock) ----------
@@ -476,18 +508,19 @@ def test_bmc_hostnames_compare_case_insensitively(site):
     assert errors(report, "spec.hypervisors.hosts[1].bmc.address")
 
 
-def test_bootstrap_ntp_needs_hypervisors(site):
+def test_time_served_by_dciab_needs_hypervisors(site):
     doc = load_example("proxmox-bare")
     del doc["spec"]["hypervisors"]
     _, report = site.validate(doc)
-    assert "spec.hypervisors" in errors(report, "spec.bootstrap.ntp")[0]["fix"]
+    assert "spec.hypervisors" in errors(report, "spec.time.servedBy")[0]["fix"]
 
 
-def test_bootstrap_ntp_upstream_must_not_be_a_service_ip(site):
+def test_time_upstream_must_not_be_a_service_ip(site):
     doc = load_example("proxmox-bare")
-    doc["spec"]["bootstrap"]["ntp"]["upstream"] = ["10.30.110.53"]
+    doc["spec"]["time"]["upstream"] = ["10.30.110.53"]
+    doc["spec"]["time"]["serveLocalClock"] = False
     _, report = site.validate(doc)
-    assert errors(report, "spec.bootstrap.ntp.upstream[0]")
+    assert errors(report, "spec.time.upstream[0]")
 
 
 def test_hypervisors_need_a_boot_mode(site):
@@ -623,3 +656,180 @@ def test_openssl_timeout_is_noted(site, monkeypatch):
     monkeypatch.setattr(checks.subprocess, "run", slow)
     code, report = site.validate(load_example("proxmox"))
     assert code == 0 and any("openssl timed out" in n for n in report["notes"])
+
+
+# --- failure domains (ADR 0010) --------------------------------------------------------
+
+def test_failure_domains_are_required(site):
+    doc = load_example("proxmox")
+    del doc["spec"]["failureDomains"]
+    _, report = site.validate(doc)
+    assert errors(report, "spec.failureDomains")[0]["found"] == "missing"
+
+
+def test_fewer_than_three_domains_need_a_reason(site):
+    doc = load_example("proxmox")
+    doc["spec"]["failureDomains"]["domains"] = doc["spec"]["failureDomains"]["domains"][:2]
+    _, report = site.validate(doc)
+    assert "notHighlyAvailable" in errors(report, "spec.failureDomains.notHighlyAvailable")[0]["fix"]
+    doc["spec"]["failureDomains"]["notHighlyAvailable"] = {"reason": "two hosts at a branch office"}
+    _, report = site.validate(doc)
+    assert not errors(report)
+    assert "two failure domains" in warnings(report, "spec.failureDomains.notHighlyAvailable")[0]["fix"]
+
+
+def test_single_domain_warning_names_the_host(site):
+    _, report = site.validate(load_example("proxmox-bare"))
+    assert "losing pve01 stops MGMT, INFRA" in warnings(report, "spec.failureDomains.notHighlyAvailable")[0]["fix"]
+
+
+def test_proxmox_domains_name_their_node(site):
+    doc = load_example("proxmox")
+    d = doc["spec"]["failureDomains"]["domains"]
+    d[0]["name"] = "rack1"
+    d[1]["proxmox"]["node"] = "pve09"
+    d[2]["proxmox"]["node"] = "pve01"
+    _, report = site.validate(doc)
+    assert "after its PVE node" in errors(report, "spec.failureDomains.domains[0].name")[0]["fix"]
+    assert errors(report, "spec.failureDomains.domains[1].proxmox.node")
+    assert "one domain" in errors(report, "spec.failureDomains.domains[2].proxmox.node")[0]["fix"]
+
+
+def test_domains_match_the_platform(site):
+    doc = load_example("proxmox")
+    doc["spec"]["failureDomains"]["domains"][0]["vsphere"] = {"computeCluster": "c1"}
+    _, report = site.validate(doc)
+    assert errors(report, "spec.failureDomains.domains[0]")
+
+
+def test_proxmox_control_plane_is_reported_unspread(site):
+    _, report = site.validate(load_example("proxmox"))
+    assert "control plane isn't in r1" in warnings(report, "spec.failureDomains.domains")[0]["fix"]
+
+
+def test_references_name_declared_domains(site):
+    doc = load_example("metal3-cluster")
+    doc["spec"]["baremetal"]["hosts"][0]["failureDomain"] = "rack-z"
+    doc["spec"]["workloadClusters"][0]["workerPools"][0]["failureDomains"] = ["rack-z"]
+    _, report = site.validate(doc)
+    assert errors(report, "spec.baremetal.hosts[0].failureDomain")
+    assert errors(report, "spec.workloadClusters[0].workerPools[0].failureDomains[0]")
+
+
+def test_vsphere_cluster_can_not_use_a_metal_domain(site):
+    doc = load_example("metal3-cluster")
+    doc["spec"]["failureDomains"]["domains"].append({"name": "rack-d"})   # bare metal only
+    doc["spec"]["clusters"]["infra"]["failureDomains"] = ["rack-d"]
+    _, report = site.validate(doc)
+    assert "vsphere cluster" in errors(report, "spec.clusters.infra.failureDomains[0]")[0]["fix"]
+
+
+def test_generated_pool_names_stay_short(site):
+    doc = load_example("proxmox")
+    doc["spec"]["clusters"]["infra"]["workerPools"][0]["name"] = "a-very-long-pool-nam"
+    for d in doc["spec"]["failureDomains"]["domains"]:
+        d["name"] = d["proxmox"]["node"] = d["name"] + "-node-long"
+    doc["spec"]["platform"]["proxmox"]["nodes"] = [d["name"] for d in doc["spec"]["failureDomains"]["domains"]]
+    doc["spec"]["platform"]["proxmox"]["templateNode"] = doc["spec"]["platform"]["proxmox"]["nodes"][0]
+    _, report = site.validate(doc)
+    assert "<pool>-<domain>" in errors(report, "spec.clusters.infra.workerPools[0].name")[0]["fix"]
+
+
+def test_narrowed_cluster_warns_about_quorum(site):
+    doc = load_example("proxmox")
+    doc["spec"]["clusters"]["infra"]["failureDomains"] = ["pve01", "pve02"]
+    _, report = site.validate(doc)
+    assert "3 control plane nodes over 2" in warnings(report, "spec.clusters.infra.controlPlane.replicas")[0]["found"]
+
+
+def test_metal3_domains_need_enough_hosts(site):
+    doc = load_example("metal3-cluster")
+    doc["spec"]["baremetal"]["hosts"][4]["failureDomain"] = "rack-a"     # r760-05 leaves rack-b
+    _, report = site.validate(doc)
+    assert "0 matching host(s) in rack-b" in warnings(report, "spec.workloadClusters[0].workerPools[0].hostSelector")[0]["found"]
+
+
+def test_cluster_modules_off_is_a_warning(site):
+    doc = load_example("vsphere")
+    doc["spec"]["platform"]["vsphere"]["clusterModules"] = False
+    _, report = site.validate(doc)
+    assert warnings(report, "spec.platform.vsphere.clusterModules")
+
+
+# --- storage networks (ADR 0010, decision 8a) -------------------------------------------
+
+def test_storage_networks_and_ranges(site):
+    doc = load_example("proxmox")
+    infra = doc["spec"]["clusters"]["infra"]
+    infra["storageIPRanges"]["san-c"] = "10.40.30.10-10.40.30.20"
+    infra["storageIPRanges"]["san-b"] = "10.40.10.30-10.40.10.49"      # in san-a's network
+    doc["spec"]["clusters"]["mgmt"]["storageIPRanges"] = {"san-a": "10.40.10.40-10.40.10.45"}
+    _, report = site.validate(doc)
+    assert errors(report, "spec.clusters.infra.storageIPRanges.san-c")
+    assert "outside spec.network.storage san-b" in errors(report, "spec.clusters.infra.storageIPRanges.san-b")[0]["found"]
+    assert "overlaps spec.clusters.mgmt.storageIPRanges.san-a" in errors(
+        report, "spec.clusters.infra.storageIPRanges.san-a")[0]["found"]
+
+
+def test_storage_networks_per_platform(site):
+    doc = load_example("vsphere")
+    doc["spec"]["network"]["storage"] = [{"name": "san-a", "cidr": "10.40.10.0/24", "vlan": 410}]
+    _, report = site.validate(doc)
+    assert errors(report, "spec.network.storage[0].portGroup")
+    assert errors(report, "spec.network.storage[0].vlan")
+    doc = load_example("proxmox")
+    doc["spec"]["network"]["storage"][0]["cidr"] = "10.30.110.0/24"
+    _, report = site.validate(doc)
+    assert errors(report, "spec.network.storage[0].cidr")                  # overlaps the node network
+
+
+def test_unused_storage_network_is_noted(site):
+    doc = load_example("proxmox")
+    del doc["spec"]["clusters"]["infra"]["storageIPRanges"]
+    _, report = site.validate(doc)
+    assert any("no cluster has storageIPRanges" in n for n in report["notes"])
+
+
+def test_only_domains_mgmt_and_infra_can_use_count(site):
+    """A Proxmox node and two Metal3 racks are not three domains for a Proxmox control plane."""
+    doc = load_example("proxmox")
+    doc["spec"]["failureDomains"] = {"domains": [{"name": "pve01", "proxmox": {"node": "pve01"}},
+                                                 {"name": "rack-a"}, {"name": "rack-b"}]}
+    _, report = site.validate(doc)
+    assert "1 failure domain(s) MGMT and INFRA can use" in errors(report, "spec.failureDomains.notHighlyAvailable")[0]["found"]
+
+
+def test_generated_names_never_collide(site):
+    doc = load_example("proxmox")
+    nodes = ["c", "b-c", "pve03"]
+    doc["spec"]["platform"]["proxmox"].update(nodes=nodes, templateNode="c")
+    doc["spec"]["failureDomains"]["domains"] = [{"name": n, "proxmox": {"node": n}} for n in nodes]
+    pool = doc["spec"]["clusters"]["infra"]["workerPools"][0]
+    doc["spec"]["clusters"]["infra"]["workerPools"] = [dict(pool, name="ab", failureDomains=["b-c", "pve03"]),
+                                                       dict(pool, name="ab-b", failureDomains=["c", "pve03"])]
+    _, report = site.validate(doc)
+    assert any("also a MachineDeployment" in e["found"] for e in errors(report))
+
+
+# --- upstream DNS -------------------------------------------------------------------
+
+def test_empty_upstream_resolvers_without_isolated_is_a_warning(site):
+    doc = load_example("proxmox")
+    del doc["spec"]["network"]["isolated"]
+    code, report = site.validate(doc)
+    assert code == 0
+    [w] = warnings(report, "spec.network.upstreamResolvers")
+    assert "isolated" in w["fix"] and "kubeadm init" in w["fix"]
+
+
+def test_isolated_site_with_no_resolvers_is_quiet(site):
+    _, report = site.validate(load_example("proxmox"))
+    assert warnings(report, "spec.network.upstreamResolvers") == []
+
+
+def test_isolated_with_resolvers_is_a_warning(site):
+    doc = load_example("vsphere")
+    doc["spec"]["network"]["isolated"] = True
+    code, report = site.validate(doc)
+    assert code == 0
+    assert warnings(report, "spec.network.isolated")

@@ -1,0 +1,16 @@
+# DCiaB's defaults for the vSphere CPI chart (vsphere-cpi). The per-site values (vCenter,
+# datacenter, thumbprint) come from the config through cpi_values.py; the image and its tag
+# come with the chart pinned in bundle.lock.
+config:
+  enabled: true
+  name: vsphere-cloud-config
+  # Never set here: install.sh creates the Secret from the config's credentials reference.
+  username: ""
+  password: ""
+  secret:
+    create: false
+    name: vsphere-cloud-secret
+  # Empty turns the CPI's zone lookup off; cpi_values.py sets k8s-region and k8s-zone when
+  # the site declares vSphere failure domains.
+  region: ""
+  zone: ""

@@ -14,6 +14,8 @@ ipam:
   mode: kubernetes
 
 operator:
+  # install.sh sets it per cluster: the control plane replicas, at most 2. Its replicas
+  # never share a node, and a 1-node control plane can't hold two.
   replicas: 2
   rollOutPods: true    # restart when its configuration changes
 
