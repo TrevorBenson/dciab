@@ -266,6 +266,13 @@ spec:
             diskGiB:
               type: integer
               minimum: 25
+            dataDiskGiB:
+              type: integer
+              minimum: 10
+              description: >-
+                Optional second disk, mounted at /var/lib/longhorn, so Longhorn never writes
+                to the root disk that etcd uses. Its size must differ from diskGiB: the node
+                finds the disk by its size.
           description: Machine size. Set at cluster level and override per control plane or worker pool.
     - name: dnsServers
       required: true
@@ -608,6 +615,10 @@ spec:
               path: /spec/template/spec/diskGiB
               valueFrom: {variable: machine.diskGiB}
             - op: add
+              path: /spec/template/spec/additionalDisksGiB
+              valueFrom:
+                template: '{{ if .machine.dataDiskGiB }}[{{ .machine.dataDiskGiB }}]{{ else }}[]{{ end }}'
+            - op: add
               path: /spec/template/spec/network
               valueFrom:
                 template: |
@@ -669,6 +680,10 @@ spec:
             - op: add
               path: /spec/template/spec/diskGiB
               valueFrom: {variable: machine.diskGiB}
+            - op: add
+              path: /spec/template/spec/additionalDisksGiB
+              valueFrom:
+                template: '{{ if .machine.dataDiskGiB }}[{{ .machine.dataDiskGiB }}]{{ else }}[]{{ end }}'
             - op: add
               path: /spec/template/spec/network
               valueFrom:
@@ -924,6 +939,88 @@ spec:
             - op: add
               path: /spec/template/spec/preKubeadmCommands/-
               value: "systemctl restart systemd-modules-load.service && if systemctl cat multipathd.service >/dev/null 2>&1; then systemctl enable --now multipathd.service; fi"
+    - name: dataDisk
+      description: >-
+        Machines with machine.dataDiskGiB: format the second disk once and mount it at
+        /var/lib/longhorn (an fstab entry, so it comes back after a reboot), before kubeadm
+        runs. The bootstrap fails when the disk isn't there, rather than letting Longhorn
+        write to the root disk. Machines without it run a no-op.
+      definitions:
+        - selector:
+            apiVersion: controlplane.cluster.x-k8s.io/v1beta2
+            kind: KubeadmControlPlaneTemplate
+            matchResources:
+              controlPlane: true
+          jsonPatches:
+            - op: add
+              path: /spec/template/spec/kubeadmConfigSpec/files/-
+              value:
+                path: /etc/dciab/data-disk.sh
+                owner: root:root
+                permissions: "0755"
+                content: |
+                  #!/bin/sh
+                  # Mount this machine's data disk (dataDiskGiB) at /var/lib/longhorn. The disk
+                  # is the blank one of exactly that size; it is formatted once and labelled.
+                  set -eu
+                  size_gib="${1:-0}"
+                  [ "$size_gib" -gt 0 ] || exit 0
+                  mnt=/var/lib/longhorn
+                  label=dciab-data
+                  if ! dev="$(blkid -L "$label")"; then
+                    want=$((size_gib * 1024 * 1024 * 1024))
+                    dev=""
+                    for d in $(lsblk -dbnpo NAME,TYPE,SIZE | awk -v w="$want" '$2 == "disk" && $3 == w {print $1}'); do
+                      if [ -z "$(lsblk -nro FSTYPE,PTTYPE "$d" | tr -d '[:space:]')" ]; then dev="$d"; break; fi
+                    done
+                    [ -n "$dev" ] || { echo "dciab-data-disk: no blank ${size_gib} GiB disk" >&2; exit 1; }
+                    mkfs.xfs -q -L "$label" "$dev"
+                  fi
+                  mkdir -p "$mnt"
+                  grep -q "^LABEL=$label " /etc/fstab || echo "LABEL=$label $mnt xfs defaults 0 2" >> /etc/fstab
+                  mountpoint -q "$mnt" || mount "$mnt"
+            - op: add
+              path: /spec/template/spec/kubeadmConfigSpec/preKubeadmCommands/-
+              valueFrom:
+                template: '/etc/dciab/data-disk.sh {{ .machine.dataDiskGiB | default 0 }}'
+        - selector:
+            apiVersion: bootstrap.cluster.x-k8s.io/v1beta2
+            kind: KubeadmConfigTemplate
+            matchResources:
+              machineDeploymentClass:
+                names: [default]
+          jsonPatches:
+            - op: add
+              path: /spec/template/spec/files/-
+              value:
+                path: /etc/dciab/data-disk.sh
+                owner: root:root
+                permissions: "0755"
+                content: |
+                  #!/bin/sh
+                  # Mount this machine's data disk (dataDiskGiB) at /var/lib/longhorn. The disk
+                  # is the blank one of exactly that size; it is formatted once and labelled.
+                  set -eu
+                  size_gib="${1:-0}"
+                  [ "$size_gib" -gt 0 ] || exit 0
+                  mnt=/var/lib/longhorn
+                  label=dciab-data
+                  if ! dev="$(blkid -L "$label")"; then
+                    want=$((size_gib * 1024 * 1024 * 1024))
+                    dev=""
+                    for d in $(lsblk -dbnpo NAME,TYPE,SIZE | awk -v w="$want" '$2 == "disk" && $3 == w {print $1}'); do
+                      if [ -z "$(lsblk -nro FSTYPE,PTTYPE "$d" | tr -d '[:space:]')" ]; then dev="$d"; break; fi
+                    done
+                    [ -n "$dev" ] || { echo "dciab-data-disk: no blank ${size_gib} GiB disk" >&2; exit 1; }
+                    mkfs.xfs -q -L "$label" "$dev"
+                  fi
+                  mkdir -p "$mnt"
+                  grep -q "^LABEL=$label " /etc/fstab || echo "LABEL=$label $mnt xfs defaults 0 2" >> /etc/fstab
+                  mountpoint -q "$mnt" || mount "$mnt"
+            - op: add
+              path: /spec/template/spec/preKubeadmCommands/-
+              valueFrom:
+                template: '/etc/dciab/data-disk.sh {{ .machine.dataDiskGiB | default 0 }}'
     - name: controlPlaneSchedulable
       description: >-
         A cluster without worker nodes runs its workloads on its control plane nodes:

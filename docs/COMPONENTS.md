@@ -69,7 +69,7 @@ What a DCiaB site runs, grouped by capability, and where each piece runs. Versio
 
 | Capability | Components | Runs on | Status |
 | --- | --- | --- | --- |
-| Block storage (CSI) | Longhorn, backed up to S3 (SeaweedFS or the site's own) or NFS | Every cluster | Installer built for MGMT (`dciab mgmt`'s `longhorn` step, [addons/longhorn](../addons/longhorn/README.md)): default StorageClass and backup target, no backup schedule yet; INFRA and workload clusters planned |
+| Block storage (CSI) | `spec.storage.block`: Longhorn, the site's array (vSphere CSI, the Proxmox CSI driver, ceph-csi, a vendor driver) or a StorageClass the cluster already has ([ADR 0008](adr/0008-provider-pattern.md)). Every cluster gets the classes `replicated` (default), `replicated-retain`, `local` and `local-retain` | Every cluster | MGMT: `dciab mgmt`'s `storage` step installs Longhorn ([addons/longhorn](../addons/longhorn/README.md), on its own disk on vSphere) or copies an existing class, and applies the four classes; no backup schedule yet. Array drivers, INFRA and workload clusters planned |
 | Object storage (S3) | SeaweedFS: S3 API for platform services (backups, snapshots, IaC state, artifacts) | INFRA | Proposed |
 | Bucket provisioning (COSI) | Container Object Storage Interface: the COSI controller and the SeaweedFS COSI driver, so workloads request buckets and credentials with BucketClaim and BucketAccess. Each requesting cluster runs both, and its driver calls INFRA's SeaweedFS over the network | INFRA (SeaweedFS); every cluster that requests buckets (controller and driver) | Proposed |
 | Databases | CloudNativePG (Postgres for Forgejo, Authentik, NetBox, Artifact Keeper, OpenVoxDB, Terrakube, AWX) | INFRA | Planned |

@@ -39,9 +39,12 @@
 #               on MGMT and none are left on the bootstrap cluster
 #   adopt       the classes and mgmt Helm releases on MGMT take over the moved objects; it
 #               refuses to run unless the moved Cluster is on MGMT
-#   longhorn    addons/longhorn/install.sh: Longhorn, MGMT's default StorageClass, backed up
-#               to spec.storage.longhorn's target; after the move, so a storage problem
-#               never holds up the pivot, and the bootstrap cluster can go once it finishes
+#   storage     MGMT's block storage (spec.storage.block, with its mgmt override) and the
+#               four StorageClasses, replicated the default (lib/steps/storage-classes.sh).
+#               longhorn: addons/longhorn/install.sh, backed up to its target; existing: the
+#               classes copy the StorageClass the config names. After the move, so a storage
+#               problem never holds up the pivot, and the bootstrap cluster can go once it
+#               finishes
 #
 # A Cluster left on both clusters (a move that stopped part-way, or a second Cluster on MGMT
 # from an earlier run whose move moved nothing), or paused on the bootstrap cluster, stops
@@ -53,7 +56,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-STEPS=(preflight values cluster control-plane cpi cilium providers move adopt longhorn)
+STEPS=(preflight values cluster control-plane cpi cilium providers move adopt storage)
 NS=cluster-mgmt
 CLASS_NS=dciab-clusterclasses
 
@@ -242,9 +245,21 @@ on_mgmt helm upgrade --install mgmt "$ROOT/charts/capi-cluster" --namespace "$NS
 on_mgmt kubectl -n "$NS" get cluster mgmt
 finish_if adopt
 
-step longhorn
-# The chart comes from $DCIAB_PAYLOAD/charts when DCIAB_PAYLOAD is set.
-"$ROOT/addons/longhorn/install.sh" "$config" "$mgmt_kubeconfig"
+step storage
+provider="$(python3 -m dciab_storage provider "$config" mgmt)"
+echo "block storage: $provider"
+case "$provider" in
+  longhorn)
+    # The chart comes from $DCIAB_PAYLOAD/charts when DCIAB_PAYLOAD is set.
+    "$ROOT/addons/longhorn/install.sh" "$config" "$mgmt_kubeconfig"
+    ;;
+  existing)
+    "$ROOT/lib/steps/storage-classes.sh" "$config" mgmt "$mgmt_kubeconfig"
+    ;;
+  *)
+    die "block storage $provider isn't installed by DCiaB yet (dciab validate says so); choose longhorn or existing for MGMT"
+    ;;
+esac
 step_done 0
 echo
 echo "dciab mgmt: done. MGMT manages itself; kubeconfig: $mgmt_kubeconfig"

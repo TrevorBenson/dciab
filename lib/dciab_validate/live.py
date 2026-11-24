@@ -16,6 +16,8 @@ from pathlib import Path as FsPath
 from typing import Callable, List, Optional, Tuple
 from urllib.parse import quote, urlsplit
 
+from dciab_storage import tier_block
+
 from . import netutil as nu
 from . import probes
 from .findings import ERROR, WARNING, Finding, Path
@@ -385,9 +387,11 @@ def dns_names(spec: dict) -> List[str]:
         names.append(plat["vsphere"]["server"])
     else:
         names.append(urlsplit(plat["proxmox"]["url"]).hostname or "")
-    target = spec["storage"]["longhorn"]["backupTarget"]
-    host = target.split("://", 1)[1].split("@", 1)[-1].split(":", 1)[0].split("/", 1)[0]
-    names.append(host)
+    for tier in ("mgmt", "infra", "workload"):
+        block = tier_block(spec, tier)
+        if block["provider"] == "longhorn":
+            target = block["settings"]["backupTarget"]
+            names.append(target.split("://", 1)[1].split("@", 1)[-1].split(":", 1)[0].split("/", 1)[0])
     names.extend(spec["time"].get("servers", []))
     names.extend(spec["time"].get("upstream", []))
     out = []

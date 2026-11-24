@@ -119,7 +119,7 @@ def test_the_image_inventory_takes_the_rendered_cpi(workflow):
 def test_mgmt_installs_the_cpi_before_anything_that_schedules():
     text = (ROOT / "lib" / "steps" / "mgmt.sh").read_text()
     steps = re.search(r"^STEPS=\((.*)\)", text, re.M).group(1).split()
-    for later in ("cilium", "providers", "move", "longhorn"):
+    for later in ("cilium", "providers", "move", "storage"):
         assert steps.index("cpi") < steps.index(later)
     assert text.index("step cpi") < text.index("step cilium") < text.index("vsphere-cpi/install.sh\" \"$config\" --wait")
     assert text.index("--wait \"$mgmt_kubeconfig\"") < text.index("step providers")

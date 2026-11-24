@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 # Install or upgrade Longhorn on one DCiaB cluster.
 #
-#   addons/longhorn/install.sh <config> <kubeconfig> [--chart TGZ]    install, then wait for the manager and StorageClass
+#   addons/longhorn/install.sh <config> <kubeconfig> [--chart TGZ]    install, then wait for the manager; apply the StorageClasses
 #   addons/longhorn/install.sh <config> --template [--chart TGZ]      render the manifests; no cluster needed
 #   addons/longhorn/install.sh <config> --images [--chart TGZ]        every image the release runs, one per line
 #   addons/longhorn/install.sh <config> --print-values                print the per-site values
 #
-# <config> is the site config (spec.storage.longhorn; MGMT's worker pools decide whether
-# Longhorn tolerates the control plane taint). The chart comes from --chart, else from
+# <config> is the site config (MGMT's Longhorn settings from spec.storage.block; MGMT's worker
+# pools decide whether Longhorn tolerates the control plane taint). The chart comes from --chart, else from
 # $DCIAB_PAYLOAD/charts when DCIAB_PAYLOAD is set, else from the pinned repository; its sha256
 # is checked against bundle.lock chartDigests.longhorn. DCiaB's defaults: values.yaml here.
 set -euo pipefail
@@ -98,21 +98,20 @@ case "$mode" in
     kubectl create namespace "$NS" --dry-run=client -o yaml | kubectl apply -f -
     # S3 credentials go from the config's reference straight into the cluster through a pipe
     # (pipefail stops the install on a bad credentials file). NFS targets take none.
+    # Server-side apply: a client-side apply would keep a second, plain copy of the
+    # credentials in the last-applied-configuration annotation (#121). One left by an
+    # earlier install is removed.
     if grep -q backupTargetCredentialSecret "$overrides"; then
-      python3 "$HERE/longhorn_values.py" secret "$config" "$NS" | kubectl apply -f -
+      python3 "$HERE/longhorn_values.py" secret "$config" "$NS" \
+        | kubectl apply --server-side --field-manager=dciab --force-conflicts -f -
+      kubectl -n "$NS" annotate secret longhorn-backup-credentials kubectl.kubernetes.io/last-applied-configuration- >/dev/null || true   # absent: nothing to remove
     else
       kubectl -n "$NS" delete secret longhorn-backup-credentials --ignore-not-found   # left from an S3 target
     fi
     helm upgrade --install longhorn "$tgz" "${values[@]}" --wait --timeout 15m
-    echo "== waiting for the Longhorn manager on every node and the default StorageClass"
+    echo "== waiting for the Longhorn manager on every node"
     kubectl -n "$NS" rollout status daemonset/longhorn-manager --timeout=10m
-    for _ in $(seq 1 60); do
-      default="$(kubectl get storageclass longhorn --ignore-not-found \
-        -o jsonpath='{.metadata.annotations.storageclass\.kubernetes\.io/is-default-class}')"
-      [[ "$default" == true ]] && break
-      sleep 5
-    done
-    [[ "${default:-}" == true ]] || { echo "install.sh: StorageClass longhorn isn't the default after 5 minutes" >&2; exit 1; }
-    kubectl get storageclass
+    echo "== StorageClasses"
+    "$ROOT/lib/steps/storage-classes.sh" "$config" mgmt "$kubeconfig"
     ;;
 esac

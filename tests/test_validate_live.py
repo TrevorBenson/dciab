@@ -711,7 +711,8 @@ def test_cli_live_end_to_end(cert, servers, site, monkeypatch):
     assert code == 0, report
     # Only the example's own acknowledgements (tests/test_validate.py EXPECTED_WARNINGS).
     assert errors(report) == [] and {w["path"] for w in warnings(report)} == {
-        "spec.failureDomains.notHighlyAvailable", "spec.time.serveLocalClock"}
+        "spec.failureDomains.notHighlyAvailable", "spec.time.serveLocalClock",
+        "spec.clusters.mgmt", "spec.clusters.infra"}
     notes = report["notes"]
     assert not any("were not run" in n for n in notes)
     assert sum("virtual media" in n for n in notes) == 3

@@ -25,7 +25,7 @@ def decoded(manifest):
 
 def test_replica_count_comes_from_the_config():
     site = load_example("proxmox")
-    site["spec"]["storage"]["longhorn"]["replicaCount"] = 1
+    site["spec"]["storage"]["block"]["longhorn"]["replicaCount"] = 1
     v = lv.site_values(site)
     assert v["persistence"]["defaultClassReplicaCount"] == 1
     assert v["defaultSettings"]["defaultReplicaCount"] == 1
@@ -67,7 +67,7 @@ def test_s3_secret_reads_the_credentials_file_and_adds_the_endpoint(tmp_path):
 
 def test_s3_secret_from_an_environment_variable(monkeypatch, tmp_path):
     site = load_example("vsphere")
-    site["spec"]["storage"]["longhorn"]["backupCredentials"] = {"env": "LH_S3"}
+    site["spec"]["storage"]["block"]["longhorn"]["backupCredentials"] = {"env": "LH_S3"}
     monkeypatch.setenv("LH_S3", "AWS_ACCESS_KEY_ID=a\nAWS_SECRET_ACCESS_KEY=b\nAWS_ENDPOINTS=http://s3:8333\n")
     assert decoded(lv.secret(site, "ns", tmp_path)) == {
         "AWS_ACCESS_KEY_ID": "a", "AWS_SECRET_ACCESS_KEY": "b", "AWS_ENDPOINTS": "http://s3:8333"}
@@ -89,7 +89,8 @@ def test_defaults_keep_data_under_var_and_no_ingress():
     v = yaml.safe_load((ROOT / "addons" / "longhorn" / "values.yaml").read_text())
     assert v["defaultSettings"]["defaultDataPath"].startswith("/var/")
     assert v["ingress"]["enabled"] is False
-    assert v["persistence"]["defaultClass"] is True
+    # DCiaB's classes are the defaults (replicated), not the chart's "longhorn".
+    assert v["persistence"]["defaultClass"] is False
 
 
 def test_images_reads_the_image_tree():
@@ -149,8 +150,8 @@ def test_mgmt_header_lists_every_step():
     listed = text.split("Steps, in order", 1)[1].split("set -euo pipefail", 1)[0]
     header = re.findall(r"^#   ([a-z-]+)(?:\s|$)", listed, re.M)
     assert header == steps
-    assert steps.index("longhorn") > steps.index("adopt")
-    assert text.index("step adopt") < text.index("step longhorn")
+    assert steps.index("storage") > steps.index("adopt")
+    assert text.index("step adopt") < text.index("step storage")
 
 
 def test_no_worker_pools_tolerates_the_control_plane_taint():

@@ -75,15 +75,17 @@ spec:
       serviceCIDR: 10.243.0.0/16
       controlPlane: {replicas: 3, cpu: 4, memoryGiB: 16, diskGiB: 100}
       workerPools:
-        - {name: general, replicas: 3, cpu: 8, memoryGiB: 32, diskGiB: 150}   # Longhorn data shares the root disk
+        - {name: general, replicas: 3, cpu: 8, memoryGiB: 32, diskGiB: 150}
       storageIPRanges:                   # [opt] a NIC on each storage network, for every INFRA node
         san-a: 10.40.10.30-10.40.10.49
         san-b: 10.40.20.30-10.40.20.49
 
   storage:
-    longhorn:
-      replicaCount: 2                    # the Ceph datastore already replicates
-      backupTarget: nfs://nas01.dc3.example.net:/exports/longhorn
+    block:
+      provider: longhorn                 # on the root disk: CAPMOX gives VMs no second disk yet
+      longhorn:
+        replicaCount: 1                  # one copy: the Ceph datastore already replicates (ADR 0008)
+        backupTarget: nfs://nas01.dc3.example.net:/exports/longhorn
 
   pki:
     mode: import-intermediate

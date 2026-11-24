@@ -50,6 +50,7 @@ workerPools:
     cpu: 16
     memoryGiB: 64
     diskGiB: 150
+    dataDiskGiB: 500
   failureDomain: az1
 - name: general-az2
   replicas: 1
@@ -57,6 +58,7 @@ workerPools:
     cpu: 16
     memoryGiB: 64
     diskGiB: 150
+    dataDiskGiB: 500
   failureDomain: az2
 - name: general-az3
   replicas: 1
@@ -64,6 +66,7 @@ workerPools:
     cpu: 16
     memoryGiB: 64
     diskGiB: 150
+    dataDiskGiB: 500
   failureDomain: az3
 storageNetworks:
 - name: san-a

@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
 """Longhorn's per-site values, backup credentials Secret and image list, from the site config.
 
-    longhorn_values.py values <config> [<cluster>]     # Helm values from spec.storage.longhorn
-    longhorn_values.py secret <config> <namespace>     # backup credentials Secret YAML (S3 only)
+    longhorn_values.py values <config> [<cluster>]               # Helm values from the cluster's Longhorn settings
+    longhorn_values.py secret <config> <namespace> [<cluster>]   # backup credentials Secret YAML (S3 only)
     longhorn_values.py images <chart values> <values>  # every image the release runs, one per line
 
-The Secret goes to stdout so install.sh can pipe it into kubectl apply -f -: credentials never
-land on disk or in a process's arguments. `secret` prints nothing for an NFS target.
+The Longhorn settings are the cluster's tier block (spec.storage.block with its override, or
+the old spec.storage.longhorn; lib/dciab_storage). <cluster> defaults to mgmt.
+
+The Secret goes to stdout so install.sh can pipe it into kubectl apply --server-side -f -:
+credentials never land on disk, in a process's arguments, or in a last-applied annotation. `secret` prints nothing for an NFS target.
 
 backupTarget is DCiaB's form: s3://<bucket>@<endpoint>[/<path>] or nfs://<server>:/<export>.
 Longhorn wants s3://<bucket>@<region>/<path> and the endpoint in the Secret's AWS_ENDPOINTS,
@@ -28,6 +31,7 @@ import yaml
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "lib"))
 
 from dciab_cluster.credentials import resolve  # noqa: E402
+from dciab_storage import StorageError, cluster_block  # noqa: E402
 
 SECRET_NAME = "longhorn-backup-credentials"
 # Longhorn's S3 URL needs a region; S3-compatible endpoints (SeaweedFS, MinIO) ignore it.
@@ -38,8 +42,11 @@ S3_TARGET = re.compile(r"^s3://(?P<bucket>[^@/]+)@(?P<endpoint>[^/]+)(?P<path>/.
 REQUIRED_KEYS = ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY")
 
 
-def longhorn(site: dict) -> dict:
-    return site["spec"]["storage"]["longhorn"]
+def longhorn(site: dict, cluster: str = "mgmt") -> dict:
+    block = cluster_block(site["spec"], cluster)
+    if block["provider"] != "longhorn":
+        raise ValueError(f"cluster {cluster} uses {block['provider']} for block storage, not longhorn")
+    return block["settings"]
 
 
 def backup_target(target: str) -> str:
@@ -64,7 +71,7 @@ def has_workers(site: dict, cluster: str) -> bool:
 
 
 def site_values(site: dict, cluster: str = "mgmt") -> dict:
-    lh = longhorn(site)
+    lh = longhorn(site, cluster)
     count = lh["replicaCount"]
     store = {"backupTarget": backup_target(lh["backupTarget"])}
     if lh["backupTarget"].startswith("s3://"):
@@ -99,9 +106,9 @@ def parse_env(text: str) -> Dict[str, str]:
     return out
 
 
-def secret(site: dict, namespace: str, config_dir: Path):
+def secret(site: dict, namespace: str, config_dir: Path, cluster: str = "mgmt"):
     """The backup credentials Secret, or None for an NFS target."""
-    lh = longhorn(site)
+    lh = longhorn(site, cluster)
     m = S3_TARGET.match(lh["backupTarget"])
     if not lh["backupTarget"].startswith("s3://"):
         return None
@@ -157,9 +164,10 @@ def main(argv=None) -> int:
         if len(argv) in (2, 3) and argv[0] == "values":
             cluster = argv[2] if len(argv) == 3 else "mgmt"
             yaml.safe_dump(site_values(yaml.safe_load(open(argv[1])), cluster), sys.stdout, sort_keys=False)
-        elif len(argv) == 3 and argv[0] == "secret":
+        elif len(argv) in (3, 4) and argv[0] == "secret":
             path = Path(argv[1]).resolve()
-            manifest = secret(yaml.safe_load(path.read_text()), argv[2], path.parent)
+            cluster = argv[3] if len(argv) == 4 else "mgmt"
+            manifest = secret(yaml.safe_load(path.read_text()), argv[2], path.parent, cluster)
             if manifest:
                 yaml.safe_dump(manifest, sys.stdout, sort_keys=False)
         elif len(argv) >= 2 and argv[0] == "images":
@@ -170,7 +178,7 @@ def main(argv=None) -> int:
         else:
             print(__doc__.split("\n\n")[1], file=sys.stderr)
             return 2
-    except (KeyError, ValueError, OSError) as exc:
+    except (KeyError, ValueError, OSError, StorageError) as exc:
         print(f"longhorn: {exc}", file=sys.stderr)
         return 1
     return 0
