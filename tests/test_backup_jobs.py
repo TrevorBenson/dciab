@@ -562,3 +562,22 @@ def test_sealed_key_upload_is_idempotent_and_retried(tmp_path, fake_target):
     # A key the config gives has no sealed copy of DCiaB's to upload.
     spec["backup"]["key"] = {"publicKey": KEYS[0]}
     assert jobs.seal_key_to_target(spec, tmp_path, tmp_path, sleep=lambda s: None) is False
+
+
+def test_pause_export_annotates_every_object(tmp_path):
+    d = tmp_path / "capi" / "cluster-mgmt"
+    d.mkdir(parents=True)
+    (d / "Cluster_cluster-mgmt_mgmt.yaml").write_text("kind: Cluster\nmetadata:\n  name: mgmt\n  annotations: null\n")
+    (d / "ProxmoxMachine_cluster-mgmt_m0.yaml").write_text(
+        "kind: ProxmoxMachine\nmetadata:\n  name: m0\n  annotations: {a: b}\n")
+    env = {**os.environ, "PYTHONPATH": str(ROOT / "lib")}
+    r = subprocess.run([sys.executable, "-m", "dciab_backup", "pause-export", str(tmp_path / "capi")],
+                       capture_output=True, text=True, env=env)
+    assert r.returncode == 0, r.stderr
+    assert "2 objects" in r.stdout
+    for f in d.iterdir():
+        notes = yaml.safe_load(f.read_text())["metadata"]["annotations"]
+        assert notes["cluster.x-k8s.io/paused"] == ""
+    assert yaml.safe_load((d / "ProxmoxMachine_cluster-mgmt_m0.yaml").read_text())["metadata"]["annotations"]["a"] == "b"
+    with pytest.raises(jobs.BackupError, match="no exported objects"):
+        jobs.pause_export(tmp_path / "empty")

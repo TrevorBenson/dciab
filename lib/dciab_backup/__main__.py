@@ -11,6 +11,9 @@
     python3 -m dciab_backup manifests <config> mgmt --state DIR
                                                                MGMT's backup namespace, recipients, RBAC and
                                                                CronJobs (etcd snapshots, CAPI exports)
+    python3 -m dciab_backup pause-export <dir>                 annotate every object of an unpacked CAPI
+                                                               export cluster.x-k8s.io/paused, before an
+                                                               import (docs/BACKUP.md, Restore)
     python3 -m dciab_backup export <config> --state DIR --kubeconfig FILE --label TEXT
                                                                a CAPI export of that cluster, encrypted, kept
                                                                in <state>/capi-backup and uploaded
@@ -31,7 +34,8 @@ ROOT = Path(__file__).resolve().parent.parent.parent
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="python3 -m dciab_backup", description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("what", choices=["longhorn-jobs", "target", "key", "secret", "site-kind", "manifests", "export"])
+    ap.add_argument("what", choices=["longhorn-jobs", "target", "key", "secret", "site-kind", "manifests", "export",
+                                       "pause-export"])
     ap.add_argument("config")
     ap.add_argument("cluster", nargs="?")
     ap.add_argument("--state")
@@ -39,6 +43,10 @@ def main(argv=None) -> int:
     ap.add_argument("--label", default="")
     args = ap.parse_args(argv)
     try:
+        if args.what == "pause-export":
+            n = jobs.pause_export(Path(args.config))
+            print(f"dciab backup: {n} objects in {args.config} annotated {jobs.PAUSED}")
+            return 0
         config = Path(args.config).resolve()
         spec = yaml.safe_load(config.read_text())["spec"]
         state = Path(args.state) if args.state else None

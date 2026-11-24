@@ -373,5 +373,34 @@ def seal_key_to_target(spec: dict, config_dir: Path, state: Path, attempts: int 
                       f"{sealed}. Fix the target and re-run")
 
 
-__all__ = ["NS", "SECRET", "backup_image", "etcd_image", "export_now", "generate_key", "manifests",
+# -- restoring -----------------------------------------------------------------------------
+
+PAUSED = "cluster.x-k8s.io/paused"
+
+
+def pause_export(directory: Path) -> int:
+    """Put the cluster.x-k8s.io/paused annotation on every object of an unpacked export, so
+    nothing reconciles them once imported. clusterctl move --from-directory resumes the
+    Clusters' spec.paused and the ClusterClasses at the end, but leaves objects' annotations:
+    Cluster API, KCP and the providers (CAPMOX among them, through annotations.IsPaused) skip
+    an annotated object. Returns how many objects were annotated."""
+    import yaml
+
+    n = 0
+    files = sorted(directory.rglob("*.yaml"))
+    if not files:
+        raise BackupError(f"{directory}: no exported objects (*.yaml) there")
+    for f in files:
+        docs = [d for d in yaml.safe_load_all(f.read_text()) if d]
+        for d in docs:
+            d.setdefault("metadata", {}).setdefault("annotations", {})
+            if d["metadata"]["annotations"] is None:
+                d["metadata"]["annotations"] = {}
+            d["metadata"]["annotations"][PAUSED] = ""
+            n += 1
+        f.write_text(yaml.safe_dump_all(docs, sort_keys=False))
+    return n
+
+
+__all__ = ["NS", "pause_export", "SECRET", "backup_image", "etcd_image", "export_now", "generate_key", "manifests",
            "public_key", "recipients", "secret_manifest", "seal_key_to_target", "target_env"]

@@ -45,21 +45,25 @@ Read first:
    kubectl -n dciab-backup create job --from=cronjob/etcd-snapshot etcd-now
    kubectl -n dciab-backup create job --from=cronjob/capi-export capi-now
    ```
-   Pass: both Jobs complete; `dciab status` shows `backups ok`; `dciab/mgmt/etcd/` holds one snapshot. On failure, record `kubectl -n dciab-backup describe pod` and the logs of every container (`snapshot`, `check`, `upload` or `export`). Look out for SELinux denials (`ausearch -m avc` on the node) when reading `/etc/kubernetes/pki/etcd` or mounting NFS.
-5. **The backup key opens a snapshot.** Decrypt `backup-key-<time>.age` with one recipient identity into `/dev/shm`, then decrypt the snapshot with it. Run `etcdutl snapshot status` on the snapshot, using the etcd image's `etcdutl` (`podman run --rm -v /dev/shm:/dev/shm:z <etcd image> etcdutl snapshot status /dev/shm/etcd.db`). Pass: it prints a hash, a revision and a key count. Delete the plaintext afterwards.
+   Pass: both Jobs complete; `dciab status` shows `backups ok`; `dciab/mgmt/etcd/` holds one snapshot. On failure, record `kubectl -n dciab-backup describe pod` and the logs of every container (`snapshot` and `upload`, or `export`). Look out for SELinux denials (`ausearch -m avc` on the node) when reading `/etc/kubernetes/pki/etcd` or mounting NFS.
+5. **The backup key opens a snapshot.** Decrypt `backup-key-<public key>.age` with one recipient identity into `/dev/shm`, then decrypt the snapshot with it. Run `etcdutl snapshot status` on the snapshot, using the etcd image's `etcdutl` (`podman run --rm -v /dev/shm:/dev/shm:z <etcd image> etcdutl snapshot status /dev/shm/etcd.db`). Pass: it prints a hash, a revision and a key count. Delete the plaintext afterwards.
 6. **Stop and ask:** before the CAPI import (step 7).
-7. **Import a CAPI export into a scratch cluster whose controllers reconcile nothing.** `clusterctl move --from-directory` needs the providers' webhooks (their `failurePolicy` is `Fail`), so the controllers must keep running. It also resumes the Clusters at the end, so pausing them doesn't protect anything either. Instead, every controller gets a watch filter that no imported object matches: it then ignores all of them, and its webhooks keep serving.
-   1. `kind create cluster --name dciab-0012`, and set `KUBECONFIG` to its kubeconfig for the rest of this step. Install the same providers there (`lib/steps/capi-providers.sh`, with `--manifests <payload>/providers` if you use a payload).
-   2. Add `--watch-filter=dciab-0012-none` to the manager container of every provider deployment. That is every deployment in `capi-system`, `capi-kubeadm-bootstrap-system`, `capi-kubeadm-control-plane-system`, the Proxmox provider's namespace and the IPAM provider's namespace (`kubectl get deployments -A` lists them). For each one:
+7. **Import a CAPI export, paused, into a scratch cluster.** The scratch cluster's controllers and webhooks run as usual: `clusterctl move --from-directory` needs the webhooks. What keeps them off MGMT's VMs is Cluster API's pause annotation, `cluster.x-k8s.io/paused`, on every imported object. clusterctl resumes the Clusters' `spec.paused` and the ClusterClasses after an import, but leaves objects' annotations alone. Cluster API, the kubeadm providers and CAPMOX all skip an annotated object; CAPMOX v0.9.2 checks `annotations.IsPaused(cluster, object)` in both its reconcilers. **Never remove the annotations in the scratch cluster:** that would give MGMT's VMs a second manager.
+   1. `kind create cluster --name dciab-0012`, and set `KUBECONFIG` to its kubeconfig for the rest of this step. Install the same providers there (`lib/steps/capi-providers.sh`, with `--manifests <payload>/providers` if you use a payload), and wait for every provider pod to be Running.
+   2. Decrypt and unpack the newest export (`age -d ... | tar -x`), then annotate every object in it:
       ```bash
-      i="$(kubectl -n <ns> get deployment <name> -o json | python3 -c 'import json,sys; c=json.load(sys.stdin)["spec"]["template"]["spec"]["containers"]; print([x["name"] for x in c].index("manager"))')"
-      kubectl -n <ns> patch deployment <name> --type json -p "[{\"op\":\"add\",\"path\":\"/spec/template/spec/containers/$i/args/-\",\"value\":\"--watch-filter=dciab-0012-none\"}]"
-      kubectl -n <ns> rollout status deployment <name>
+      PYTHONPATH=lib python3 -m dciab_backup pause-export capi/cluster-mgmt
       ```
-      Pass: every pod is Running with the new argument (`kubectl get pods -A`, and `kubectl -n <ns> get deployment <name> -o jsonpath='{..args}'`). **If any manager rejects the flag** (CrashLoopBackOff, `unknown flag`), stop and ask: don't import.
-   3. Follow `docs/BACKUP.md`, "Cluster API state, from an export", step 3, with `--to-kubeconfig` set to the scratch cluster's kubeconfig.
-   4. Pass: `kubectl -n cluster-mgmt get cluster,machines,proxmoxmachines` lists everything MGMT has, and the `mgmt-kubeconfig` Secret's kubeconfig reaches MGMT's API (`kubectl get nodes`). On MGMT itself, `kubectl -n cluster-mgmt get machines` is unchanged, and no new VM appeared on the hypervisors.
-   5. `kind delete cluster --name dciab-0012`.
+      Pass: it reports as many objects as there are files in `capi/cluster-mgmt/`.
+   3. Follow `docs/BACKUP.md`, "Cluster API state, from an export", step 4, with `--to-kubeconfig` set to the scratch cluster's kubeconfig.
+   4. **Check the pause at once.** Every object in `cluster-mgmt` must carry the annotation. This lists the ones that don't:
+      ```bash
+      kinds="$(kubectl api-resources --namespaced -o name | grep -E '\.(x-k8s\.io)$' | paste -sd,)"
+      kubectl -n cluster-mgmt get "$kinds" -o json | python3 -c 'import json,sys; [print(o["kind"], o["metadata"]["name"]) for o in json.load(sys.stdin)["items"] if "cluster.x-k8s.io/paused" not in (o["metadata"].get("annotations") or {})]'
+      ```
+      Pass: it prints nothing. If it prints anything, run `kind delete cluster --name dciab-0012` at once, then stop and ask.
+   5. Pass: `kubectl -n cluster-mgmt get cluster,machines,proxmoxmachines` lists everything MGMT has, and the `mgmt-kubeconfig` Secret's kubeconfig reaches MGMT's API (`kubectl get nodes`). The provider logs say they skip the paused objects (CAPMOX: `marked as paused, not reconciling`). On MGMT itself, `kubectl -n cluster-mgmt get machines` is unchanged, and no new VM appeared on the hypervisors.
+   6. `kind delete cluster --name dciab-0012`, without resuming anything.
 8. **Stop and ask:** before the etcd restore. It stops MGMT's API and Cluster API for its duration. Trevor approves it, and the time.
 9. **Restore MGMT's etcd.** Before you start, create a marker: `kubectl -n default create configmap dciab-0012-before`. Take a snapshot (step 4's `etcd-now` again, under a new name). Then create `kubectl -n default create configmap dciab-0012-after`. Follow `docs/BACKUP.md`, "MGMT's etcd, from a snapshot", steps 1 to 5, with that snapshot, on every control plane node. Time each step. Pass:
    - every node is `Ready`, and Cluster mgmt and its Machines are as before;
@@ -72,13 +76,13 @@ Read first:
 
 - `images.backup` isn't pinned on `main`: stop before step 2.
 - Before step 2 (building MGMT creates VMs), before step 7 (the import) and before step 9 (the etcd restore): Trevor approves each.
-- In step 7, a provider manager that rejects `--watch-filter`: stop before the import.
+- In step 7, an imported object without the pause annotation: delete the scratch cluster at once, then stop.
 - If step 9 leaves MGMT unhealthy, stop. Don't improvise a fix. Record the state (`crictl ps -a`, the etcd logs, `etcdctl member list`) and ask.
 
 ## Report
 
 - The commit, the tool versions, the site target's kind, and how long each step took.
 - Steps 2–5: the output lines named there, and the file names on the target (never their contents).
-- Step 7: the commands as run, each manager's watch-filter result, and MGMT's Machines before and after.
+- Step 7: the commands as run, the pause check's output (object names and annotations only), and MGMT's Machines before and after.
 - Step 9: the time per step, the runbook corrections, and the before/after marker result.
 - Anything left behind (the target's backups, the backup key's sealed copies).

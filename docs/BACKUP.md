@@ -175,17 +175,35 @@ The first choice whenever MGMT's VMs still exist. It stops MGMT: Cluster API, an
 
 `clusterctl move --from-directory` recreates every object of an export in the cluster `--to-kubeconfig` names, then resumes the Clusters. It ignores `--kubeconfig`, and without `--to-kubeconfig` it uses `$KUBECONFIG` or `~/.kube/config`, which may be another cluster: always pass `--to-kubeconfig`. It doesn't restore `status`, so controllers rebuild it.
 
-**The bootstrap host was lost before or during the move.** MGMT's VMs run, but the kind cluster that managed them is gone. Use the export taken before the move:
+**The bootstrap host was lost before or during the move.** MGMT's VMs run, but the kind cluster that managed them is gone. Use the export taken before the move. Import it paused, check it, and only then resume it: until then, nothing acts on MGMT's VMs.
 
 1. Bring up a new bootstrap host with the same config and run `dciab seed`. It makes a new kind cluster with Cluster API, the providers and the ClusterClasses.
 2. Decrypt and unpack the newest `capi-mgmt-<time>.tar.age` (`age -d ... | tar -x`). This gives `capi/cluster-mgmt/`.
-3. Import it into the new bootstrap cluster:
+3. Annotate every object in it with Cluster API's pause annotation:
+   ```console
+   $ PYTHONPATH=lib python3 -m dciab_backup pause-export capi/cluster-mgmt
+   ```
+   clusterctl resumes the Clusters' `spec.paused` and the ClusterClasses after an import, but it leaves objects' annotations alone. Cluster API, the kubeadm providers and the infrastructure providers skip every annotated object.
+4. Import it into the new bootstrap cluster:
    ```console
    $ clusterctl move --from-directory capi/cluster-mgmt --to-kubeconfig <state>/bootstrap.kubeconfig
    ```
-4. Check that `kubectl -n cluster-mgmt get cluster mgmt,machines` lists every MGMT machine, and that none is being replaced. Then re-run `dciab mgmt`: it finds Cluster mgmt on the bootstrap cluster and moves it to MGMT.
+5. Check: `kubectl -n cluster-mgmt get cluster mgmt,machines` lists every MGMT machine, and every object in `cluster-mgmt` still carries `cluster.x-k8s.io/paused`. This lists any that don't, and must print nothing:
+   ```console
+   $ kinds="$(kubectl api-resources --namespaced -o name | grep -E '\.(x-k8s\.io)$' | paste -sd,)"
+   $ kubectl -n cluster-mgmt get "$kinds" -o json | python3 -c 'import json,sys; [print(o["kind"], o["metadata"]["name"]) for o in json.load(sys.stdin)["items"] if "cluster.x-k8s.io/paused" not in (o["metadata"].get("annotations") or {})]'
+   ```
+6. Resume, ClusterClass first, then every other object, then the Cluster last:
+   ```console
+   $ export KUBECONFIG=<state>/bootstrap.kubeconfig
+   $ kubectl -n dciab-clusterclasses annotate clusterclass --all cluster.x-k8s.io/paused-
+   $ kinds="$(kubectl api-resources --namespaced -o name | grep -E '\.(x-k8s\.io)$' | grep -v '^clusters\.' | paste -sd,)"
+   $ kubectl -n cluster-mgmt annotate "$kinds" --all cluster.x-k8s.io/paused-
+   $ kubectl -n cluster-mgmt annotate cluster mgmt cluster.x-k8s.io/paused-
+   ```
+   Watch that no Machine is replaced (`kubectl -n cluster-mgmt get machines -w`). Then re-run `dciab mgmt`: it finds Cluster mgmt on the bootstrap cluster, unpaused, and moves it to MGMT.
 
-**MGMT was lost, with its VMs.** Rebuild MGMT from the archive and the config (`dciab seed`, then `dciab mgmt`). Once MGMT manages INFRA and workload clusters, import the newest export's namespaces for those clusters into the new MGMT, as in step 3, with `--to-kubeconfig` set to MGMT's kubeconfig. Don't import `cluster-mgmt`: the rebuilt MGMT has its own.
+**MGMT was lost, with its VMs.** Rebuild MGMT from the archive and the config (`dciab seed`, then `dciab mgmt`). Once MGMT manages INFRA and workload clusters, import the newest export's namespaces for those clusters into the new MGMT the same way: paused (step 3), imported with `--to-kubeconfig` set to MGMT's kubeconfig, checked, then resumed. Don't import `cluster-mgmt`: the rebuilt MGMT has its own.
 
 Never import an export into a management cluster while another one still manages the same Clusters: both would act on the same VMs.
 
