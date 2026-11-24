@@ -87,3 +87,26 @@ done
 group "Verify what the topology controller generated"
 python3 "$ROOT/hack/e2e/verify.py" "$ROOT"/charts/capi-cluster/ci/*-values.yaml
 endgroup
+
+# The classes' CEL rules keep every issuer's users and groups out of system: (system:masters
+# bypasses RBAC). CAPI's webhook must refuse a Cluster whose issuer prefix reaches it.
+group "An issuer prefix in system: is refused"
+oidc="$ROOT/charts/capi-cluster/ci/proxmox-oidc-values.yaml"
+bad="$(mktemp -d)"
+for prefix in "system:" "sys"; do
+  python3 - "$oidc" "$bad/values.yaml" "$prefix" <<'PY'
+import sys, yaml
+v = yaml.safe_load(open(sys.argv[1]))
+v["nodes"]["authentication"]["issuers"][1]["groupsPrefix"] = sys.argv[3]
+yaml.safe_dump({"nodes": {"authentication": v["nodes"]["authentication"]}}, open(sys.argv[2], "w"))
+PY
+  helm template mgmt "$ROOT/charts/capi-cluster" --namespace cluster-mgmt --values "$oidc" --values "$bad/values.yaml" \
+    --show-only templates/cluster.yaml > "$bad/cluster.yaml"
+  if kubectl apply --dry-run=server -f "$bad/cluster.yaml" > "$bad/out" 2>&1; then
+    echo "a Cluster with groupsPrefix '$prefix' was accepted" >&2; rm -rf "$bad"; exit 1
+  fi
+  grep -q "system:" "$bad/out" || { cat "$bad/out" >&2; rm -rf "$bad"; exit 1; }
+  echo "ok: groupsPrefix '$prefix' refused"
+done
+rm -rf "$bad"
+endgroup

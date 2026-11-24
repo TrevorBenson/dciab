@@ -90,7 +90,7 @@ spec:
       workerPools:
         - {name: general, replicas: 3, cpu: 8, memoryGiB: 32, diskGiB: 150}
 
-  storage:
+  storage:                               # INFRA's block storage. MGMT keeps no volumes: [opt] block.overrides.mgmt (ADR 0008, 4a)
     block:
       provider: longhorn                 # on the root disk: CAPMOX gives VMs no second disk yet (validate warns)
                                          # Longhorn, not proxmox-csi, for its backups to the site's NAS

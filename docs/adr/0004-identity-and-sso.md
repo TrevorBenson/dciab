@@ -1,6 +1,6 @@
 # ADR 0004: Identity and SSO — Authentik for people, SPIFFE/SPIRE for workloads
 
-- Status: proposed
+- Status: proposed; decision 4 amended 2026-11-24 (MGMT and INFRA may trust the site's IdP; ADR 0008, amendment 3)
 - Date: 2026-11-22
 
 ## Context
@@ -58,6 +58,8 @@ Group claims are only as fresh as the token. Authentik issues short-lived ID and
 ### 4. MGMT and INFRA don't depend on Authentik
 
 Authentik runs on INFRA, so the clusters it depends on can't depend on it. MGMT and INFRA keep certificate-based admin kubeconfigs (written by `dciab mgmt` and the platform step, and stored age-encrypted to `spec.bootstrap.recipients` and in OpenBao). Adding OIDC to INFRA later is possible but never replaces the certificate path.
+
+> **Amended 2026-11-24** (ADR 0008, amendment 3). When the site provides the IdP (`identity.provider: external`, or a site issuer in `identity.kubernetes.issuers`), MGMT's and INFRA's Kubernetes APIs trust it. DCiaB doesn't run it, so there is no dependency loop. DCiaB's Authentik never serves MGMT or INFRA, and the certificate kubeconfigs stay as break-glass.
 
 ### 5. Break-glass when Authentik is down
 

@@ -20,6 +20,8 @@ What each phase builds, against the component list in [COMPONENTS.md](COMPONENTS
 - [x] `capi-clusterclasses` chart: `r1` classes (draft until the first release; see [VERSIONING.md](VERSIONING.md)) for vSphere, Proxmox and Metal3
 - [x] `capi-cluster` chart
 - [x] `r1` structured authentication: an `AuthenticationConfiguration` with several JWT issuers, each with its own username and groups prefix (ADR 0008)
+- [x] Identity provider ([IDENTITY.md](IDENTITY.md), ADR 0008 decision 3): `spec.identity.provider` (`authentik` or `external`), `consumers`, `roles` and `identity.kubernetes` with `validate`'s rules, the tier rule included; each cluster's JWT issuers built from them; the three platform roles as ClusterRoleBindings, applied on MGMT by `dciab mgmt`; Authentik blueprints and the clients list rendered
+- [ ] Identity, next: install the blueprints with Authentik on INFRA (platform step); `authentik.upstream` (the site directory behind Authentik); role bindings on INFRA and workload clusters; Proxmox VE and vCenter identity on opt-in; other consumers' role mappings with each service
 - [x] `r1` failure domains (ADR 0010): `spec.failureDomains` with `validate` checks; worker pools per domain; vSphere zones and cluster modules; Metal3 failure domains; Proxmox workers pinned per domain, control plane not spread (reported by `validate` and `dciab status`)
 - [x] `r1` storage networks on VM nodes (`network.storage`): one NIC per network, MTU, multipath modules
 - [ ] Failure domains, next: Metal3 storage NICs, bonds and VLANs; `validate --live` capacity, vSphere tag and Proxmox shared-storage checks; multipath packages in the node image; BareMetalHost topology labels; Longhorn zone settings
@@ -38,7 +40,7 @@ What each phase builds, against the component list in [COMPONENTS.md](COMPONENTS
 - [x] `dciab cluster-values`: capi-cluster values for MGMT, INFRA and workload clusters, generated from the site config
 - [x] `dciab status`: read-only report of the Day 0 pod, the platform CA and registry certificate, the seed registry, the bootstrap cluster and where MGMT's Cluster lives
 - [x] `dciab seed`: platform CA (generated with its key age-encrypted, or imported), read-only Zot loaded from the payload, kind pulling through it, providers and ClusterClasses from the payload, DNS for `registry.<domain>`; `--remove` undoes it on the host ([SEED.md](SEED.md))
-- [ ] `dciab mgmt`: builds MGMT, installs Cilium and the providers, and moves Cluster API into MGMT; picks up `dciab seed`'s kubeconfig and trust bundle and runs offline from the payload (CI runs seed then mgmt up to the Cluster; not yet proven on real infrastructure). Block storage step built (the `storage` step: `spec.storage.block`, required for MGMT and INFRA, with per-tier overrides and an opt-in for workload clusters, the four StorageClasses; Longhorn from `addons/longhorn` with its chart and images from the payload, on a data disk on vSphere; the Proxmox CSI plugin and the vSphere CSI driver from `addons/csi`, their pinned manifests in the payload). On vSphere, the cloud provider (CPI) is installed before Cilium (`addons/vsphere-cpi`, the `cpi` step). Still to come: MGMT's other services (Metal3, PowerDNS, Kea) and the DNS handoff
+- [ ] `dciab mgmt`: builds MGMT, installs Cilium and the providers, and moves Cluster API into MGMT; picks up `dciab seed`'s kubeconfig and trust bundle and runs offline from the payload (CI runs seed then mgmt up to the Cluster; not yet proven on real infrastructure). Block storage step built (the `storage` step: `spec.storage.block` is INFRA's; MGMT keeps no volumes and the step installs nothing there unless `overrides.mgmt` opts in, as workload clusters do with `overrides.workload`; the four StorageClasses; Longhorn from `addons/longhorn` with its chart and images from the payload, on a data disk on vSphere; the Proxmox CSI plugin and the vSphere CSI driver from `addons/csi`, their pinned manifests in the payload). On vSphere, the cloud provider (CPI) is installed before Cilium (`addons/vsphere-cpi`, the `cpi` step). Still to come: MGMT's other services (Metal3, PowerDNS, Kea) and the DNS handoff
 
 ## Day 0 for bare servers
 
@@ -69,7 +71,7 @@ Decided in [ADR 0002](adr/0002-bootstrap-appliance-on-ventoy.md).
 
 ## Platform interoperability
 
-Proposed for phases 3 and 4. Two pieces exist: `dciab cluster-values` already gives workload clusters Authentik's OIDC issuer, and the ClusterClasses already write a Kubernetes API audit log for log collection to pick up.
+Proposed for phases 3 and 4. Two pieces exist: `dciab cluster-values` already gives each cluster its JWT issuers from `spec.identity` ([IDENTITY.md](IDENTITY.md)), and the ClusterClasses already write a Kubernetes API audit log for log collection to pick up.
 
 - [ADR 0004](adr/0004-identity-and-sso.md): identity and SSO (Authentik, SPIFFE/SPIRE)
 - [ADR 0005](adr/0005-secrets.md): secrets (OpenBao, External Secrets Operator, platform PKI)

@@ -1,6 +1,6 @@
 # ADR 0008: Providers — one pattern for identity, storage, DNS, IPAM and secrets
 
-- Status: Accepted (2026-11-23); amended 2026-11-24 (block storage has no default and workload clusters opt in: decisions 1, 2 and 4); amendment 2 accepted 2026-11-24 (MGMT keeps no volumes: decision 4a, which supersedes "required for MGMT and INFRA" in decisions 1, 2, 4 and 5)
+- Status: Accepted (2026-11-23); amended 2026-11-24 (block storage has no default and workload clusters opt in: decisions 1, 2 and 4); amendment 2 accepted 2026-11-24 (MGMT keeps no volumes: decision 4a, which supersedes "required for MGMT and INFRA" in decisions 1, 2, 4 and 5); amendment 3, 2026-11-24 (a site IdP may serve MGMT and INFRA, and `identity.kubernetes` adds to the provider's issuer: decisions 3, 8 and 9)
 - Date: 2026-11-22
 
 ## Context
@@ -26,7 +26,7 @@ Each core service is a block under `spec` with a `provider` key. Each provider h
 | Service | Built-in provider | Site-provided providers | Default |
 | --- | --- | --- | --- |
 | Identity (`spec.identity`) | `authentik` | `external` (OIDC, plus LDAP for hosts) | `authentik` |
-| Block storage (`spec.storage.block`) | `longhorn` | `vsphere-csi`, `proxmox-csi`, `ceph-csi`, `vendor-csi`, `existing` | none: required for MGMT and INFRA; optional and not enforced for workload clusters (decision 4) |
+| Block storage (`spec.storage.block`) | `longhorn` | `vsphere-csi`, `proxmox-csi`, `ceph-csi`, `vendor-csi`, `existing` | none: required for INFRA; MGMT keeps no volumes unless `overrides.mgmt` asks (decision 4a); optional and not enforced for workload clusters (decision 4) |
 | Object storage (`spec.storage.object`) | `seaweedfs` | `rook-ceph`, `external` | `seaweedfs` |
 | DNS (`spec.dns`) | `powerdns` | `external` | `powerdns` |
 | IPAM (`spec.ipam`) | `in-cluster` | `netbox` (DCiaB's or the site's) | `in-cluster` |
@@ -35,17 +35,17 @@ Each core service is a block under `spec` with a `provider` key. Each provider h
 
 `spec.pki` keeps its `mode` key; renaming it buys nothing. Every new block uses `provider`.
 
-The built-in provider is always the default, so a config that names none gets today's behaviour. Block storage is the exception: it has no default. Its provider is required for MGMT and INFRA, and optional and not enforced for workload clusters (decision 4).
+The built-in provider is always the default, so a config that names none gets today's behaviour. Block storage is the exception: it has no default. Its provider is required for INFRA. MGMT gets block storage only when `overrides.mgmt` asks for it (decision 4a), and for workload clusters it's optional and not enforced (decision 4).
 
 **Providers can be pivoted.** A site that starts on a built-in provider can move to its own service once that service exists (identity, DNS, object storage, secrets). In config that is a change of `provider` and its sub-block. Each service's migration steps (moving records, buckets, clients or secrets) belong to that service's implementation, not this ADR.
 
 ### 2. Tiers can override, but only downwards
 
-A site runs three kinds of cluster: MGMT, INFRA and workload clusters. Each service block takes an `overrides` map keyed by tier (`mgmt`, `infra`, `workload`). An override is merged over the block for that tier's clusters. Block storage's `workload` override is the exception: it stands alone, because workload clusters don't inherit MGMT and INFRA's block storage (decision 4). Overrides for one workload cluster at a time come after v1; in v1 every workload cluster gets the `workload` override.
+A site runs three kinds of cluster: MGMT, INFRA and workload clusters. Each service block takes an `overrides` map keyed by tier (`mgmt`, `infra`, `workload`). An override is merged over the block for that tier's clusters. Block storage's `mgmt` and `workload` overrides are the exception: each stands alone, because neither MGMT nor workload clusters inherit INFRA's block storage (decisions 4 and 4a). Overrides for one workload cluster at a time come after v1; in v1 every workload cluster gets the `workload` override.
 
 One rule limits overrides. The tiers are created in order: site → bootstrap → MGMT → INFRA → workload. **A tier may use providers that run on itself, on the site, or on an earlier tier. Its creation and its recovery may depend only on the site and earlier tiers.** A tier never depends on a later one. So:
 
-- MGMT must not depend on anything that runs on INFRA: not SeaweedFS, not Authentik ([ADR 0004](0004-identity-and-sso.md), decision 4), not NetBox. Its block storage is Longhorn or a site array, and its backups go to the site target, never INFRA's SeaweedFS (ADR 0009).
+- MGMT must not depend on anything that runs on INFRA: not SeaweedFS, not Authentik ([ADR 0004](0004-identity-and-sso.md), decision 4), not NetBox. It keeps no volumes by default (decision 4a); when `overrides.mgmt` gives it block storage, that is Longhorn or a site array. Its backups go to the site target, never INFRA's SeaweedFS (ADR 0009).
 - INFRA may use what it runs itself: its own block storage, and its own SeaweedFS for INFRA-local data and as the primary copy of its backups. That copy can't be the only one: restoring INFRA can't need INFRA, so the critical set is also copied to the off-site or site target (ADR 0009). OpenBao's snapshots skip SeaweedFS entirely and go to the site target, because restoring OpenBao comes before SeaweedFS can be trusted (ADR 0009, decision 4). INFRA can use MGMT's DNS, but not its own Authentik for its Kubernetes API (again ADR 0004).
 - Workload clusters can use anything.
 
@@ -66,9 +66,11 @@ One rule limits overrides. The tiers are created in order: site → bootstrap �
 
 **Protocols.** OIDC is the one protocol DCiaB services consume. Every consumer in the matrix (decision 9) speaks OIDC, except hosts (SSSD reads LDAP) and vCenter (below). LDAP is served only for those. SAML is accepted only as an Authentik upstream, never as a consumer protocol: no DCiaB consumer needs it.
 
-**The Kubernetes issuer comes from config, through structured authentication.** `cluster-values` stops hard-coding the issuer. It reads `identity.kubernetes`: a list of issuers, each with its URL, client ID (audience), claims and CA bundle. With `authentik` the list defaults to today's URL and client `kubernetes`. With `external` it holds the site's issuer and the client given for `kubernetes`.
+**The Kubernetes issuer comes from config, through structured authentication.** `cluster-values` stops hard-coding the issuer. Each cluster's list starts with the provider's issuer, when `kubernetes` is in `consumers`: with `authentik`, today's URL and client `kubernetes`; with `external`, the site's issuer and the client given for `kubernetes`. `identity.kubernetes.issuers` adds more, each with its URL, client ID (audience), claims, CA bundle and the tiers it serves.
 
-The `r1` ClusterClasses, still a draft, switch from the API server's `--oidc-*` flags to an `AuthenticationConfiguration` file (`--authentication-config`). Structured authentication is stable since Kubernetes 1.34, and DCiaB pins v1.36.6. It accepts several JWT issuers at once, so a cluster can trust Authentik and the site IdP together while people move from one to the other. Adding or removing an issuer is a change to the file, not a new flag set. MGMT and INFRA still get no issuer (ADR 0004, decision 4).
+The `r1` ClusterClasses, still a draft, switch from the API server's `--oidc-*` flags to an `AuthenticationConfiguration` file (`--authentication-config`). Structured authentication is stable since Kubernetes 1.34, and DCiaB pins v1.36.6. It accepts several JWT issuers at once, so a cluster can trust Authentik and the site IdP together while people move from one to the other. Adding or removing an issuer is a change to the file, not a new flag set. MGMT and INFRA never trust DCiaB's Authentik (ADR 0004, decision 4). They trust the site's IdP when it is configured (`provider: external`, or a site issuer in `identity.kubernetes.issuers`), and keep their certificate kubeconfigs either way.
+
+> **Amendment 3, 2026-11-24.** As accepted, this decision said "MGMT and INFRA still get no issuer". Now: with `provider: external` (or a site issuer listed in `identity.kubernetes.issuers`), MGMT and INFRA trust the site's IdP too. DCiaB doesn't run that IdP, so trusting it creates no dependency loop: the site comes before every tier (decision 2). DCiaB's own Authentik never serves MGMT or INFRA, and the break-glass certificate kubeconfigs stay on every cluster (ADR 0004, decision 5). Also, `identity.kubernetes` adds issuers to the provider's instead of replacing the list, so the provider's issuer is never typed twice; leaving `kubernetes` out of `consumers` drops it. No issuer may be named `system`, and no prefix may start with `system:` or be the start of it, so no prefix reaches Kubernetes' own `system:` users and groups.
 
 **Clients are provisioned by blueprints first, then OpenTofu.** With `authentik`, the platform's own applications, providers and groups are Authentik blueprints. Authentik applies blueprint files from its blueprint directory when they appear or change, and rescans it on a schedule, each blueprint in one transaction. The platform step renders them from the site config into ConfigMaps mounted into the worker. They need nothing that isn't already running: not Terrakube, not Forgejo. That matters because those services need their own clients before they can start. Client secrets are generated into OpenBao and reach both Authentik and the consumer through ESO. After the platform step, the blueprints stay the source of truth for platform clients. Tenant applications and later additions go through the IaC path with the Authentik Terraform provider ([ADR 0006](0006-iac-path.md)), where OPA protects "Authentik core".
 
@@ -83,7 +85,7 @@ identity:
 
 | Consumer | `admin` | `operator` | `viewer` |
 | --- | --- | --- | --- |
-| Kubernetes (workload) | `cluster-admin` | `edit`, cluster-wide | `view` |
+| Kubernetes (every cluster with an issuer) | `cluster-admin` | `edit`, cluster-wide | `view` |
 | Argo CD | `role:admin` | a project role with sync | `role:readonly` |
 | Forgejo | site admin | organization owner of platform orgs | read on platform orgs |
 | Grafana | Admin | Editor | Viewer |
@@ -111,7 +113,7 @@ Tenant groups are added on top of these, per tenant, through Git.
 
 The v1 block providers are Longhorn, the vSphere CSI driver, the Proxmox CSI driver, ceph-csi (when the site supplies a Ceph key) and a small set of pinned vendor SAN drivers. OpenEBS is not in v1 (Alternatives considered).
 
-**`block.provider` is required for MGMT and INFRA.** There is no platform default. The usual choice follows from the platform, and `dciab validate` suggests it when the provider is missing:
+**`block.provider` is required, and it is INFRA's.** There is no platform default. MGMT doesn't inherit it: it keeps no volumes unless `overrides.mgmt` asks for them (decision 4a). The usual choice follows from the platform, and `dciab validate` suggests it when the provider is missing:
 
 | Platform and datastore | Usual `block.provider` |
 | --- | --- |
@@ -120,7 +122,7 @@ The v1 block providers are Longhorn, the vSphere CSI driver, the Proxmox CSI dri
 | Proxmox VE with local storage only (`local-lvm`, ZFS) | `longhorn`, on the worker data disk |
 | Metal3 (bare metal) | `longhorn`, on the node's data disks |
 
-**For workload clusters it's optional and not enforced.** They don't inherit MGMT and INFRA's block. Without `overrides.workload`, DCiaB imposes no block storage on workload clusters: each tenant brings its own. With it, every workload cluster gets that provider and its settings, written in full; nothing is merged from `block`.
+**For workload clusters it's optional and not enforced.** They don't inherit INFRA's block. Without `overrides.workload`, DCiaB imposes no block storage on workload clusters: each tenant brings its own. With it, every workload cluster gets that provider and its settings, written in full; nothing is merged from `block`.
 
 > **Amended 2026-11-24.** As accepted on 2026-11-23, this decision gave block storage a default by platform, applied to every cluster. Now the provider is required for MGMT and INFRA, and optional and not enforced for workload clusters. Why:
 > - **No hidden site-specific defaults.** Every site-specific field in the config is required; a storage default that silently differs by platform breaks that rule.
@@ -196,7 +198,7 @@ The provider decides where both come from: on vSphere the datastore through the 
 
 ### 5. A local class for services that replicate themselves
 
-CloudNativePG, OpenSearch, OpenBao (Raft) and SeaweedFS volume servers keep their own copies. On a replicated class they double-replicate inside the cluster too. So MGMT and INFRA, and workload clusters that opt in, also have two **local** classes:
+CloudNativePG, OpenSearch, OpenBao (Raft) and SeaweedFS volume servers keep their own copies. On a replicated class they double-replicate inside the cluster too. So INFRA, and MGMT and workload clusters that opt in, also have two **local** classes:
 
 - **`local-retain`** (`reclaimPolicy: Retain`) for platform data that keeps its own copies: the services above.
 - **`local`** (`reclaimPolicy: Delete`) for scratch data.
@@ -262,10 +264,9 @@ A sketch. Field names are settled in the implementation PR; the structure is the
 spec:
   identity:
     provider: authentik                # authentik | external
-    # kubernetes:                      # optional; defaults to the provider's issuer
+    # kubernetes:                      # optional; issuers added to the provider's (amendment 3)
     #   issuers:                       # rendered into the AuthenticationConfiguration
-    #     - {url: https://auth.dc1.example.net/application/o/kubernetes/, clientID: kubernetes}
-    #     - {url: https://sso.example.net/realms/dc, clientID: k8s, caBundle: {file: ./secrets/sso-ca.pem}}
+    #     - {name: corp, url: https://sso.example.net/realms/dc, clientID: k8s, caBundle: {file: ./secrets/sso-ca.pem}}
     adminGroup: dciab-admins           # unchanged
     initialAdmins: [...]               # unchanged
     roles: {operator: dciab-operators, viewer: dciab-viewers}   # admin is always adminGroup
@@ -340,7 +341,7 @@ One row per consumer. The cells say what the consumer uses with the default prov
 
 | Consumer | Identity | Secrets via ESO | TLS issuer | Storage class / COSI bucket | DB on CNPG | Backup target | DNS record | Metrics |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| Kubernetes API | Workload: JWT issuers in an `AuthenticationConfiguration` (`identity.kubernetes`). MGMT and INFRA: certificates only (ADR 0004) | n/a (hosts ESO) | kubeadm cluster CA | n/a | n/a (etcd) | etcd snapshots to the site target (ADR 0009) | API VIP, written by DCiaB | API server metrics |
+| Kubernetes API | JWT issuers in an `AuthenticationConfiguration` (`identity.kubernetes`): Authentik on workload clusters only; a site IdP on every cluster. Certificates on every cluster as break-glass (ADR 0004) | n/a (hosts ESO) | kubeadm cluster CA | n/a | n/a (etcd) | etcd snapshots to the site target (ADR 0009) | API VIP, written by DCiaB | API server metrics |
 | Argo CD | OIDC | OIDC client secret, repo credentials | platform issuer | none (state is Git) | none | none needed (Git) | external-dns | ServiceMonitor |
 | Forgejo | OIDC auth source | OIDC secret, DB, S3 | platform issuer | `replicated-retain` for repos; bucket for LFS, packages, attachments | yes | CNPG archive + repo volume (ADR 0009) | external-dns | ServiceMonitor |
 | Grafana | Generic OAuth | OIDC secret, DB | platform issuer | none (dashboards from Git) | yes | CNPG archive | external-dns | ServiceMonitor |
@@ -369,7 +370,7 @@ The schema does what JSON Schema can: one `provider` per block, the chosen provi
 1. **Tier order** (decision 2). Error when an override gives MGMT an INFRA-hosted provider (`storage.object: seaweedfs`, `ipam: netbox` with `mode: platform`, `identity` for the MGMT API), when MGMT's or OpenBao's backup target isn't the site target, or when INFRA backs up to its own object provider with no off-site or site copy of the critical set (ADR 0009).
 2. **No double replication.** Error when `longhorn` with more than one replica sits on replicated storage. Offline, `validate` warns when the Proxmox storage name or the vSphere datastore is set, since it can't know its type. With `--live`, it reads the type (Proxmox `rbd` or `cephfs`, vSphere `vsan`) and errors. Today's check only hints at this (`check_resilience`).
 3. **Platform fit.** `vsphere-csi` only for `vsphere`-class clusters, `proxmox-csi` only for `proxmox`-class clusters. Longhorn on VMs needs `dataDiskGiB` on the worker pools. With `--live`, the `proxmox-csi` token's privileges are checked like the CAPMOX token's.
-4. **Required provider fields.** `block.provider` for MGMT and INFRA; when it's missing, the error names the platform's usual choice (decision 4). `proxmox-csi`: a storage and its token. `ceph-csi`: monitors, cluster ID, pool, key. `vendor-csi`: a chart that is in `bundle.lock`. `existing`: a StorageClass name. Exactly one default StorageClass per cluster, and the four class names of decisions 4 and 5 present on every cluster DCiaB gives block storage.
+4. **Required provider fields.** `block.provider` for INFRA (MGMT's only in `overrides.mgmt`, decision 4a); when it's missing, the error names the platform's usual choice (decision 4). `proxmox-csi`: a storage and its token. `ceph-csi`: monitors, cluster ID, pool, key. `vendor-csi`: a chart that is in `bundle.lock`. `existing`: a StorageClass name. Exactly one default StorageClass per cluster, and the four class names of decisions 4 and 5 present on every cluster DCiaB gives block storage.
 5. **COSI.** `cosi: true` only with `seaweedfs` or `rook-ceph`. With `external`, every enabled consumer needs a bucket entry.
 6. **Identity.** `external.issuer` is `https`. Every name in `consumers` has a client entry with `external`. A secret is required for every client except the public `kubernetes` one. `openvox` in `consumers` with no `external.ldap` is a warning (hosts get break-glass only). `vcenter` in `consumers` needs LDAP (Authentik outpost or `external.ldap`), or the note that the site federates vCenter itself. `roles.operator` and `roles.viewer`, when set, differ from `adminGroup` and from each other.
 7. **DNS.** With `external.mode: delegated`, `network.domain` is the delegated zone or inside it, and `validate --live` checks that the parent zone's NS records point at DCiaB's DNS addresses. With `records`, the zone is `network.domain` or a parent of it; `rfc2136` needs a TSIG key; `webhook` needs a provider pinned in `bundle.lock`.

@@ -10,7 +10,7 @@ import sys
 import pytest
 import yaml
 
-from conftest import ROOT, load_example, longhorn_example
+from conftest import ROOT, load_example, longhorn_example, mgmt_longhorn
 
 sys.path.insert(0, str(ROOT / "addons" / "longhorn"))
 
@@ -24,22 +24,25 @@ def decoded(manifest):
 
 
 def test_replica_count_comes_from_the_config():
-    site = longhorn_example("proxmox")
-    site["spec"]["storage"]["block"]["longhorn"]["replicaCount"] = 1
+    site = mgmt_longhorn(longhorn_example("proxmox"))
+    site["spec"]["storage"]["block"]["overrides"]["mgmt"]["longhorn"]["replicaCount"] = 1
+    v = lv.site_values(site)
+    assert v["persistence"]["defaultClassReplicaCount"] == 1
+    site["spec"]["storage"]["block"]["longhorn"]["replicaCount"] = 2   # INFRA's, not MGMT's
     v = lv.site_values(site)
     assert v["persistence"]["defaultClassReplicaCount"] == 1
     assert v["defaultSettings"]["defaultReplicaCount"] == 1
 
 
 def test_nfs_target_has_no_credentials_secret(tmp_path):
-    site = longhorn_example("proxmox")
+    site = mgmt_longhorn(longhorn_example("proxmox"))
     v = lv.site_values(site)
     assert v["defaultBackupStore"] == {"backupTarget": "nfs://nas01.dc3.example.net:/exports/dciab-backup"}
     assert lv.secret(site, "longhorn-system", tmp_path) is None
 
 
 def test_s3_target_is_translated_and_names_the_secret():
-    v = lv.site_values(longhorn_example("vsphere"))
+    v = lv.site_values(mgmt_longhorn(longhorn_example("vsphere")))
     assert v["defaultBackupStore"] == {"backupTarget": "s3://dciab-backup@us-east-1/dc1",
                                        "backupTargetCredentialSecret": lv.SECRET_NAME}
 
@@ -58,7 +61,7 @@ def test_s3_secret_reads_the_credentials_file_and_adds_the_endpoint(tmp_path):
     (tmp_path / "secrets").mkdir()
     (tmp_path / "secrets" / "backup-site.env").write_text(
         "# S3\nAWS_ACCESS_KEY_ID=AKID\nexport AWS_SECRET_ACCESS_KEY='sk'\n")
-    m = lv.secret(longhorn_example("vsphere"), "longhorn-system", tmp_path)
+    m = lv.secret(mgmt_longhorn(longhorn_example("vsphere")), "longhorn-system", tmp_path)
     assert m["metadata"] == {"name": lv.SECRET_NAME, "namespace": "longhorn-system",
                              "labels": {"app.kubernetes.io/managed-by": "dciab"}}
     assert decoded(m) == {"AWS_ACCESS_KEY_ID": "AKID", "AWS_SECRET_ACCESS_KEY": "sk",
@@ -66,7 +69,7 @@ def test_s3_secret_reads_the_credentials_file_and_adds_the_endpoint(tmp_path):
 
 
 def test_s3_secret_from_an_environment_variable(monkeypatch, tmp_path):
-    site = longhorn_example("vsphere")
+    site = mgmt_longhorn(longhorn_example("vsphere"))
     site["spec"]["backup"]["targets"]["site"]["credentials"] = {"env": "LH_S3"}
     monkeypatch.setenv("LH_S3", "AWS_ACCESS_KEY_ID=a\nAWS_SECRET_ACCESS_KEY=b\nAWS_ENDPOINTS=http://s3:8333\n")
     assert decoded(lv.secret(site, "ns", tmp_path)) == {
@@ -77,7 +80,7 @@ def test_s3_secret_needs_both_keys(tmp_path):
     (tmp_path / "secrets").mkdir()
     (tmp_path / "secrets" / "backup-site.env").write_text("AWS_ACCESS_KEY_ID=a\n")
     with pytest.raises(ValueError, match="AWS_SECRET_ACCESS_KEY"):
-        lv.secret(longhorn_example("vsphere"), "ns", tmp_path)
+        lv.secret(mgmt_longhorn(longhorn_example("vsphere")), "ns", tmp_path)
 
 
 def test_bad_credentials_line(tmp_path):
@@ -112,35 +115,44 @@ def run(*args, env=None):
 
 def test_install_usage():
     assert run().returncode == 2
-    assert run(ROOT / "examples" / "metal3-cluster.yaml", "--bogus").returncode == 2
+    assert run(ROOT / "examples" / "metal3-cluster.yaml", "--bogus", "--cluster", "metal01").returncode == 2
     assert run(ROOT / "examples" / "metal3-cluster.yaml", "--template", "--nope", "x").returncode == 2
+
+
+def test_install_on_mgmt_needs_overrides_mgmt():
+    """MGMT keeps no volumes (ADR 0008, decision 4a): Longhorn goes there only through
+    overrides.mgmt, and the error says so."""
+    r = run(ROOT / "examples" / "metal3-cluster.yaml", "--print-values")
+    assert r.returncode == 1 and "overrides.mgmt" in r.stderr
     assert run("/no/such.yaml", "--print-values").returncode == 2
 
 
 def test_install_print_values_needs_no_cluster():
-    r = run(ROOT / "examples" / "metal3-cluster.yaml", "--print-values")
+    r = run(ROOT / "examples" / "metal3-cluster.yaml", "--print-values", "--cluster", "metal01")
     assert r.returncode == 0, r.stderr
     v = yaml.safe_load(r.stdout)
-    assert v["defaultSettings"]["defaultReplicaCount"] == 3
+    assert v["defaultSettings"]["defaultReplicaCount"] == 2
     assert "AWS_" not in r.stdout
 
 
 def test_install_refuses_a_chart_with_the_wrong_sha256(tmp_path):
     fake = tmp_path / "longhorn.tgz"
     fake.write_bytes(b"not a chart")
-    r = run(ROOT / "examples" / "metal3-cluster.yaml", "--template", "--chart", fake)
+    r = run(ROOT / "examples" / "metal3-cluster.yaml", "--template", "--chart", fake, "--cluster", "metal01")
     assert r.returncode == 1 and "refusing" in r.stderr
     assert hashlib.sha256(b"not a chart").hexdigest() in r.stderr
 
 
 def test_install_uses_the_payload_chart(tmp_path):
     lock = yaml.safe_load((ROOT / "bundle.lock").read_text())
-    r = run(ROOT / "examples" / "metal3-cluster.yaml", "--template", env={"DCIAB_PAYLOAD": str(tmp_path)})
+    r = run(ROOT / "examples" / "metal3-cluster.yaml", "--template", "--cluster", "metal01",
+            env={"DCIAB_PAYLOAD": str(tmp_path)})
     assert r.returncode == 1
     assert f"charts/longhorn-{lock['charts']['longhorn']}.tgz" in r.stderr
     (tmp_path / "charts").mkdir()
     (tmp_path / "charts" / f"longhorn-{lock['charts']['longhorn']}.tgz").write_bytes(b"x")
-    r = run(ROOT / "examples" / "metal3-cluster.yaml", "--template", env={"DCIAB_PAYLOAD": str(tmp_path)})
+    r = run(ROOT / "examples" / "metal3-cluster.yaml", "--template", "--cluster", "metal01",
+            env={"DCIAB_PAYLOAD": str(tmp_path)})
     assert r.returncode == 1 and "refusing" in r.stderr
 
 
@@ -155,7 +167,7 @@ def test_mgmt_header_lists_every_step():
 
 
 def test_no_worker_pools_tolerates_the_control_plane_taint():
-    site = longhorn_example("vsphere")   # MGMT has workerPools: []
+    site = mgmt_longhorn(longhorn_example("vsphere"))   # MGMT has workerPools: []
     v = lv.site_values(site)
     assert v["defaultSettings"]["taintToleration"] == "node-role.kubernetes.io/control-plane:NoSchedule"
     for part in ("longhornManager", "longhornDriver", "longhornUI"):

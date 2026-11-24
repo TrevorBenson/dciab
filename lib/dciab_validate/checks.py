@@ -18,6 +18,7 @@ from pathlib import Path as FsPath
 from typing import Dict, List, Optional, Tuple
 
 import dciab_backup as bk
+import dciab_identity as idp
 import dciab_storage as st
 from dciab_cluster.values import place_pools, usable_domains
 
@@ -25,7 +26,7 @@ from . import netutil as nu
 from .findings import ERROR, WARNING, Finding, Path, format_path
 
 SECRET_KEYS = {"password", "rootPassword", "tokenSecret", "backupCredentials", "certificate", "key", "chain", "caBundle",
-               "credentials", "readCredentials"}
+               "credentials", "readCredentials", "clientSecret", "bindPassword"}
 RESERVED_CLUSTER_NAMES = {"mgmt", "infra"}
 # CAs below an imported intermediate: OpenBao's SPIFFE intermediate, the SPIRE root CA and
 # each child SPIRE CA (ADR 0004 and ADR 0005).
@@ -34,6 +35,8 @@ ONE_YEAR_SECONDS = 365 * 24 * 3600
 # A MachineDeployment's name ends up in its machines' host names, <cluster>-<md>-<5>-<5>,
 # which must fit a 63-character DNS label with a 20-character cluster name.
 MAX_MD_NAME = 30
+# The ClusterClasses' authentication variable takes at most this many issuers.
+MAX_TIER_ISSUERS = 4
 
 
 @dataclass
@@ -98,6 +101,7 @@ class Checker:
         self.check_resilience()
         self.check_template_version()
         self.check_pki_intermediate()
+        self.check_identity()
         return self.findings, self.notes
 
     # -- individual checks -------------------------------------------------------
@@ -568,13 +572,14 @@ class Checker:
                 out[item[key]] = item
         return out
 
-    # -- block storage (ADR 0008, decisions 4 and 5) ----------------------------------
+    # -- block storage (ADR 0008, decisions 4, 4a and 5) ------------------------------
 
     def _tiers(self) -> List[str]:
-        """The tiers DCiaB gives block storage: MGMT and INFRA always, workload clusters only
-        through overrides.workload (tenants otherwise bring their own)."""
+        """The tiers DCiaB gives block storage: INFRA always, MGMT only through overrides.mgmt
+        (it keeps no volumes otherwise), workload clusters only through overrides.workload
+        (tenants otherwise bring their own)."""
         over = (st.base_block(self.spec).get("overrides") or {})
-        return ["mgmt", "infra"] + (["workload"] if "workload" in over else [])
+        return [t for t in st.TIERS if t == "infra" or t in over]
 
     def _tier_clusters(self, tier: str):
         """(path, cluster, class) of each cluster in a tier."""
@@ -589,9 +594,9 @@ class Checker:
         if st.legacy(self.spec):
             return ("spec", "storage", "longhorn") + ((field,) if field else ())
         base = ("spec", "storage", "block")
-        if tier == "workload":
-            # The workload override stands alone: nothing in it comes from block.
-            return base + ("overrides", "workload", key or "provider") + ((field,) if field else ())
+        if tier in st.STANDALONE:
+            # The mgmt and workload overrides stand alone: nothing in them comes from block.
+            return base + ("overrides", tier, key or "provider") + ((field,) if field else ())
         over = (self.spec["storage"]["block"].get("overrides") or {}).get(tier) or {}
         if key is None:
             return base + (("overrides", tier, "provider") if "provider" in over else ("provider",))
@@ -608,7 +613,10 @@ class Checker:
                                                         "longhorn": self.spec["storage"]["longhorn"]}}},
                                  sort_keys=False, default_flow_style=None).strip().replace("\n", "; ")
             self.warn(("spec", "storage", "longhorn"), "the old form of block storage",
-                      f"write it as {new} (ADR 0008); the old form is accepted for one minor release")
+                      f"write it as {new} (ADR 0008); the old form is accepted for one minor release. "
+                      "It is INFRA's storage now: MGMT keeps no volumes unless spec.storage.block.overrides.mgmt "
+                      "asks for them (decision 4a), and dciab mgmt leaves a Longhorn an earlier run installed "
+                      "on MGMT in place (docs/MGMT.md)")
         else:
             over = self.spec["storage"]["block"].get("overrides") or {}
             base_provider = self.spec["storage"]["block"]["provider"]
@@ -618,6 +626,9 @@ class Checker:
                     if key in o and key != st.SETTINGS[provider]:
                         self.error(("spec", "storage", "block", "overrides", tier, key), f"set for provider {provider}",
                                    "remove it, or set provider in this override to the one it belongs to")
+        if "mgmt" not in self._tiers():
+            self.notes.append("storage: MGMT keeps no volumes (ADR 0008, decision 4a); dciab mgmt installs no Longhorn, "
+                              "CSI driver or StorageClass there. spec.storage.block is INFRA's")
         for tier in self._tiers():
             self._check_tier_storage(tier)
         for cpath, c, klass in self._all_clusters():
@@ -749,7 +760,7 @@ class Checker:
         import yaml
 
         new = {"backup": {"targets": {"site": target, "offsite": {"mode": "copy", "url": "<another location>"}}}}
-        self.warn(("spec", "backup"), "missing: the backup target is read from MGMT's Longhorn settings",
+        self.warn(("spec", "backup"), "missing: the backup target is read from the Longhorn settings' backupTarget",
                   "move it to spec.backup (ADR 0009): " +
                   yaml.safe_dump(new, sort_keys=False, default_flow_style=None).strip().replace("\n", "; ") +
                   ". Without it there is no off-site copy")
@@ -886,8 +897,10 @@ class Checker:
                 self.error(dpath, str(g["dataDiskGiB"]),
                            "remove it: CAPMOX can't give a machine a second disk yet; use provider proxmox-csi")
             elif provider is None:
-                self.warn(dpath, f"{g['dataDiskGiB']}, on a workload cluster DCiaB gives no block storage",
-                          "remove it, or opt in with spec.storage.block.overrides.workload {provider: longhorn, ...}: "
+                what = "MGMT, which keeps no volumes" if tier == "mgmt" else \
+                    "a workload cluster DCiaB gives no block storage"
+                self.warn(dpath, f"{g['dataDiskGiB']}, on {what}",
+                          f"remove it, or opt in with spec.storage.block.overrides.{tier} {{provider: longhorn, ...}}: "
                           "the data disk is only for Longhorn, so these machines don't get it")
             elif provider != "longhorn":
                 self.warn(dpath, f"{g['dataDiskGiB']}, with block storage {provider}",
@@ -1168,6 +1181,112 @@ class Checker:
         elif openssl("-checkend", str(ONE_YEAR_SECONDS)).returncode != 0:
             self.warn(path, "the certificate expires within a year",
                       "renew the intermediate with the site's CA before it expires; every platform CA chains to it")
+    # -- identity (ADR 0008, decisions 2, 3 and 10) ------------------------------------
+
+    def check_identity(self) -> None:
+        ident = self.spec["identity"]
+        ip = ("spec", "identity")
+        consumers = idp.consumers(self.spec)
+        seen = {ident["adminGroup"]: "adminGroup"}
+        for role in ("operator", "viewer"):
+            group = (ident.get("roles") or {}).get(role)
+            if group is None:
+                continue
+            if group in seen:
+                self.error(ip + ("roles", role), group,
+                           f"give the {role} role a group of its own; {seen[group]} already uses {group}")
+            else:
+                seen[group] = f"roles.{role}"
+        ptype = self.spec["platform"]["type"]
+        for consumer, platform in (("proxmox", "proxmox"), ("vcenter", "vsphere")):
+            if consumer in consumers and ptype != platform:
+                self.warn(ip + ("consumers",), f"{consumer} is listed, but the site's platform is {ptype}",
+                          f"remove {consumer}: DCiaB configures it only on a {platform} site")
+        if idp.provider(self.spec) == "external":
+            self._check_external(ip + ("external",), ident["external"], consumers)
+        self._check_kubernetes_issuers()
+
+    def _check_external(self, ep: Path, ext: dict, consumers: List[str]) -> None:
+        if idp.infra_hosted(self.spec, ext["issuer"]):
+            self.error(ep + ("issuer",), ext["issuer"],
+                       "that is DCiaB's own Authentik (auth.<network.domain>); use provider: authentik, "
+                       "or give the site's issuer")
+        given = ext.get("clients") or {}
+        for c in consumers:
+            if c not in idp.OIDC_CONSUMERS:
+                continue
+            if c not in given:
+                secret = "" if c in idp.PUBLIC_CLIENTS else ", clientSecret: {file: <path>}"
+                self.error(ep + ("clients", c), "missing",
+                           f"add the OIDC client the site's IdP team created for {c}: {{clientID: <id>{secret}}}. "
+                           "python3 -m dciab_identity clients <config> lists every client and its redirect URIs")
+            elif c not in idp.PUBLIC_CLIENTS and "clientSecret" not in given[c]:
+                self.error(ep + ("clients", c, "clientSecret"), "missing",
+                           f"add the {c} client's secret as {{file: <path>}} or {{env: <VARIABLE>}}")
+        for c in given:
+            if c not in consumers:
+                self.warn(ep + ("clients", c), f"{c} is not in identity.consumers, so this client isn't used",
+                          f"add {c} to identity.consumers, or remove the client")
+        if "openvox" in consumers and "ldap" not in ext:
+            self.warn(ep, "no ldap: hosts managed by OpenVox get only the break-glass user",
+                      "add external.ldap (the site directory, for SSSD), or remove openvox from identity.consumers")
+        if "vcenter" in consumers and "ldap" not in ext and not ext.get("vcenterFederation"):
+            self.error(ep, "vcenter is in identity.consumers, but vCenter has no identity source",
+                       "add external.ldap for vCenter's LDAP identity source, or set vcenterFederation: true "
+                       "if the site federates vCenter to its IdP itself")
+        if "caBundle" in ext:
+            self._check_pem(ep + ("caBundle",), ext["caBundle"])
+
+    def _check_kubernetes_issuers(self) -> None:
+        issuers = idp.kubernetes_issuers(self.spec)
+        names: Dict[str, Path] = {}
+        urls: Dict[str, Path] = {}
+        for i in issuers:
+            extra = len(i["path"]) > 3   # spec.identity.kubernetes.issuers[n], not the provider's
+            if i["name"] in names:
+                self.error(i["path"] + (("name",) if extra else ()), i["name"],
+                           f"choose another name: {format_path(names[i['name']])} already uses it, and each issuer's "
+                           "users and groups carry its name as their prefix")
+            names.setdefault(i["name"], i["path"])
+            if i["url"] in urls:
+                self.error(i["path"] + (("url",) if extra else ()), i["url"],
+                           f"list each issuer once; {format_path(urls[i['url']])} already has it")
+            urls.setdefault(i["url"], i["path"])
+            if i["infraHosted"]:
+                early = [t for t in i["tiers"] if t in ("mgmt", "infra")]
+                if early:
+                    self.error(i["path"] + (("tiers",) if extra else ()),
+                               f"DCiaB's Authentik runs on INFRA, and this issuer would serve {' and '.join(early)}",
+                               "trust it on workload clusters only (tiers: [workload]): MGMT's and INFRA's APIs "
+                               "can't depend on INFRA (ADR 0008, decision 2; ADR 0004, decision 4)")
+            if extra and i["caBundle"]:
+                self._check_pem(i["path"] + ("caBundle",), i["caBundle"])
+        for tier in idp.TIERS:
+            mine = [i["name"] for i in issuers if tier in i["tiers"]]
+            if len(mine) > MAX_TIER_ISSUERS:
+                self.error(("spec", "identity", "kubernetes", "issuers"),
+                           f"{tier} clusters would trust {len(mine)} issuers ({', '.join(mine)})",
+                           f"keep it to {MAX_TIER_ISSUERS} per tier, the most the ClusterClasses take")
+        if not any("mgmt" in i["tiers"] for i in issuers):
+            self.notes.append("identity: MGMT's Kubernetes API trusts no OIDC issuer; it is reached with the "
+                              "certificate kubeconfig only (ADR 0004, decision 4)")
+
+    def _check_pem(self, path: Path, ref: dict) -> None:
+        """A CA bundle reference holds at least one PEM certificate (check_secrets reports a
+        missing or empty one)."""
+        if "env" in ref:
+            text = os.environ.get(ref["env"], "")
+        else:
+            raw = ref["file"]
+            target = FsPath(raw) if os.path.isabs(raw) else self.config_dir / raw
+            if not target.is_file():
+                return
+            try:
+                text = target.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                return
+        if text.strip() and "-----BEGIN CERTIFICATE-----" not in text:
+            self.error(path, "holds no PEM certificate", "point it at the issuer's CA certificate, in PEM")
 
 
 def run(doc: dict, config_path: FsPath, root: FsPath) -> Tuple[List[Finding], List[str]]:

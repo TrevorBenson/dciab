@@ -1,11 +1,12 @@
-"""Block storage for each cluster of a site config (ADR 0008, decisions 4 and 5).
+"""Block storage for each cluster of a site config (ADR 0008, decisions 4, 4a and 5).
 
-spec.storage.block names a provider and its settings for MGMT and INFRA, and may override
-both for either tier. The provider is required: there is no platform default. Workload
-(tenant) clusters don't inherit it: DCiaB gives them block storage only when
-overrides.workload names a provider, and its settings, of its own. Without it, tenants bring
-their own storage. The old form, spec.storage.longhorn, reads as
-block: {provider: longhorn, longhorn: <it>}.
+spec.storage.block names INFRA's provider and its settings; overrides.infra may change them.
+The provider is required: there is no platform default. MGMT keeps no volumes (decision 4a):
+DCiaB gives it block storage only when overrides.mgmt names a provider, and its settings, of
+its own. Workload (tenant) clusters are the same with overrides.workload; without it, tenants
+bring their own storage. Neither override is merged over block. The old form,
+spec.storage.longhorn, reads as block: {provider: longhorn, longhorn: <it>}, so it describes
+INFRA, and MGMT gets nothing from it.
 
 Every cluster DCiaB gives block storage gets the same four StorageClasses, whatever backs
 them, so platform charts never change from site to site:
@@ -34,6 +35,8 @@ PROVIDERS = ("longhorn", "vsphere-csi", "proxmox-csi", "ceph-csi", "vendor-csi",
 SETTINGS = {"longhorn": "longhorn", "vsphere-csi": "vsphereCSI", "proxmox-csi": "proxmoxCSI",
             "ceph-csi": "cephCSI", "vendor-csi": "vendorCSI", "existing": "existing"}
 TIERS = ("mgmt", "infra", "workload")
+# Tiers whose override stands alone: without it, DCiaB gives the tier no block storage.
+STANDALONE = ("mgmt", "workload")
 # Providers DCiaB installs today. The others are accepted by the schema so configs can be
 # written, and validate says they aren't installed yet.
 INSTALLED = ("longhorn", "vsphere-csi", "proxmox-csi", "existing")
@@ -76,14 +79,14 @@ def tier_block(spec: dict, tier: str) -> Optional[Dict[str, object]]:
     """The provider and its settings for a tier's clusters. {"provider": ..., "settings": {...}};
     settings may be empty.
 
-    mgmt and infra: block, with the tier's override merged over it. workload: only
-    overrides.workload, never merged over block; None when it's absent, as DCiaB then
-    imposes no block storage on workload clusters."""
+    infra: block, with overrides.infra merged over it. mgmt and workload: only their own
+    override, never merged over block; None when it's absent, as DCiaB then gives that tier
+    no block storage (MGMT keeps no volumes, ADR 0008 decision 4a; tenants bring their own)."""
     if tier not in TIERS:
         raise StorageError(f"no tier {tier!r}; use one of {', '.join(TIERS)}")
     base = base_block(spec)
     over = (base.get("overrides") or {}).get(tier) or {}
-    if tier == "workload":
+    if tier in STANDALONE:
         if not over:
             return None
         provider = over["provider"]
@@ -106,7 +109,7 @@ def tier_of(spec: dict, cluster: str) -> Tuple[str, str]:
 
 
 def cluster_block(spec: dict, cluster: str) -> Optional[Dict[str, object]]:
-    """The cluster's tier block; None for a workload cluster DCiaB gives no block storage."""
+    """The cluster's tier block; None for MGMT or a workload cluster DCiaB gives no block storage."""
     return tier_block(spec, tier_of(spec, cluster)[0])
 
 
@@ -192,8 +195,9 @@ def storage_classes(spec: dict, cluster: str, source: Optional[dict] = None) -> 
     the cluster, for provider existing."""
     b = cluster_block(spec, cluster)
     if b is None:
-        raise StorageError(f"cluster {cluster}: DCiaB gives workload clusters no block storage unless "
-                           "spec.storage.block.overrides.workload names a provider")
+        tier = tier_of(spec, cluster)[0]
+        raise StorageError(f"cluster {cluster}: DCiaB gives {tier} no block storage unless "
+                           f"spec.storage.block.overrides.{tier} names a provider")
     provider, settings = b["provider"], b["settings"]
     if provider == "longhorn":
         return longhorn_classes(settings)
@@ -206,5 +210,5 @@ def storage_classes(spec: dict, cluster: str, source: Optional[dict] = None) -> 
     raise StorageError(f"{provider} is not installed by DCiaB yet")
 
 
-__all__ = ["CLASSES", "CLASS_ONLY", "DEFAULT_CLASS", "INSTALLED", "PROVIDERS", "SETTINGS", "TIERS",
+__all__ = ["CLASSES", "CLASS_ONLY", "DEFAULT_CLASS", "INSTALLED", "PROVIDERS", "SETTINGS", "STANDALONE", "TIERS",
            "StorageError", "base_block", "cluster_block", "legacy", "storage_classes", "tier_block", "tier_of"]

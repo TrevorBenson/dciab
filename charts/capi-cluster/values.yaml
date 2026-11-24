@@ -30,9 +30,11 @@ encryption:
 #   sshAuthorizedKeys: ["ssh-ed25519 AAAA..."]
 #   dnsServers: [10.20.110.53, 10.20.110.54]
 #   mtu: 9000                       # optional, VM classes: the node NIC's MTU
-#   authentication:                 # optional: JWT issuers (AuthenticationConfiguration)
-#     issuers:
-#       - {url: https://auth.dc1.example.com/application/o/kubernetes/, clientID: kubernetes}
+#   authentication:                 # optional: JWT issuers (AuthenticationConfiguration), from spec.identity
+#     issuers:                      # (docs/IDENTITY.md); none: certificates only
+#       - {name: site, url: https://sso.example.com/realms/dc1, clientID: dc1-kubernetes,
+#          usernameClaim: preferred_username, usernamePrefix: "site:", groupsClaim: groups, groupsPrefix: "site:",
+#          certificateAuthority: "-----BEGIN CERTIFICATE-----..."}   # certificateAuthority optional
 
 # VM classes (vsphere, proxmox): one node network and range per cluster.
 # network: {nodeIPRange: 10.20.110.60-10.20.110.89, prefix: 24, gateway: 10.20.110.1}

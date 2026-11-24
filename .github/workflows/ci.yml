@@ -31,6 +31,10 @@ jobs:
       - run: python -m pytest -v
       - name: Schema is valid JSON Schema 2020-12
         run: python -c "import json; from jsonschema import Draft202012Validator as V; V.check_schema(json.load(open('schema/dciab.schema.json')))"
+      - name: docs/CONFIG.md matches the schema, and every schema key has a description
+        run: |
+          python hack/gen_config_docs.py --check
+          python -m pytest -q tests/test_config_docs.py
 
   charts:
     name: charts (helm render + CRD checks)
@@ -83,22 +87,59 @@ jobs:
             addons/kubelet-csr-approver/install.sh "$values" --template > /dev/null
             echo "ok: kubelet-csr-approver renders for $values"
           done
-      - name: Render MGMT's block storage for every example config
+      - name: MGMT gets no block storage; INFRA's renders, and MGMT's with overrides.mgmt
         env:
           DCIAB_PVE_CSI_TOKEN: placeholder
         run: |
           set -euo pipefail
+          # ADR 0008, decision 4a: no example gives MGMT block storage, so dciab mgmt's
+          # storage step installs nothing there.
           for config in examples/*.yaml; do
             provider="$(PYTHONPATH=lib python3 -m dciab_storage provider "$config" mgmt)"
+            [[ "$provider" == none ]] || { echo "$config: MGMT gets block storage $provider" >&2; exit 1; }
+            provider="$(PYTHONPATH=lib python3 -m dciab_storage provider "$config" infra)"
             case "$provider" in
-              longhorn) addons/longhorn/install.sh "$config" --template > /dev/null ;;
-              *-csi) addons/csi/install.sh "$config" mgmt --template > /dev/null ;;
+              # metal3's INFRA backs up to the object store, which isn't built yet; its
+              # workload clusters' Longhorn renders below (--images) and in the inventory.
+              longhorn) [[ "$config" == *metal3* ]] || addons/longhorn/install.sh "$config" --template --cluster infra > /dev/null ;;
+              *-csi) addons/csi/install.sh "$config" infra --template > /dev/null ;;
             esac
-            echo "ok: $provider renders for $config"
+            echo "ok: MGMT none, INFRA $provider for $config"
           done
-          addons/longhorn/install.sh examples/metal3-cluster.yaml --images
+          # overrides.mgmt, written in full, gives MGMT block storage: block's provider and settings here.
+          for name in proxmox proxmox-bare; do
+            python3 - "examples/$name.yaml" "$RUNNER_TEMP/$name-mgmt.yaml" <<'PY'
+          import copy, sys, yaml
+          doc = yaml.safe_load(open(sys.argv[1]))
+          block = doc["spec"]["storage"]["block"]
+          key = {"proxmox-csi": "proxmoxCSI", "longhorn": "longhorn"}[block["provider"]]
+          block["overrides"] = {"mgmt": {"provider": block["provider"], key: copy.deepcopy(block[key])}}
+          yaml.safe_dump(doc, open(sys.argv[2], "w"), sort_keys=False)
+          PY
+          done
+          addons/csi/install.sh "$RUNNER_TEMP/proxmox-mgmt.yaml" mgmt --template > /dev/null
+          addons/longhorn/install.sh "$RUNNER_TEMP/proxmox-bare-mgmt.yaml" --template --cluster mgmt > /dev/null
+          echo "ok: overrides.mgmt renders proxmox-csi and longhorn on MGMT"
+          addons/longhorn/install.sh examples/metal3-cluster.yaml --images --cluster metal01
       - name: Render the vSphere CPI
         run: addons/vsphere-cpi/install.sh examples/vsphere.yaml --template > /dev/null
+      - name: Nothing dciab mgmt installs on MGMT asks for a volume (ADR 0008, decision 4a)
+        run: |
+          set -euo pipefail
+          # Everything but block storage, which MGMT gets only with overrides.mgmt: the
+          # ClusterClasses and the mgmt cluster (rendered above), Cilium, kubelet-csr-approver,
+          # the vSphere CPI, cert-manager, Cluster API and its providers. The backup CronJobs
+          # are checked in tests/test_mgmt_no_volumes.py.
+          mgmt="$RUNNER_TEMP/mgmt-installs"
+          mkdir -p "$mgmt"
+          for values in charts/capi-cluster/ci/*-values.yaml; do
+            name="$(basename "$values" -values.yaml)"
+            addons/cilium/install.sh "$values" --template > "$mgmt/cilium-$name.yaml"
+            addons/kubelet-csr-approver/install.sh "$values" --template > "$mgmt/kubelet-csr-approver-$name.yaml"
+          done
+          addons/vsphere-cpi/install.sh examples/vsphere.yaml --template > "$mgmt/vsphere-cpi.yaml"
+          python hack/check_no_volumes.py out "$mgmt" "$CRDS"/cert-manager-*/cert-manager.yaml \
+            "$CRDS"/baremetal-operator-*/ "$CRDS"/cluster-api-*/ "$CRDS"/infrastructure-*/ "$CRDS"/ipam-*/
       - name: Bad values fail the render, with the expected message
         run: |
           set -uo pipefail
@@ -205,6 +246,33 @@ jobs:
           ./dciab mgmt "$site/dciab.yaml" --bootstrap-kubeconfig "$site/bootstrap.kubeconfig" --until cluster
           kubectl -n cluster-mgmt wait cluster/mgmt --for=condition=TopologyReconciled --timeout=5m
           kubectl -n cluster-mgmt get cluster,kubeadmcontrolplane,secret -o wide
+      - name: The storage step leaves a cluster without overrides.mgmt untouched (ADR 0008, decision 4a)
+        run: |
+          set -euo pipefail
+          # The example gives MGMT no block storage. dciab mgmt's storage step, run here against
+          # the kind cluster as a stand-in for MGMT, must install no driver and apply no
+          # StorageClass or PVC; kind's own StorageClass stays the only one.
+          kind get kubeconfig --name dciab-e2e > "$RUNNER_TEMP/kind.kubeconfig"
+          before="$(kubectl get storageclass,pvc -A -o name | sort)"
+          out="$(lib/steps/block-storage.sh examples/proxmox.yaml mgmt "$RUNNER_TEMP/kind.kubeconfig")"
+          echo "$out"
+          grep -q "^block storage: none$" <<<"$out"
+          grep -q "no Longhorn, no CSI driver and no StorageClass on mgmt" <<<"$out"
+          after="$(kubectl get storageclass,pvc -A -o name | sort)"
+          [[ "$before" == "$after" ]] || { echo "the storage step changed StorageClasses or PVCs:"; diff <(echo "$before") <(echo "$after"); exit 1; }
+          [[ -z "$(kubectl get storageclass -l app.kubernetes.io/managed-by=dciab -o name)" ]]
+          ! kubectl get namespace longhorn-system csi-proxmox vmware-system-csi 2>/dev/null | grep -q Active
+      - name: Nothing dciab mgmt installed on the kind cluster asks for a volume (ADR 0008, decision 4a)
+        run: |
+          set -euo pipefail
+          # What is really there after dciab mgmt (the providers and the mgmt release), read
+          # back from the cluster; Secrets hold no volumes and are left out. kind's own
+          # StorageClass and local-path provisioner aren't DCiaB's.
+          kubectl get "$(kubectl api-resources --verbs=list --namespaced=true -o name \
+              | grep -vE '^(events|events.events.k8s.io|secrets)$' | paste -sd, -)" -A -o yaml > "$RUNNER_TEMP/live-namespaced.yaml"
+          kubectl get storageclass,persistentvolume -o yaml > "$RUNNER_TEMP/live-cluster.yaml"
+          python hack/check_no_volumes.py --ignore StorageClass/standard --ignore-namespace local-path-storage \
+            "$RUNNER_TEMP/live-namespaced.yaml" "$RUNNER_TEMP/live-cluster.yaml"
 
   archive-inventory:
     # Every image a site needs, then a small archive payload built from it (build/archive.py).
@@ -251,8 +319,9 @@ jobs:
           addons/cilium/install.sh charts/capi-cluster/ci/proxmox-values.yaml --template > "$RUNNER_TEMP/cilium.yaml"
           addons/kubelet-csr-approver/install.sh charts/capi-cluster/ci/proxmox-values.yaml --template > "$RUNNER_TEMP/kubelet-csr-approver.yaml"
           # Longhorn's manager starts most of its images itself: list them from the chart values too.
-          addons/longhorn/install.sh examples/metal3-cluster.yaml --template > "$RUNNER_TEMP/longhorn.yaml"
-          addons/longhorn/install.sh examples/metal3-cluster.yaml --images > "$RUNNER_TEMP/longhorn-images.txt"
+          # The metal3 example's workload clusters run Longhorn (MGMT keeps no volumes).
+          addons/longhorn/install.sh examples/metal3-cluster.yaml --template --cluster metal01 > "$RUNNER_TEMP/longhorn.yaml"
+          addons/longhorn/install.sh examples/metal3-cluster.yaml --images --cluster metal01 > "$RUNNER_TEMP/longhorn-images.txt"
           addons/vsphere-cpi/install.sh examples/vsphere.yaml --template > "$RUNNER_TEMP/vsphere-cpi.yaml"
           mapfile -t longhorn < "$RUNNER_TEMP/longhorn-images.txt"
           (( ${#longhorn[@]} > 0 )) || { echo "no Longhorn images listed" >&2; exit 1; }
@@ -676,7 +745,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: shellcheck dciab hack/e2e/run.sh hack/check_frozen_classes.sh images/node/build.sh lib/steps/mgmt.sh lib/steps/mgmt-pivot.sh lib/steps/services.sh lib/steps/capi-providers.sh lib/steps/storage-classes.sh images/node-bootc/build.sh images/node-bootc/rootfs/usr/libexec/dciab/growroot images/bootstrap-bootc/build.sh images/usb/build.sh images/day0-chrony/build.sh images/backup/build.sh images/lab-runner/build.sh images/lab-runner/rootfs/usr/libexec/dciab-lab-runner/loop images/lab-runner/rootfs/usr/libexec/dciab-lab-runner/job-started.sh addons/cilium/install.sh addons/longhorn/install.sh addons/vsphere-cpi/install.sh addons/csi/install.sh addons/kubelet-csr-approver/install.sh hack/e2e/boot-node-image.sh hack/lab/runner-image-id.sh hack/lab/fetch-runner-disk.sh hack/lab/pve.sh hack/lab/check-token.sh hack/lab/template.sh hack/lab/cluster.sh hack/lab/mgmt.sh
+      - run: shellcheck dciab hack/e2e/run.sh hack/check_frozen_classes.sh images/node/build.sh lib/steps/mgmt.sh lib/steps/mgmt-pivot.sh lib/steps/services.sh lib/steps/capi-providers.sh lib/steps/storage-classes.sh lib/steps/block-storage.sh images/node-bootc/build.sh images/node-bootc/rootfs/usr/libexec/dciab/growroot images/bootstrap-bootc/build.sh images/usb/build.sh images/day0-chrony/build.sh images/backup/build.sh images/lab-runner/build.sh images/lab-runner/rootfs/usr/libexec/dciab-lab-runner/loop images/lab-runner/rootfs/usr/libexec/dciab-lab-runner/job-started.sh addons/cilium/install.sh addons/longhorn/install.sh addons/vsphere-cpi/install.sh addons/csi/install.sh addons/kubelet-csr-approver/install.sh hack/e2e/boot-node-image.sh hack/lab/runner-image-id.sh hack/lab/fetch-runner-disk.sh hack/lab/pve.sh hack/lab/check-token.sh hack/lab/template.sh hack/lab/cluster.sh hack/lab/mgmt.sh
 
   rocky10:
     # The validator must run on the bootstrap host with distro packages only.

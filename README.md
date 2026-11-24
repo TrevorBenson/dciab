@@ -4,6 +4,8 @@ One archive and one YAML file build a data center platform from bare power and n
 
 What a site runs, by capability and cluster: [docs/COMPONENTS.md](docs/COMPONENTS.md).
 
+Every page, by audience (operators, contributors, agents): [docs/README.md](docs/README.md). Every config key: [docs/CONFIG.md](docs/CONFIG.md). Terms: [docs/GLOSSARY.md](docs/GLOSSARY.md).
+
 **Status:** Phase 1, in progress. Done: the config schema and `dciab validate` (offline and `--live` checks), the pinned `bundle.lock`, the ClusterClass and cluster charts, `cluster-values`, `status`, `media`, `services`, `hypervisors` (Proxmox VE, first part) and `seed`. Implemented, not yet passed end to end: the archive build and `verify-archive` (node images still to come), and `mgmt` (CI runs it up to the Cluster; MGMT's own services still to come). `infra`, `platform` and `finalize` aren't built yet. A Proxmox VE node template has been built and verified; no cluster has passed on real infrastructure yet. [docs/ROADMAP.md](docs/ROADMAP.md) is the source of truth for what exists.
 
 ## The bootstrap host
@@ -30,7 +32,7 @@ Under `sudo`, `{env: VAR}` secrets are dropped: pass them through with `sudo --p
 | 0b | `sudo ./dciab services dciab.yaml --state <state>` | Bare servers only: DNS, NTP and HTTP on the bootstrap host |
 | 0c | `sudo ./dciab hypervisors dciab.yaml --state <state>` | Bare servers only (in progress, Proxmox VE): installed over Redfish virtual media ([docs/HYPERVISORS.md](docs/HYPERVISORS.md)) |
 | 1 | `sudo ./dciab seed dciab.yaml --state <state>` | Seed DNS (`registry.<domain>` on the DNS service IPs), seed registry (Zot, read-only, from the payload) and KinD with all CAPI providers ([docs/SEED.md](docs/SEED.md)) |
-| 2 | `sudo ./dciab mgmt dciab.yaml --state <state>` | MGMT built, the vSphere cloud provider (vSphere only), Cilium and the providers installed, CAPI moved into it, its block storage (Longhorn, or an existing class) and StorageClasses installed. It picks up `seed`'s kubeconfig and trust bundle from the state folder, and runs as the folder's owner (root, after `seed`), with the payload's tools first in PATH. Stages: `preflight values cluster control-plane cpi cilium providers move adopt storage`. See [docs/MGMT.md](docs/MGMT.md). Not yet proven on real infrastructure; MGMT's other services and the DNS handoff are still to come |
+| 2 | `sudo ./dciab mgmt dciab.yaml --state <state>` | MGMT built, the vSphere cloud provider (vSphere only), Cilium and the providers installed, CAPI moved into it. MGMT keeps no volumes: its `storage` stage installs nothing unless `spec.storage.block.overrides.mgmt` asks for block storage. It picks up `seed`'s kubeconfig and trust bundle from the state folder, and runs as the folder's owner (root, after `seed`), with the payload's tools first in PATH. Stages: `preflight values cluster control-plane cpi cilium providers move adopt storage`. See [docs/MGMT.md](docs/MGMT.md). Not yet proven on real infrastructure; MGMT's other services and the DNS handoff are still to come |
 | 3 | `./dciab infra` | Not built yet: INFRA with Argo CD, Forgejo, OpenBao, CloudNativePG |
 | 4 | `./dciab platform` | Not built yet: repos pushed; Argo CD and OpenTofu bring up the rest |
 | 5 | `./dciab finalize` | Not built yet: images moved to Artifact Keeper; seed torn down |
@@ -136,7 +138,7 @@ handoff/                 development only: lab test tasks and reports (not part 
 examples/                vsphere.yaml, proxmox.yaml, proxmox-bare.yaml, metal3-cluster.yaml
 tests/                   pytest suite
 CLAUDE.md                how AI agents work in this repo
-docs/                    roadmap, versioning (VERSIONING.md) and decision records (adr/)
+docs/                    the docs index (README.md), config reference (CONFIG.md, generated), glossary, roadmap, versioning and decision records (adr/)
 ```
 
 ## Development

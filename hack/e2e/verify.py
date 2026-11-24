@@ -178,6 +178,16 @@ class Verifier:
             self.expect("JWT issuers", [(j.get("issuer", {}).get("url"), j.get("issuer", {}).get("audiences"))
                                         for j in config.get("jwt", [])],
                         [(i["url"], [i["clientID"]]) for i in auth["issuers"]])
+            # Each issuer's claims and its own prefix (<name>:), and its CA when it has one.
+            self.expect("JWT claim mappings", [
+                (j.get("claimMappings", {}).get("username"), j.get("claimMappings", {}).get("groups"))
+                for j in config.get("jwt", [])], [
+                ({"claim": i.get("usernameClaim", "preferred_username"),
+                  "prefix": i.get("usernamePrefix", i["name"] + ":")},
+                 {"claim": i.get("groupsClaim", "groups"), "prefix": i.get("groupsPrefix", i["name"] + ":")})
+                for i in auth["issuers"]])
+            self.expect("JWT issuer CAs", [j.get("issuer", {}).get("certificateAuthority") for j in config.get("jwt", [])],
+                        [i.get("certificateAuthority") for i in auth["issuers"]])
         else:
             self.expect_true("no authentication-config without issuers", "authentication-config" not in args)
 

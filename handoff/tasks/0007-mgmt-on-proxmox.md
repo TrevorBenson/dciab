@@ -14,7 +14,8 @@ The first run (findings on issue #113) built MGMT but stopped at the move: `clus
 
 - **#126:** `dciab mgmt` moves namespace `cluster-mgmt` (`--namespace`). It then checks that the Cluster and its Machines are on MGMT, unpaused, with none left on the bootstrap cluster, and fails otherwise. `adopt` refuses to run unless the moved Cluster is on MGMT. A Cluster on both clusters stops the run with what to do for that state (`docs/MGMT.md`). If that happens, stop and report it with the message: don't act on it without Trevor.
 - **#112:** a cluster with no worker nodes gets a schedulable control plane (`controlPlaneSchedulable` in the `r1` draft; no taint at init or join). Don't use the `kubectl taint` workaround: step 5 must pass without it. On MGMT, `kubectl get nodes -o jsonpath='{.items[*].spec.taints}'` shows no `control-plane` taint.
-- **#143 and #144 (backups):** the lab config now needs a `spec.backup` block with the site target (`targets.site`, plus `targets.offsite: {mode: none, reason: lab}` and `tiers.infra.target: site`), or `dciab validate` fails. The `move` step also uploads a CAPI export to that target before it moves. The last step, `backups`, refuses to run until `bundle.lock` `images.backup` is pinned: until then, stop with `--until storage` (`docs/BACKUP.md`).
+- **#143 and #144 (backups):** the lab config now needs a `spec.backup` block with the site target (`targets.site`, plus `targets.offsite: {mode: none, reason: lab}` and `tiers.infra.target: site`), or `dciab validate` fails. The `move` step also uploads a CAPI export to that target before it moves. The last step, `backups`, needs `bundle.lock` `images.backup` pinned, which #152 did: run every step, `backups` included (`docs/BACKUP.md`).
+- **#152 (ADR 0008, decision 4a):** MGMT keeps no volumes, so there is no storage to check on MGMT. Without `spec.storage.block.overrides.mgmt` (don't set it), the `storage` step installs nothing and prints `block storage: none`; `spec.storage.block` is INFRA's, which isn't built. The lab config needs no Proxmox CSI token: step 2 gives INFRA Longhorn instead of the example's `proxmox-csi`. In step 6, check that MGMT has no StorageClass, PVC or PV (`kubectl get storageclass,pvc,pv -A` lists none) and no `longhorn-system` namespace. The lab workflow `lab-mgmt.yml` checks the same after each run.
 - `dciab mgmt` no longer prints `the server doesn't have a resource type "cluster"` on a re-run, and prints `== mgmt: <step> done in Ns` after each step; use those for the timings.
 
 The `r1` draft changed, so the old ClusterClasses can't be upgraded in place (`docs/VERSIONING.md`). Start from a **fresh** bootstrap cluster and state: with Trevor's go-ahead, delete the old `dciab-bootstrap` kind cluster and `dciab-registry` container (`~/.dciab/0007/teardown.sh`), and remove `~/.dciab/0007/state/mgmt.kubeconfig` and `mgmt-values.yaml` (the old MGMT's VMs are gone). Keep `state/pki`. Then run every step again. In step 5, record the move check's line (`Cluster mgmt and its 3 Machines are on MGMT ...`). There is no report yet: the first run's findings are only in #113's comments. Create `handoff/reports/0007-mgmt-on-proxmox.md` with the first attempt summarized from those comments (with a link to them), then this attempt after it.
@@ -32,7 +33,7 @@ Read first:
 
 **Out of scope:**
 - DNS for `registry.<domain>`: nothing serves it yet, so MGMT's nodes can't use the seed registry by name. Their containerd and CRI-O fall back to the upstream registries, which this lab reaches. Only the bootstrap cluster pulls through the seed registry (by address).
-- MGMT services other than Longhorn (cert-manager comes with the providers; Metal3, PowerDNS and Kea don't). `dciab mgmt` ends with its `storage` step (Longhorn here; formerly named `longhorn`), which needs the template from task 0006 run 5 (iSCSI and NFS clients).
+- MGMT's services (cert-manager comes with the providers; Metal3, PowerDNS and Kea don't). MGMT keeps no volumes (ADR 0008, decision 4a): its `storage` step (formerly named `longhorn`) installs nothing here.
 - The DNS handoff.
 
 ## Needs
@@ -68,6 +69,7 @@ Keep everything outside the repo in `~/.dciab/0007/` (mode 700).
      - `clusters.mgmt`: 3 control plane nodes, `{cpu: 2, memoryGiB: 4, diskGiB: 25}`, `workerPools: []`
      - `pki.mode: generate-root` (seed creates the CA)
      - the token secret in `{env: DCIAB_PVE_TOKEN}`
+     - `storage.block`: `{provider: longhorn, longhorn: {replicaCount: 2}}`. It is INFRA's, which isn't built, and it needs no Proxmox CSI token, unlike the example's `proxmox-csi`. Don't set `overrides.mgmt`: MGMT keeps no volumes. Remove `clusters.infra.storageIPRanges` and `network.storage`, which the lab doesn't have
    - Fill every other required section with plausible values, including INFRA, which isn't built.
    - Run `./dciab validate ~/.dciab/0007/dciab.yaml`. It must pass.
    - Ask Trevor before reusing or deleting an existing `dciab-bootstrap` kind cluster or `dciab-registry` container.
@@ -90,6 +92,7 @@ Keep everything outside the repo in `~/.dciab/0007/` (mode 700).
    - On MGMT, `kubectl -n cluster-mgmt get cluster mgmt` is Available, and `kubectl get clusterclasses -A` lists the three classes.
    - On the bootstrap cluster, the Cluster is gone.
    - `helm list -A` on MGMT shows the `classes` and `mgmt` releases deployed.
+   - MGMT keeps no volumes: `kubectl get storageclass,pvc,pv -A` lists none, and there is no `longhorn-system` namespace.
    - Delete one MGMT worker or control plane Machine **on MGMT**. MGMT's own controllers replace it.
 7. **Re-run.** Run step 5's command again. Every step must report that nothing changed, and no Machine may roll.
 8. **Clean up.** Ask Trevor whether to keep MGMT for the next task.
