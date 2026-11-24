@@ -15,6 +15,7 @@ _NOT_FIXES = {
     "platform": "keep only the block for platform.type and remove the other one",
     "loadBalancer": "remove bgp: it is only used when mode is bgp",
     "pki": "remove certificate, key and chain: they are only used when mode is import-intermediate",
+    "identity": "remove external, or set provider: external: external is only used with the site's own IdP",
     "workload": "remove overrides: the workload override is complete on its own and takes no overrides",
     "mgmt": "remove overrides: the mgmt override is complete on its own and takes no overrides",
 }

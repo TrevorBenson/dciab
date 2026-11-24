@@ -13,10 +13,14 @@ Site-wide conventions, the same for every cluster:
 - SSH keys: identity.initialAdmins[].sshPublicKey (the break-glass user `dciab`)
 - Metal3 images: served by Ironic at https://ironic.<network.domain>/images/<file name>,
   with a <url>.sha256sum checksum file next to each image
-- workload clusters (not MGMT or INFRA) trust one JWT issuer, Authentik at
-  https://auth.<network.domain>/application/o/kubernetes/ (structured authentication; the
-  class takes a list, for a site IdP next to it), and get the label dciab.io/baseline=true
-  that the baseline add-ons select on
+- JWT issuers (structured authentication) come from spec.identity (lib/dciab_identity): the
+  provider's issuer plus identity.kubernetes.issuers, each for the tiers it serves. With
+  authentik, workload clusters trust https://auth.<network.domain>/application/o/kubernetes/;
+  MGMT and INFRA never trust Authentik, which runs on INFRA (ADR 0008, decision 2). With
+  external, the site's issuer serves every tier, MGMT included. Users and groups carry
+  the issuer's name as their prefix (<name>:). A cluster with no issuer is reached with its
+  certificate kubeconfig only
+- workload clusters get the label dciab.io/baseline=true that the baseline add-ons select on
 - failure domains (ADR 0010): a cluster uses the spec.failureDomains entries for its
   platform (narrowed by its own failureDomains list). With two or more, each worker pool
   becomes one MachineDeployment per domain, <pool>-<domain>, with the replicas split
@@ -39,7 +43,6 @@ import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-OIDC_CLIENT_ID = "kubernetes"
 # The classes' authentication variable takes at most this many issuers (its maxItems, which
 # keeps the API server's CEL cost estimate for the uniqueness rules small).
 MAX_ISSUERS = 4
@@ -188,9 +191,35 @@ def unsupported(site: dict, name: str) -> List[str]:
     return notes
 
 
-def cluster_values(site: dict, name: str, trust_bundle: str, lock: Optional[dict] = None) -> Dict[str, Any]:
+def api_issuers(spec: dict, tier: str, config_dir: Optional[Path] = None) -> List[dict]:
+    """The authentication variable's issuers for a tier's clusters, from spec.identity. Each
+    issuer's users and groups get the prefix <name>:, so a second issuer (the site's IdP
+    during a pivot) can never name the same user or group. config_dir resolves a caBundle
+    {file:} reference; it is needed only when an issuer has one."""
+    from dciab_cluster.credentials import resolve
+    from dciab_identity import tier_issuers
+
+    out = []
+    for i in tier_issuers(spec, tier):
+        entry = {"name": i["name"], "url": i["url"], "clientID": i["clientID"],
+                 "usernameClaim": i["claims"]["username"], "usernamePrefix": i["name"] + ":",
+                 "groupsClaim": i["claims"]["groups"], "groupsPrefix": i["name"] + ":"}
+        if i["caBundle"]:
+            if config_dir is None and "file" in i["caBundle"]:
+                raise ValuesError(f"issuer {i['name']}: its caBundle is a file, and no config folder was given")
+            try:
+                entry["certificateAuthority"] = certificates_only(resolve(i["caBundle"], config_dir or Path(".")))
+            except (KeyError, OSError) as exc:
+                raise ValuesError(f"issuer {i['name']}: can't read its caBundle: {exc}") from exc
+        out.append(entry)
+    return out
+
+
+def cluster_values(site: dict, name: str, trust_bundle: str, lock: Optional[dict] = None,
+                   config_dir: Optional[Path] = None) -> Dict[str, Any]:
     """Values for the capi-cluster chart. trust_bundle is the platform CA, PEM; lock is
-    bundle.lock (default: the one next to lib/)."""
+    bundle.lock (default: the one next to lib/); config_dir is the config's folder, for the
+    issuers' caBundle files."""
     spec = site["spec"]
     lock = lock if lock is not None else load_lock()
     role, c, klass = _cluster(spec, name)
@@ -223,17 +252,9 @@ def cluster_values(site: dict, name: str, trust_bundle: str, lock: Optional[dict
     }
     if role == "workload":
         values["labels"]["dciab.io/baseline"] = "true"
-        # Users and groups carry the issuer's prefix (authentik:alice, authentik:dciab-admins),
-        # so a second issuer (the site's IdP during a pivot) can never collide with them.
-        values["nodes"]["authentication"] = {"issuers": check_issuers([{
-            "name": "authentik",
-            "url": f"https://auth.{domain}/application/o/kubernetes/",
-            "clientID": OIDC_CLIENT_ID,
-            "usernameClaim": "preferred_username",
-            "usernamePrefix": "authentik:",
-            "groupsClaim": "groups",
-            "groupsPrefix": "authentik:",
-        }])}
+    issuers = api_issuers(spec, role, config_dir)
+    if issuers:
+        values["nodes"]["authentication"] = {"issuers": check_issuers(issuers)}
 
     if klass == "metal3":
         _metal3(values, spec, c, domain)

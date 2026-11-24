@@ -637,6 +637,115 @@
               "sshPublicKey": {"type": "string", "pattern": "^(ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp(256|384|521)|sk-ssh-ed25519@openssh\\.com) [A-Za-z0-9+/=]+( .*)?$", "description": "one OpenSSH public key line"}
             }
           }
+        },
+        "provider": {"enum": ["authentik", "external"], "description": "authentik (default): DCiaB's Authentik on INFRA; external: the site's own OIDC issuer, with no Authentik (ADR 0008, decision 3)"},
+        "roles": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "operator": {"type": "string", "minLength": 1, "description": "optional: the group that gets the operator role (edit on Kubernetes)"},
+            "viewer": {"type": "string", "minLength": 1, "description": "optional: the group that gets the viewer role (view on Kubernetes)"}
+          },
+          "description": "optional groups for the operator and viewer platform roles; admin is always adminGroup"
+        },
+        "consumers": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {"enum": ["kubernetes", "argocd", "forgejo", "grafana", "netbox", "openbao", "awx", "terrakube", "opensearch", "openvox", "proxmox", "vcenter"]},
+          "description": "what logs in through the identity provider. Default: every platform service, not the hypervisors; add proxmox or vcenter to let DCiaB change the hypervisors' identity source"
+        },
+        "kubernetes": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["issuers"],
+          "properties": {
+            "issuers": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 4,
+              "items": {"$ref": "#/$defs/jwtIssuer"},
+              "description": "JWT issuers the Kubernetes APIs trust in addition to the provider's, for example the site's IdP while people move to it"
+            }
+          }
+        },
+        "external": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["issuer", "claims", "clients"],
+          "properties": {
+            "name": {"$ref": "#/$defs/issuerName", "description": "the issuer's short name, the prefix of its users and groups on Kubernetes (<name>:). Default: site"},
+            "issuer": {"type": "string", "pattern": "^https://", "maxLength": 512, "description": "the site's OIDC issuer URL"},
+            "claims": {"$ref": "#/$defs/jwtClaims"},
+            "caBundle": {"$ref": "#/$defs/secretRef", "description": "optional: the CA of the issuer's TLS certificate (PEM), when the platform CA doesn't cover it"},
+            "clients": {
+              "type": "object",
+              "propertyNames": {"enum": ["kubernetes", "argocd", "forgejo", "grafana", "netbox", "openbao", "awx", "terrakube", "opensearch", "proxmox"]},
+              "additionalProperties": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["clientID"],
+                "properties": {
+                  "clientID": {"type": "string", "minLength": 1, "maxLength": 256},
+                  "clientSecret": {"$ref": "#/$defs/secretRef"}
+                }
+              },
+              "description": "one client per OIDC consumer, created by the site's IdP team: its client ID and, except for the public kubernetes client, a secret reference"
+            },
+            "ldap": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["url", "bindDN", "bindPassword", "userBaseDN", "groupBaseDN"],
+              "properties": {
+                "url": {"type": "string", "pattern": "^ldaps://", "description": "an ldaps:// URL"},
+                "bindDN": {"type": "string", "minLength": 1},
+                "bindPassword": {"$ref": "#/$defs/secretRef"},
+                "userBaseDN": {"type": "string", "minLength": 1},
+                "groupBaseDN": {"type": "string", "minLength": 1}
+              },
+              "description": "optional: the site's directory, for SSSD on hosts (openvox) and vCenter's identity source"
+            },
+            "vcenterFederation": {"type": "boolean", "description": "true: the site federates vCenter to its IdP itself, so vcenter in consumers needs no ldap"}
+          }
+        }
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"provider": {"const": "external"}}, "required": ["provider"]},
+          "then": {"required": ["external"]},
+          "else": {"not": {"required": ["external"]}}
+        }
+      ]
+    },
+    "issuerName": {
+      "type": "string",
+      "pattern": "^[a-z0-9]([-a-z0-9]{0,60}[a-z0-9])?$",
+      "description": "1-62 lowercase letters, digits and hyphens"
+    },
+    "jwtClaims": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["username", "groups"],
+      "properties": {
+        "username": {"type": "string", "minLength": 1, "maxLength": 256, "description": "the claim that holds the user name, such as preferred_username"},
+        "groups": {"type": "string", "minLength": 1, "maxLength": 256, "description": "the claim that holds the groups"}
+      }
+    },
+    "jwtIssuer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "url", "clientID"],
+      "properties": {
+        "name": {"$ref": "#/$defs/issuerName", "description": "short name, the prefix of its users and groups on Kubernetes (<name>:)"},
+        "url": {"type": "string", "pattern": "^https://", "maxLength": 512},
+        "clientID": {"type": "string", "minLength": 1, "maxLength": 256, "description": "the audience its ID tokens carry"},
+        "claims": {"$ref": "#/$defs/jwtClaims", "description": "optional; default preferred_username and groups"},
+        "caBundle": {"$ref": "#/$defs/secretRef", "description": "optional: the CA of the issuer's TLS certificate (PEM)"},
+        "tiers": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {"enum": ["mgmt", "infra", "workload"]},
+          "description": "which clusters' APIs trust it. Default: every tier, or only workload clusters for DCiaB's Authentik (auth.<network.domain>), which MGMT and INFRA never trust"
         }
       }
     },

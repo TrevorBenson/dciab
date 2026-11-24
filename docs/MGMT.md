@@ -11,6 +11,10 @@ $ sudo ./dciab mgmt dciab.yaml --state <state> --until values
 
 When MGMT has no worker nodes (`workerPools: []`), its control plane nodes run its workloads: cert-manager, the Cluster API controllers, and Longhorn when `overrides.mgmt` gives MGMT block storage. Their nodes then carry no `node-role.kubernetes.io/control-plane:NoSchedule` taint. See [charts/capi-cluster](../charts/capi-cluster/README.md#clusters-without-workers).
 
+## Logins on MGMT
+
+MGMT never trusts Authentik, which runs on INFRA. Its API server trusts the site's OIDC issuer when the config names one (`provider: external`, or `identity.kubernetes.issuers`), and the `identity` step binds the platform roles to that issuer's groups. Otherwise MGMT is reached with the certificate kubeconfig only, and the step says so. See [IDENTITY.md](IDENTITY.md).
+
 ## MGMT keeps no volumes
 
 MGMT's state is the Cluster API objects in etcd, and its backups are the etcd snapshots and CAPI exports on the site target ([BACKUP.md](BACKUP.md)). Nothing DCiaB runs on MGMT asks for a volume, so MGMT gets no block storage by default ([ADR 0008](adr/0008-provider-pattern.md), decision 4a): the `storage` step installs no Longhorn, no CSI driver and no StorageClass, and prints `block storage: none`. `spec.storage.block` describes INFRA's storage. MGMT needs no Proxmox CSI token, vCenter CSI Secret or Longhorn settings.

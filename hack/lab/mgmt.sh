@@ -5,7 +5,8 @@
 #   hack/lab/mgmt.sh config TEMPLATE_NAME       write dciab.yaml for the lab and validate it
 #   hack/lab/mgmt.sh seed                       dciab seed (root), then again: nothing may change
 #   hack/lab/mgmt.sh mgmt                       dciab mgmt (root), each step line timed
-#   hack/lab/mgmt.sh checks                     MGMT manages itself and keeps no volumes; replace a control plane Machine
+#   hack/lab/mgmt.sh checks                     MGMT manages itself, keeps no volumes and trusts the site's
+#                                               OIDC issuer with the platform roles; replace a control plane Machine
 #   hack/lab/mgmt.sh rerun                      dciab mgmt again: no step changes, no Machine rolls
 #   hack/lab/mgmt.sh down                       delete MGMT, the bootstrap cluster and what seed added
 #
@@ -85,6 +86,13 @@ s["identity"]["initialAdmins"] = [{"username": "ci", "email": "ci@lab.invalid", 
 # INFRA's block storage (INFRA isn't built here): Longhorn needs no token of its own. MGMT
 # gets none (ADR 0008, decision 4a); checks verifies that.
 s["storage"] = {"block": {"provider": "longhorn", "longhorn": {"replicaCount": 2}}}
+# MGMT's API trusts a site OIDC issuer (provider external, ADR 0008 decision 3), so checks can
+# verify the AuthenticationConfiguration on a real API server and the role bindings. Nothing
+# answers at the issuer's URL: the API server must load the file and keep serving anyway.
+s["identity"].update(provider="external", consumers=["kubernetes"], roles={"viewer": "dciab-lab-viewers"},
+                     external={"issuer": "https://sso.lab.invalid/realms/dciab",
+                               "claims": {"username": "preferred_username", "groups": "groups"},
+                               "clients": {"kubernetes": {"clientID": "dciab-lab"}}})
 s["backup"]["targets"]["site"] = {"url": "nfs://%s:/exports/longhorn" % net["gateway"]}
 print(yaml.safe_dump(c, sort_keys=False))
 PY
@@ -123,6 +131,7 @@ checks() {
   sudo env "KUBECONFIG=$STATE/mgmt.kubeconfig" helm list -A | tee "$LAB_DIR/helm.txt"
   grep -q '^classes' "$LAB_DIR/helm.txt" && grep -q '^mgmt' "$LAB_DIR/helm.txt"
   no_volumes
+  oidc
   local machine start
   machine="$(sk mgmt -n cluster-mgmt get machines --no-headers | awk 'NR==1 {print $1}')"
   [[ -n "$machine" ]] || lab_die "MGMT holds no Machines"
@@ -145,6 +154,32 @@ no_volumes() {
     ! sk mgmt get namespace "$ns" >/dev/null 2>&1 || lab_die "MGMT has namespace $ns: a storage driver was installed"
   done
   echo "MGMT keeps no volumes: no StorageClass, PVC, PV or storage driver"
+}
+
+# MGMT's API server reads the AuthenticationConfiguration with the site issuer, keeps serving
+# though nothing answers at the issuer's URL, and dciab mgmt's identity step bound the platform
+# roles to the issuer's prefixed groups (site:<group>).
+oidc() {
+  local auth=/etc/kubernetes/authentication/config.yaml issuer=https://sso.lab.invalid/realms/dciab admins
+  admins="$(python3 -c 'import sys, yaml; print(yaml.safe_load(open(sys.argv[1]))["spec"]["identity"]["adminGroup"])' "$CONFIG")"
+  grep -q "identity: MGMT's API trusts:" "$LAB_DIR/mgmt1.log" || lab_die "dciab mgmt's identity step didn't report MGMT's issuer"
+  sk mgmt -n kube-system get pods -l component=kube-apiserver -o json \
+    | jq -e --arg a "--authentication-config=$auth" '.items | length == 3 and all(.[]; .spec.containers[0].command | index($a))' >/dev/null \
+    || lab_die "not every kube-apiserver on MGMT runs with --authentication-config=$auth"
+  sk mgmt -n cluster-mgmt get kcp -o json \
+    | jq -e --arg p "$auth" --arg i "$issuer" '.items[0].spec.kubeadmConfigSpec.files[] | select(.path == $p) | .content | contains($i) and contains("site:")' >/dev/null \
+    || lab_die "MGMT's control plane has no AuthenticationConfiguration with $issuer and the site: prefix"
+  sk mgmt get --raw /readyz >/dev/null || lab_die "MGMT's API isn't ready with the site issuer configured"
+  sk mgmt get clusterrolebinding dciab-admin-site dciab-viewer-site -o wide
+  [[ "$(sk mgmt auth can-i '*' '*' --as=site:ci --as-group="site:$admins" || true)" == yes ]] \
+    || lab_die "site:$admins isn't cluster-admin on MGMT"
+  [[ "$(sk mgmt auth can-i list pods -A --as=site:v --as-group=site:dciab-lab-viewers || true)" == yes ]] \
+    || lab_die "site:dciab-lab-viewers can't view MGMT"
+  [[ "$(sk mgmt auth can-i delete pods -A --as=site:v --as-group=site:dciab-lab-viewers || true)" == no ]] \
+    || lab_die "site:dciab-lab-viewers can change MGMT"
+  [[ "$(sk mgmt auth can-i list pods -A --as=dciab-lab-viewers --as-group=dciab-lab-viewers || true)" == no ]] \
+    || lab_die "an unprefixed group got the viewer role"
+  echo "MGMT trusts $issuer; the platform roles are bound to its site: groups"
 }
 
 rerun() {
@@ -174,5 +209,5 @@ down() {
 case "${1:-}" in
   payload) payload ;; config) shift; config "$@" ;; seed) seed ;; mgmt) mgmt ;; checks) checks ;;
   rerun) rerun ;; down) down ;;
-  *) sed -n '2,11p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2; exit 2 ;;
+  *) sed -n '2,12p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2; exit 2 ;;
 esac
