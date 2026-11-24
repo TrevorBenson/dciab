@@ -1,7 +1,7 @@
 ---
 id: "0011"
 title: Stand up the self-hosted lab runner VM on Proxmox (Rocky 10 bootc, ephemeral JIT runner)
-status: open
+status: done
 runner: workstation
 depends: ["0006"]
 report: handoff/reports/0011-lab-runner.md
