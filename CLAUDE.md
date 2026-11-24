@@ -19,6 +19,10 @@ DCiaB is built by a **planner** (Claude in a cloud session: writes the code and 
 - **Before pushing, run:**
   - `python3 -m pytest -q`
   - `shellcheck` on the shell scripts CI lists in `.github/workflows/ci.yml`
+- **Test in CI, on the right runner.** Every change adds or updates the CI that proves it, so the result is a pass or fail in GitHub Actions, not an agent session.
+  - **Hosted runners** (`.github/workflows/ci.yml`): unit tests, schema and validate, chart renders, the kind e2e, the seed and services jobs. Anything that needs no real infrastructure.
+  - **The self-hosted lab runner** (`runs-on: [self-hosted, dciab-lab]`): anything that needs real infrastructure. Add or extend a reusable lab workflow (`lab-template.yml`, `lab-cluster.yml`, `lab-mgmt.yml`, or a new `lab-*.yml` called from `lab.yml`), following the rules `tests/test_lab_runner.py` checks: the `dciab-lab` concurrency group, actions pinned by commit SHA, `contents: read`, and cleanup of what the job creates. Lab workflows run from `main` only, so the PR says which lab run proves it after merge.
+  - **Handoff tasks** only for what CI can't do: human gates, physical media, hardware the lab doesn't have, or a one-off spike (`handoff/README.md`).
 
 ## Where things are
 

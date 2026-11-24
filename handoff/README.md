@@ -99,6 +99,8 @@ A finding from a lab run reaches the product docs only as a general fact. For ex
 
 ## Rules for the planner
 
+- **CI first.** A test that can run unattended belongs in CI, not in a task: hosted runners for anything without real infrastructure, and a lab workflow on the self-hosted runner (`[self-hosted, dciab-lab]`, dispatched from `lab.yml`) for anything that needs the lab. Write a task only for what CI can't do: a human gate (approving destruction, physical media, Secure Boot enrollment), hardware the lab doesn't have, or a one-off spike. A task that needs the lab should, where it can, say "dispatch lab workflow X and report its result" instead of listing manual steps.
+
 - Tasks only cover what exists on `main` when they're merged. Anything missing is named in the task as out of scope, not left for the runner to work out.
 - Keep tasks short: steps that can be checked, and explicit stop points. Put background in docs and link it.
 - A task that needs new code ships in the same PR as that code, or after it.
