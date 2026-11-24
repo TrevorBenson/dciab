@@ -7,6 +7,7 @@ import json
 import subprocess
 import sys
 import tarfile
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -185,16 +186,22 @@ def test_binaries_checked_and_helm_extracted(tmp_path):
             info = tarfile.TarInfo(member)
             info.size = len(member)
             tar.addfile(info, io.BytesIO(member.encode()))
+    zbuf = io.BytesIO()
+    with zipfile.ZipFile(zbuf, "w") as zf:
+        zf.writestr("rclone-v1.76.0-linux-amd64/rclone", b"rclone")
+        zf.writestr("rclone-v1.76.0-linux-amd64/README.txt", b"readme")
     blobs = {"kind": b"kind", "kubectl": b"kubectl", "helm": buf.getvalue(), "clusterctl": b"clusterctl",
              "oras": obuf.getvalue(), "age": abuf.getvalue(), "age-keygen": abuf.getvalue(),
-             "cosign": b"cosign"}
+             "cosign": b"cosign", "rclone": zbuf.getvalue()}
     sha = {k: hashlib.sha256(v).hexdigest() for k, v in blobs.items()}
     lock = lock_with(bootstrapAppliance={"toolChecksums": {"kind": sha["kind"], "kubectl": sha["kubectl"],
                                                           "helm": sha["helm"]}},
                      binarySHA256={"clusterctl-linux-amd64": sha["clusterctl"],
                                    "oras-linux-amd64.tar.gz": sha["oras"],
                                    "age-linux-amd64.tar.gz": sha["age"],
-                                   "cosign-linux-amd64": sha["cosign"]})
+                                   "cosign-linux-amd64": sha["cosign"],
+                                   "rclone-linux-amd64.zip": sha["rclone"]})
+    lock["tools"]["rclone"] = "v1.76.0"
     urls = {url: name for name, url, _, _ in archive.binary_list(lock)}
 
     def fetch(url, dest):
@@ -204,6 +211,7 @@ def test_binaries_checked_and_helm_extracted(tmp_path):
     assert (tmp_path / "bin" / "oras").read_bytes() == b"oras"
     assert (tmp_path / "bin" / "age-keygen").read_bytes() == b"age/age-keygen"
     assert (tmp_path / "bin" / "cosign").read_bytes() == b"cosign"
+    assert (tmp_path / "bin" / "rclone").read_bytes() == b"rclone"
     assert (tmp_path / "bin" / "kind").stat().st_mode & 0o111
     lock["binarySHA256"]["clusterctl-linux-amd64"] = "1" * 64
     with pytest.raises(archive.ArchiveError, match="clusterctl"):

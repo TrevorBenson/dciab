@@ -24,7 +24,8 @@ What each phase builds, against the component list in [COMPONENTS.md](COMPONENTS
 - [x] `r1` storage networks on VM nodes (`network.storage`): one NIC per network, MTU, multipath modules
 - [ ] Failure domains, next: Metal3 storage NICs, bonds and VLANs; `validate --live` capacity, vSphere tag and Proxmox shared-storage checks; multipath packages in the node image; BareMetalHost topology labels; Longhorn zone settings
 - [x] Backups, first part ([BACKUP.md](BACKUP.md), ADR 0009): `spec.backup` (site and off-site targets, tiers, schedules and retention) with `validate`'s tier rule; Longhorn recurring snapshots and backups on MGMT
-- [ ] Backups, next: MGMT etcd snapshots and CAPI exports; the off-site copier and removable exports; the S3 shim for NFS-only sites; `validate --live` target checks
+- [x] Backups, MGMT: hourly etcd snapshots and daily CAPI exports (CronJobs), CAPI exports before and after the move, all age-encrypted to the recipients and a backup key; `dciab status` shows the last success of each; restore runbook (lab drill: handoff task 0012). The backup image (`images/backup`) is built by CI, pinned once published
+- [ ] Backups, next: the off-site copier and removable exports; the S3 shim for NFS-only sites; `validate --live` target checks; INFRA and workload clusters' backups; snapshots before control plane changes; restore drills in CI
 - [ ] Production NTP on MGMT (`spec.time`, ADR 0010 decision 9)
 - [x] ClusterClass end-to-end test: CAPI and all providers on kind, one Cluster per class, generated objects verified (no infrastructure)
 - [x] Node template recipe: image-builder with a Rocky 10 Proxmox target (`images/node/`)

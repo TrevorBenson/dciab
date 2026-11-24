@@ -100,3 +100,32 @@ def test_proxmox_control_plane_placement_is_a_note(tmp_path):
     shared = fake([("proxmoxmachines", 0, "cp-a=pve01\ncp-b=pve01\ncp-c=pve02\n")])
     assert "pve01 holds more than one etcd member" in cli.check_placement(site, tmp_path, shared)["detail"]
     assert cli.check_placement({"spec": {"platform": {"type": "vsphere"}}}, tmp_path, shared) is None
+
+
+def test_backups_shows_the_last_success_of_each_kind(tmp_path):
+    import json
+    from datetime import datetime, timezone
+    now = datetime(2026, 11, 23, 12, 0, tzinfo=timezone.utc)
+    assert cli.check_backups(tmp_path, fake([]), now) is None
+    (tmp_path / "capi-backup").mkdir()
+    (tmp_path / "capi-backup" / "LAST").write_text("20261123T100000Z after-move\n")
+    assert cli.check_backups(tmp_path, fake([]), now)["detail"] == "pivot CAPI export (after-move) 2h ago"
+    (tmp_path / "mgmt.kubeconfig").write_text("x")
+    jobs = {"items": [
+        {"metadata": {"name": "etcd-snapshot"},
+         "status": {"lastScheduleTime": "2026-11-23T11:00:00Z", "lastSuccessfulTime": "2026-11-23T11:01:00Z"}},
+        {"metadata": {"name": "capi-export"},
+         "status": {"lastScheduleTime": "2026-11-23T02:30:00Z", "lastSuccessfulTime": "2026-11-22T02:31:00Z"}}]}
+    answers = [("get cronjobs", 0, json.dumps(jobs)),
+               ("backups.longhorn.io", 0, "2026-11-23T01:00:05Z\n2026-11-22T01:00:04Z\n")]
+    c = cli.check_backups(tmp_path, fake(answers), now)
+    assert c["status"] == "down" and "Failing: capi-export" in c["detail"]
+    assert "etcd-snapshot 59m ago" in c["detail"] and "longhorn 10h ago" in c["detail"]
+    jobs["items"][1]["status"]["lastSuccessfulTime"] = "2026-11-23T02:32:00Z"
+    answers[0] = ("get cronjobs", 0, json.dumps(jobs))
+    assert cli.check_backups(tmp_path, fake(answers), now)["status"] == "ok"
+    # A run still within its first hour isn't a failure yet.
+    jobs["items"][0]["status"]["lastScheduleTime"] = "2026-11-23T11:30:00Z"
+    answers[0] = ("get cronjobs", 0, json.dumps(jobs))
+    assert cli.check_backups(tmp_path, fake(answers), now)["status"] == "ok"
+    assert cli.check_backups(tmp_path, fake([("get cronjobs", 0, '{"items": []}')]), now)["status"] == "down"

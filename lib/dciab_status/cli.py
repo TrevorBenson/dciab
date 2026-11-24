@@ -10,6 +10,7 @@ import ssl
 import subprocess
 import sys
 import urllib.request
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable, Dict, List, Optional
 
@@ -180,9 +181,78 @@ def check_placement(site: dict, state: Path, runner: Runner = run) -> Optional[D
     return result("placement", "note", detail)
 
 
+BACKUP_NS = "dciab-backup"
+# How long a scheduled backup may run before a schedule with no success after it counts as failed.
+BACKUP_GRACE = timedelta(hours=1)
+
+
+def _when(text: str) -> Optional[datetime]:
+    try:
+        return datetime.strptime(text, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+    except (TypeError, ValueError):
+        return None
+
+
+def _age(when: datetime, now: datetime) -> str:
+    secs = max(0, int((now - when).total_seconds()))
+    if secs < 3600:
+        return f"{secs // 60}m ago"
+    if secs < 2 * 86400:
+        return f"{secs // 3600}h ago"
+    return f"{secs // 86400}d ago"
+
+
+def check_backups(state: Path, runner: Runner = run, now: Optional[datetime] = None) -> Optional[Dict[str, str]]:
+    """The last successful backup of each kind, where it's cheap to read: MGMT's backup
+    CronJobs (etcd snapshots, CAPI exports), Longhorn's newest backup, and the CAPI export
+    dciab mgmt took around the pivot. Down when a CronJob's last scheduled run, older than an
+    hour, has no success after it (ADR 0009, decision 11)."""
+    now = now or datetime.now(timezone.utc)
+    parts, down = [], []
+    last = state / "capi-backup" / "LAST"
+    if last.is_file():
+        words = last.read_text().split()
+        try:
+            when = datetime.strptime(words[0], "%Y%m%dT%H%M%SZ").replace(tzinfo=timezone.utc) if words else None
+        except ValueError:
+            when = None
+        if when:
+            parts.append(f"pivot CAPI export ({' '.join(words[1:]) or 'dciab mgmt'}) {_age(when, now)}")
+    kc = state / "mgmt.kubeconfig"
+    if kc.is_file():
+        r = kubectl(kc, ["-n", BACKUP_NS, "get", "cronjobs", "-o", "json"], runner)
+        jobs = []
+        if r.returncode == 0:
+            try:
+                jobs = json.loads(r.stdout or "{}").get("items", [])
+            except ValueError:
+                jobs = []
+        for job in jobs:
+            name, st = job["metadata"]["name"], job.get("status") or {}
+            ok, scheduled = _when(st.get("lastSuccessfulTime")), _when(st.get("lastScheduleTime"))
+            parts.append(f"{name} {_age(ok, now) if ok else 'never succeeded'}")
+            if scheduled and (ok is None or ok < scheduled) and now - scheduled > BACKUP_GRACE:
+                down.append(name)
+        lh = kubectl(kc, ["-n", "longhorn-system", "get", "backups.longhorn.io",
+                          "-o", "jsonpath={range .items[*]}{.status.backupCreatedAt}{\"\\n\"}{end}"], runner)
+        if lh.returncode == 0:
+            times = [t for t in (_when(x.strip()) for x in lh.stdout.split()) if t]
+            if times:
+                parts.append(f"longhorn {_age(max(times), now)}")
+        if r.returncode == 0 and not jobs:
+            down.append("no backup CronJobs on MGMT (dciab mgmt's backups step)")
+    if not parts and not down:
+        return None
+    detail = "; ".join(parts) or "none yet"
+    if down:
+        return result("backups", "down", f"{detail}. Failing: {', '.join(down)}")
+    return result("backups", "ok", detail)
+
+
 def collect(site: dict, state: Path, runner: Runner = run) -> List[Dict[str, str]]:
     checks = [check_services(site, runner), check_pki(state, runner), check_registry(site, state, runner),
-              check_bootstrap(state, runner), check_mgmt(state, runner), check_placement(site, state, runner)]
+              check_bootstrap(state, runner), check_mgmt(state, runner), check_placement(site, state, runner),
+              check_backups(state, runner)]
     return [c for c in checks if c is not None]
 
 
