@@ -123,8 +123,9 @@ def port_open(address: str, port: int, timeout: float = 3.0) -> bool:
 
 def pve_api(address: str, port: int = 8006, timeout: float = 5.0) -> bool:
     """Whether the Proxmox VE API answers on address:port: GET /api2/json/version over TLS gives
-    a version (200 with data.version) or the API daemon's own 401 (Server: pve-api-daemon). Any
-    other answer, or none, is False: an open port alone is not an installed Proxmox VE.
+    a version (200 whose JSON body has data.version and repoid, with or without the daemon's
+    Server header) or the API daemon's own 401 (Server: pve-api-daemon). Any other answer, or
+    none, is False: an open port alone is not an installed Proxmox VE.
 
     The certificate isn't checked: a fresh install has a self-signed one, nothing is sent but
     the GET, and a False here never resets a host on its own (the other checks still apply)."""
@@ -143,9 +144,11 @@ def pve_api(address: str, port: int = 8006, timeout: float = 5.0) -> bool:
         return False
     finally:
         conn.close()
-    if server.startswith("pve-api-daemon"):
-        return resp.status in (200, 401)
+    if resp.status == 401:
+        # Only the API daemon's own 401 counts: any login page answers 401.
+        return server.startswith("pve-api-daemon")
     if resp.status == 200:
+        # The body must be Proxmox VE's version answer, whatever the Server header says.
         try:
             data = json.loads(body).get("data")
         except (ValueError, AttributeError):

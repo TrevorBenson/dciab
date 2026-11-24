@@ -779,6 +779,25 @@ def test_no_boot_options_and_no_record_is_held_without_first_install(fake_bmc, t
     assert not [c for c in f.calls if c[0] in CHANGES] and cli.read_install(tmp_path / "installs", "pve01") is None
 
 
+def test_an_empty_boot_options_collection_counts_as_none_listed(fake_bmc, tmp_path):
+    # The collection exists but has no members: nothing to tell a new server from a lost record.
+    f = fake_bmc(power="Off", boot_options=[PXE_OPT], overrides={SYS + "/BootOptions": {"Members": []}})
+    assert f.bmc.os_boot_entries() is None
+    failed, held, _, out = guard(f, tmp_path)
+    assert (failed, held) == ([], ["pve01"]) and "lists no boot options" in out and "--first-install pve01" in out
+    assert not [c for c in f.calls if c[0] in CHANGES]
+    failed, held, _, out = guard(f, tmp_path, first_install=["pve01"])
+    assert (failed, held) == ([], []) and f.power == "On"
+
+
+def test_network_only_boot_options_dont_need_first_install(fake_bmc, tmp_path):
+    f = fake_bmc(power="Off", boot_options=[PXE_OPT, {"Id": "0002", "DisplayName": "UEFI HTTPv4",
+                                                     "UefiDevicePath": "MAC(b8ca3a010301)/IPv4(0.0.0.0)/Uri()"}])
+    assert f.bmc.os_boot_entries() == []
+    failed, held, _, _ = guard(f, tmp_path)
+    assert (failed, held) == ([], []) and f.power == "On"
+
+
 def test_first_install_installs_a_host_with_no_evidence_either_way(fake_bmc, tmp_path):
     f = fake_bmc(power="Off", boot_options=[])
     failed, held, _, out = guard(f, tmp_path, first_install=["pve01"])
@@ -809,6 +828,12 @@ def test_an_os_boot_entry_holds_a_host_without_a_record_even_with_first_install(
     ("UEFI OS", "", True),
     ("Windows Boot Manager", "HD(2,GPT)/\\EFI\\Microsoft\\Boot\\bootmgfw.efi", True),
     ("Integrated RAID", "PciRoot(0x0)/Pci(0x2,0x0)/Scsi(0x0,0x0)/HD(1,GPT,ef)", True),
+    ("UEFI OS (Virtual Disk)", "", True),                                   # OS name beats "virtual"
+    ("Ubuntu USB", "", True),                                               # OS name beats "usb"
+    ("UEFI USB", "PciRoot(0x0)/USB(0x1,0x0)/HD(1,GPT,ab)", True),           # a bootable stick holds
+    ("USB Stick", "PciRoot(0x0)/USB(0x1,0x0)", False),                      # no OS evidence
+    ("Rocky Linux PXE", "MAC(b8ca3a010301)", False),                        # network stays out
+    ("Linux HTTP Boot", "MAC(b8ca3a010301)/IPv4(0.0.0.0)/Uri(http://x/shimx64.efi)", False),
 ])
 def test_os_entry_classification(name, path, os_entry):
     assert redfish.is_os_entry(name, path) is os_entry
@@ -1002,9 +1027,12 @@ PVE_VERSION = json.dumps({"data": {"version": "9.2.0", "release": "9.2", "repoid
     (200, PVE_VERSION, {}, True),                                        # behind a proxy that rewrites Server
     (401, b"Unauthorized", {}, False),                                   # some other service's login
     (200, b"<html>It works</html>", {}, False),                          # a web server on 8006
+    (200, b"<html>proxy</html>", {"Server": "pve-api-daemon/3.0"}, False), # the header alone isn't enough
+    (200, b"not json", {"Server": "pve-api-daemon/3.0"}, False),
     (200, json.dumps({"data": {"version": "1"}}).encode(), {}, False),   # JSON, but not Proxmox VE's shape
     (404, b"", {}, False),
-], ids=["pve-401", "pve-200", "pve-200-proxied", "other-401", "html", "other-json", "404"])
+], ids=["pve-401", "pve-200", "pve-200-proxied", "other-401", "html", "pve-header-html", "pve-header-not-json",
+        "other-json", "404"])
 def test_pve_api_needs_a_proxmox_answer_not_an_open_port(cert, status, body, headers, expected):
     srv = FakeHTTPS(cert, status, body, dict(headers))
     try:

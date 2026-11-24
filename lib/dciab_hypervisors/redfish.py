@@ -25,19 +25,30 @@ class RedfishError(Exception):
 # \EFI\BOOT\BOOTX64.EFI (after an NVRAM reset or a board swap, for example).
 OS_HINTS = ("proxmox", "uefi os", "windows boot manager", "rocky", "red hat", "redhat", "centos", "almalinux",
             "fedora", "debian", "ubuntu", "suse", "sles", "vmware", "esxi", "grub", "shim", "linux")
-# Entries that never load an OS from a local disk, even when their path mentions a partition.
-NOT_OS_HINTS = ("pxe", "http boot", "httpv", "network", "ipv4", "ipv6", "cd", "dvd", "usb", "virtual",
-                "shell", "setup", "diagnostic", "lifecycle", "boot manager menu", "efi shell")
+# Names of network boot entries. A network entry never loads an installed OS from a local disk,
+# so it never holds a host, whatever else its name says.
+NETWORK_HINTS = ("pxe", "http boot", "httpv", "network", "ipv4", "ipv6")
+# Device path nodes of a network boot.
+NETWORK_PATH = ("mac(", "ipv4(", "ipv6(", "uri(")
 
 
 def is_os_entry(name: str, device_path: str) -> bool:
-    """Whether a UEFI boot option may load an installed OS from a local disk."""
-    text = f"{name} {device_path}".lower()
+    """Whether a UEFI boot option may load an installed OS, so the host must be held.
+
+    Explicit OS evidence wins over any other word in the name: Proxmox VE, a name in OS_HINTS
+    (so "UEFI OS (Virtual Disk)" counts), or a device path into a disk partition (HD(...)), so
+    a USB-named entry on a partition, such as a bootable stick, counts too and holds the host.
+    Only unambiguous network entries are left out: a network name or network path nodes, with
+    no HD(...) in the path. Anything else (CD/DVD, shell, setup, an unnamed entry with no disk
+    path) doesn't count."""
+    lname, lpath = name.lower(), device_path.lower()
+    text = f"{lname} {lpath}"
     if "proxmox" in text:
         return True
-    if any(h in name.lower() for h in NOT_OS_HINTS) and "hd(" not in device_path.lower():
+    on_disk = "hd(" in lpath
+    if not on_disk and (any(n in lpath for n in NETWORK_PATH) or any(h in lname for h in NETWORK_HINTS)):
         return False
-    return "hd(" in device_path.lower() or any(h in text for h in OS_HINTS)
+    return on_disk or any(h in text for h in OS_HINTS)
 
 
 class Bmc:
@@ -176,20 +187,22 @@ class Bmc:
         return dict(self.state(), attached=bool(slot.get("Inserted")) and slot.get("Image") == image)
 
     def os_boot_entries(self) -> Optional[List[str]]:
-        """Names of UEFI boot options that may load an installed OS from a disk; [] when none
-        does. None when the BMC offers no BootOptions. Reads only.
+        """Names of UEFI boot options that may load an installed OS (is_os_entry); [] when the
+        BMC lists options and none does. None when the BMC lists no boot options at all: no
+        BootOptions collection, or one with no members, so nothing can be told either way and
+        the caller needs --first-install. Reads only.
 
-        An option counts when it names a known OS loader (Proxmox VE's \\EFI\\proxmox, or the
-        names in OS_HINTS, the generic "UEFI OS" entry firmware makes after an NVRAM reset
-        included) or its device path points into a disk partition (HD(...)). Network, CD/DVD,
-        USB, shell and setup entries don't count. Raises RedfishError when the list can't be
-        read in full or a member makes no sense: the caller must then assume an OS may be there."""
+        Raises RedfishError when the list can't be read in full or a member makes no sense: the
+        caller must then assume an OS may be there."""
         coll = (self.system().get("Boot") or {}).get("BootOptions")
         if not coll:
             return None
         try:
+            members = self.get(coll["@odata.id"]).get("Members")
+            if members is None or members == []:
+                return None
             found = []
-            for member in self.get(coll["@odata.id"]).get("Members", []):
+            for member in members:
                 opt = self.get(member["@odata.id"])
                 if is_os_entry(str(opt.get("DisplayName") or ""), str(opt.get("UefiDevicePath") or "")):
                     found.append(str(opt.get("DisplayName") or opt.get("Id") or member["@odata.id"]))

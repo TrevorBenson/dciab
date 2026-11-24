@@ -49,12 +49,12 @@ Fixed value: `filesystem = "ext4"`, which gives the `local` and `local-lvm` stor
 
 | Evidence | To install anyway |
 | --- | --- |
-| The Proxmox VE API answers on the host's address: `GET /api2/json/version` over TLS returns a Proxmox VE version, or the API daemon's own 401 (`Server: pve-api-daemon`). Another service on port 8006 doesn't count | `--reinstall <host>` |
+| The Proxmox VE API answers on the host's address: `GET /api2/json/version` over TLS returns Proxmox VE's version answer (JSON with `data.version`), or the API daemon's own 401 (`Server: pve-api-daemon`). Another service on port 8006 doesn't count, even one that sends the daemon's `Server` header with some other body | `--reinstall <host>` |
 | An install is recorded in `<state>/installs/<host>.json` (any file there, even an unreadable one), powered off or not. A recorded install still in progress, powered on with its ISO attached, isn't reset again: the run goes on to `wait` | `--reinstall <host>` |
 | No record, but SSH (22) answers | `--reinstall <host>` |
-| No record, but the BMC lists a UEFI boot option that may load an installed OS: Proxmox VE (`\EFI\proxmox`), a known OS name, the generic "UEFI OS" entry firmware creates after an NVRAM reset or a board swap, or any entry whose device path points into a disk partition (`HD(...)`). Network, CD/DVD, USB, shell and setup entries don't count | `--reinstall <host>` |
+| No record, but the BMC lists a UEFI boot option that may load an installed OS: Proxmox VE (`\EFI\proxmox`), a known OS name, the generic "UEFI OS" entry firmware creates after an NVRAM reset or a board swap, or any entry whose device path points into a disk partition (`HD(...)`). OS evidence wins over other words in the name: "UEFI OS (Virtual Disk)" counts, and so does a USB-named entry on a partition, such as a bootable stick left in the server. Only network entries (PXE, HTTP boot) never count; CD/DVD, shell and setup entries count only with such evidence | `--reinstall <host>` |
 | No record, and the BMC's boot options can't be read in full | `--reinstall <host>` |
-| No record, and the BMC lists no boot options at all: a new server and one whose state folder was lost (or a different `--state`) look the same | `--first-install <host>`, or restore the host's record in `installs/` |
+| No record, and the BMC lists no boot options at all (no boot options collection, or an empty one): a new server and one whose state folder was lost (or a different `--state`) look the same | `--first-install <host>`, or restore the host's record in `installs/` |
 
 `--first-install` never overrides the other rows: it only answers the question the last row can't. A new server whose firmware lists only network or CD entries needs neither flag. `--reinstall` wipes the host whatever the evidence; the run says which evidence it overrode.
 
