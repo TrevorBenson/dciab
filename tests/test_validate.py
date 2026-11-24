@@ -1,20 +1,20 @@
 import os
 import subprocess
 
-from conftest import ROOT, errors, load_example, warnings
+from conftest import ROOT, errors, load_example, longhorn_example, warnings
 
 
 # --- the shipped examples ---------------------------------------------------------
 
 # Warnings an example is meant to show on every run (ADR 0010): a site that isn't highly
 # available says so, and so does a Proxmox control plane that r1 can't spread.
-# Longhorn on a vSAN datastore or on Ceph replicates twice, and Longhorn on Proxmox VMs
-# shares the root disk: the examples say so until they move to their platform's CSI driver.
+# proxmox-bare runs Longhorn, for its backups, on VM root disks (CAPMOX gives no data disk),
+# which warns for MGMT and INFRA.
+# metal3-cluster runs Longhorn on MGMT and INFRA VMs on a vSAN datastore, which replicates
+# twice: the example keeps it to show Longhorn on VMs with data disks.
 EXPECTED_WARNINGS = {
-    "vsphere": {"spec.storage.block.longhorn.replicaCount"},
     "metal3-cluster": {"spec.storage.block.longhorn.replicaCount"},
-    "proxmox": {"spec.failureDomains.domains", "spec.storage.block.longhorn.replicaCount",
-                "spec.clusters.mgmt", "spec.clusters.infra"},
+    "proxmox": {"spec.failureDomains.domains"},
     "proxmox-bare": {"spec.failureDomains.notHighlyAvailable", "spec.time.serveLocalClock",
                      "spec.clusters.mgmt", "spec.clusters.infra"},
 }
@@ -218,14 +218,14 @@ def test_ironic_ip_must_be_in_mgmt_pool(site):
 
 
 def test_s3_target_needs_credentials(site):
-    doc = load_example("vsphere")
+    doc = longhorn_example("vsphere")
     del doc["spec"]["storage"]["block"]["longhorn"]["backupCredentials"]
     _, report = site.validate(doc)
     assert errors(report, "spec.storage.block.longhorn.backupCredentials")
 
 
 def test_nfs_target_rejects_credentials(site):
-    doc = load_example("proxmox")
+    doc = longhorn_example("proxmox")
     doc["spec"]["storage"]["block"]["longhorn"]["backupCredentials"] = {"file": "./secrets/longhorn-s3.env"}
     _, report = site.validate(doc)
     assert "remove it" in errors(report, "spec.storage.block.longhorn.backupCredentials")[0]["fix"]

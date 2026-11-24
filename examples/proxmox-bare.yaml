@@ -92,7 +92,8 @@ spec:
 
   storage:
     block:
-      provider: longhorn                 # on the root disk: CAPMOX gives VMs no second disk yet
+      provider: longhorn                 # on the root disk: CAPMOX gives VMs no second disk yet (validate warns)
+                                         # Longhorn, not proxmox-csi, for its backups to the site's NAS
       longhorn:
         replicaCount: 2                  # local disks on one host: survives a node VM, not the host
         backupTarget: nfs://nas01.dc3.example.net:/exports/longhorn

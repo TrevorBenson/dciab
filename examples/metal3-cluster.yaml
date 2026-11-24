@@ -79,7 +79,7 @@ spec:
 
   storage:
     block:
-      provider: longhorn
+      provider: longhorn                 # MGMT and INFRA on vSphere VMs, each node with a Longhorn disk
       longhorn:
         replicaCount: 3
         backupTarget: s3://longhorn@minio.dc2.example.net/dc2

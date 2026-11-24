@@ -303,7 +303,7 @@ def test_vsphere_storage_ci_values_come_from_the_example():
 
 def test_a_cluster_without_workers_gets_a_schedulable_control_plane():
     """#112: MGMT with workerPools: [] must be able to run cert-manager and the rest."""
-    doc = load_example("proxmox")
+    doc = load_example("proxmox-bare")
     assert cluster_values(doc, "mgmt", CA)["controlPlane"]["schedulable"] is True
     assert "schedulable" not in cluster_values(doc, "infra", CA)["controlPlane"]
     for pool in doc["spec"]["clusters"]["infra"]["workerPools"]:

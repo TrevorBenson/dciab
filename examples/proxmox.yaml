@@ -82,10 +82,13 @@ spec:
 
   storage:
     block:
-      provider: longhorn                 # on the root disk: CAPMOX gives VMs no second disk yet
-      longhorn:
-        replicaCount: 2                  # VM root disks go with a replaced node, so Longhorn keeps its own copies
-        backupTarget: nfs://nas01.dc3.example.net:/exports/longhorn
+      provider: proxmox-csi              # volumes are VM disks on a Proxmox storage; Ceph replicates them
+      proxmoxCSI:
+        storage: ceph-vm
+        shared: true                     # Ceph RBD: every PVE node reaches it (validate --live checks)
+        credentials:                     # its own token: the privileges in docs/PROXMOX.md
+          tokenID: csi@pve!dciab
+          tokenSecret: {env: DCIAB_PVE_CSI_TOKEN}
 
   pki:
     mode: import-intermediate

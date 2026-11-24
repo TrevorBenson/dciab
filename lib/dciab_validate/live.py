@@ -151,15 +151,17 @@ def check_proxmox(spec: dict, config_dir: FsPath, timeout: float) -> Results:
     return r
 
 
-def check_token_privileges(px: dict, get, r: Results, base: Path) -> None:
+def check_token_privileges(px: dict, get, r: Results, base: Path, want=None, token_id: Optional[str] = None,
+                           what: str = "docs/PROXMOX.md") -> None:
     """The token has exactly what docs/PROXMOX.md lists: nothing missing, nothing that could
-    change permissions or the hosts."""
+    change permissions or the hosts. want and token_id default to the CAPMOX token's."""
     from .proxmox_privs import compare, grants
-    want = grants(px)
-    user = px["credentials"]["tokenID"].split("!", 1)[0]
+    want = grants(px) if want is None else want
+    token_id = token_id or px["credentials"]["tokenID"]
+    user = token_id.split("!", 1)[0]
     if user == "root@pam":
         r.warn(base + ("credentials", "tokenID"), "the token belongs to root@pam",
-               "use a dedicated user with the privileges in docs/PROXMOX.md (pveum commands there)")
+               f"use a dedicated user with the privileges in {what} (pveum commands there)")
     have = {}
     for path in [g.path for g in want] + ["/"]:
         status, data = get(f"/access/permissions?path={quote(path, safe='')}")
@@ -171,12 +173,80 @@ def check_token_privileges(px: dict, get, r: Results, base: Path) -> None:
     missing, broad = compare(want, {k: v for k, v in have.items() if k != "/"}, root=have.get("/"))
     for line in missing:
         r.error(base + ("credentials", "tokenID"), f"the token lacks {line}",
-                "grant exactly the roles and ACLs in docs/PROXMOX.md, to both the user and the token (privsep=1)")
+                f"grant exactly the roles and ACLs in {what}, to both the user and the token (privsep=1)")
     for line in broad:
         r.warn(base + ("credentials", "tokenID"), f"the token can do more than DCiaB needs: {line}",
-               "remove those privileges; docs/PROXMOX.md lists exactly what is needed")
+               f"remove those privileges; {what} lists exactly what is needed")
     if not missing:
-        r.note(f"token {px['credentials']['tokenID']} has every privilege docs/PROXMOX.md lists")
+        r.note(f"token {token_id} has every privilege {what} lists")
+
+
+def proxmox_csi_blocks(spec: dict) -> List[Tuple[Path, dict]]:
+    """(path, proxmoxCSI settings) for each place the config gives the Proxmox CSI plugin's."""
+    block = spec["storage"].get("block")
+    if not block:
+        return []
+    out = []
+    if "proxmoxCSI" in block:
+        out.append((("spec", "storage", "block", "proxmoxCSI"), block["proxmoxCSI"]))
+    for tier, over in (block.get("overrides") or {}).items():
+        if "proxmoxCSI" in over:
+            out.append((("spec", "storage", "block", "overrides", tier, "proxmoxCSI"), over["proxmoxCSI"]))
+    return out
+
+
+def check_proxmox_csi(spec: dict, base: Path, csi: dict, config_dir: FsPath, timeout: float) -> Results:
+    """The Proxmox CSI plugin's own token: accepted, its storage on every node and shared as the
+    config says, and exactly the privileges docs/PROXMOX.md lists for it."""
+    from .proxmox_privs import csi_grants
+    r = Results()
+    px = spec["platform"]["proxmox"]
+    creds = csi["credentials"]
+    secret = read_secret(creds["tokenSecret"], config_dir)
+    client = HttpsClient(px["url"], Trust(fingerprint=px["tlsFingerprint"]), timeout)
+    auth = {"Authorization": f"PVEAPIToken={creds['tokenID']}={secret}"}
+
+    def get(path: str):
+        resp = client.request("GET", "/api2/json" + path, auth)
+        return resp.status, (resp.json().get("data") if resp.status == 200 else None)
+
+    what = "docs/PROXMOX.md (Proxmox CSI plugin)"
+    try:
+        status, _ = get("/version")
+        if status in (401, 403):
+            r.error(base + ("credentials", "tokenID"), f"the API rejected token {creds['tokenID']} (HTTP {status})",
+                    f"check the token ID and the secret in {_secret_path(creds['tokenSecret'])}")
+            return r
+        missing_on, unreadable = [], []
+        for node in px["nodes"]:
+            status, stores = get(f"/nodes/{quote(node)}/storage")
+            if status != 200:
+                unreadable.append(node)
+            elif csi["storage"] not in {s.get("storage") for s in stores or []}:
+                missing_on.append(node)
+        if unreadable:
+            r.warn(base + ("storage",), "the token can't list the storage on " + ", ".join(unreadable),
+                   f"grant Datastore.Audit as {what} lists, so DCiaB can check the storage")
+        if missing_on:
+            r.error(base + ("storage",), f"{csi['storage']}: no such storage on " + ", ".join(missing_on),
+                    "use a storage the nodes that run Kubernetes VMs have")
+        # Whether the storage is shared decides the zone rule: the config says, Proxmox knows.
+        status, conf = get(f"/storage/{quote(csi['storage'])}") if not missing_on else (None, None)
+        if status is None:
+            pass   # no such storage: reported above
+        elif status == 200 and conf is not None:
+            shared = bool(int(conf.get("shared") or 0))
+            if shared != csi["shared"]:
+                r.error(base + ("shared",), f"{str(csi['shared']).lower()}, but Proxmox has {csi['storage']} as "
+                        + ("shared" if shared else "not shared (node-local)"),
+                        f"set shared: {str(shared).lower()}, or fix the storage's shared flag in Proxmox")
+        else:
+            r.warn(base + ("shared",), f"the token can't read storage {csi['storage']} (HTTP {status})",
+                   f"grant Datastore.Audit as {what} lists, so DCiaB can check shared")
+        check_token_privileges(px, get, r, base, csi_grants(csi), creds["tokenID"], what)
+    except ProbeError as exc:
+        r.error(("spec", "platform", "proxmox", "url"), str(exc), "check the network path to the Proxmox API")
+    return r
 
 
 # -- vSphere ------------------------------------------------------------------------------
@@ -528,6 +598,9 @@ def tasks(spec: dict, config_dir: FsPath, timeout: float) -> List[Tuple[str, Cal
     plat = spec["platform"]
     if plat["type"] == "proxmox":
         out.append(("Proxmox API", lambda: check_proxmox(spec, config_dir, timeout)))
+        for path, csi in proxmox_csi_blocks(spec):
+            out.append((f"Proxmox CSI token {csi['credentials']['tokenID']}",
+                        lambda p=path, c=csi: check_proxmox_csi(spec, p, c, config_dir, timeout)))
     else:
         out.append(("vSphere API", lambda: check_vsphere(spec, config_dir, timeout)))
     hosts: List[Tuple[Path, dict]] = []
