@@ -34,13 +34,13 @@ def test_replica_count_comes_from_the_config():
 def test_nfs_target_has_no_credentials_secret(tmp_path):
     site = longhorn_example("proxmox")
     v = lv.site_values(site)
-    assert v["defaultBackupStore"] == {"backupTarget": "nfs://nas01.dc3.example.net:/exports/longhorn"}
+    assert v["defaultBackupStore"] == {"backupTarget": "nfs://nas01.dc3.example.net:/exports/dciab-backup"}
     assert lv.secret(site, "longhorn-system", tmp_path) is None
 
 
 def test_s3_target_is_translated_and_names_the_secret():
     v = lv.site_values(longhorn_example("vsphere"))
-    assert v["defaultBackupStore"] == {"backupTarget": "s3://longhorn@us-east-1/dc1",
+    assert v["defaultBackupStore"] == {"backupTarget": "s3://dciab-backup@us-east-1/dc1",
                                        "backupTargetCredentialSecret": lv.SECRET_NAME}
 
 
@@ -56,7 +56,7 @@ def test_backup_target(target, want):
 
 def test_s3_secret_reads_the_credentials_file_and_adds_the_endpoint(tmp_path):
     (tmp_path / "secrets").mkdir()
-    (tmp_path / "secrets" / "longhorn-s3.env").write_text(
+    (tmp_path / "secrets" / "backup-site.env").write_text(
         "# S3\nAWS_ACCESS_KEY_ID=AKID\nexport AWS_SECRET_ACCESS_KEY='sk'\n")
     m = lv.secret(longhorn_example("vsphere"), "longhorn-system", tmp_path)
     assert m["metadata"] == {"name": lv.SECRET_NAME, "namespace": "longhorn-system",
@@ -67,7 +67,7 @@ def test_s3_secret_reads_the_credentials_file_and_adds_the_endpoint(tmp_path):
 
 def test_s3_secret_from_an_environment_variable(monkeypatch, tmp_path):
     site = longhorn_example("vsphere")
-    site["spec"]["storage"]["block"]["longhorn"]["backupCredentials"] = {"env": "LH_S3"}
+    site["spec"]["backup"]["targets"]["site"]["credentials"] = {"env": "LH_S3"}
     monkeypatch.setenv("LH_S3", "AWS_ACCESS_KEY_ID=a\nAWS_SECRET_ACCESS_KEY=b\nAWS_ENDPOINTS=http://s3:8333\n")
     assert decoded(lv.secret(site, "ns", tmp_path)) == {
         "AWS_ACCESS_KEY_ID": "a", "AWS_SECRET_ACCESS_KEY": "b", "AWS_ENDPOINTS": "http://s3:8333"}
@@ -75,7 +75,7 @@ def test_s3_secret_from_an_environment_variable(monkeypatch, tmp_path):
 
 def test_s3_secret_needs_both_keys(tmp_path):
     (tmp_path / "secrets").mkdir()
-    (tmp_path / "secrets" / "longhorn-s3.env").write_text("AWS_ACCESS_KEY_ID=a\n")
+    (tmp_path / "secrets" / "backup-site.env").write_text("AWS_ACCESS_KEY_ID=a\n")
     with pytest.raises(ValueError, match="AWS_SECRET_ACCESS_KEY"):
         lv.secret(longhorn_example("vsphere"), "ns", tmp_path)
 

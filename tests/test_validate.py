@@ -219,16 +219,16 @@ def test_ironic_ip_must_be_in_mgmt_pool(site):
 
 def test_s3_target_needs_credentials(site):
     doc = longhorn_example("vsphere")
-    del doc["spec"]["storage"]["block"]["longhorn"]["backupCredentials"]
+    del doc["spec"]["backup"]["targets"]["site"]["credentials"]
     _, report = site.validate(doc)
-    assert errors(report, "spec.storage.block.longhorn.backupCredentials")
+    assert errors(report, "spec.backup.targets.site.credentials")
 
 
 def test_nfs_target_rejects_credentials(site):
     doc = longhorn_example("proxmox")
-    doc["spec"]["storage"]["block"]["longhorn"]["backupCredentials"] = {"file": "./secrets/longhorn-s3.env"}
+    doc["spec"]["backup"]["targets"]["site"]["credentials"] = {"file": "./secrets/longhorn-s3.env"}
     _, report = site.validate(doc)
-    assert "remove it" in errors(report, "spec.storage.block.longhorn.backupCredentials")[0]["fix"]
+    assert "remove it" in errors(report, "spec.backup.targets.site.credentials")[0]["fix"]
 
 
 def test_missing_secret_file(site):

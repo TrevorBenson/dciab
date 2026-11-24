@@ -133,7 +133,11 @@ def _class(name: str, provisioner: str, parameters: Dict[str, str], *, binding: 
 
 def longhorn_classes(settings: dict) -> List[dict]:
     """replicated: the configured replica count, spread over nodes. local: one replica on the
-    node that uses the volume (strict-local), bound once the pod is scheduled."""
+    node that uses the volume (strict-local), bound once the pod is scheduled. Each class but
+    replicated names the recurring-job group of its volumes (replicated's are in Longhorn's
+    default group)."""
+    from dciab_backup import class_selector   # imports this module
+
     out = []
     for name in CLASSES:
         local = name.startswith("local")
@@ -143,6 +147,10 @@ def longhorn_classes(settings: dict) -> List[dict]:
             "staleReplicaTimeout": "30",
             "fsType": "ext4",
         }
+        # The recurring-job group its volumes join (ADR 0009, decision 6; lib/dciab_backup).
+        selector = class_selector(name)
+        if selector:
+            params["recurringJobSelector"] = selector
         out.append(_class(name, PROVISIONERS["longhorn"], params,
                           binding="WaitForFirstConsumer" if local else "Immediate"))
     return out

@@ -17,13 +17,15 @@ from datetime import datetime, timezone
 from pathlib import Path as FsPath
 from typing import Dict, List, Optional, Tuple
 
+import dciab_backup as bk
 import dciab_storage as st
 from dciab_cluster.values import place_pools, usable_domains
 
 from . import netutil as nu
 from .findings import ERROR, WARNING, Finding, Path, format_path
 
-SECRET_KEYS = {"password", "rootPassword", "tokenSecret", "backupCredentials", "certificate", "key", "chain", "caBundle"}
+SECRET_KEYS = {"password", "rootPassword", "tokenSecret", "backupCredentials", "certificate", "key", "chain", "caBundle",
+               "credentials", "readCredentials"}
 RESERVED_CLUSTER_NAMES = {"mgmt", "infra"}
 # CAs below an imported intermediate: OpenBao's SPIFFE intermediate, the SPIRE root CA and
 # each child SPIRE CA (ADR 0004 and ADR 0005).
@@ -92,6 +94,7 @@ class Checker:
         self.check_failure_domains()
         self.check_storage_networks()
         self.check_storage()
+        self.check_backup()
         self.check_resilience()
         self.check_template_version()
         self.check_pki_intermediate()
@@ -136,7 +139,7 @@ class Checker:
         if isinstance(node, dict):
             for key, value in node.items():
                 p = path + (key,)
-                if key in SECRET_KEYS and isinstance(value, dict) and len(value) == 1:
+                if key in SECRET_KEYS and isinstance(value, dict) and len(value) == 1 and set(value) <= {"file", "env"}:
                     self._check_secret_ref(p, value)
                 else:
                     self.check_secrets(value, p)
@@ -656,6 +659,101 @@ class Checker:
                            "give the Proxmox CSI driver a token of its own (docs/PROXMOX.md), so each holds only "
                            "the privileges it uses")
 
+    # -- backups (ADR 0009) --------------------------------------------------------------
+
+    def check_backup(self) -> None:
+        if bk.legacy(self.spec):
+            self._check_backup_legacy()
+            return
+        b = self.spec["backup"]
+        bpath = ("spec", "backup")
+        site = b["targets"]["site"]
+        spath = bpath + ("targets", "site")
+        self._check_target_url(spath + ("url",), spath + ("credentials",), site["url"], "credentials" in site,
+                               "credentials")
+        if "caBundle" in site and not site["url"].startswith("s3://"):
+            self.error(spath + ("caBundle",), "set for an NFS target", "remove it: only an S3 endpoint has a CA")
+        if site["url"].startswith("nfs://"):
+            self.notes.append("backup: the site target is NFS, so OpenBao and CloudNativePG will write to an S3 shim "
+                              "on MGMT backed by it (ADR 0009, decision 4a); it comes with those services")
+        tiers = b.get("tiers") or {}
+        tpath = bpath + ("tiers",)
+        if bk.tier_target(self.spec, "mgmt") != "site":
+            self.error(tpath + ("mgmt", "target"), bk.tier_target(self.spec, "mgmt"),
+                       "use site: MGMT always backs up to the site target, never to INFRA's object store, as "
+                       "restoring INFRA needs MGMT (ADR 0009, decision 1)")
+        self._check_offsite(bpath + ("targets", "offsite"), bk.offsite(self.spec))
+        off = bk.offsite(self.spec)
+        if off["mode"] == "none" and bk.tier_target(self.spec, "infra") == "objectStore":
+            where = tpath + ("infra", "target") if "target" in (tiers.get("infra") or {}) else tpath
+            self.error(where, "INFRA backs up to its own object store, and there is no off-site copy",
+                       "set tiers.infra.target: site, so INFRA's critical set has a copy off INFRA's hardware, or "
+                       "give an off-site target (ADR 0009, decision 1)")
+        key = (b.get("key") or {}).get("publicKey")
+        if key and key in self.spec["bootstrap"]["recipients"]:
+            self.error(bpath + ("key", "publicKey"), "one of spec.bootstrap.recipients",
+                       "use a key of its own: the backup key's private half lives in OpenBao and the recovery "
+                       "bundle, a recipient's never does (ADR 0009, decision 10)")
+        self._check_workload_backups(tiers.get("workloads") or {})
+
+    def _check_offsite(self, opath: Path, off: dict) -> None:
+        mode = off["mode"]
+        if mode == "none":
+            self.warn(opath + ("mode",), f"none ({off['reason']})",
+                      "nothing survives losing the site; give an off-site target, or mode: removable to carry "
+                      "an encrypted export away (ADR 0009, decision 8)")
+            return
+        if mode == "copy":
+            self._check_target_url(opath + ("url",), opath + ("credentials",), off["url"], "credentials" in off,
+                                   "credentials")
+            if off["url"] == self.spec["backup"]["targets"]["site"]["url"]:
+                self.error(opath + ("url",), "the site target", "give a target at another location")
+            if off["url"].startswith("nfs://"):
+                self.warn(opath + ("url",), "an NFS off-site target",
+                          "NFS can't be made write-once: a compromised copier could delete the off-site copy. "
+                          "Prefer S3 with object lock or versioning (ADR 0009, decision 8)")
+            for k in ("readCredentials", "caBundle"):
+                if k in off and not off["url"].startswith("s3://"):
+                    self.error(opath + (k,), "set for an NFS target", "remove it: it applies to S3 only")
+            self.notes.append("backup: the off-site copier (rclone, ADR 0009, decision 8) isn't built yet; until it is, "
+                              "nothing is copied off site")
+        if mode == "removable":
+            self.notes.append(f"backup: off site by removable media every {off['everyDays']} days; the export "
+                              "(dciab backup export) isn't built yet")
+        if off["retentionDays"] < bk.OFFSITE_RETENTION_DAYS:
+            self.warn(opath + ("retentionDays",), str(off["retentionDays"]),
+                      f"the off-site store keeps one retention for everything, and OpenBao's snapshots plan on "
+                      f"{bk.OFFSITE_RETENTION_DAYS} days off site (ADR 0009, decisions 4 and 8); use at least that "
+                      "unless the site's policy says otherwise")
+
+    def _check_workload_backups(self, wl: dict) -> None:
+        if not self.spec.get("workloadClusters"):
+            return
+        t = bk.tiers(self.spec)["workloads"]
+        etcd = "on" if t["etcdSnapshots"] else "off"
+        vols = "every volume of the replicated classes" if t["volumeBackups"] else "only volumes their tenants opt in"
+        self.notes.append(f"backup: workload clusters get etcd snapshots ({etcd}) and volume backups ({vols}) to "
+                          f"{t['target']} once DCiaB builds workload clusters")
+        if not t["etcdSnapshots"]:
+            self.warn(("spec", "backup", "tiers", "workloads", "etcdSnapshots"), "false",
+                      "a workload cluster without etcd snapshots can only be rebuilt, not restored; leave it on "
+                      "unless tenants back up their clusters themselves (ADR 0009, decision 2)")
+
+    def _check_backup_legacy(self) -> None:
+        target = bk.site_target(self.spec)
+        if target is None:
+            self.error(("spec", "backup"), "missing",
+                       "add spec.backup with targets.site (the site's S3 bucket or NFS export) and targets.offsite "
+                       "(ADR 0009): MGMT's etcd snapshots and CAPI exports need a target")
+            return
+        import yaml
+
+        new = {"backup": {"targets": {"site": target, "offsite": {"mode": "copy", "url": "<another location>"}}}}
+        self.warn(("spec", "backup"), "missing: the backup target is read from MGMT's Longhorn settings",
+                  "move it to spec.backup (ADR 0009): " +
+                  yaml.safe_dump(new, sort_keys=False, default_flow_style=None).strip().replace("\n", "; ") +
+                  ". Without it there is no off-site copy")
+
     def _check_proxmox_csi_zones(self, tier: str, csi: dict) -> None:
         """The plugin finds VMs by UUID, but a volume on node-local storage carries its PVE node
         as topology, matched against the nodes' topology.kubernetes.io/zone label (ADR 0010: the
@@ -678,20 +776,37 @@ class Checker:
             self.notes.append(f"{tier}: Proxmox CSI volumes on {csi['storage']} stay on the PVE node they were made on; "
                               "a pod that uses one runs only there")
 
-    def _check_longhorn(self, tier: str, lh: dict) -> None:
-        target = lh["backupTarget"]
-        tpath = self._block_path(tier, "longhorn", "backupTarget")
-        cpath = self._block_path(tier, "longhorn", "backupCredentials")
-        if target.startswith("s3://"):
-            if not re.match(r"^s3://[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]@[A-Za-z0-9.-]+(:\d+)?(/\S*)?$", target):
-                self.error(tpath, target, "use s3://<bucket>@<endpoint>[/<path>]")
-            if "backupCredentials" not in lh:
-                self.error(cpath, "missing", "add backupCredentials: {file: <path>} holding the S3 access key and secret")
+    def _check_target_url(self, tpath: Path, cpath: Path, url: str, has_creds: bool, cred_key: str) -> None:
+        """An s3:// or nfs:// target, with credentials for S3 and none for NFS."""
+        if url.startswith("s3://"):
+            if not bk.S3_URL.match(url):
+                self.error(tpath, url, "use s3://<bucket>@<endpoint>[/<path>]")
+            if not has_creds:
+                self.error(cpath, "missing", f"add {cred_key}: {{file: <path>}} holding the S3 access key and secret")
         else:
-            if not re.match(r"^nfs://[A-Za-z0-9.-]+:/\S*$", target):
-                self.error(tpath, target, "use nfs://<server>:/<export>")
-            if "backupCredentials" in lh:
+            if not bk.NFS_URL.match(url):
+                self.error(tpath, url, "use nfs://<server>:/<export>")
+            if has_creds:
                 self.error(cpath, "set for an NFS target", "remove it: NFS targets take no credentials")
+
+    def _check_longhorn(self, tier: str, lh: dict) -> None:
+        if "backupTarget" in lh:
+            tpath = self._block_path(tier, "longhorn", "backupTarget")
+            cpath = self._block_path(tier, "longhorn", "backupCredentials")
+            self._check_target_url(tpath, cpath, lh["backupTarget"], "backupCredentials" in lh, "backupCredentials")
+            if not bk.legacy(self.spec):
+                site = self.spec["backup"]["targets"]["site"]["url"]
+                if tier == "mgmt" and lh["backupTarget"] != site:
+                    self.error(tpath, f"{lh['backupTarget']}, not the site target {site}",
+                               "remove it: MGMT's Longhorn always backs up to spec.backup.targets.site (ADR 0009, "
+                               "decision 1)")
+                else:
+                    self.warn(tpath, "the old place of the backup target, ignored while spec.backup is set",
+                              f"remove backupTarget and backupCredentials: {tier}'s Longhorn backs up to "
+                              f"spec.backup.tiers.{bk.backup_tier(tier)}'s target (ADR 0009)")
+        elif "backupCredentials" in lh:
+            self.error(self._block_path(tier, "longhorn", "backupCredentials"), "set without backupTarget",
+                       "remove it: the backup target and its credentials are in spec.backup.targets")
         replicas = lh["replicaCount"]
         rpath = self._block_path(tier, "longhorn", "replicaCount")
         if replicas == 1:

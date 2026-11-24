@@ -82,15 +82,21 @@ spec:
       provider: longhorn                 # MGMT and INFRA on vSphere VMs, each node with a Longhorn disk
       longhorn:
         replicaCount: 3
-        backupTarget: s3://longhorn@minio.dc2.example.net/dc2
-        backupCredentials: {file: ./secrets/longhorn-s3.env}
       overrides:                         # [opt] workload clusters don't inherit block; without this, tenants bring their own
         workload:                        # opt in: Longhorn on the bare-metal hosts' disks
           provider: longhorn
           longhorn:
             replicaCount: 2
-            backupTarget: s3://longhorn@minio.dc2.example.net/dc2-tenants
-            backupCredentials: {file: ./secrets/longhorn-s3.env}
+
+  backup:                                # ADR 0009; docs/BACKUP.md
+    targets:
+      site:                              # the site's own S3, outside DCiaB's clusters: MGMT always backs up here
+        url: s3://dciab-backup@minio.dc2.example.net/dc2
+        credentials: {file: ./secrets/backup-site.env}
+      offsite:
+        mode: site-replicated            # the site's S3 already replicates to another location
+    tiers:
+      workloads: {target: site}          # tenants' etcd snapshots, and the volumes they opt in
 
   pki:
     mode: generate-root

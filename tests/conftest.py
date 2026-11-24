@@ -15,7 +15,7 @@ sys.path.insert(0, str(ROOT / "lib"))
 from dciab_validate import cli  # noqa: E402
 
 SECRET_FILES = [
-    "vsphere.pw", "longhorn-s3.env",
+    "vsphere.pw", "longhorn-s3.env", "backup-site.env", "backup-offsite.env",
     "pki/intermediate.crt", "pki/intermediate.key", "pki/chain.pem",
     "bmc/ca.pem", *[f"bmc/r760-0{i}" for i in range(1, 8)],
     "hv/root", "bmc/pve01", "bmc/pve02", "bmc/pve03",
@@ -46,11 +46,11 @@ def load_example(name: str) -> dict:
 
 
 # Longhorn settings for examples whose block storage is an array driver, so Longhorn tests
-# can use them: an S3 target on vSphere, NFS on Proxmox.
+# can use them. The backup target is the example's spec.backup site target: S3 on vSphere,
+# NFS on Proxmox.
 LONGHORN = {
-    "vsphere": {"replicaCount": 3, "backupTarget": "s3://longhorn@minio.dc1.example.net/dc1",
-                "backupCredentials": {"file": "./secrets/longhorn-s3.env"}},
-    "proxmox": {"replicaCount": 2, "backupTarget": "nfs://nas01.dc3.example.net:/exports/longhorn"},
+    "vsphere": {"replicaCount": 3},
+    "proxmox": {"replicaCount": 2},
 }
 
 

@@ -90,6 +90,14 @@ spec:
           tokenID: csi@pve!dciab
           tokenSecret: {env: DCIAB_PVE_CSI_TOKEN}
 
+  backup:                                # ADR 0009; docs/BACKUP.md
+    targets:
+      site:
+        url: nfs://nas01.dc3.example.net:/exports/dciab-backup
+      offsite:
+        mode: removable                  # no second location: an encrypted export to a disk the site carries away
+        everyDays: 7
+
   pki:
     mode: import-intermediate
     commonName: DC3 Platform Intermediate CA

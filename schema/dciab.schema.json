@@ -77,6 +77,7 @@
           }
         },
         "storage": {"$ref": "#/$defs/storage"},
+        "backup": {"$ref": "#/$defs/backup"},
         "pki": {"$ref": "#/$defs/pki"},
         "identity": {"$ref": "#/$defs/identity"},
         "baremetal": {"$ref": "#/$defs/baremetal"},
@@ -406,13 +407,127 @@
       ],
       "description": "merged over block for this tier's clusters: a provider and its settings block, or a settings block for block's provider. A settings block is complete, as under block"
     },
+    "backupTarget": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["url"],
+      "properties": {
+        "url": {"type": "string", "pattern": "^(s3|nfs)://.+", "description": "s3://<bucket>@<endpoint>[/<path>] or nfs://<server>:/<export>"},
+        "credentials": {"$ref": "#/$defs/secretRef", "description": "S3 only: KEY=VALUE lines with AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY"},
+        "caBundle": {"$ref": "#/$defs/secretRef", "description": "S3 only, optional: the private CA that signed the endpoint's certificate, in PEM"}
+      }
+    },
+    "offsiteTarget": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode"],
+      "properties": {
+        "mode": {"enum": ["copy", "site-replicated", "removable", "none"], "description": "copy: to S3 or NFS at another location; site-replicated: the site target already replicates off site; removable: media the site carries away; none: no off-site copy, with a reason"},
+        "url": {"type": "string", "pattern": "^(s3|nfs)://.+", "description": "copy: the off-site target, s3://<bucket>@<endpoint>[/<path>] or nfs://<server>:/<export>"},
+        "credentials": {"$ref": "#/$defs/secretRef", "description": "copy, S3: credentials that can write but not delete"},
+        "readCredentials": {"$ref": "#/$defs/secretRef", "description": "copy, S3, optional: read-only credentials for restores"},
+        "caBundle": {"$ref": "#/$defs/secretRef"},
+        "retentionDays": {"type": "integer", "minimum": 1, "description": "what the off-site store keeps, in days; default 90"},
+        "everyDays": {"type": "integer", "minimum": 1, "description": "removable: how often to export, in days; default 7"},
+        "reason": {"type": "string", "minLength": 3, "description": "none: why this site has no off-site copy"}
+      },
+      "allOf": [
+        {"if": {"properties": {"mode": {"const": "copy"}}, "required": ["mode"]}, "then": {"description": "with mode copy, give url (and credentials for S3); everyDays and reason belong to other modes", "required": ["url"], "not": {"anyOf": [{"required": ["everyDays"]}, {"required": ["reason"]}]}}},
+        {"if": {"properties": {"mode": {"const": "site-replicated"}}, "required": ["mode"]}, "then": {"description": "with mode site-replicated, the site target's own replication is the copy: give no url, credentials, everyDays or reason", "not": {"anyOf": [{"required": ["url"]}, {"required": ["credentials"]}, {"required": ["readCredentials"]}, {"required": ["caBundle"]}, {"required": ["everyDays"]}, {"required": ["reason"]}]}}},
+        {"if": {"properties": {"mode": {"const": "removable"}}, "required": ["mode"]}, "then": {"description": "with mode removable, give at most everyDays (and retentionDays): no url, credentials or reason", "not": {"anyOf": [{"required": ["url"]}, {"required": ["credentials"]}, {"required": ["readCredentials"]}, {"required": ["caBundle"]}, {"required": ["reason"]}]}}},
+        {"if": {"properties": {"mode": {"const": "none"}}, "required": ["mode"]}, "then": {"description": "with mode none, give a reason, and nothing else", "required": ["reason"], "not": {"anyOf": [{"required": ["url"]}, {"required": ["credentials"]}, {"required": ["readCredentials"]}, {"required": ["caBundle"]}, {"required": ["everyDays"]}, {"required": ["retentionDays"]}]}}}
+      ]
+    },
+    "backupKeep": {
+      "type": "object",
+      "additionalProperties": false,
+      "minProperties": 1,
+      "properties": {
+        "hourly": {"type": "integer", "minimum": 1, "description": "the newest N"},
+        "daily": {"type": "integer", "minimum": 1, "description": "the newest of each day, for N days"},
+        "days": {"type": "integer", "minimum": 1, "description": "every copy of the last N days"}
+      },
+      "description": "what the site target keeps; the job prunes by these, never by bucket lifecycle rules. A copy any rule keeps is kept"
+    },
+    "cronSchedule": {"type": "string", "pattern": "^\\S+( \\S+){4}$", "description": "a five-field cron schedule, in UTC"},
+    "backupSchedule": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "cron": {"$ref": "#/$defs/cronSchedule"},
+        "keep": {"$ref": "#/$defs/backupKeep"}
+      }
+    },
+    "longhornSchedule": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "cron": {"$ref": "#/$defs/cronSchedule"},
+        "retain": {"type": "integer", "minimum": 1, "maximum": 100, "description": "how many Longhorn keeps"}
+      }
+    },
+    "backup": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["targets"],
+      "properties": {
+        "targets": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["site", "offsite"],
+          "properties": {
+            "site": {"$ref": "#/$defs/backupTarget", "description": "required: the site's own S3 bucket or NFS export, outside DCiaB's clusters. MGMT always backs up here"},
+            "offsite": {"$ref": "#/$defs/offsiteTarget", "description": "required: the copy that survives losing the site, or mode: none with a reason"}
+          }
+        },
+        "tiers": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "mgmt": {"type": "object", "additionalProperties": false, "properties": {"target": {"enum": ["site", "objectStore"], "description": "site, always: MGMT never backs up to INFRA (validate rejects anything else)"}}},
+            "infra": {"type": "object", "additionalProperties": false, "properties": {"target": {"enum": ["site", "objectStore"], "description": "objectStore (the default: storage.object, SeaweedFS on INFRA) or site"}}},
+            "workloads": {"type": "object", "additionalProperties": false, "properties": {
+              "target": {"enum": ["site", "objectStore"], "description": "objectStore (the default) or site"},
+              "etcdSnapshots": {"type": "boolean", "description": "default true: every workload cluster's etcd is snapshotted"},
+              "volumeBackups": {"type": "boolean", "description": "default false: tenants opt volumes in; true backs up every volume of the replicated classes"}
+            }}
+          },
+          "description": "where each tier backs up (ADR 0009, decision 1). Defaults: mgmt site, infra objectStore, workloads objectStore"
+        },
+        "key": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["publicKey"],
+          "properties": {"publicKey": {"type": "string", "pattern": "^age1[0-9a-z]{58}$", "description": "the backup key's age public key"}},
+          "description": "optional: the backup key's public half (ADR 0009, decision 10). Without it, DCiaB generates one and seals its private half to spec.bootstrap.recipients"
+        },
+        "schedules": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "etcd": {"type": "object", "additionalProperties": false, "properties": {
+              "mgmt": {"$ref": "#/$defs/backupSchedule"},
+              "infra": {"$ref": "#/$defs/backupSchedule"},
+              "workloads": {"$ref": "#/$defs/backupSchedule"}
+            }},
+            "capiExport": {"$ref": "#/$defs/backupSchedule"},
+            "longhorn": {"type": "object", "additionalProperties": false, "properties": {
+              "snapshot": {"$ref": "#/$defs/longhornSchedule"},
+              "backup": {"$ref": "#/$defs/longhornSchedule"}
+            }}
+          },
+          "description": "optional: DCiaB's defaults (ADR 0009) apply to anything not given"
+        }
+      },
+      "description": "backups (ADR 0009): the site and off-site targets, where each tier backs up, schedules and retention"
+    },
     "longhorn": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["replicaCount", "backupTarget"],
+      "required": ["replicaCount"],
       "properties": {
         "replicaCount": {"type": "integer", "minimum": 1, "maximum": 3},
-        "backupTarget": {"type": "string", "pattern": "^(s3|nfs)://.+", "description": "a site-provided target: s3://bucket@endpoint/path or nfs://server:/export"},
+        "backupTarget": {"type": "string", "pattern": "^(s3|nfs)://.+", "description": "the old place of the site's backup target, read only when spec.backup is absent (ADR 0009): s3://bucket@endpoint/path or nfs://server:/export"},
         "backupCredentials": {"$ref": "#/$defs/secretRef"}
       }
     },

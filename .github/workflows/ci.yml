@@ -641,7 +641,7 @@ jobs:
           for example in examples/*.yaml; do
             work="$(mktemp -d)"
             cp "$example" "$work/"
-            for s in vsphere.pw longhorn-s3.env pki/intermediate.crt pki/intermediate.key pki/chain.pem \
+            for s in vsphere.pw longhorn-s3.env backup-site.env backup-offsite.env pki/intermediate.crt pki/intermediate.key pki/chain.pem \
                      bmc/ca.pem bmc/r760-01 bmc/r760-02 bmc/r760-03 bmc/r760-04 bmc/r760-05 bmc/r760-06 bmc/r760-07 \
                      hv/root bmc/pve01 bmc/pve02 bmc/pve03; do
               mkdir -p "$(dirname "$work/secrets/$s")"
