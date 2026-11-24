@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Build DCiaB's backup image from its pinned base and binaries (bundle.lock backupImage.base,
 # tools.age, tools.rclone, kubernetes.version for kubectl, clusterAPI.core.version for
-# clusterctl), with lib/dciab_backup/runner.py as /usr/libexec/dciab/backup-runner.
+# clusterctl, and etcdutl from the clusters' etcd image in imageDigests), with
+# lib/dciab_backup/runner.py as /usr/libexec/dciab/backup-runner.
 #
 #   images/backup/build.sh [--tag TAG] [--recipe-id]
 #
@@ -34,6 +35,9 @@ lock = yaml.safe_load(open(sys.argv[1]))
 t, b = lock["tools"], lock["binarySHA256"]
 k8s, capi = lock["kubernetes"]["version"], lock["clusterAPI"]["core"]["version"]
 print("base", lock["backupImage"]["base"], "-", "-")
+etcd = [f"{r}@{d}" for r, d in (lock.get("imageDigests") or {}).items() if r.startswith("registry.k8s.io/etcd:")]
+assert len(etcd) == 1, "bundle.lock imageDigests should pin one registry.k8s.io/etcd image"
+print("etcd", etcd[0], "-", "-")
 print("age", f"https://github.com/FiloSottile/age/releases/download/{t['age']}/age-{t['age']}-linux-amd64.tar.gz",
       b["age-linux-amd64.tar.gz"], "age/age")
 print("rclone", f"https://github.com/rclone/rclone/releases/download/{t['rclone']}/rclone-{t['rclone']}-linux-amd64.zip",
@@ -45,6 +49,7 @@ print("clusterctl", f"https://github.com/kubernetes-sigs/cluster-api/releases/do
 PY
 )"
 base="$(awk '$1 == "base" {print $2}' <<<"$pins")"
+etcd="$(awk '$1 == "etcd" {print $2}' <<<"$pins")"
 [[ "$base" == *@sha256:* ]] || { echo "build.sh: bundle.lock backupImage.base isn't pinned by digest" >&2; exit 1; }
 recipe_id="$( { printf '%s\n' "$pins"; cat "$HERE/Containerfile" "$RUNNER"; } | sha256sum | cut -c1-12)"
 if [[ "$recipe_only" == true ]]; then
@@ -54,16 +59,17 @@ tag="${tag:-localhost/dciab/backup:$recipe_id}"
 
 ctx="$(mktemp -d)"
 trap 'rm -rf "$ctx"' EXIT
-mkdir -p "$ctx/bin" "$ctx/dl"
+mkdir -p "$ctx/bin" "$ctx/dl" "$ctx/x"
 while read -r name url sum member; do
-  [[ "$name" == base ]] && continue
+  [[ "$name" == base || "$name" == etcd ]] && continue
   [[ "$sum" =~ ^[0-9a-f]{64}$ ]] || { echo "build.sh: bundle.lock has no sha256 for $name ($url)" >&2; exit 1; }
-  file="$ctx/dl/$name"
+  # Downloads and what's extracted from them live apart: age's tarball holds age/age.
+  file="$ctx/dl/$name.download"
   curl -fsSL --retry 3 -o "$file" "$url"
   got="$(sha256sum "$file" | cut -d' ' -f1)"
   [[ "$got" == "$sum" ]] || { echo "build.sh: $url has sha256 $got, bundle.lock says $sum" >&2; exit 1; }
   case "$url" in
-    *.tar.gz) tar -xzf "$file" -C "$ctx/dl" "$member"; mv "$ctx/dl/$member" "$ctx/bin/$name" ;;
+    *.tar.gz) tar --no-same-owner -xzf "$file" -C "$ctx/x" "$member"; mv "$ctx/x/$member" "$ctx/bin/$name" ;;
     *.zip) python3 -c 'import sys, zipfile; open(sys.argv[3], "wb").write(zipfile.ZipFile(sys.argv[1]).read(sys.argv[2]))' \
              "$file" "$member" "$ctx/bin/$name" ;;
     *) mv "$file" "$ctx/bin/$name" ;;
@@ -72,7 +78,7 @@ while read -r name url sum member; do
 done <<<"$pins"
 cp "$HERE/Containerfile" "$ctx/"
 cp "$RUNNER" "$ctx/backup-runner"
-rm -rf "$ctx/dl"
+rm -rf "$ctx/dl" "$ctx/x"
 
-podman build --pull=missing -t "$tag" --build-arg "BASE_IMAGE=$base" "$ctx" >&2
+podman build --pull=missing -t "$tag" --build-arg "BASE_IMAGE=$base" --build-arg "ETCD_IMAGE=$etcd" "$ctx" >&2
 echo "$tag"

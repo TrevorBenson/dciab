@@ -173,13 +173,17 @@ def test_s3_target_needs_credentials():
 
 
 @needs_age
-def test_runner_etcd_deletes_the_plaintext(tmp_path):
+def test_runner_etcd_checks_and_deletes_the_plaintext(tmp_path):
     root = tmp_path / "export"
     root.mkdir()
     rec, _ = keys_file(tmp_path)
     src = tmp_path / "etcd.db"
     src.write_bytes(b"x")
-    env = {**os.environ, "DCIAB_CLUSTER": "mgmt", "DCIAB_TARGET_URL": "nfs://nas:/b", "DCIAB_TARGET_ROOT": str(root),
+    bin_dir = tmp_path / "ebin"
+    bin_dir.mkdir()
+    (bin_dir / "etcdutl").write_text('#!/bin/sh\n[ -n "$FAKE_BAD" ] && exit 1\necho "| HASH | REVISION |"\n')
+    (bin_dir / "etcdutl").chmod(0o755)
+    env = {**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}", "DCIAB_CLUSTER": "mgmt", "DCIAB_TARGET_URL": "nfs://nas:/b", "DCIAB_TARGET_ROOT": str(root),
            "DCIAB_RECIPIENTS": str(rec), "DCIAB_KEEP": '{"hourly": 24, "daily": 14}'}
     r = subprocess.run([sys.executable, str(RUNNER), "etcd", "--src", str(src)], env=env, capture_output=True, text=True)
     assert r.returncode == 0, r.stderr
@@ -190,6 +194,12 @@ def test_runner_etcd_deletes_the_plaintext(tmp_path):
     r = subprocess.run([sys.executable, str(RUNNER), "etcd", "--src", str(src)],
                        env={**env, "DCIAB_TARGET_ROOT": str(tmp_path / "gone")}, capture_output=True, text=True)
     assert r.returncode == 1 and not src.exists()
+    # A snapshot etcdutl can't read is never uploaded, and is deleted.
+    src.write_bytes(b"x")
+    r = subprocess.run([sys.executable, str(RUNNER), "etcd", "--src", str(src)], env={**env, "FAKE_BAD": "1"},
+                       capture_output=True, text=True)
+    assert r.returncode == 1 and "etcdutl" in r.stderr and not src.exists()
+    assert len(list((root / "dciab" / "mgmt" / "etcd").iterdir())) == 1
 
 
 def test_runner_is_standard_library_only():
@@ -209,6 +219,13 @@ if "machines.cluster.x-k8s.io" in args:
     json.dump(state, open(os.environ["FAKE_STATE"], "w"))
     phase = "Provisioning" if busy else "Running"
     print(json.dumps({"items": [{"metadata": {"namespace": "cluster-mgmt", "name": "m0"}, "status": {"phase": phase}}]}))
+elif "get" in args and "clusterclasses.cluster.x-k8s.io" in args:
+    notes = {"cluster.x-k8s.io/paused": ""} if state.get("ccpaused") else {}
+    print(json.dumps({"items": [{"metadata": {"namespace": "dciab-clusterclasses", "name": "dciab-proxmox-r1",
+                                              "annotations": notes}}]}))
+elif "annotate" in args and "clusterclasses.cluster.x-k8s.io" in args:
+    state["ccpaused"] = False
+    json.dump(state, open(os.environ["FAKE_STATE"], "w"))
 elif "get" in args:
     paused = state.get("paused", False)
     print(json.dumps({"items": [{"metadata": {"namespace": "cluster-mgmt", "name": "mgmt", "annotations": {}},
@@ -226,6 +243,9 @@ open(os.path.join(d, "Cluster_cluster-mgmt_mgmt.yaml"), "w").write("kind: Cluste
 if os.environ.get("FAKE_LEAVE_PAUSED"):
     state = json.load(open(os.environ["FAKE_STATE"])); state["paused"] = True
     json.dump(state, open(os.environ["FAKE_STATE"], "w"))
+if os.environ.get("FAKE_LEAVE_CLASS_PAUSED"):
+    state = json.load(open(os.environ["FAKE_STATE"])); state["ccpaused"] = True
+    json.dump(state, open(os.environ["FAKE_STATE"], "w"))
 '''
 
 
@@ -241,8 +261,8 @@ def capi(tmp_path, monkeypatch):
     st = tmp_path / "state.json"
     monkeypatch.setenv("FAKE_STATE", str(st))
 
-    def setup(busy=(), paused=False):
-        st.write_text(json.dumps({"busy": list(busy), "paused": paused}))
+    def setup(busy=(), paused=False, ccpaused=False):
+        st.write_text(json.dumps({"busy": list(busy), "paused": paused, "ccpaused": ccpaused}))
     return setup
 
 
@@ -267,15 +287,26 @@ def test_capi_export_gives_up_when_never_quiet(tmp_path, capi):
 def test_capi_export_resumes_a_cluster_it_left_paused(tmp_path, capi, monkeypatch):
     capi()
     monkeypatch.setenv("FAKE_LEAVE_PAUSED", "1")
-    with pytest.raises(rn.RunnerError, match="left cluster-mgmt/mgmt paused"):
+    with pytest.raises(rn.RunnerError, match="left Cluster cluster-mgmt/mgmt paused"):
         rn.capi_export(Path("kc"), tmp_path, sleep=lambda s: None)
     assert "patch clusters.cluster.x-k8s.io mgmt" in (tmp_path / "capi.log").read_text()
 
 
-def test_capi_export_leaves_a_cluster_paused_before_alone(tmp_path, capi):
-    capi(paused=True)
+def test_capi_export_resumes_a_clusterclass_it_left_paused(tmp_path, capi, monkeypatch):
+    capi()
+    monkeypatch.setenv("FAKE_LEAVE_CLASS_PAUSED", "1")
+    with pytest.raises(rn.RunnerError, match="ClusterClass dciab-clusterclasses/dciab-proxmox-r1"):
+        rn.capi_export(Path("kc"), tmp_path, sleep=lambda s: None)
+    log = (tmp_path / "capi.log").read_text()
+    assert "annotate clusterclasses.cluster.x-k8s.io dciab-proxmox-r1 cluster.x-k8s.io/paused-" in log
+    assert json.loads(Path(os.environ["FAKE_STATE"]).read_text())["ccpaused"] is False
+
+
+def test_capi_export_leaves_what_was_paused_before_alone(tmp_path, capi):
+    capi(paused=True, ccpaused=True)
     rn.capi_export(Path("kc"), tmp_path, sleep=lambda s: None)
-    assert "patch" not in (tmp_path / "capi.log").read_text()
+    log = (tmp_path / "capi.log").read_text()
+    assert "patch" not in log and "annotate" not in log
 
 
 # --- the backup key ----------------------------------------------------------------------
@@ -349,10 +380,16 @@ def test_mgmt_manifests_s3():
     assert etcd["spec"]["schedule"] == "15 * * * *" and etcd["spec"]["concurrencyPolicy"] == "Forbid"
     pod = etcd["spec"]["jobTemplate"]["spec"]["template"]["spec"]
     assert pod["hostNetwork"] and pod["nodeSelector"] == {"node-role.kubernetes.io/control-plane": ""}
-    snap = pod["initContainers"][0]
+    [snap] = pod["initContainers"]
     assert snap["image"].startswith("registry.k8s.io/etcd:") and "@sha256:" in snap["image"]
     assert "snapshot" in snap["command"] and "save" in snap["command"]
-    assert pod["initContainers"][1]["command"][:3] == ["etcdutl", "snapshot", "status"]
+    # Only the client certificate and the CA certificate: never etcd's CA key or server keys.
+    pki = [v["hostPath"] for v in pod["volumes"] if "hostPath" in v]
+    assert sorted(h["path"].rsplit("/", 1)[1] for h in pki) == ["ca.crt", "healthcheck-client.crt",
+                                                                 "healthcheck-client.key"]
+    assert all(h["type"] == "File" for h in pki)
+    job = etcd["spec"]["jobTemplate"]["spec"]
+    assert job["ttlSecondsAfterFinished"] and etcd["spec"]["failedJobsHistoryLimit"] == 1
     up = pod["containers"][0]
     assert up["image"] == PINNED["images"]["backup"]
     assert up["envFrom"] == [{"secretRef": {"name": jobs.SECRET}}]
@@ -455,7 +492,73 @@ def test_backup_image_recipe_is_pinned():
 def test_mgmt_backups_step_applies_server_side():
     text = (ROOT / "lib" / "steps" / "mgmt.sh").read_text()
     step = text.split("step backups", 1)[1]
+    # The pin is checked (manifests rendered) before the credentials Secret is applied.
+    assert step.index("dciab_backup manifests") < step.index("dciab_backup secret")
     assert 'dciab_backup secret "$config" | on_mgmt kubectl apply --server-side' in step
-    assert "dciab_backup manifests" in step and "--server-side" in step.split("dciab_backup manifests", 1)[1]
+    assert '--server-side --field-manager=dciab --force-conflicts -f - <<<"$backup_jobs"' in step
     # Credentials never land on disk.
     assert "> \"$state" not in step
+
+
+def test_after_move_export_is_retried_until_recorded():
+    text = (ROOT / "lib" / "steps" / "mgmt.sh").read_text()
+    adopt = text.split("step adopt", 1)[1].split("finish_if adopt", 1)[0]
+    assert "grep -qs ' after-move$' \"$state/capi-backup/LAST\"" in adopt
+    backup = text.split("capi_backup() {", 1)[1].split("\n}", 1)[0]
+    assert backup.count("|| return") == 2
+
+
+class FakeTarget:
+    store = {}
+    fail = 0
+
+    def __init__(self, url, root=None, env=None, workdir=None):
+        pass
+
+    def list(self, d):
+        return sorted(k.rsplit("/", 1)[1] for k in self.store if k.startswith(d + "/"))
+
+    def put(self, src, rel):
+        if FakeTarget.fail:
+            FakeTarget.fail -= 1
+            raise rn.RunnerError("connection refused")
+        self.store[rel] = Path(src).read_bytes()
+
+
+@pytest.fixture
+def fake_target(monkeypatch, tmp_path):
+    class NoMount:
+        def __init__(self, spec):
+            pass
+
+        def __enter__(self):
+            return None
+
+        def __exit__(self, *a):
+            return False
+    FakeTarget.store, FakeTarget.fail = {}, 0
+    monkeypatch.setattr(rn, "Target", FakeTarget)
+    monkeypatch.setattr(jobs, "mounted", NoMount)
+    monkeypatch.setattr(jobs, "target_env", lambda spec, d: {})
+    return FakeTarget
+
+
+def test_sealed_key_upload_is_idempotent_and_retried(tmp_path, fake_target):
+    spec = load_example("vsphere")["spec"]
+    d = tmp_path / "backup"
+    d.mkdir()
+    (d / "backup-key.age").write_bytes(b"sealed")
+    (d / "backup-key.pub").write_text(KEYS[2] + "\n")
+    fake_target.fail = 2
+    assert jobs.seal_key_to_target(spec, tmp_path, tmp_path, sleep=lambda s: None)
+    assert fake_target.store == {f"dciab/recovery/backup-key-{KEYS[2]}.age": b"sealed"}
+    # Already there: nothing uploaded again.
+    fake_target.fail = 5
+    assert jobs.seal_key_to_target(spec, tmp_path, tmp_path, sleep=lambda s: None)
+    # Never reaches the target: the step fails.
+    fake_target.store.clear()
+    with pytest.raises(jobs.BackupError, match="isn't on the site target"):
+        jobs.seal_key_to_target(spec, tmp_path, tmp_path, sleep=lambda s: None)
+    # A key the config gives has no sealed copy of DCiaB's to upload.
+    spec["backup"]["key"] = {"publicKey": KEYS[0]}
+    assert jobs.seal_key_to_target(spec, tmp_path, tmp_path, sleep=lambda s: None) is False

@@ -52,12 +52,16 @@ def main(argv=None) -> int:
             print(longhorn_target(spec, args.cluster)["url"])
         elif args.what == "key":
             key = jobs.public_key(spec, state)
-            if key is None:
+            generated = key is None
+            if generated:
                 key = jobs.generate_key(spec, state)
-                jobs.seal_key_to_target(spec, config.parent, state)
+            # Every run: the sealed private half must be on the target before anything is
+            # encrypted to the key (retried; fails the step otherwise).
+            if jobs.seal_key_to_target(spec, config.parent, state) and generated:
                 print(f"dciab backup: generated the backup key; its private half is sealed to the recipients in "
-                      f"{jobs.key_dir(state)}/backup-key.age and on the site target under dciab/recovery/. "
-                      f"Put spec.backup.key.publicKey: {key} in the config to keep it.", file=sys.stderr)
+                      f"{jobs.key_dir(state)}/backup-key.age and on the site target as dciab/recovery/"
+                      f"{jobs.sealed_name(key)}. Put spec.backup.key.publicKey: {key} in the config to keep it.",
+                      file=sys.stderr)
             print(key)
         elif args.what == "site-kind":
             print(target_kind(jobs.target(spec)["url"]))

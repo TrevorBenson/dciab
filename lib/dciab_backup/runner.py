@@ -5,7 +5,8 @@ Standard library only: the same file runs in the backup image (images/backup, as
 /usr/libexec/dciab/backup-runner) and on the bootstrap host (dciab mgmt's CAPI exports
 around the pivot). It needs age, and rclone for an S3 target.
 
-    backup-runner etcd --src FILE           encrypt and upload an etcd snapshot, then delete FILE
+    backup-runner etcd --src FILE           check an etcd snapshot (etcdutl), encrypt and upload it;
+                                            FILE is deleted whatever happens
     backup-runner capi-export               clusterctl move --to-directory of every namespace that
                                             holds a Cluster, then encrypt and upload it as one tar
     backup-runner store --kind KIND --file FILE [--keep-local DIR]
@@ -280,6 +281,15 @@ def paused(kubeconfig: Path) -> Set[str]:
     return out
 
 
+def paused_classes(kubeconfig: Path) -> Set[str]:
+    out = set()
+    for c in kubectl_json(kubeconfig, "get", "clusterclasses.cluster.x-k8s.io", "-A").get("items", []):
+        meta = c["metadata"]
+        if PAUSED_ANNOTATION in (meta.get("annotations") or {}):
+            out.add(f"{meta['namespace']}/{meta['name']}")
+    return out
+
+
 def cluster_namespaces(kubeconfig: Path) -> List[str]:
     items = kubectl_json(kubeconfig, "get", "clusters.cluster.x-k8s.io", "-A").get("items", [])
     return sorted({c["metadata"]["namespace"] for c in items})
@@ -287,7 +297,9 @@ def cluster_namespaces(kubeconfig: Path) -> List[str]:
 
 def capi_export(kubeconfig: Path, workdir: Path, quiet_minutes: int = 30, sleep=time.sleep) -> Path:
     """Export every namespace that holds a Cluster to one tar in workdir. Waits for the
-    clusters to be quiet; checks that the export left no Cluster paused."""
+    clusters to be quiet. clusterctl pauses each Cluster and its ClusterClass while it reads,
+    and resumes them only on success: anything the export left paused is resumed here, and
+    the export then fails so that someone looks."""
     deadline = time.monotonic() + quiet_minutes * 60
     while True:
         why = busy(kubeconfig)
@@ -301,7 +313,7 @@ def capi_export(kubeconfig: Path, workdir: Path, quiet_minutes: int = 30, sleep=
     namespaces = cluster_namespaces(kubeconfig)
     if not namespaces:
         raise RunnerError("no Cluster to export")
-    before = paused(kubeconfig)
+    before, classes_before = paused(kubeconfig), paused_classes(kubeconfig)
     export = workdir / "capi"
     shutil.rmtree(export, ignore_errors=True)
     try:
@@ -311,6 +323,12 @@ def capi_export(kubeconfig: Path, workdir: Path, quiet_minutes: int = 30, sleep=
                  "--to-directory", str(export / ns)])
             log(f"exported namespace {ns}")
     finally:
+        left_classes = paused_classes(kubeconfig) - classes_before
+        for ref in sorted(left_classes):
+            ns, name = ref.split("/", 1)
+            log(f"ClusterClass {ref} was left paused by the export; resuming it")
+            run(["kubectl", "--kubeconfig", str(kubeconfig), "-n", ns, "annotate", "clusterclasses.cluster.x-k8s.io",
+                 name, f"{PAUSED_ANNOTATION}-"])
         left = paused(kubeconfig) - before
         for ref in sorted(left):
             ns, name = ref.split("/", 1)
@@ -319,8 +337,9 @@ def capi_export(kubeconfig: Path, workdir: Path, quiet_minutes: int = 30, sleep=
                  "--type", "merge", "-p", '{"spec":{"paused":false}}'])
             run(["kubectl", "--kubeconfig", str(kubeconfig), "-n", ns, "annotate", "clusters.cluster.x-k8s.io",
                  name, f"{PAUSED_ANNOTATION}-"])
-    if left:
-        raise RunnerError(f"the export left {', '.join(sorted(left))} paused (resumed now); check them, and the export")
+    if left or left_classes:
+        what = [f"Cluster {r}" for r in sorted(left)] + [f"ClusterClass {r}" for r in sorted(left_classes)]
+        raise RunnerError(f"the export left {', '.join(what)} paused (resumed now); check them, and the export")
     tar = workdir / "capi.tar"
     with tarfile.open(tar, "w") as tf:
         tf.add(export, arcname="capi")
@@ -354,6 +373,10 @@ def main(argv: Optional[List[str]] = None) -> int:
             work = Path(tmp)
             target = target_from_env(workdir=work)
             if plaintext is not None:
+                if not plaintext.is_file():
+                    raise RunnerError(f"no snapshot at {plaintext}")
+                # The snapshot must be whole before it's kept: etcdutl reads its hash and revision.
+                print(run(["etcdutl", "snapshot", "status", str(plaintext), "--write-out=table"], capture=True), end="")
                 store("etcd", cluster, plaintext, ".db", target, recipients, keep)
             elif args.cmd == "capi-export":
                 kc = os.environ.get("DCIAB_KUBECONFIG")

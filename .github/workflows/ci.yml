@@ -556,13 +556,18 @@ jobs:
       - run: pip install pyyaml
       - name: Build
         id: build
-        run: echo "tag=$(images/backup/build.sh)" >> "$GITHUB_OUTPUT"
+        run: |
+          set -euo pipefail
+          # Not inside echo "$(...)": a failed build must fail this step.
+          tag="$(images/backup/build.sh)"
+          [[ -n "$tag" ]] || { echo "::error::images/backup/build.sh printed no tag"; exit 1; }
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
       - name: The tools run and the pin matches this recipe
         env:
           TAG: ${{ steps.build.outputs.tag }}
         run: |
           set -euo pipefail
-          for tool in "age --version" "rclone version" "kubectl version --client" "clusterctl version"; do
+          for tool in "age --version" "rclone version" "etcdutl version" "kubectl version --client" "clusterctl version"; do
             podman run --rm --network none --entrypoint sh "$TAG" -c "$tool"
           done
           podman run --rm --network none "$TAG" --help >/dev/null

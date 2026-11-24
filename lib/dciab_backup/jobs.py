@@ -8,7 +8,7 @@ leaves the machine that made it. Clusters only ever hold the public keys.
 The backup key: spec.backup.key.publicKey when the config gives one. Otherwise DCiaB
 generates an age key pair the first time it needs one (dciab mgmt's move step) and never
 writes its private half in plaintext: it is sealed to the recipients at once and kept as
-<state>/backup/backup-key.age on the bootstrap host and as dciab/recovery/backup-key-<time>.age
+<state>/backup/backup-key.age on the bootstrap host and as dciab/recovery/backup-key-<public key>.age
 on the site target. Until OpenBao exists, those two sealed copies are the only ones, so a
 restore needs a recipient to open either the backup itself or the sealed key. When OpenBao
 comes, the private half also goes to its platform KV mount (ADR 0009, decision 10).
@@ -175,9 +175,11 @@ def _cronjob(name: str, schedule: dict, pod: dict) -> dict:
         "spec": {
             "schedule": schedule["cron"], "timeZone": "Etc/UTC",
             "concurrencyPolicy": "Forbid", "startingDeadlineSeconds": 900,
-            "successfulJobsHistoryLimit": 3, "failedJobsHistoryLimit": 3,
+            "successfulJobsHistoryLimit": 3, "failedJobsHistoryLimit": 1,
             "jobTemplate": {"metadata": {"labels": dict(MANAGED_BY)}, "spec": {
-                "backoffLimit": 2, "activeDeadlineSeconds": 3 * 3600,
+                # A failed run whose upload container never started keeps its plaintext snapshot in
+                # the pod's emptyDir until the pod goes: one failed Job, removed after 6 hours.
+                "backoffLimit": 1, "activeDeadlineSeconds": 3 * 3600, "ttlSecondsAfterFinished": 6 * 3600,
                 "template": {"metadata": {"labels": {**MANAGED_BY, "dciab.io/backup": name}}, "spec": pod},
             }},
         },
@@ -207,6 +209,8 @@ def manifests(spec: dict, cluster: str, keys: List[str], lock: dict) -> List[dic
                 {"name": "DCIAB_RECIPIENTS", "value": "/etc/dciab/backup/recipients.txt"},
                 {"name": "DCIAB_KEEP", "value": json.dumps(keep, sort_keys=True)}] + tenv
 
+    # Only the three files etcdctl needs, never etcd's CA key or its server and peer keys.
+    pki_files = ("ca.crt", "healthcheck-client.crt", "healthcheck-client.key")
     certs = [f"--cacert={ETCD_PKI}/ca.crt", f"--cert={ETCD_PKI}/healthcheck-client.crt",
              f"--key={ETCD_PKI}/healthcheck-client.key"]
     etcd_pod = {
@@ -219,12 +223,9 @@ def manifests(spec: dict, cluster: str, keys: List[str], lock: dict) -> List[dic
         "initContainers": [
             {"name": "snapshot", "image": etcd,
              "command": ["etcdctl", "--endpoints=https://127.0.0.1:2379", *certs, "snapshot", "save", "/work/etcd.db"],
-             "volumeMounts": [{"name": "etcd-pki", "mountPath": ETCD_PKI, "readOnly": True},
-                              {"name": "work", "mountPath": "/work"}],
+             "volumeMounts": [{"name": f"etcd-{f.replace('.', '-')}", "mountPath": f"{ETCD_PKI}/{f}", "readOnly": True}
+                              for f in pki_files] + [{"name": "work", "mountPath": "/work"}],
              "securityContext": _security()},
-            {"name": "check", "image": etcd,
-             "command": ["etcdutl", "snapshot", "status", "/work/etcd.db", "--write-out=table"],
-             "volumeMounts": [{"name": "work", "mountPath": "/work"}], "securityContext": _security()},
         ],
         "containers": [
             {"name": "upload", "image": backup,
@@ -233,7 +234,8 @@ def manifests(spec: dict, cluster: str, keys: List[str], lock: dict) -> List[dic
              "volumeMounts": [{"name": "work", "mountPath": "/work"}] + common_mounts,
              "securityContext": _security()},
         ],
-        "volumes": [{"name": "etcd-pki", "hostPath": {"path": ETCD_PKI, "type": "Directory"}},
+        "volumes": [{"name": f"etcd-{f.replace('.', '-')}", "hostPath": {"path": f"{ETCD_PKI}/{f}", "type": "File"}}
+                    for f in pki_files] + [
                     # The node's own disk: MGMT may have no StorageClass at all.
                     {"name": "work", "emptyDir": {"sizeLimit": "10Gi"}}] + common_vols,
     }
@@ -332,19 +334,43 @@ def export_now(spec: dict, config_dir: Path, state: Path, kubeconfig: Path, labe
         (work / "LAST").write_text(f"{stamp()} {label}\n")
 
 
-def seal_key_to_target(spec: dict, config_dir: Path, state: Path, runner_cmd: Optional[List[str]] = None) -> None:
-    """Upload the sealed private half of a generated backup key to dciab/recovery/."""
+def sealed_name(public: str) -> str:
+    """The sealed private half's name on the target: it names its public key, so a later run
+    can tell whether this key's sealed copy is there."""
+    return f"backup-key-{public}.age"
+
+
+def seal_key_to_target(spec: dict, config_dir: Path, state: Path, attempts: int = 3, sleep=None) -> bool:
+    """Make sure the sealed private half of a key DCiaB generated is in dciab/recovery/ on the
+    site target: uploads it when it isn't there yet, retrying, and raises if it can't. Safe to
+    call on every run. False when there is nothing to upload (the config gives the key)."""
+    import time
+
     sealed = key_dir(state) / "backup-key.age"
-    if not sealed.is_file():
-        return
-    with mounted(spec) as root:
-        env = runner_env(spec, config_dir, "recovery", Path("/dev/null"), {}, root)
-        from .runner import RunnerError, Target
+    pub = public_key(spec, state)
+    given = ((spec.get("backup") or {}).get("key") or {}).get("publicKey")
+    if not sealed.is_file() or pub is None or (given and given != (key_dir(state) / "backup-key.pub").read_text().strip()):
+        return False
+    from .runner import RunnerError, Target
+    name = sealed_name(pub)
+    last = ""
+    for attempt in range(attempts):
         try:
-            t = Target(env["DCIAB_TARGET_URL"], env.get("DCIAB_TARGET_ROOT"), env)
-            t.put(sealed, f"dciab/recovery/backup-key-{stamp()}.age")
-        except RunnerError as exc:
-            raise BackupError(f"can't upload the sealed backup key: {exc}") from None
+            with mounted(spec) as root:
+                env = runner_env(spec, config_dir, "recovery", Path("/dev/null"), {}, root)
+                with tempfile.TemporaryDirectory() as tmp:
+                    t = Target(env["DCIAB_TARGET_URL"], env.get("DCIAB_TARGET_ROOT"), env, Path(tmp))
+                    if name not in t.list("dciab/recovery"):
+                        t.put(sealed, f"dciab/recovery/{name}")
+                    if name in t.list("dciab/recovery"):
+                        return True
+                    last = "it isn't listed after the upload"
+        except (RunnerError, BackupError, OSError) as exc:
+            last = str(exc)
+        if attempt + 1 < attempts:
+            (sleep or time.sleep)(10)
+    raise BackupError(f"the backup key's sealed private half isn't on the site target ({last}); it is only in "
+                      f"{sealed}. Fix the target and re-run")
 
 
 __all__ = ["NS", "SECRET", "backup_image", "etcd_image", "export_now", "generate_key", "manifests",

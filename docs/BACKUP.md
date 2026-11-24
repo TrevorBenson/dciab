@@ -113,19 +113,19 @@ On vSphere CSI, the Proxmox CSI driver and the other array providers, DCiaB back
 | What | When | Where | Kept (default) |
 | --- | --- | --- | --- |
 | CAPI export of the bootstrap cluster | The `move` step, before `clusterctl move`. The move doesn't start until the export is on the site target | `dciab/mgmt/capi/`, and `<state>/capi-backup/` | `capiExport.keep` |
-| CAPI export of MGMT | The `adopt` step, in the run that moved MGMT | the same | the same |
+| CAPI export of MGMT | The `adopt` step, once MGMT is moved; a later run retries a failed one (`<state>/capi-backup/LAST` records it) | the same | the same |
 | etcd snapshot of MGMT | CronJob `dciab-backup/etcd-snapshot`, every hour | `dciab/mgmt/etcd/` | 24 hourly, 14 daily |
 | CAPI export of MGMT | CronJob `dciab-backup/capi-export`, every day at 02:30 UTC | `dciab/mgmt/capi/` | 14 daily |
 
-The `backups` step (the last one) applies the CronJobs, a `ConfigMap` of the public keys, and, for an S3 target, the Secret `dciab-backup-target`, piped from the config's reference into `kubectl apply --server-side`. The jobs run DCiaB's backup image (`images/backup`: age, rclone, kubectl, clusterctl and `lib/dciab_backup/runner.py`), which CI builds and publishes and `bundle.lock` pins as `images.backup`; the step refuses to run until it is pinned.
+The `backups` step (the last one) first renders the jobs, so an unpinned image stops it before anything is applied. Then it applies the CronJobs, a `ConfigMap` of the public keys, and, for an S3 target, the Secret `dciab-backup-target`, piped from the config's reference into `kubectl apply --server-side`. The jobs run DCiaB's backup image (`images/backup`: age, rclone, kubectl, clusterctl and `lib/dciab_backup/runner.py`), which CI builds and publishes and `bundle.lock` pins as `images.backup`; the step refuses to run until it is pinned.
 
-**etcd snapshots.** A CronJob on a control plane node, as ADR 0009 decision 2 chose over a systemd timer: it needs no new ClusterClass revision and no node roll, and it runs whenever the API works, which is when a snapshot is worth having. With host networking it runs `etcdctl snapshot save` against `https://127.0.0.1:2379`, with kubeadm's etcd client certificate (`/etc/kubernetes/pki/etcd`, mounted read-only), using the cluster's own etcd image (the `registry.k8s.io/etcd` pin in `bundle.lock`). `etcdutl snapshot status` checks the file, then the runner encrypts it, uploads it and prunes. The snapshot is staged on the node's own disk (an `emptyDir`) and deleted when the run ends, whether it succeeded or not. It never needs a StorageClass: MGMT may run no block storage at all.
+**etcd snapshots.** A CronJob on a control plane node, as ADR 0009 decision 2 chose over a systemd timer: it needs no new ClusterClass revision and no node roll, and it runs whenever the API works, which is when a snapshot is worth having. With host networking it runs `etcdctl snapshot save` against `https://127.0.0.1:2379`, using the cluster's own etcd image (the `registry.k8s.io/etcd` pin in `bundle.lock`). It authenticates with kubeadm's etcd client certificate. Only `ca.crt` and `healthcheck-client.{crt,key}` are mounted, read-only; etcd's CA key and its server and peer keys never are. The upload container checks the file with `etcdutl snapshot status` (the same etcd version, built into the backup image), then encrypts it, uploads it and prunes. The snapshot is staged on the node's own disk (an `emptyDir`) and deleted when the upload container ends, whether it succeeded or not. If that container never starts (its image can't be pulled, for example), the plaintext snapshot stays in the failed pod's folder on the node, readable by root only. It is removed with the Job: the CronJob keeps one failed Job, deleted after 6 hours. The job never needs a StorageClass: MGMT may run no block storage at all.
 
-**CAPI exports.** `clusterctl move --to-directory` of every namespace that holds a Cluster, as one tar. The job waits up to 30 minutes for every Machine to be `Running` and none to be deleting, because `move` expects stable clusters. An export pauses each Cluster while it reads. Any Cluster the export left paused is resumed, and the job fails so that someone checks it. `move` never restores `status`, so an export is the fallback, for when MGMT's etcd can't be restored.
+**CAPI exports.** `clusterctl move --to-directory` of every namespace that holds a Cluster, as one tar. The job waits up to 30 minutes for every Machine to be `Running` and none to be deleting, because `move` expects stable clusters. An export pauses each Cluster and its ClusterClass while it reads, and clusterctl resumes them only on success. Any Cluster or ClusterClass the export left paused is resumed, and the job fails so that someone checks it. A paused ClusterClass would otherwise stop topology reconciliation, and fail every later export. `move` never restores `status`, so an export is the fallback, for when MGMT's etcd can't be restored.
 
-**The backup key.** With `spec.backup.key.publicKey` set, that key is used. Without it, the `move` step generates an age key pair the first time it needs one. The private half is never written in plaintext: it is sealed to the recipients at once, and kept as `<state>/backup/backup-key.age` on the bootstrap host and as `dciab/recovery/backup-key-<time>.age` on the site target. `dciab mgmt` prints the public half; put it in the config, so a new bootstrap host keeps using it. **Until OpenBao exists, those two sealed files are the only copies of the private half**, so every restore needs a recipient's identity. With OpenBao, the private half also goes to its platform KV mount, and on-call staff restore without a recipient (ADR 0009, decision 10).
+**The backup key.** With `spec.backup.key.publicKey` set, that key is used. Without it, the `move` step generates an age key pair the first time it needs one. The private half is never written in plaintext: it is sealed to the recipients at once, and kept as `<state>/backup/backup-key.age` on the bootstrap host and as `dciab/recovery/backup-key-<public key>.age` on the site target. Every `dciab mgmt` run checks that the sealed copy is on the target, and uploads it (with retries) if it isn't. Nothing is encrypted to the key, and nothing moves, until it is there. `dciab mgmt` prints the public half; put it in the config, so a new bootstrap host keeps using it. **Until OpenBao exists, those two sealed files are the only copies of the private half**, so every restore needs a recipient's identity. With OpenBao, the private half also goes to its platform KV mount, and on-call staff restore without a recipient (ADR 0009, decision 10).
 
-**Retention and failures.** Each job prunes its own folder by its `keep` rules after a successful upload, and only then. A CronJob keeps the last three successful and three failed Jobs, so `kubectl -n dciab-backup logs job/<name>` shows what happened.
+**Retention and failures.** Each job prunes its own folder by its `keep` rules after a successful upload, and only then. A CronJob keeps the last three successful Jobs and one failed Job, each for 6 hours, so `kubectl -n dciab-backup logs job/<name>` shows what happened.
 
 ## Where backups stand
 
@@ -141,7 +141,7 @@ $ kubectl -n dciab-backup get jobs
 Every restore starts with a backup and a key that opens it: a recipient's identity, or the backup key, which you open first with a recipient's identity. Keep plaintext in memory (`/dev/shm`) or on the machine that needs it, never on shared storage.
 
 ```console
-$ age -d -i <recipient identity> -o /dev/shm/backup-key.txt backup-key-<time>.age   # only to use the backup key
+$ age -d -i <recipient identity> -o /dev/shm/backup-key.txt backup-key-<public key>.age   # only to use the backup key
 $ age -d -i /dev/shm/backup-key.txt -o /dev/shm/etcd.db etcd-mgmt-<time>.db.age      # or -i <recipient identity>
 ```
 
@@ -160,7 +160,11 @@ The first choice whenever MGMT's VMs still exist. It stops MGMT: Cluster API, an
 3. **Restore every member.** Copy the snapshot to every control plane node. On each node, read `--name` and `--initial-advertise-peer-urls` from `/root/held/etcd.yaml`, then:
    ```console
    # mv /var/lib/etcd /var/lib/etcd.before-restore
-   # etcdutl snapshot restore /dev/shm/etcd.db --data-dir /var/lib/etcd        --name <this node's --name>        --initial-advertise-peer-urls https://<this node's IP>:2380        --initial-cluster <node1>=https://<ip1>:2380,<node2>=https://<ip2>:2380,<node3>=https://<ip3>:2380        --initial-cluster-token mgmt-restore-<date>
+   # etcdutl snapshot restore /dev/shm/etcd.db --data-dir /var/lib/etcd \
+       --name <this node's --name> \
+       --initial-advertise-peer-urls https://<this node's IP>:2380 \
+       --initial-cluster <node1>=https://<ip1>:2380,<node2>=https://<ip2>:2380,<node3>=https://<ip3>:2380 \
+       --initial-cluster-token mgmt-restore-<date>
    # restorecon -R /var/lib/etcd          # SELinux-enforcing nodes
    ```
    `etcdutl` is in the etcd image `bundle.lock` pins. Nodes don't carry it, so copy it out of the image on the bootstrap host (`podman create` the image, then `podman cp <container>:/usr/local/bin/etcdutl .`) and onto each node.
@@ -169,7 +173,7 @@ The first choice whenever MGMT's VMs still exist. It stops MGMT: Cluster API, an
 
 ### Cluster API state, from an export
 
-`clusterctl move --from-directory` recreates every object of an export, then resumes the Clusters. It doesn't restore `status`, so controllers rebuild it.
+`clusterctl move --from-directory` recreates every object of an export in the cluster `--to-kubeconfig` names, then resumes the Clusters. It ignores `--kubeconfig`, and without `--to-kubeconfig` it uses `$KUBECONFIG` or `~/.kube/config`, which may be another cluster: always pass `--to-kubeconfig`. It doesn't restore `status`, so controllers rebuild it.
 
 **The bootstrap host was lost before or during the move.** MGMT's VMs run, but the kind cluster that managed them is gone. Use the export taken before the move:
 
@@ -177,11 +181,11 @@ The first choice whenever MGMT's VMs still exist. It stops MGMT: Cluster API, an
 2. Decrypt and unpack the newest `capi-mgmt-<time>.tar.age` (`age -d ... | tar -x`). This gives `capi/cluster-mgmt/`.
 3. Import it into the new bootstrap cluster:
    ```console
-   $ clusterctl move --from-directory capi/cluster-mgmt        --kubeconfig <state>/bootstrap.kubeconfig --to-kubeconfig <state>/bootstrap.kubeconfig
+   $ clusterctl move --from-directory capi/cluster-mgmt --to-kubeconfig <state>/bootstrap.kubeconfig
    ```
 4. Check that `kubectl -n cluster-mgmt get cluster mgmt,machines` lists every MGMT machine, and that none is being replaced. Then re-run `dciab mgmt`: it finds Cluster mgmt on the bootstrap cluster and moves it to MGMT.
 
-**MGMT was lost, with its VMs.** Rebuild MGMT from the archive and the config (`dciab seed`, then `dciab mgmt`). Once MGMT manages INFRA and workload clusters, import the newest export's namespaces for those clusters into the new MGMT, as in step 3, with MGMT's kubeconfig. Don't import `cluster-mgmt`: the rebuilt MGMT has its own.
+**MGMT was lost, with its VMs.** Rebuild MGMT from the archive and the config (`dciab seed`, then `dciab mgmt`). Once MGMT manages INFRA and workload clusters, import the newest export's namespaces for those clusters into the new MGMT, as in step 3, with `--to-kubeconfig` set to MGMT's kubeconfig. Don't import `cluster-mgmt`: the rebuilt MGMT has its own.
 
 Never import an export into a management cluster while another one still manages the same Clusters: both would act on the same VMs.
 

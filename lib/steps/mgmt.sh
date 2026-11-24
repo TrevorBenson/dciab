@@ -39,10 +39,10 @@
 #               on MGMT and none are left on the bootstrap cluster. First, an encrypted CAPI
 #               export of the bootstrap cluster to the site target (docs/BACKUP.md); the
 #               move doesn't start without it. The backup key is generated here if the
-#               config gives none
+#               config gives none, and its sealed private half must reach the target first
 #   adopt       the classes and mgmt Helm releases on MGMT take over the moved objects; it
-#               refuses to run unless the moved Cluster is on MGMT. A run that moved MGMT
-#               then exports MGMT's CAPI state once more
+#               refuses to run unless the moved Cluster is on MGMT. Then it exports MGMT's
+#               CAPI state from MGMT once; a later run retries a failed export
 #   storage     MGMT's block storage (spec.storage.block, with its mgmt override) and the
 #               four StorageClasses, replicated the default (lib/steps/storage-classes.sh).
 #               longhorn: addons/longhorn/install.sh, with recurring snapshots and backups
@@ -157,8 +157,9 @@ flock -n 9 || die "another dciab mgmt is running with state $state"
 # target, kept in <state>/capi-backup too (lib/dciab_backup). Generates the backup key first
 # if there is none. The move step calls it before the move, the adopt step after.
 capi_backup() {
-  python3 -m dciab_backup key "$config" --state "$state" >/dev/null
-  python3 -m dciab_backup export "$config" --state "$state" --kubeconfig "$1" --label "$2"
+  # Called as capi_backup ... || die, where set -e doesn't apply: each command returns on failure.
+  python3 -m dciab_backup key "$config" --state "$state" >/dev/null || return
+  python3 -m dciab_backup export "$config" --state "$state" --kubeconfig "$1" --label "$2" || return
 }
 
 # Where MGMT's Cluster object lives (pivot_state), the move and its checks.
@@ -267,9 +268,10 @@ apply_credentials "$mgmt_kubeconfig"
 on_mgmt helm upgrade --install classes "$ROOT/charts/capi-clusterclasses" --namespace "$CLASS_NS" --create-namespace
 on_mgmt helm upgrade --install mgmt "$ROOT/charts/capi-cluster" --namespace "$NS" --values "$values"
 on_mgmt kubectl -n "$NS" get cluster mgmt
-if [[ "$pivot" != mgmt ]]; then
-  # This run moved MGMT: export its CAPI state once from MGMT itself (ADR 0009, decision 3).
-  capi_backup "$mgmt_kubeconfig" after-move || die "the CAPI export after the move failed (above); MGMT is moved and adopted, re-run to retry"
+# Once MGMT is moved, export its CAPI state from MGMT itself (ADR 0009, decision 3). Done
+# when <state>/capi-backup/LAST records it, so a run after a failed export retries it.
+if [[ "$pivot" != mgmt ]] || ! grep -qs ' after-move$' "$state/capi-backup/LAST"; then
+  capi_backup "$mgmt_kubeconfig" after-move || die "the CAPI export after the move failed (above); MGMT is moved and adopted. Re-run dciab mgmt: it retries the export"
 fi
 finish_if adopt
 
@@ -297,6 +299,9 @@ finish_if storage
 
 step backups
 python3 -m dciab_backup key "$config" --state "$state" >/dev/null
+# Rendered first: an unpinned images.backup stops the step before anything is applied.
+backup_jobs="$(python3 -m dciab_backup manifests "$config" mgmt --state "$state")" \
+  || die "MGMT's backup jobs can't be rendered (above); nothing was applied"
 # The S3 credentials go from the config's reference into the cluster through a pipe,
 # server-side, as Longhorn's do. NFS targets take none.
 on_mgmt kubectl create namespace dciab-backup --dry-run=client -o yaml | on_mgmt kubectl apply --server-side --field-manager=dciab -f -
@@ -305,8 +310,7 @@ if [[ "$(python3 -m dciab_backup site-kind "$config")" == s3 ]]; then
 else
   on_mgmt kubectl -n dciab-backup delete secret dciab-backup-target --ignore-not-found
 fi
-python3 -m dciab_backup manifests "$config" mgmt --state "$state" \
-  | on_mgmt kubectl apply --server-side --field-manager=dciab --force-conflicts -f -
+on_mgmt kubectl apply --server-side --field-manager=dciab --force-conflicts -f - <<<"$backup_jobs"
 on_mgmt kubectl -n dciab-backup get cronjobs
 step_done 0
 echo
