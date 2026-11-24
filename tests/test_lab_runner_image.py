@@ -14,15 +14,20 @@ def wf():
     return yaml.safe_load(WF.read_text())
 
 
-def test_it_builds_on_a_github_hosted_runner_never_on_the_lab():
+def test_it_builds_on_the_lab_runner_and_never_runs_for_a_pull_request():
+    """A hosted Ubuntu runner can't build the base (nested rpm-ostree compose fails with
+    'cannot open /etc/gshadow'); the lab runner is Rocky 10 with SELinux. The job-started
+    hook refuses pull requests, so the workflow must not offer that trigger."""
     w = wf()
     job = w["jobs"]["image"]
-    assert job["runs-on"] == "ubuntu-latest"
+    assert job["runs-on"] == ["self-hosted", "dciab-lab"]
     triggers = w[True]
-    assert set(triggers) == {"push", "pull_request", "workflow_dispatch"}
+    assert set(triggers) == {"push", "workflow_dispatch"}
     assert triggers["push"]["branches"] == ["main"]
-    assert triggers["push"]["paths"] == triggers["pull_request"]["paths"]
     assert "images/lab-runner/**" in triggers["push"]["paths"] and "images/node-bootc/**" in triggers["push"]["paths"]
+    assert w["concurrency"] == {"group": "dciab-lab", "cancel-in-progress": False}
+    # The runner image has its own python with PyYAML; setup-python is for Ubuntu runners.
+    assert "setup-python" not in WF.read_text()
 
 
 def test_only_the_job_can_write_packages_and_only_main_publishes():
@@ -31,7 +36,7 @@ def test_only_the_job_can_write_packages_and_only_main_publishes():
     job = w["jobs"]["image"]
     assert job["permissions"] == {"contents": "read", "packages": "write"}
     publish = next(s for s in job["steps"] if s.get("name", "").startswith("Publish"))
-    assert publish["if"] == "github.event_name == 'push' && github.ref == 'refs/heads/main'"
+    assert publish["if"] == "github.ref == 'refs/heads/main'"
     # Every step that logs in or pushes is the publish step.
     for step in job["steps"]:
         if step is not publish:
