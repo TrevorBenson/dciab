@@ -63,13 +63,24 @@ objects_on() {
   printf '%s\n%s\n' "$objects" "$secrets" | sed '/^$/d' | sort -u
 }
 
+# deleting_on <kubeconfig>: succeeds if an object in NS is being deleted (a deletionTimestamp,
+# or clusterctl's delete-for-move mark): a move's delete phase has started there.
+deleting_on() {
+  local kinds out
+  kinds="$(KUBECONFIG="$1" kubectl api-resources --namespaced=true --verbs=list -o name)" || return 2
+  kinds="$(grep -E '\.(x-k8s\.io|metal3\.io)$' <<<"$kinds" | paste -sd, -)"
+  out="$(KUBECONFIG="$1" kubectl -n "$NS" get "$kinds,secrets" \
+    -o jsonpath='{range .items[*]}{.metadata.deletionTimestamp}|{.metadata.annotations}{"\n"}{end}')" || return 2
+  grep -qE '^[^|]+[|]|clusterctl\.cluster\.x-k8s\.io/delete-for-move' <<<"$out"
+}
+
 # subset <a> <b>: every line of a is in b.
 subset() { [[ -z "$(comm -23 <(printf '%s\n' "$1") <(printf '%s\n' "$2") | sed '/^$/d')" ]]; }
 
 # pivot_state: where MGMT's Cluster is, and what that means.
 #   bootstrap  on the bootstrap cluster only, not paused (or nowhere yet): not moved
-#   stalled    on the bootstrap cluster only, paused: a move paused it and stopped before
-#              it created anything on MGMT
+#   stalled    on the bootstrap cluster only, paused, and MGMT answers without a Cluster: a
+#              move paused it and stopped before it created anything on MGMT
 #   mgmt       on MGMT only: moved (the move step resumes it there if it is still paused)
 #   On both clusters:
 #   split      neither copy paused, MGMT's has no Machines and the bootstrap's has: the
@@ -84,7 +95,7 @@ subset() { [[ -z "$(comm -23 <(printf '%s\n' "$1") <(printf '%s\n' "$2") | sed '
 #              bootstrap's copies: finish the move on MGMT by hand
 #   unclear    anything else: don't delete or unpause either copy
 pivot_state() {
-  local on_b on_m="" p_b p_m m_b m_m o_b o_m cls cp_b
+  local on_b on_m="" p_b p_m m_b m_m o_b o_m cls cp_b del
   # No kubeconfig for MGMT: its control plane was never up, so nothing was moved.
   [[ -f "$mgmt_kubeconfig" ]] || { echo bootstrap; return; }
   on_b="$(cluster_on "$bootstrap")" || die "can't read Clusters on the bootstrap cluster ($bootstrap)"
@@ -94,7 +105,14 @@ pivot_state() {
     [[ -n "$on_b" ]] || die "MGMT's API doesn't answer ($mgmt_kubeconfig) and the bootstrap cluster has no Cluster mgmt," \
       "so this can't tell whether MGMT was already moved. Bring MGMT's API back and re-run; if that MGMT was" \
       "torn down, delete $mgmt_kubeconfig and re-run to build a new one."
-    on_m=""
+    # Paused on the bootstrap cluster: a move may already have copied it to MGMT, which this
+    # can't see. Unpausing a remainder would let its controllers replace deleted Machines.
+    p_b="$(paused_on "$bootstrap")" || die "can't read Cluster mgmt on the bootstrap cluster"
+    [[ "$p_b" == no ]] || die "MGMT is unreachable ($mgmt_kubeconfig) and Cluster mgmt is paused on the bootstrap" \
+      "cluster: a move may already have copied it to MGMT. Don't unpause anything on the bootstrap cluster; bring" \
+      "MGMT's API back, then re-run."
+    echo bootstrap
+    return
   fi
   if [[ -z "$on_m" ]]; then
     if [[ -z "$on_b" ]]; then echo bootstrap; return; fi
@@ -117,7 +135,15 @@ pivot_state() {
   [[ "$p_m" == yes ]] || { echo unclear; return; }   # paused on the bootstrap only: not a move's doing
   o_b="$(objects_on "$bootstrap")" || die "can't list the objects in $NS on the bootstrap cluster"
   o_m="$(objects_on "$mgmt_kubeconfig")" || die "can't list the objects in $NS on MGMT"
-  # clusterctl deletes from the source only after it created everything on the target.
+  # clusterctl deletes from the source only after it created everything on the target. An
+  # object it is deleting is still listed until its finalizers go, so look for those too.
+  del=0
+  deleting_on "$bootstrap" || del=$?
+  (( del < 2 )) || die "can't read the objects in $NS on the bootstrap cluster"
+  if (( del == 0 )); then
+    if [[ "$p_b" == yes ]] && subset "$o_b" "$o_m"; then echo finish; else echo unclear; fi
+    return
+  fi
   if (( m_b > 0 )) && subset "$o_m" "$o_b"; then
     # MGMT holds nothing the bootstrap cluster lost: nothing was deleted there.
     cls="$(class_of "$bootstrap")" || die "can't read Cluster mgmt's ClusterClass on the bootstrap cluster"
@@ -198,13 +224,15 @@ EOF
 # resume_on_mgmt: the move's last step, when it stopped just before it. The bootstrap cluster
 # no longer has the Cluster, so MGMT's paused copy is the only one, and unpausing it is safe.
 resume_on_mgmt() {
-  local cls
+  local cls cp p
   cls="$(class_of "$mgmt_kubeconfig")" || die "can't read Cluster mgmt's ClusterClass on MGMT"
-  if [[ "$(class_paused_on "$mgmt_kubeconfig" "${cls% *}" "${cls#* }")" == yes ]]; then
+  cp="$(class_paused_on "$mgmt_kubeconfig" "${cls% *}" "${cls#* }")" || die "can't read ClusterClass ${cls#* } on MGMT"
+  p="$(paused_on "$mgmt_kubeconfig")" || die "can't read Cluster mgmt on MGMT"
+  if [[ "$cp" == yes ]]; then
     echo "resuming ClusterClass ${cls#* } on MGMT (the move stopped before it did)"
     KUBECONFIG="$mgmt_kubeconfig" kubectl -n "${cls% *}" annotate clusterclass "${cls#* }" "$PAUSED_ANNOTATION-"
   fi
-  if [[ "$(paused_on "$mgmt_kubeconfig")" == yes ]]; then
+  if [[ "$p" == yes ]]; then
     echo "resuming Cluster mgmt on MGMT (the move stopped before it did)"
     KUBECONFIG="$mgmt_kubeconfig" kubectl -n "$NS" annotate cluster mgmt "$PAUSED_ANNOTATION-"
     KUBECONFIG="$mgmt_kubeconfig" kubectl -n "$NS" patch cluster mgmt --type merge -p '{"spec":{"paused":false}}'
@@ -215,7 +243,7 @@ resume_on_mgmt() {
 # are on MGMT, neither it nor its ClusterClass is paused there, and no Machines are left on
 # the bootstrap cluster. Fails with what to do otherwise.
 check_moved() {
-  local state on_m left cls
+  local state on_m left cls p cp
   state="$(pivot_state)" || return 1
   case "$state" in
     mgmt) ;;
@@ -239,7 +267,9 @@ check_moved() {
   fi
   # Paused, nothing on MGMT reconciles it: MGMT doesn't manage itself yet.
   cls="$(class_of "$mgmt_kubeconfig")" || die "can't read Cluster mgmt's ClusterClass on MGMT"
-  if [[ "$(paused_on "$mgmt_kubeconfig")" == yes || "$(class_paused_on "$mgmt_kubeconfig" "${cls% *}" "${cls#* }")" == yes ]]; then
+  p="$(paused_on "$mgmt_kubeconfig")" || die "can't read Cluster mgmt on MGMT"
+  cp="$(class_paused_on "$mgmt_kubeconfig" "${cls% *}" "${cls#* }")" || die "can't read ClusterClass ${cls#* } on MGMT"
+  if [[ "$p" == yes || "$cp" == yes ]]; then
     echo "dciab mgmt: Cluster mgmt is on MGMT, but it or its ClusterClass ${cls#* } is still paused there, so" \
       "nothing manages it. Re-run dciab mgmt: its move step resumes them." >&2
     return 1
@@ -252,11 +282,16 @@ check_moved() {
 # then check_moved. Safe to re-run: once moved, it only resumes what is still paused on MGMT
 # and checks.
 move_mgmt() {
-  local state before
+  local state before on_m left
   state="$(pivot_state)" || exit 1
   case "$state" in
     mgmt)
       echo "already moved"
+      # Resume only a copy that holds the Machines, with none left on the bootstrap cluster.
+      on_m="$(machines_on "$mgmt_kubeconfig")" || die "can't read Machines on MGMT"
+      left="$(machines_on "$bootstrap")" || die "can't read Machines on the bootstrap cluster"
+      (( on_m > 0 && left == 0 )) || die "Cluster mgmt is on MGMT with $on_m Machines and $left left on the bootstrap" \
+        "cluster; not resuming it. See $MGMT_DOC."
       resume_on_mgmt ;;
     bootstrap|rerun)
       [[ "$state" == bootstrap ]] || echo "a move to MGMT stopped part-way; nothing was deleted from the bootstrap cluster, so moving again"

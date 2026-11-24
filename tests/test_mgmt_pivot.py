@@ -76,6 +76,13 @@ if what == "machines":
     print("\n".join(o for o in objs if o.startswith("machine.cluster.x-k8s.io/")))
 elif what == "secrets":
     print("\n".join(o for o in objs if o.startswith("secret/") and not o.startswith("secret/sh.helm.release")))
+elif "," in what and "deletionTimestamp" in " ".join(args):
+    for o in objs:
+        if o.startswith("secret/sh.helm.release"):
+            continue
+        stamp = "2026-11-23T00:00:00Z" if o in side.get("deleting", []) else ""
+        notes = '{"clusterctl.cluster.x-k8s.io/delete-for-move":""}' if o in side.get("marked", []) else "{}"
+        print(f"{stamp}|{notes}")
 elif "," in what:
     print("\n".join(o for o in objs if not o.startswith("secret/")))
 elif what == "cluster":
@@ -87,6 +94,8 @@ elif what == "cluster":
     if "classRef" in jp:
         print("dciab-clusterclasses dciab-proxmox-r1", end="")
     elif "paused" in jp:
+        if side.get("unreadable"):
+            sys.exit("Error from server: etcdserver: request timed out")
         print(("true" if side.get("paused") else "") + "|{}", end="")
     else:
         print("cluster.cluster.x-k8s.io/mgmt")
@@ -165,10 +174,10 @@ def lab(tmp_path):
         mgmt = tmp_path / "mgmt.kubeconfig"
         env = {"PATH": f"{bin_dir}:/usr/bin:/bin", "FAKE_LOG": str(log)}
 
-        def side(self, kubeconfig, objects=(), crd=True, paused=False, ccpaused=False, down=False):
+        def side(self, kubeconfig, objects=(), crd=True, paused=False, ccpaused=False, down=False, **more):
             kubeconfig.write_text("fake")
             side_file(kubeconfig).write_text(json.dumps(
-                {"crd": crd, "down": down, "paused": paused, "ccpaused": ccpaused, "objects": list(objects)}))
+                {"crd": crd, "down": down, "paused": paused, "ccpaused": ccpaused, "objects": list(objects), **more}))
 
         def run(self, command, **env):
             script = (f'set -euo pipefail\nNS={NS} bootstrap="{self.bootstrap}" mgmt_kubeconfig="{self.mgmt}"'
@@ -413,3 +422,45 @@ def test_the_help_points_at_a_doc_section_that_exists():
     text = LIB.read_text()
     doc, section = text.split('MGMT_DOC="', 1)[1].split('"', 1)[0].split(", ", 1)
     assert f"## {section.strip(chr(39))}" in (ROOT / doc).read_text()
+
+
+def test_mgmt_unreachable_and_a_paused_bootstrap_never_says_to_unpause(lab):
+    """Re-review N1: a move stopped mid-delete, re-run while MGMT's API is down. Unpausing the
+    bootstrap cluster's remainder would replace MGMT's deleted Machines with new VMs."""
+    remainder = ["cluster.cluster.x-k8s.io/mgmt", "secret/mgmt-ca", "machine.cluster.x-k8s.io/mgmt-0"]
+    lab.side(lab.bootstrap, remainder, paused=True, ccpaused=True)
+    lab.side(lab.mgmt, mgmt_objects(), paused=True, ccpaused=True, down=True)
+    for command in ('state="$(pivot_state)"; echo "got $state"', "move_mgmt"):
+        r = lab.run(command)
+        assert r.returncode == 1 and "got" not in r.stdout
+        assert "MGMT is unreachable" in r.stderr and "Don't unpause anything on the bootstrap cluster" in r.stderr
+        assert "KUBECONFIG=" not in r.stderr.replace(f"({lab.mgmt})", "") and "annotate" not in r.stderr
+    assert lab.moves() == [] and lab.changes_on(lab.bootstrap) == []
+
+
+@pytest.mark.parametrize("mark", ["deleting", "marked"])
+def test_a_started_delete_is_never_resumed_from_the_bootstrap(lab, mark):
+    """Re-review L1: clusterctl deletes an object, then drops its finalizers. One still listed but being
+    deleted means the delete phase began: finish on MGMT, never unpause the bootstrap copy."""
+    objs = mgmt_objects()
+    lab.side(lab.bootstrap, objs, paused=True, ccpaused=True, **{mark: ["secret/mgmt-0-bootstrap"]})
+    lab.side(lab.mgmt, objs, paused=True, ccpaused=True)
+    assert lab.run("pivot_state").stdout.strip() == "finish"
+    lab.side(lab.bootstrap, objs, ccpaused=True, **{mark: ["secret/mgmt-0-bootstrap"]})
+    assert lab.run("pivot_state").stdout.strip() == "unclear"
+
+
+def test_a_paused_copy_on_mgmt_without_machines_is_not_resumed(lab):
+    """Re-review L2: resume only after the Machine checks."""
+    lab.side(lab.bootstrap)
+    lab.side(lab.mgmt, mgmt_objects(0), paused=True, ccpaused=True)
+    r = lab.run("move_mgmt")
+    assert r.returncode == 1 and "not resuming it" in r.stderr and lab.changes_on(lab.mgmt) == []
+
+
+def test_an_unreadable_pause_stops_the_check(lab):
+    """Re-review L2: a failed read is not "not paused"."""
+    lab.side(lab.bootstrap)
+    lab.side(lab.mgmt, mgmt_objects(), unreadable=True)
+    r = lab.run("check_moved")
+    assert r.returncode == 1 and "can't read Cluster mgmt on MGMT" in r.stderr and "not paused" not in r.stdout
