@@ -56,6 +56,12 @@ jobs:
           sudo udevadm trigger --name-match=kvm
           ls -l /dev/kvm
           df -h /
+      - name: Let bootc-image-builder mount inside its container (AppArmor)
+        # osbuild mounts the container storage inside bootc-image-builder; Ubuntu's default
+        # AppArmor profile for podman denies it ("mount: /run/osbuild/containers/storage: permission denied").
+        run: |
+          sudo mkdir -p /etc/containers/containers.conf.d
+          printf '[containers]\napparmor_profile = "unconfined"\n' | sudo tee /etc/containers/containers.conf.d/99-dciab.conf >/dev/null
       - name: Build the node image and qcow2
         run: sudo images/node-bootc/build.sh --type qcow2
       - name: Boot it and check
