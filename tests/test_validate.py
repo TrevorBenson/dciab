@@ -374,13 +374,37 @@ def test_hypervisor_duplicate_mac_and_bmc(site):
     assert errors(report, "spec.hypervisors.hosts[2].bmc.address")
 
 
-def test_hypervisor_not_in_proxmox_nodes_is_a_warning(site):
+def test_unclustered_hypervisors_list_only_the_template_node(site):
+    # ADR 0010: the installed hosts aren't clustered, so nodes: [pve01] is right and the
+    # other hosts get a note: notHighlyAvailable already warns about the single host.
     doc = load_example("proxmox-bare")
-    doc["spec"]["hypervisors"]["hosts"][2]["name"] = "pve09"
+    assert doc["spec"]["platform"]["proxmox"]["nodes"] == ["pve01"]
     code, report = site.validate(doc)
     assert code == 0
-    assert warnings(report, "spec.hypervisors.hosts[2].name")
-    assert any("pve03" in n for n in report["notes"])
+    assert not errors(report, "spec.platform.proxmox.nodes")
+    assert not warnings(report, "spec.hypervisors.hosts")
+    assert any(n.startswith("pve02, pve03 are installed but not in") for n in report["notes"])
+    assert not any("won't install" in n for n in report["notes"])
+
+
+def test_unclustered_hosts_in_nodes_on_local_storage_is_an_error(site):
+    doc = load_example("proxmox-bare")
+    doc["spec"]["platform"]["proxmox"]["nodes"] = ["pve01", "pve02", "pve03"]
+    code, report = site.validate(doc)
+    assert code != 0
+    [e] = errors(report, "spec.platform.proxmox.nodes")
+    assert "[pve01]" in e["fix"] and "pve02, pve03" in e["fix"]
+    assert not any("installed but not in" in n for n in report["notes"])
+
+
+def test_more_nodes_on_shared_storage_are_accepted(site):
+    doc = load_example("proxmox-bare")
+    px = doc["spec"]["platform"]["proxmox"]
+    px["storage"], px["nodes"] = "ceph-rbd", ["pve01", "pve02", "pve09"]
+    _, report = site.validate(doc)
+    assert not errors(report, "spec.platform.proxmox.nodes")
+    assert any(n.startswith("pve03 is installed but not in") for n in report["notes"])
+    assert any("pve09" in n and "won't install" in n for n in report["notes"])
 
 
 def test_hypervisor_root_password_must_exist_when_given(site):

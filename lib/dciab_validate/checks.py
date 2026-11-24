@@ -499,12 +499,25 @@ class Checker:
             bmcs.setdefault(addr, hp)
 
         if ptype == "proxmox" and hv["type"] == "proxmox":
-            nodes = self.spec["platform"]["proxmox"]["nodes"]
+            # ADR 0010 (decisions 6 and 7): the hosts dciab hypervisors installs aren't clustered
+            # and have only a fresh install's local storage, so CAPMOX clones every VM on the
+            # template's node. nodes lists just that node; the other hosts wait for clustering.
+            px = self.spec["platform"]["proxmox"]
+            nodes, template = px["nodes"], px["templateNode"]
             names = [h["name"] for h in hv["hosts"]]
-            for i, name in enumerate(names):
-                if name not in nodes:
-                    self.warn(base + ("hosts", i, "name"), name,
-                              "add it to spec.platform.proxmox.nodes, or CAPMOX will never place VMs on it")
+            extra = [n for n in nodes if n != template]
+            # Matched by name offline; a renamed local pool is caught by --live's shared-flag check.
+            if extra and px["storage"] in ("local", "local-lvm", "local-zfs"):
+                self.error(("spec", "platform", "proxmox", "nodes"), ", ".join(nodes),
+                           f"list only the template node ([{template}]): on {px['storage']}, local to one host, "
+                           f"CAPMOX can't clone the template to {', '.join(extra)} (ADR 0010)")
+            idle = [n for n in names if n not in nodes]
+            if idle:
+                # A note, not a warning: notHighlyAvailable already warns once about the single host
+                # (ADR 0010 decision 7), and there's nothing here for the operator to change.
+                verb = "is" if len(idle) == 1 else "are"
+                self.notes.append(f"{', '.join(idle)} {verb} installed but not in spec.platform.proxmox.nodes: "
+                                  "CAPMOX uses them once they're clustered with shared storage (ADR 0010)")
             missing = [n for n in nodes if n not in names]
             if missing:
                 self.notes.append("spec.platform.proxmox.nodes lists hosts DCiaB won't install ("
