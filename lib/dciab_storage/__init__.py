@@ -36,7 +36,7 @@ SETTINGS = {"longhorn": "longhorn", "vsphere-csi": "vsphereCSI", "proxmox-csi": 
 TIERS = ("mgmt", "infra", "workload")
 # Providers DCiaB installs today. The others are accepted by the schema so configs can be
 # written, and validate says they aren't installed yet.
-INSTALLED = ("longhorn", "existing")
+INSTALLED = ("longhorn", "vsphere-csi", "proxmox-csi", "existing")
 # Array providers that work only on clusters of one class.
 CLASS_ONLY = {"vsphere-csi": "vsphere", "proxmox-csi": "proxmox"}
 PROVISIONERS = {"longhorn": "driver.longhorn.io", "vsphere-csi": "csi.vsphere.vmware.com",

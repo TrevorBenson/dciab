@@ -41,6 +41,8 @@ class ChecksumError(Exception):
 
 def cache_dir(lock: dict) -> Path:
     pins = {k: lock.get(k) for k in ("clusterAPI", "metal3", "certManager", "checksums")}
+    if lock.get("csiDrivers"):
+        pins["csiDrivers"] = lock["csiDrivers"]
     return CACHE / hashlib.sha256(json.dumps(pins, sort_keys=True).encode()).hexdigest()[:12]
 
 
@@ -61,6 +63,15 @@ def release_files(lock: dict) -> Iterator[Tuple[str, str, str]]:
         for component in entry["components"]:
             yield f"{name}-{entry['version']}", component, \
                 f"{GITHUB}{entry['repo']}/releases/download/{entry['version']}/{component}"
+
+
+def csi_files(lock: dict) -> Iterator[Tuple[str, str, str]]:
+    """(folder, file name, URL) for every pinned CSI driver manifest (addons/csi), raw at its tag.
+    Saved as <name>.yaml whatever its suffix, so build/inventory.py reads it like the others."""
+    for name, entry in (lock.get("csiDrivers") or {}).items():
+        for manifest in entry["manifests"]:
+            yield f"{name}-{entry['version']}", Path(manifest).stem + ".yaml", \
+                f"{RAW}{entry['repo']}/{entry['version']}/{manifest}"
 
 
 def bmo_files(lock: dict, fetch) -> Iterator[Tuple[str, str, str]]:
@@ -107,7 +118,7 @@ def write_atomic(dest: Path, data: bytes) -> None:
 
 def print_checksums(lock: dict) -> int:
     print("checksums:")
-    files = list(release_files(lock))
+    files = list(release_files(lock)) + list(csi_files(lock))
     seen = {}
 
     def fetch(url: str) -> bytes:
@@ -135,7 +146,8 @@ def main(argv) -> int:
         print(root)
         return 0
     try:
-        files = list(release_files(lock)) + list(bmo_files(lock, lambda u: verified(u, download(u), checksums)))
+        files = list(release_files(lock)) + list(csi_files(lock)) + \
+            list(bmo_files(lock, lambda u: verified(u, download(u), checksums)))
         for folder, name, url in files:
             dest = root / folder / name
             if dest.is_file():

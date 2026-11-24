@@ -437,7 +437,7 @@
           "additionalProperties": false,
           "required": ["tokenID", "tokenSecret"],
           "properties": {
-            "tokenID": {"type": "string", "pattern": "^[^@\\s]+@[^!\\s]+![^\\s]+$", "description": "an API token of its own, not CAPMOX's, such as dciab@pve!csi (docs/PROXMOX.md)"},
+            "tokenID": {"type": "string", "pattern": "^[^@\\s]+@[^!\\s]+![^\\s]+$", "description": "an API token of its own, not CAPMOX's, such as csi@pve!dciab (docs/PROXMOX.md)"},
             "tokenSecret": {"$ref": "#/$defs/secretRef"}
           }
         }

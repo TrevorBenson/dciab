@@ -636,11 +636,30 @@ class Checker:
         if provider == "longhorn":
             self._check_longhorn(tier, settings)
         if provider == "proxmox-csi" and self.spec["platform"]["type"] == "proxmox":
+            self._check_proxmox_csi_zones(tier, settings)
             capmox = self.spec["platform"]["proxmox"]["credentials"]["tokenID"]
             if settings["credentials"]["tokenID"] == capmox:
                 self.error(self._block_path(tier, key, "credentials"), f"tokenID {capmox}, CAPMOX's token",
                            "give the Proxmox CSI driver a token of its own (docs/PROXMOX.md), so each holds only "
                            "the privileges it uses")
+
+    def _check_proxmox_csi_zones(self, tier: str, csi: dict) -> None:
+        """The plugin finds a node's PVE node from its topology.kubernetes.io/zone label (ADR
+        0010: the zone is the PVE node name). In r1 a Proxmox control plane gets a zone only on
+        a one-domain site, so a control plane that holds volumes needs one domain."""
+        for path, c, klass in self._tier_clusters(tier):
+            if klass != "proxmox":
+                continue
+            zones = usable_domains(self.spec, c, "proxmox")
+            workers = any(p["replicas"] > 0 for p in c.get("workerPools", []))
+            if not workers and len(zones) > 1:
+                self.error(path + ("workerPools",), f"none, over {len(zones)} failure domains, with proxmox-csi",
+                           "add a worker pool, or narrow the cluster to one failure domain: the control plane "
+                           "isn't spread in r1, so its nodes get no zone label and the Proxmox CSI plugin can't "
+                           "find their PVE node (ADR 0010)")
+        if csi["storage"].startswith("local"):
+            self.notes.append(f"{tier}: Proxmox CSI volumes on {csi['storage']} stay on the PVE node they were made on; "
+                              "a pod that uses one runs only there")
 
     def _check_longhorn(self, tier: str, lh: dict) -> None:
         target = lh["backupTarget"]

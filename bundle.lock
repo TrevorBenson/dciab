@@ -195,6 +195,22 @@ charts:
   # Approves kubelet serving-certificate CSRs (the classes set serverTLSBootstrap).
   kubelet-csr-approver: 1.2.16
 
+# Array CSI drivers (ADR 0008, decision 4), installed from their upstream release manifests
+# at these tags: hack/fetch_crds.py fetches each file (checked against checksums below), the
+# archive carries it in payload/providers, and addons/csi applies it with DCiaB's changes.
+csiDrivers:
+  # The Proxmox CSI plugin: the default block storage on Proxmox. Needs only an API token.
+  proxmox-csi:
+    repo: sergelogvinov/proxmox-csi-plugin
+    version: v0.22.1
+    manifests: [docs/deploy/proxmox-csi-plugin-release.yml]
+  # The vSphere CSI driver: the default on vSphere. v3.8 supports Kubernetes 1.34 to 1.36;
+  # bump it with kubernetes.version, like the CPI.
+  vsphere-csi:
+    repo: kubernetes-sigs/vsphere-csi-driver
+    version: v3.8.0
+    manifests: [manifests/vanilla/vsphere-csi-driver.yaml]
+
 # Where the charts above come from. The archive build (build/archive.py charts) vendors
 # each chart listed here. cert-manager is installed from its release manifest instead.
 chartRepositories:
@@ -299,4 +315,6 @@ checksums:
   metal3-io/baremetal-operator/v0.14.3/config/base/crds/bases/metal3.io_preprovisioningimages.yaml: 11a7c8d5e1752507a99ddeef899b0acdc4536cfd20fff876bb8caea00eb59e57
   metal3-io/baremetal-operator/v0.14.3/config/base/crds/kustomization.yaml: ac4149624c477d9bc2a9506c06fbf35bedf742983663d15b50e985d6e11740ec
   metal3-io/cluster-api-provider-metal3/v1.14.2/infrastructure-components.yaml: 37294b42b5e7dc2b8243a39d88565328126e8178c5a5e7db4baa8734fb7a34fe
+  kubernetes-sigs/vsphere-csi-driver/v3.8.0/manifests/vanilla/vsphere-csi-driver.yaml: 5dc3bf60183af5cb40634d433aaefad3f7cf0de1f2872e776d55ce781aaf3a4b
+  sergelogvinov/proxmox-csi-plugin/v0.22.1/docs/deploy/proxmox-csi-plugin-release.yml: 32078eaec6ed43766feb40e27e9385ca1c49ffd228f81c8fd4b1f8ef622d8ce8
   metal3-io/ip-address-manager/v1.14.3/ipam-components.yaml: c693215a94810ff935c303adbcd14f8535aec3653aa7cc32a6931f44b78f0c39

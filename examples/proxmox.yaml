@@ -66,7 +66,8 @@ spec:
       podCIDR: 10.240.0.0/16
       serviceCIDR: 10.241.0.0/16
       controlPlane: {replicas: 3, cpu: 4, memoryGiB: 16, diskGiB: 100}
-      workerPools: []
+      workerPools:                       # MGMT's volumes live on workers: in r1 only they get a zone (PVE node) label
+        - {name: general, replicas: 3, cpu: 4, memoryGiB: 16, diskGiB: 100}
     infra:
       apiVIP: 10.30.110.11
       nodeIPRange: 10.30.110.30-10.30.110.49
@@ -82,10 +83,12 @@ spec:
 
   storage:
     block:
-      provider: longhorn                 # on the root disk: CAPMOX gives VMs no second disk yet
-      longhorn:
-        replicaCount: 2                  # VM root disks go with a replaced node, so Longhorn keeps its own copies
-        backupTarget: nfs://nas01.dc3.example.net:/exports/longhorn
+      provider: proxmox-csi              # volumes are VM disks on a Proxmox storage; Ceph replicates them
+      proxmoxCSI:
+        storage: ceph-vm
+        credentials:                     # its own token: the privileges in docs/PROXMOX.md
+          tokenID: csi@pve!dciab
+          tokenSecret: {env: DCIAB_PVE_CSI_TOKEN}
 
   pki:
     mode: import-intermediate

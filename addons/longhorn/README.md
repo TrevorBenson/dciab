@@ -1,6 +1,6 @@
 # Longhorn
 
-Longhorn is DCiaB's own block storage (CSI), the `longhorn` provider of `spec.storage.block` ([ADR 0008](../../docs/adr/0008-provider-pattern.md)), for clusters on local disks. A site with an array that replicates (vSAN, Ceph, a SAN) uses the array's CSI driver instead, so data isn't replicated twice. Volumes are replicated across nodes. The site's backup target is Longhorn's default target; no backup schedule is set yet, so a volume is backed up only when someone asks for a backup.
+Longhorn is DCiaB's own block storage (CSI), the `longhorn` provider of `spec.storage.block` ([ADR 0008](../../docs/adr/0008-provider-pattern.md)), for clusters on local disks. A site with an array that replicates (vSAN, Ceph, a SAN) uses the array's CSI driver instead ([addons/csi](../csi/README.md)), so data isn't replicated twice. Volumes are replicated across nodes. The site's backup target is Longhorn's default target; no backup schedule is set yet, so a volume is backed up only when someone asks for a backup.
 
 `install.sh` installs or upgrades Longhorn on one cluster:
 - **Version and chart source:** `bundle.lock` (`charts.longhorn`, `chartRepositories.longhorn`). The chart's sha256 is checked against `chartDigests.longhorn`; a mismatch stops the install.

@@ -9,7 +9,7 @@ import sys
 import pytest
 import yaml
 
-from conftest import ROOT, errors, load_example, warnings
+from conftest import ROOT, errors, load_example, longhorn_example, warnings
 
 sys.path.insert(0, str(ROOT / "lib"))
 
@@ -26,7 +26,7 @@ def by_name(classes):
 
 
 def legacy_doc(name="proxmox"):
-    doc = load_example(name)
+    doc = longhorn_example(name)
     doc["spec"]["storage"] = {"longhorn": doc["spec"]["storage"]["block"]["longhorn"]}
     return doc
 
@@ -35,7 +35,7 @@ def proxmox_csi(doc):
     doc["spec"]["storage"]["block"] = {
         "provider": "proxmox-csi",
         "proxmoxCSI": {"storage": "ceph-vm",
-                       "credentials": {"tokenID": "dciab@pve!csi", "tokenSecret": {"env": "DCIAB_PVE_TOKEN"}}},
+                       "credentials": {"tokenID": "csi@pve!dciab", "tokenSecret": {"env": "DCIAB_PVE_TOKEN"}}},
     }
     return doc
 
@@ -50,7 +50,7 @@ def test_old_form_reads_as_longhorn():
 
 
 def test_override_replaces_the_provider_for_its_tier_only():
-    spec = load_example("vsphere")["spec"]
+    spec = longhorn_example("vsphere")["spec"]
     lh = spec["storage"]["block"]["longhorn"]
     spec["storage"]["block"] = {"provider": "vsphere-csi", "vsphereCSI": {"storagePolicy": "gold"},
                                 "overrides": {"workload": {"provider": "longhorn", "longhorn": lh}}}
@@ -61,7 +61,7 @@ def test_override_replaces_the_provider_for_its_tier_only():
 
 
 def test_override_without_a_provider_merges_settings():
-    spec = load_example("vsphere")["spec"]
+    spec = longhorn_example("vsphere")["spec"]
     spec["storage"]["block"]["overrides"] = {"mgmt": {"longhorn": {"replicaCount": 2}}}
     m = st.tier_block(spec, "mgmt")["settings"]
     assert m["replicaCount"] == 2 and m["backupTarget"].startswith("s3://")
@@ -73,13 +73,14 @@ def test_override_without_a_provider_merges_settings():
 def test_workload_clusters_dont_inherit_block():
     """MGMT and INFRA's block is theirs: without overrides.workload, DCiaB gives workload
     clusters no block storage, and tenants bring their own."""
-    spec = load_example("vsphere")["spec"]
+    doc = longhorn_example("vsphere")
+    spec = doc["spec"]
     assert st.tier_block(spec, "workload") is None
     assert st.cluster_block(spec, "apps01") is None
     assert st.cluster_block(spec, "infra")["provider"] == "longhorn"
     with pytest.raises(st.StorageError, match="overrides.workload"):
         st.storage_classes(spec, "apps01")
-    assert not cluster_values(load_example("vsphere"), "apps01", CA)["workerPools"][0]["machine"].get("dataDiskGiB")
+    assert not cluster_values(doc, "apps01", CA)["workerPools"][0]["machine"].get("dataDiskGiB")
 
 
 def test_workload_override_stands_alone():
@@ -92,7 +93,7 @@ def test_workload_override_stands_alone():
 
 
 def test_unknown_cluster_and_tier():
-    spec = load_example("vsphere")["spec"]
+    spec = longhorn_example("vsphere")["spec"]
     with pytest.raises(st.StorageError):
         st.tier_of(spec, "nope")
     with pytest.raises(st.StorageError):
@@ -102,13 +103,13 @@ def test_unknown_cluster_and_tier():
 # --- the four classes --------------------------------------------------------------------
 
 def test_every_provider_makes_the_four_classes_with_one_default():
-    vs = load_example("vsphere")["spec"]
+    vs = longhorn_example("vsphere")["spec"]
     vs["storage"]["block"] = {"provider": "vsphere-csi", "vsphereCSI": {"storagePolicy": "gold"}}
     source = {"kind": "StorageClass", "provisioner": "csi.example.com", "parameters": {"tier": "1"},
               "allowVolumeExpansion": True, "volumeBindingMode": "WaitForFirstConsumer", "mountOptions": ["noatime"]}
-    for classes in (st.storage_classes(load_example("proxmox")["spec"], "mgmt"),
+    for classes in (st.storage_classes(longhorn_example("proxmox")["spec"], "mgmt"),
                     st.storage_classes(vs, "mgmt"),
-                    st.storage_classes(proxmox_csi(load_example("proxmox"))["spec"], "infra"),
+                    st.storage_classes(proxmox_csi(longhorn_example("proxmox"))["spec"], "infra"),
                     st.copied_classes(source)):
         names = [c["metadata"]["name"] for c in classes]
         assert names == ["replicated", "replicated-retain", "local", "local-retain"]
@@ -122,7 +123,7 @@ def test_every_provider_makes_the_four_classes_with_one_default():
 
 
 def test_longhorn_local_classes_keep_one_replica_on_the_node():
-    spec = load_example("vsphere")["spec"]
+    spec = longhorn_example("vsphere")["spec"]
     c = by_name(st.storage_classes(spec, "mgmt"))
     assert c["replicated"]["parameters"]["numberOfReplicas"] == "3"
     assert c["replicated"]["parameters"]["dataLocality"] == "disabled"
@@ -134,11 +135,11 @@ def test_longhorn_local_classes_keep_one_replica_on_the_node():
 
 
 def test_array_classes_use_the_array_four_times():
-    spec = proxmox_csi(load_example("proxmox"))["spec"]
+    spec = proxmox_csi(longhorn_example("proxmox"))["spec"]
     c = by_name(st.storage_classes(spec, "mgmt"))
     assert {x["provisioner"] for x in c.values()} == {"csi.proxmox.sinextra.dev"}
     assert all(x["parameters"]["storage"] == "ceph-vm" for x in c.values())
-    vs = load_example("vsphere")["spec"]
+    vs = longhorn_example("vsphere")["spec"]
     vs["storage"]["block"] = {"provider": "vsphere-csi", "vsphereCSI": {"datastoreURL": "ds:///vmfs/volumes/x/"}}
     c = by_name(st.storage_classes(vs, "mgmt"))
     assert c["local"]["parameters"] == {"csi.storage.k8s.io/fstype": "ext4", "datastoreurl": "ds:///vmfs/volumes/x/"}
@@ -147,7 +148,7 @@ def test_array_classes_use_the_array_four_times():
 
 
 def test_existing_copies_the_source_and_needs_it():
-    spec = load_example("vsphere")["spec"]
+    spec = longhorn_example("vsphere")["spec"]
     spec["storage"]["block"] = {"provider": "existing", "existing": {"storageClass": "site-gold"}}
     with pytest.raises(st.StorageError, match="read StorageClass site-gold"):
         st.storage_classes(spec, "mgmt")
@@ -167,7 +168,7 @@ def test_existing_copies_the_source_and_needs_it():
     ("vendor-csi", "vendorCSI", {"driver": "trident"}),
 ])
 def test_providers_not_installed_yet_make_no_classes(provider, key, settings):
-    spec = load_example("vsphere")["spec"]
+    spec = longhorn_example("vsphere")["spec"]
     spec["storage"]["block"] = {"provider": provider, key: settings}
     with pytest.raises(st.StorageError, match="not installed by DCiaB yet"):
         st.storage_classes(spec, "mgmt")
@@ -175,10 +176,13 @@ def test_providers_not_installed_yet_make_no_classes(provider, key, settings):
 
 def test_cli_prints_provider_and_classes(tmp_path):
     env = {**os.environ, "PYTHONPATH": str(ROOT / "lib")}
-    cfg = ROOT / "examples" / "vsphere.yaml"
-    r = subprocess.run([sys.executable, "-m", "dciab_storage", "provider", str(cfg), "apps01"],
-                       capture_output=True, text=True, env=env)
+    r = subprocess.run([sys.executable, "-m", "dciab_storage", "provider", str(ROOT / "examples" / "vsphere.yaml"),
+                        "apps01"], capture_output=True, text=True, env=env)
     assert r.returncode == 0 and r.stdout.strip() == "none"
+    cfg = ROOT / "examples" / "metal3-cluster.yaml"
+    r = subprocess.run([sys.executable, "-m", "dciab_storage", "provider", str(cfg), "metal01"],
+                       capture_output=True, text=True, env=env)
+    assert r.returncode == 0 and r.stdout.strip() == "longhorn"
     r = subprocess.run([sys.executable, "-m", "dciab_storage", "provider", str(cfg), "mgmt"],
                        capture_output=True, text=True, env=env)
     assert r.returncode == 0 and r.stdout.strip() == "longhorn"
@@ -237,7 +241,7 @@ def test_storage_classes_recreates_a_class_whose_parameters_changed(tmp_path):
 
 
 def test_storage_classes_copies_an_existing_class(tmp_path, site):
-    doc = load_example("vsphere")
+    doc = longhorn_example("vsphere")
     doc["spec"]["storage"]["block"] = {"provider": "existing", "existing": {"storageClass": "site-gold"}}
     cfg = tmp_path / "dciab.yaml"
     cfg.write_text(yaml.safe_dump(doc))
@@ -272,7 +276,7 @@ def test_longhorn_install_applies_its_secret_server_side_and_the_classes():
 # --- the data disk ----------------------------------------------------------------------
 
 def test_vsphere_longhorn_machines_get_their_data_disk():
-    doc = load_example("vsphere")
+    doc = longhorn_example("vsphere")
     mgmt = cluster_values(doc, "mgmt", CA)
     assert mgmt["controlPlane"]["machine"]["dataDiskGiB"] == 200
     infra = cluster_values(doc, "infra", CA)
@@ -282,12 +286,12 @@ def test_vsphere_longhorn_machines_get_their_data_disk():
 
 
 def test_data_disk_is_dropped_without_longhorn_or_on_proxmox():
-    doc = load_example("vsphere")
+    doc = longhorn_example("vsphere")
     doc["spec"]["storage"]["block"] = {"provider": "vsphere-csi"}
     v = cluster_values(doc, "mgmt", CA)
     assert "dataDiskGiB" not in v["controlPlane"]["machine"]
     assert "isn't Longhorn" in unsupported(doc, "mgmt")[0]
-    px = load_example("proxmox")
+    px = longhorn_example("proxmox")
     px["spec"]["clusters"]["infra"]["workerPools"][0]["dataDiskGiB"] = 100
     v = cluster_values(px, "infra", CA)
     assert all("dataDiskGiB" not in p["machine"] for p in v["workerPools"])
@@ -376,18 +380,18 @@ def test_old_form_still_validates_with_a_warning(site):
 
 
 def test_both_forms_at_once_is_an_error(site):
-    doc = load_example("vsphere")
+    doc = longhorn_example("vsphere")
     doc["spec"]["storage"]["longhorn"] = doc["spec"]["storage"]["block"]["longhorn"]
     _, report = site.validate(doc)
     assert errors(report, "spec.storage")
 
 
 def test_settings_of_another_provider_are_rejected(site):
-    doc = load_example("vsphere")
+    doc = longhorn_example("vsphere")
     doc["spec"]["storage"]["block"]["vsphereCSI"] = {}
     _, report = site.validate(doc)
     assert any("keep only" in e["fix"] for e in errors(report))
-    doc = load_example("vsphere")
+    doc = longhorn_example("vsphere")
     doc["spec"]["storage"]["block"]["overrides"] = {"mgmt": {"proxmoxCSI": {
         "storage": "x", "credentials": {"tokenID": "a@pve!b", "tokenSecret": {"env": "DCIAB_PVE_TOKEN"}}}}}
     _, report = site.validate(doc)
@@ -395,7 +399,7 @@ def test_settings_of_another_provider_are_rejected(site):
 
 
 def test_override_to_a_provider_without_its_settings(site):
-    doc = load_example("vsphere")
+    doc = longhorn_example("vsphere")
     doc["spec"]["storage"]["block"]["overrides"] = {"infra": {"provider": "existing"}}
     _, report = site.validate(doc)
     assert "add existing" in errors(report, "spec.storage.block.existing")[0]["fix"]
@@ -411,7 +415,7 @@ def test_provider_is_required_and_the_error_names_the_usual_choice(site, name, u
 
 
 def test_workload_override_needs_its_own_provider(site):
-    doc = load_example("vsphere")
+    doc = longhorn_example("vsphere")
     lh = doc["spec"]["storage"]["block"]["longhorn"]
     doc["spec"]["storage"]["block"]["overrides"] = {"workload": {"longhorn": lh}}
     _, report = site.validate(doc)
@@ -423,8 +427,9 @@ def test_workload_override_needs_its_own_provider(site):
 
 
 def test_workload_clusters_without_the_override_get_no_storage_checks(site):
-    doc = load_example("vsphere")
+    doc = longhorn_example("vsphere")
     pool = doc["spec"]["workloadClusters"][0]["workerPools"][0]
+    del pool["dataDiskGiB"]
     _, report = site.validate(doc)
     assert not [f for f in report["findings"] if "workloadClusters" in f["path"]]
     pool["dataDiskGiB"] = 200
@@ -440,7 +445,7 @@ def test_workload_clusters_without_the_override_get_no_storage_checks(site):
 
 
 def test_overrides_are_keyed_by_tier_only(site):
-    doc = load_example("vsphere")
+    doc = longhorn_example("vsphere")
     doc["spec"]["storage"]["block"]["overrides"] = {"apps01": {"provider": "longhorn"}}
     _, report = site.validate(doc)
     assert errors(report, "spec.storage.block.overrides.apps01")
@@ -452,7 +457,7 @@ def test_overrides_are_keyed_by_tier_only(site):
     ("vendor-csi", "vendorCSI", {"driver": "trident"}),
 ])
 def test_providers_not_installed_yet(site, provider, key, settings):
-    doc = load_example("vsphere")
+    doc = longhorn_example("vsphere")
     lh = doc["spec"]["storage"]["block"]["longhorn"]
     doc["spec"]["storage"]["block"] = {"provider": "longhorn", "longhorn": lh,
                                        "overrides": {"infra": {"provider": provider, key: settings}}}
@@ -465,20 +470,20 @@ def test_providers_not_installed_yet(site, provider, key, settings):
 
 
 def test_array_provider_only_on_its_platform(site):
-    doc = proxmox_csi(load_example("vsphere"))
+    doc = proxmox_csi(longhorn_example("vsphere"))
     _, report = site.validate(doc)
     assert any("works only on proxmox clusters" in e["fix"] for e in errors(report, "spec.storage.block.provider"))
 
 
 def test_proxmox_csi_needs_its_own_token(site):
-    doc = proxmox_csi(load_example("proxmox"))
+    doc = proxmox_csi(longhorn_example("proxmox"))
     doc["spec"]["storage"]["block"]["proxmoxCSI"]["credentials"]["tokenID"] = "dciab@pve!capmox"
     _, report = site.validate(doc)
     assert errors(report, "spec.storage.block.proxmoxCSI.credentials")
 
 
 def test_longhorn_on_vsphere_needs_data_disks(site):
-    doc = load_example("vsphere")
+    doc = longhorn_example("vsphere")
     del doc["spec"]["clusters"]["mgmt"]["controlPlane"]["dataDiskGiB"]
     del doc["spec"]["clusters"]["infra"]["workerPools"][0]["dataDiskGiB"]
     _, report = site.validate(doc)
@@ -487,23 +492,23 @@ def test_longhorn_on_vsphere_needs_data_disks(site):
 
 
 def test_data_disk_rules(site):
-    doc = load_example("vsphere")
+    doc = longhorn_example("vsphere")
     doc["spec"]["clusters"]["mgmt"]["controlPlane"]["dataDiskGiB"] = 100   # = diskGiB
     _, report = site.validate(doc)
     assert "another size" in errors(report, "spec.clusters.mgmt.controlPlane.dataDiskGiB")[0]["fix"]
-    doc = load_example("proxmox")
+    doc = longhorn_example("proxmox")
     doc["spec"]["clusters"]["infra"]["workerPools"][0]["dataDiskGiB"] = 200
     _, report = site.validate(doc)
     assert "CAPMOX" in errors(report, "spec.clusters.infra.workerPools[0].dataDiskGiB")[0]["fix"]
 
 
 def test_longhorn_on_proxmox_warns_about_the_root_disk(site):
-    _, report = site.validate(load_example("proxmox"))
+    _, report = site.validate(longhorn_example("proxmox"))
     assert "root disk" in warnings(report, "spec.clusters.mgmt")[0]["found"]
 
 
 def test_more_replicas_than_longhorn_nodes(site):
-    doc = load_example("vsphere")
+    doc = longhorn_example("vsphere")
     doc["spec"]["clusters"]["mgmt"]["controlPlane"]["replicas"] = 1
     _, report = site.validate(doc)
     found = [w["found"] for w in warnings(report, "spec.storage.block.longhorn.replicaCount")]
@@ -511,7 +516,7 @@ def test_more_replicas_than_longhorn_nodes(site):
 
 
 def test_double_replication_hint_skips_local_proxmox_storage(site):
-    doc = load_example("proxmox")
+    doc = longhorn_example("proxmox")
     doc["spec"]["storage"]["block"]["longhorn"]["replicaCount"] = 2
     _, report = site.validate(doc)
     assert any("ceph-vm" in w["found"] for w in warnings(report, "spec.storage.block.longhorn.replicaCount"))
@@ -521,7 +526,7 @@ def test_double_replication_hint_skips_local_proxmox_storage(site):
 
 
 def test_existing_needs_a_class_name(site):
-    doc = load_example("vsphere")
+    doc = longhorn_example("vsphere")
     doc["spec"]["storage"]["block"] = {"provider": "existing", "existing": {}}
     _, report = site.validate(doc)
     assert errors(report, "spec.storage.block.existing.storageClass")
@@ -544,7 +549,7 @@ def test_old_form_on_vsphere_without_data_disks_only_warns(site):
 
 
 def test_one_replica_on_vms_warns_that_a_replaced_node_takes_it(site):
-    doc = load_example("proxmox")
+    doc = longhorn_example("proxmox")
     doc["spec"]["storage"]["block"]["longhorn"]["replicaCount"] = 1
     _, report = site.validate(doc)
     fix = next(w["fix"] for w in warnings(report, "spec.storage.block.longhorn.replicaCount") if w["found"] == "1")

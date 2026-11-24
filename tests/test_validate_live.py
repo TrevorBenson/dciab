@@ -151,6 +151,20 @@ def add_permissions(routes, px, drop=None, extra_root=None):
 
 
 PVE_AUTH = {f"PVEAPIToken=dciab@pve!capmox={TOKEN}"}
+CSI_TOKEN = "not-a-real-csi-token"   # tests/conftest.py's DCIAB_PVE_CSI_TOKEN
+
+
+def add_csi_permissions(routes, csi, drop=None):
+    """Add the Proxmox CSI token's grants to the permission answers (one server answers both
+    tokens, so the privileges of a shared path are merged)."""
+    from urllib.parse import quote
+
+    from dciab_validate.proxmox_privs import csi_grants
+    for g in csi_grants(csi):
+        key = ("GET", f"/api2/json/access/permissions?path={quote(g.path, safe='')}")
+        privs = dict(routes.get(key, (200, {"data": {g.path: {}}}))[1]["data"][g.path])
+        privs.update({p: int(g.propagate) for p in g.privileges if p != drop})
+        routes[key] = (200, {"data": {g.path: privs}})
 
 
 def proxmox_spec(port, pin):
@@ -699,7 +713,10 @@ def _validate_live(site, doc, *extra):
 
 def test_cli_live_end_to_end(cert, servers, site, monkeypatch):
     monkeypatch.setattr(probes, "find_interface", lambda want: None)
-    pve = servers(cert, pve_routes(), PVE_AUTH)
+    routes = pve_routes()
+    # The example's Proxmox CSI token (its own, on local-lvm) answers from the same server.
+    add_csi_permissions(routes, {"storage": "local-lvm"})
+    pve = servers(cert, routes, PVE_AUTH | {f"PVEAPIToken=csi@pve!dciab={CSI_TOKEN}"})
     doc = copy.deepcopy(load_example("proxmox-bare"))
     doc["spec"]["platform"]["proxmox"].update(url=f"https://127.0.0.1:{pve.port}", tlsFingerprint=cert["sha256"])
     for h in doc["spec"]["hypervisors"]["hosts"]:
@@ -711,8 +728,7 @@ def test_cli_live_end_to_end(cert, servers, site, monkeypatch):
     assert code == 0, report
     # Only the example's own acknowledgements (tests/test_validate.py EXPECTED_WARNINGS).
     assert errors(report) == [] and {w["path"] for w in warnings(report)} == {
-        "spec.failureDomains.notHighlyAvailable", "spec.time.serveLocalClock",
-        "spec.clusters.mgmt", "spec.clusters.infra"}
+        "spec.failureDomains.notHighlyAvailable", "spec.time.serveLocalClock"}
     notes = report["notes"]
     assert not any("were not run" in n for n in notes)
     assert sum("virtual media" in n for n in notes) == 3
@@ -809,3 +825,74 @@ def test_compare_counts_non_propagated_privileges_as_held():
     have = {"/storage/x": {"Datastore.Audit": 0, "Sys.Modify": 0}}
     assert compare(want, have) == ([], ["/storage/x: Sys.Modify"])
     assert compare(want, {"/storage/x": {}})[0] == ["/storage/x: Datastore.Audit"]
+
+
+# --- the Proxmox CSI plugin's token ----------------------------------------------------------
+
+CSI_AUTH = {f"PVEAPIToken=csi@pve!dciab={CSI_TOKEN}"}
+CSI_BLOCK = ("spec", "storage", "block", "proxmoxCSI")
+
+
+def csi_routes(storage="local-lvm", drop=None, csi_storage="local-lvm"):
+    routes = pve_routes(storage=storage)
+    for key in [k for k in routes if "access/permissions" in k[1]]:
+        del routes[key]
+    add_csi_permissions(routes, {"storage": csi_storage}, drop=drop)
+    routes[("GET", "/api2/json/access/permissions?path=%2F")] = (200, {"data": {"/": {}}})
+    return routes
+
+
+def csi_spec(port, pin):
+    spec = proxmox_spec(port, pin)
+    return spec, spec["storage"]["block"]["proxmoxCSI"]
+
+
+def test_proxmox_csi_token_all_good(cert, servers, monkeypatch, tmp_path):
+    monkeypatch.setenv("DCIAB_PVE_CSI_TOKEN", CSI_TOKEN)
+    srv = servers(cert, csi_routes(), CSI_AUTH)
+    spec, csi = csi_spec(srv.port, cert["sha256"])
+    r = live.check_proxmox_csi(spec, CSI_BLOCK, csi, tmp_path, 3)
+    assert r.findings == []
+    assert any("csi@pve!dciab has every privilege" in n for n in r.notes)
+
+
+def test_proxmox_csi_token_missing_a_privilege(cert, servers, monkeypatch, tmp_path):
+    monkeypatch.setenv("DCIAB_PVE_CSI_TOKEN", CSI_TOKEN)
+    srv = servers(cert, csi_routes(drop="VM.Config.Disk"), CSI_AUTH)
+    spec, csi = csi_spec(srv.port, cert["sha256"])
+    [f] = live.check_proxmox_csi(spec, CSI_BLOCK, csi, tmp_path, 3).findings
+    assert f.path == CSI_BLOCK + ("credentials", "tokenID")
+    assert "/vms: VM.Config.Disk" in f.found and "Proxmox CSI" in f.fix
+
+
+def test_proxmox_csi_token_rejected_and_storage_missing(cert, servers, monkeypatch, tmp_path):
+    monkeypatch.setenv("DCIAB_PVE_CSI_TOKEN", "wrong")
+    srv = servers(cert, csi_routes(), CSI_AUTH)
+    spec, csi = csi_spec(srv.port, cert["sha256"])
+    [f] = live.check_proxmox_csi(spec, CSI_BLOCK, csi, tmp_path, 3).findings
+    assert "HTTP 401" in f.found and "DCIAB_PVE_CSI_TOKEN" in f.fix
+    monkeypatch.setenv("DCIAB_PVE_CSI_TOKEN", CSI_TOKEN)
+    srv = servers(cert, csi_routes(storage="ceph", csi_storage="ceph-vm"), CSI_AUTH)
+    spec, csi = csi_spec(srv.port, cert["sha256"])
+    csi["storage"] = "ceph-vm"
+    found = [f.found for f in live.check_proxmox_csi(spec, CSI_BLOCK, csi, tmp_path, 3).findings]
+    assert any("ceph-vm: no such storage" in x for x in found)
+
+
+def test_live_tasks_check_each_proxmox_csi_token():
+    spec = load_example("proxmox-bare")["spec"]
+    names = [n for n, _ in live.tasks(spec, Path("."), 1)]
+    assert "Proxmox CSI token csi@pve!dciab" in names
+    spec["storage"]["block"] = {"provider": "longhorn", "longhorn": {"replicaCount": 2, "backupTarget": "nfs://n:/x"}}
+    assert not any("CSI" in n for n, _ in live.tasks(spec, Path("."), 1))
+
+
+def test_proxmox_doc_matches_the_csi_grants():
+    from dciab_validate.proxmox_privs import csi_grants
+    doc = (ROOT / "docs" / "PROXMOX.md").read_text()
+    for g in csi_grants({"storage": "<csi storage>"}):
+        row = f"| `{g.role}` | `{g.path}` | {'yes' if g.propagate else 'no'} | " + \
+              ", ".join(f"`{p}`" for p in g.privileges)
+        assert row in doc, f"docs/PROXMOX.md is out of date for {g.role}"
+    for p in ("VM.Allocate", "VM.PowerMgmt", "VM.Clone"):
+        assert all(p not in g.privileges for g in csi_grants({"storage": "x"}))

@@ -1,4 +1,5 @@
-"""The exact Proxmox VE privileges the CAPMOX API token needs, by ACL path (Proxmox VE 9).
+"""The exact Proxmox VE privileges DCiaB's API tokens need, by ACL path (Proxmox VE 9): the
+CAPMOX token, and the Proxmox CSI plugin's own token (spec.storage.block proxmoxCSI).
 
 One source of truth: docs/PROXMOX.md is written from it (tests check they agree), and
 `dciab validate --live` compares the token's effective privileges with it.
@@ -68,6 +69,29 @@ def grants(px: dict) -> List[Grant]:
     return out
 
 
+# The Proxmox CSI plugin's token: volumes are VM disks it creates on one storage and attaches
+# to the node VMs. Nothing else: it can't create, start or stop VMs.
+CSI_VM_PRIVILEGES = (
+    "VM.Audit",               # find each node's VM and read its disks
+    "VM.Config.Disk",         # attach, detach and resize volumes as VM disks
+)
+CSI_STORAGE_PRIVILEGES = (
+    "Datastore.Allocate",     # delete volumes (it also allows deleting other volumes on this storage)
+    "Datastore.AllocateSpace",  # create and resize volumes
+    "Datastore.Audit",        # see the storage and its free space (capacity tracking)
+)
+
+
+def csi_grants(csi: dict) -> List[Grant]:
+    """Every ACL the Proxmox CSI plugin's token needs for proxmoxCSI (its storage)."""
+    return [
+        Grant("DCiaBCSIVMs", "/vms", True, CSI_VM_PRIVILEGES,
+              "attach and detach volumes as disks of the node VMs"),
+        Grant("DCiaBCSIStorage", f"/storage/{csi['storage']}", False, CSI_STORAGE_PRIVILEGES,
+              "create, resize and delete volumes on the storage"),
+    ]
+
+
 # Privileges that would let the token change who can do what, or the hosts themselves.
 TOO_BROAD = ("Permissions.Modify", "User.Modify", "Sys.Modify", "Sys.PowerMgmt", "Sys.Console",
              "Realm.Allocate", "Group.Allocate")
@@ -92,13 +116,16 @@ def compare(want: List[Grant], have: Dict[str, Dict[str, int]],
     return missing, broad
 
 
-def pveum_commands(px: dict, user: str, token: str) -> List[str]:
-    """The pveum commands that create the roles, the user, the token and the ACLs."""
+def pveum_commands(px: dict, user: str, token: str, want: Optional[List[Grant]] = None,
+                   comment: str = "DCiaB: CAPMOX") -> List[str]:
+    """The pveum commands that create the roles, the user, the token and the ACLs
+    (want: the grants; default the CAPMOX token's for px)."""
+    want = grants(px) if want is None else want
     tokenid = f"{user}!{token}"
-    cmds = [f"pveum role add {g.role} --privs \"{','.join(g.privileges)}\"" for g in grants(px)]
-    cmds += [f"pveum user add {user} --comment \"DCiaB: CAPMOX\"",
+    cmds = [f"pveum role add {g.role} --privs \"{','.join(g.privileges)}\"" for g in want]
+    cmds += [f"pveum user add {user} --comment \"{comment}\"",
              f"pveum user token add {user} {token} --privsep 1"]
-    for g in grants(px):
+    for g in want:
         cmds.append(f"pveum acl modify {g.path} --users {user} --tokens '{tokenid}' --roles {g.role}"
                     f" --propagate {1 if g.propagate else 0}")
     return cmds

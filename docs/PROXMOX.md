@@ -1,8 +1,8 @@
-# Proxmox VE: the API token DCiaB uses
+# Proxmox VE: the API tokens DCiaB uses
 
-DCiaB and CAPMOX reach Proxmox VE only through its API, with one API token. Nothing DCiaB runs needs SSH to a Proxmox VE host. The token belongs to a dedicated user and is privilege-separated (`privsep=1`): its privileges are what both the user's and the token's ACLs grant, so each ACL is set for both.
+DCiaB and CAPMOX reach Proxmox VE only through its API, with one API token. The Proxmox CSI plugin, when it is the block storage (`spec.storage.block.provider: proxmox-csi`), has a token of its own ([below](#the-proxmox-csi-plugins-token)). Nothing DCiaB runs needs SSH to a Proxmox VE host. The token belongs to a dedicated user and is privilege-separated (`privsep=1`): its privileges are what both the user's and the token's ACLs grant, so each ACL is set for both.
 
-This page lists exactly what the token needs on Proxmox VE 9. `dciab validate --live` reads the token's effective privileges (`GET /access/permissions`) and reports anything missing as an error, and anything that could change permissions or the hosts (`Permissions.Modify`, `User.Modify`, `Sys.Modify`, `Sys.PowerMgmt`, `Sys.Console`, `Realm.Allocate`, `Group.Allocate`) as a warning. Both come from `lib/dciab_validate/proxmox_privs.py`, which this page must match (a test checks it).
+This page lists exactly what each token needs on Proxmox VE 9. `dciab validate --live` reads the token's effective privileges (`GET /access/permissions`) and reports anything missing as an error, and anything that could change permissions or the hosts (`Permissions.Modify`, `User.Modify`, `Sys.Modify`, `Sys.PowerMgmt`, `Sys.Console`, `Realm.Allocate`, `Group.Allocate`) as a warning. Both come from `lib/dciab_validate/proxmox_privs.py`, which this page must match (a test checks it).
 
 ## Roles and ACLs
 
@@ -50,3 +50,31 @@ $ ./dciab validate dciab.yaml --live
 ```
 
 `dciab hypervisors` will create the same roles, user, token and ACLs through the API after installing a host (post-install, not built yet).
+
+## The Proxmox CSI plugin's token
+
+The Proxmox CSI plugin creates each volume as a VM disk on one Proxmox storage (`spec.storage.block.proxmoxCSI.storage`) and attaches it to the node VM that uses it. It gets its own user and token, never CAPMOX's (`dciab validate` refuses the same token ID), so each token holds only what it uses. It needs no Ceph key, no SSH and no access to the storage network. `dciab validate --live` checks this token the same way: missing privileges are errors, the privileges listed above that could change permissions or the hosts are warnings, and the storage must exist on the nodes.
+
+| Role | Path | Propagate | Privileges | Why |
+| --- | --- | --- | --- | --- |
+| `DCiaBCSIVMs` | `/vms` | yes | `VM.Audit`, `VM.Config.Disk` | attach and detach volumes as disks of the node VMs |
+| `DCiaBCSIStorage` | `/storage/<csi storage>` | no | `Datastore.Allocate`, `Datastore.AllocateSpace`, `Datastore.Audit` | create, resize and delete volumes on the storage |
+
+`<csi storage>` is `spec.storage.block.proxmoxCSI.storage` (or the one in a tier's override).
+
+Notes:
+- **Nothing else on VMs.** The token can't create, clone, start, stop or delete VMs, or run commands in them. `VM.Config.Disk` lets it add and remove disks of any VM under `/vms`.
+- **Deleting volumes.** `Datastore.Allocate` on the storage is what lets the plugin delete a volume; it also allows deleting other volumes on that storage. Give the plugin a storage of its own if that matters to the site.
+- **TLS.** The plugin trusts only the API certificate whose fingerprint is `spec.platform.proxmox.tlsFingerprint`: `addons/csi` reads the certificate, checks the fingerprint, and gives it to the plugin as its only trusted certificate. Its host name check still applies, so `spec.platform.proxmox.url` must use a name or address the certificate lists.
+- **Zones.** The plugin finds a node's PVE node from its `topology.kubernetes.io/zone` label, which DCiaB sets to the PVE node name (ADR 0010). In `r1` a Proxmox control plane gets a zone only on a one-domain site, so on a site with several domains, volumes go on worker nodes (`dciab validate` checks it).
+
+```console
+pveum role add DCiaBCSIVMs --privs "VM.Audit,VM.Config.Disk"
+pveum role add DCiaBCSIStorage --privs "Datastore.Allocate,Datastore.AllocateSpace,Datastore.Audit"
+pveum user add csi@pve --comment "DCiaB: Proxmox CSI"
+pveum user token add csi@pve dciab --privsep 1
+pveum acl modify /vms --users csi@pve --tokens 'csi@pve!dciab' --roles DCiaBCSIVMs --propagate 1
+pveum acl modify /storage/<csi storage> --users csi@pve --tokens 'csi@pve!dciab' --roles DCiaBCSIStorage --propagate 0
+```
+
+Put its secret where `proxmoxCSI.credentials.tokenSecret` points, with `tokenID: csi@pve!dciab`.
