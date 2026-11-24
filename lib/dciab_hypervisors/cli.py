@@ -1,7 +1,8 @@
 """dciab hypervisors: install Proxmox VE on spec.hypervisors.hosts over Redfish virtual media.
 
     dciab hypervisors <config> [--state DIR] [--isos DIR] [--host NAME ...] [--until STEP]
-                      [--iso FILE] [--timeout SECONDS] [--reinstall NAME ...] [--print]
+                      [--iso FILE] [--timeout SECONDS] [--reinstall NAME ...]
+                      [--first-install NAME ...] [--print]
 
 Steps, per host, in order; each is safe to re-run:
   answer   render answer.toml -> <state>/answers/<host>.toml (dir 700, file 600)
@@ -10,15 +11,19 @@ Steps, per host, in order; each is safe to re-run:
            answer file inside (iso.py). Caddy serves it to that host's BMC address only
   media    attach http://<bootstrap.address>/host-isos/<host>.iso through the BMC, set a
            one-time UEFI boot from Cd, and reset the server. Each install is recorded in
-           <state>/installs/<host>.json (when it started, the ISO, the outcome). A host that
-           answers on 8006 or has a recorded install (any file there, even an unreadable one) is
-           never reset, powered off or not, unless --reinstall NAME names it; nor is a host
-           with no record that answers on 22 or whose BMC lists a "proxmox" UEFI boot option.
-           A host held this way that doesn't answer on 8006 is skipped and the run exits 1. A
+           <state>/installs/<host>.json (when it started, the ISO, the outcome). A host whose
+           Proxmox VE API answers on 8006 or that has a recorded install (any file there, even an
+           unreadable one) is never reset, powered off or not, unless --reinstall NAME names it;
+           nor is a host with no record that answers on 22 or whose BMC lists a boot option that
+           may load an installed OS (Proxmox VE, "UEFI OS", any entry on a disk partition). A
+           host with no record whose BMC lists no boot options at all is reset only when
+           --first-install NAME names it: without a record, DCiaB can't tell it from a server
+           whose state folder was lost. A held host is skipped and the run exits 1. A
            recorded install still in progress, powered on with its ISO attached, isn't reset
            again: the run goes on to wait for it. If the reset fails, the ISO is ejected and
            the boot override cleared
-  wait     wait for SSH (22) and then the Proxmox VE API (8006) on the host's address, and
+  wait     wait for SSH (22) and then the Proxmox VE API (/api2/json/version on 8006, not just
+           an open port) on the host's address, and
            record the install as done. Then eject the host's ISO and clear the boot override
            from Cd that DCiaB set; a failure there is logged and never fails the run
 
@@ -116,8 +121,46 @@ def port_open(address: str, port: int, timeout: float = 3.0) -> bool:
         return False
 
 
+def pve_api(address: str, port: int = 8006, timeout: float = 5.0) -> bool:
+    """Whether the Proxmox VE API answers on address:port: GET /api2/json/version over TLS gives
+    a version (200 with data.version) or the API daemon's own 401 (Server: pve-api-daemon). Any
+    other answer, or none, is False: an open port alone is not an installed Proxmox VE.
+
+    The certificate isn't checked: a fresh install has a self-signed one, nothing is sent but
+    the GET, and a False here never resets a host on its own (the other checks still apply)."""
+    import http.client
+    import ssl
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    conn = http.client.HTTPSConnection(address, port, timeout=timeout, context=ctx)
+    try:
+        conn.request("GET", "/api2/json/version", headers={"Accept": "application/json"})
+        resp = conn.getresponse()
+        server = (resp.getheader("Server") or "").lower()
+        body = resp.read(65536)
+    except (OSError, http.client.HTTPException):
+        return False
+    finally:
+        conn.close()
+    if server.startswith("pve-api-daemon"):
+        return resp.status in (200, 401)
+    if resp.status == 200:
+        try:
+            data = json.loads(body).get("data")
+        except (ValueError, AttributeError):
+            return False
+        return isinstance(data, dict) and bool(data.get("version")) and "repoid" in data
+    return False
+
+
+def installed_probe(address: str, port: int) -> bool:
+    """The evidence media and wait use: the Proxmox VE API for 8006, an open TCP port otherwise."""
+    return pve_api(address, port) if port == 8006 else port_open(address, port)
+
+
 def wait_for(address: str, ports: List[int], timeout: float, interval: float = 10.0,
-             probe: Callable[[str, int], bool] = port_open, log=print) -> Optional[int]:
+             probe: Callable[[str, int], bool] = installed_probe, log=print) -> Optional[int]:
     """Wait for each port in turn. Returns the first port that didn't open in time, else None."""
     deadline = time.monotonic() + timeout
     for port in ports:
@@ -171,12 +214,12 @@ def _now() -> str:
 
 
 def media(hosts: List[dict], doc: dict, installs: Path, reinstall: List[str], bmc_for: Callable,
-          probe: Callable[[str, int], bool] = port_open, log=print,
-          err=None) -> Tuple[List[str], List[str], List[str]]:
+          probe: Callable[[str, int], bool] = installed_probe, log=print,
+          err=None, first_install: Tuple[str, ...] = ()) -> Tuple[List[str], List[str], List[str]]:
     """The media step. Returns (failed, held, live): hosts whose BMC calls failed; hosts left alone
-    that need the operator (an install recorded, an OS already there, or an install that can't be
-    running); and hosts reset with --reinstall while they answered on 8006 (wait must see them go
-    down first)."""
+    that need the operator (an install recorded, an OS already there, an install that can't be
+    running, or no evidence either way without --first-install); and hosts reset with --reinstall
+    while the Proxmox VE API answered (wait must see them go down first)."""
     from .redfish import RedfishError
     err = err or (lambda msg: print(msg, file=sys.stderr))
     failed: List[str] = []
@@ -195,7 +238,7 @@ def media(hosts: List[dict], doc: dict, installs: Path, reinstall: List[str], bm
         try:
             if name not in reinstall:
                 if probe(addr, 8006):
-                    log(f"  {name}: already answers on {addr}:8006; not reinstalling")
+                    log(f"  {name}: the Proxmox VE API already answers on {addr}:8006; not reinstalling")
                     continue
                 if record is not None and record.get("outcome") == "in-progress":
                     st = bmc_for(h).attached(url)
@@ -210,7 +253,7 @@ def media(hosts: List[dict], doc: dict, installs: Path, reinstall: List[str], bm
                     continue
                 if record is not None:
                     hold(name, f"install recorded ({record.get('outcome')}, started {record.get('started')}) "
-                               f"but {addr}:8006 doesn't answer")
+                               f"but the Proxmox VE API doesn't answer on {addr}:8006")
                     continue
                 if probe(addr, 22):
                     hold(name, f"no install recorded, but {addr}:22 answers: an OS is running there")
@@ -222,17 +265,26 @@ def media(hosts: List[dict], doc: dict, installs: Path, reinstall: List[str], bm
                     # Fail closed: one unreadable option could be the installed OS.
                     hold(name, f"no install recorded, but the BMC's boot options couldn't be read ({exc})")
                     continue
-                if entries is None:
-                    log(f"  {name}: the BMC lists no boot options; going by the record and the ports only")
-                elif entries:
-                    hold(name, f"no install recorded, but the firmware has a boot entry for an installed "
-                               f"Proxmox VE ({', '.join(entries)})")
+                if entries:
+                    hold(name, f"no install recorded, but the firmware has a boot entry that may load an "
+                               f"installed OS ({', '.join(entries)})")
                     continue
+                if entries is None:
+                    # No record, no ports, and no boot options to look at: a lost state folder looks
+                    # exactly like a new server here, so only the operator can say which it is.
+                    if name not in first_install:
+                        log(f"  {name}: no install recorded and the BMC lists no boot options, so DCiaB can't "
+                            f"tell a new server from one whose install record was lost. If {name} is new or "
+                            f"may be wiped, pass --first-install {name}; if it holds an install, restore its "
+                            f"record in the state folder's installs/")
+                        held.append(name)
+                        continue
+                    log(f"  {name}: --first-install: no install recorded and no boot options listed; installing")
             else:
                 if probe(addr, 8006):
                     live.append(name)
                 log(f"  {name}: --reinstall: installing whatever its state "
-                    f"({'answers on 8006' if name in live else 'no answer on 8006'}, "
+                    f"({'Proxmox VE API answers' if name in live else 'no Proxmox VE API answer'}, "
                     + (f"install recorded: {record.get('outcome')})" if record is not None
                        else "no install recorded)"))
             bmc = bmc or bmc_for(h)
@@ -354,8 +406,13 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument("--isos", help="the ISOs folder (default: as for dciab services)")
     ap.add_argument("--timeout", type=float, default=3600.0, help="seconds to wait for each host's install")
     ap.add_argument("--reinstall", action="append", default=[], metavar="NAME",
-                    help="wipe and reinstall this host even if it answers on 8006 or has a recorded "
-                         "install (repeatable); without it such a host is never reset")
+                    help="wipe and reinstall this host even if its Proxmox VE API answers, it has a "
+                         "recorded install or its firmware lists an OS boot entry (repeatable); without "
+                         "it such a host is never reset")
+    ap.add_argument("--first-install", action="append", default=[], metavar="NAME",
+                    help="install this host when it has no install record and its BMC lists no boot "
+                         "options, so nothing shows whether it holds an install (repeatable). Never "
+                         "overrides a record, an answering host or an OS boot entry: that takes --reinstall")
     ap.add_argument("--print", dest="print_only", action="store_true")
     ap.add_argument("config")
     args = ap.parse_args(argv)
@@ -391,10 +448,11 @@ def main(argv: Optional[List[str]] = None) -> int:
         return 2
     if args.host:
         hosts = [h for h in hosts if h["name"] in args.host]
-    stray = sorted(set(args.reinstall) - {h["name"] for h in hosts})
-    if stray:
-        print(f"dciab hypervisors: --reinstall {', '.join(stray)}: not a selected host", file=sys.stderr)
-        return 2
+    for flag, names in (("--reinstall", args.reinstall), ("--first-install", args.first_install)):
+        stray = sorted(set(names) - {h["name"] for h in hosts})
+        if stray:
+            print(f"dciab hypervisors: {flag} {', '.join(stray)}: not a selected host", file=sys.stderr)
+            return 2
     # Before the state folder is made or migrated: run as another user, hypervisors would
     # leave it owned by that user (as #102 was for seed). --print writes nothing.
     if not args.print_only and os.geteuid() != 0:
@@ -428,6 +486,8 @@ def main(argv: Optional[List[str]] = None) -> int:
             elif record:
                 print(f"    install recorded ({record.get('outcome')}, started {record.get('started')}): "
                       f"not reset without --reinstall {h['name']}")
+            elif h["name"] in args.first_install:
+                print("    --first-install: installed if nothing shows an existing install")
         for name, text in rendered.items():
             print(f"--- {answers / (name + '.toml')}")
             print(mask(text), end="")
@@ -497,7 +557,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         return 0
 
     print("\n== hypervisors: media")
-    failed, held, live = media(hosts, doc, installs, args.reinstall, lambda h: _bmc(h, config_dir))
+    failed, held, live = media(hosts, doc, installs, args.reinstall, lambda h: _bmc(h, config_dir),
+                                 first_install=tuple(args.first_install))
     if failed:
         return 1
     if args.until == "media":
@@ -510,13 +571,14 @@ def main(argv: Optional[List[str]] = None) -> int:
             continue
         if h["name"] in live and wait_for(h["address"], [8006], 300.0,
                                           probe=lambda a, p: not port_open(a, p), log=lambda *_: None):
-            print(f"dciab hypervisors: {h['name']}: still answers on {h['address']}:8006 five minutes after "
+            print(f"dciab hypervisors: {h['name']}: {h['address']}:8006 still answers five minutes after "
                   "the reset; watch the server's console through its BMC", file=sys.stderr)
             failed.append(h["name"])
             continue
         port = wait_for(h["address"], [22, 8006], args.timeout)
         if port is not None:
-            print(f"dciab hypervisors: {h['name']}: {h['address']}:{port} didn't answer within "
+            what = "the Proxmox VE API on " if port == 8006 else ""
+            print(f"dciab hypervisors: {h['name']}: {what}{h['address']}:{port} didn't answer within "
                   f"{args.timeout:g}s; watch the server's console through its BMC", file=sys.stderr)
             failed.append(h["name"])
         else:

@@ -8,7 +8,7 @@ $ sudo ./dciab hypervisors dciab.yaml                  # every host
 $ sudo ./dciab hypervisors dciab.yaml --host pve02 --until media
 ```
 
-Options: `--state DIR` (default `.dciab/state` next to the config, or `/var/lib/dciab/work/state` on the bootstrap appliance; the same folder `dciab services` uses), `--host NAME` (repeatable), `--reinstall NAME` (repeatable: wipe and reinstall that host even if it's installed), `--until STEP`, `--iso FILE` (the base installer ISO's file name in the ISOs folder; default the file name of the Proxmox VE ISO in `bundle.lock`), `--isos DIR` (the ISOs folder; default as for `dciab services`), `--timeout SECONDS` (per host, for `wait`; default 3600).
+Options: `--state DIR` (default `.dciab/state` next to the config, or `/var/lib/dciab/work/state` on the bootstrap appliance; the same folder `dciab services` uses), `--host NAME` (repeatable), `--reinstall NAME` (repeatable: wipe and reinstall that host even if it's installed), `--first-install NAME` (repeatable: install that host when nothing shows whether it holds an install; see [the reinstall guard](#the-reinstall-guard)), `--until STEP`, `--iso FILE` (the base installer ISO's file name in the ISOs folder; default the file name of the Proxmox VE ISO in `bundle.lock`), `--isos DIR` (the ISOs folder; default as for `dciab services`), `--timeout SECONDS` (per host, for `wait`; default 3600).
 
 ## Steps
 
@@ -18,8 +18,8 @@ Each step runs for every selected host and is safe to re-run.
 | --- | --- |
 | `answer` | Renders the host's `answer.toml` into `<state>/answers/<host>.toml` (folder 700, file 600, written atomically). For a host no longer in the config, its answer file and root password files (`.root-hash`, `.root-salt`, `.root-password.age`) are removed. If it has an install record, its password files and the record are kept and the run says so: the server may still use that password. Delete the password files by hand once the server is wiped or retired |
 | `iso` | Builds `<state>/host-isos/<host>.iso` (folder 700, file 600): the Proxmox VE installer ISO with that host's answer file inside (`proxmox-auto-install-assistant prepare-iso --fetch-from iso`, run with no network from the image built from `images/pve-assistant`). The base ISO is checked against `bundle.lock` first. An ISO is rebuilt only when its answer file or the base ISO changed. Caddy serves it at `http://<bootstrap.address>/host-isos/<host>.iso` to that host's BMC address only |
-| `media` | Skipped when the host already answers on port 8006. Otherwise, over Redfish: finds the system's CD/DVD virtual media slot (under the System or its Manager), ejects other media, attaches the host's ISO, sets a one-time UEFI boot from `Cd`, and resets the server (`ForceRestart` when on, `On` when off; a server in a transitional power state is left alone). Redfish tasks a BMC accepts with HTTP 202 are waited for. The installer boots its "Automated Installation" entry and reads the answer file from the ISO: no DHCP and no answer server |
-| `wait` | Waits for SSH (22) and then the Proxmox VE API (8006) on the host's address, and records the install as done. Then, for a host whose ISO DCiaB attached, ejects that ISO and clears the boot override DCiaB set if it still points at `Cd`, so a fallback to CD never boots the installer again. Other media and overrides are left alone. The result goes in the install record (`media`: `detached`, `detach-failed`, or `detach-unverified` when other media is in the slot). Only `detached` is final: otherwise the run says how to eject by hand, and the next run checks again. This never fails the run. Each new install (`media`, `--reinstall` too) starts the record's `media` over at `attached` |
+| `media` | Skipped when the host's Proxmox VE API already answers, and held when anything shows an existing install ([the reinstall guard](#the-reinstall-guard)). Otherwise, over Redfish: finds the system's CD/DVD virtual media slot (under the System or its Manager), ejects other media, attaches the host's ISO, sets a one-time UEFI boot from `Cd`, and resets the server (`ForceRestart` when on, `On` when off; a server in a transitional power state is left alone). Redfish tasks a BMC accepts with HTTP 202 are waited for. The installer boots its "Automated Installation" entry and reads the answer file from the ISO: no DHCP and no answer server |
+| `wait` | Waits for SSH (22) and then the Proxmox VE API on the host's address (an answer from `/api2/json/version` on 8006, not just an open port), and records the install as done. Then, for a host whose ISO DCiaB attached, ejects that ISO and clears the boot override DCiaB set if it still points at `Cd`, so a fallback to CD never boots the installer again. Other media and overrides are left alone. The result goes in the install record (`media`: `detached`, `detach-failed`, or `detach-unverified` when other media is in the slot). Only `detached` is final: otherwise the run says how to eject by hand, and the next run checks again. This never fails the run. Each new install (`media`, `--reinstall` too) starts the record's `media` over at `attached` |
 
 BMC trust comes from each host's `bmc.tlsFingerprint` or `bmc.caBundle`, as for `dciab validate --live`; the certificate is checked before credentials are sent.
 
@@ -43,10 +43,26 @@ Fixed value: `filesystem = "ext4"`, which gives the `local` and `local-lvm` stor
 - **DCiaB and CAPMOX** at run time: the Proxmox VE API with a dedicated API token, never SSH. [PROXMOX.md](PROXMOX.md) lists its exact privileges.
 - **Existing hypervisors** (a site that already runs Proxmox VE or vSphere): DCiaB never touches root; it uses only the API token or vCenter account in the config.
 
+## The reinstall guard
+
+`media` resets a server only when nothing suggests it already holds an install. It holds a host, does nothing to it, and exits 1 when:
+
+| Evidence | To install anyway |
+| --- | --- |
+| The Proxmox VE API answers on the host's address: `GET /api2/json/version` over TLS returns a Proxmox VE version, or the API daemon's own 401 (`Server: pve-api-daemon`). Another service on port 8006 doesn't count | `--reinstall <host>` |
+| An install is recorded in `<state>/installs/<host>.json` (any file there, even an unreadable one), powered off or not. A recorded install still in progress, powered on with its ISO attached, isn't reset again: the run goes on to `wait` | `--reinstall <host>` |
+| No record, but SSH (22) answers | `--reinstall <host>` |
+| No record, but the BMC lists a UEFI boot option that may load an installed OS: Proxmox VE (`\EFI\proxmox`), a known OS name, the generic "UEFI OS" entry firmware creates after an NVRAM reset or a board swap, or any entry whose device path points into a disk partition (`HD(...)`). Network, CD/DVD, USB, shell and setup entries don't count | `--reinstall <host>` |
+| No record, and the BMC's boot options can't be read in full | `--reinstall <host>` |
+| No record, and the BMC lists no boot options at all: a new server and one whose state folder was lost (or a different `--state`) look the same | `--first-install <host>`, or restore the host's record in `installs/` |
+
+`--first-install` never overrides the other rows: it only answers the question the last row can't. A new server whose firmware lists only network or CD entries needs neither flag. `--reinstall` wipes the host whatever the evidence; the run says which evidence it overrode.
+
+The installer ISO and the answer files travel over plain HTTP from the bootstrap host, as ADR 0001 decided.
+
 ## Not done yet
 
 - **A tagged management VLAN** (`managementVLAN: tagged`): the answer file can't set a VLAN, so the installer's network only works on an untagged port until post-install configuration exists.
 - **Redfish preparation**: checking or setting UEFI boot mode, Secure Boot per `bootMode`, virtualization extensions, and that a disk matches `rootDeviceHints`.
 - **Post-install**: the CAPMOX API token (`platform.proxmox.credentials.tokenID`), the bridge and its VLAN-aware setting, and the storage, through the Proxmox VE API.
-- **Stronger install checks**: `media` never resets a host that answers on port 8006 or has an install recorded in `<state>/installs/<host>.json` (any file there, even an unreadable one), powered off or not, unless `--reinstall <host>` (repeatable) names it. A host with no record is also left alone when it answers on port 22, when its BMC lists a UEFI boot option for `proxmox`, or when its boot options can't be read. A recorded install still in progress, powered on with its ISO attached, isn't reset again; the run goes on to `wait`. Still missing: the record is the main guard. A powered-off host is reinstalled when the state folder (or its `installs` folder) is lost, or another one is used, and its BMC doesn't list a `proxmox` boot option. That includes a BMC that lists no boot options, and firmware that shows only a generic entry such as "UEFI OS" (after an NVRAM reset or a board swap, for example): vendors name those entries too differently to count them as an installed OS. `wait` still treats an open TCP port 8006 (and 22) as an installed host; checking the Proxmox VE API answer is next. The ISO and the answer files travel over plain HTTP from the bootstrap host, as ADR 0001 decided.
 - **ESXi.**

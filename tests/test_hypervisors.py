@@ -282,14 +282,17 @@ def cert(tmp_path_factory):
 
 
 SYS = "/redfish/v1/Systems/1"
+DEFAULT_OPTS = [{"Id": "0001", "DisplayName": "UEFI PXEv4", "UefiDevicePath": "MAC(b8ca3a010301)"}]
 
 
 class FakeBMC:
     """A stateful Redfish BMC: one system, one CD slot, under the System or its Manager,
-    with insert/eject as actions or as PATCH. Records every call."""
+    with insert/eject as actions or as PATCH. Records every call. boot_options defaults to one
+    PXE entry (a new server's firmware); [] means the BMC lists no boot options at all."""
 
     def __init__(self, cert, media="manager", actions=True, power="On", inserted=None, boot_options=None,
                  reset_status=204, overrides=None):
+        boot_options = DEFAULT_OPTS if boot_options is None else boot_options
         self.calls = []
         self.power = power
         self.slot = {"Inserted": inserted is not None, "Image": inserted}
@@ -609,14 +612,15 @@ def test_assistant_image_needs_a_pin_unless_overridden(monkeypatch):
 
 # --- the reinstall guard (cli.media) -------------------------------------------------------
 
-def guard(f, tmp_path, reinstall=(), answers=False, ssh=None):
-    """Run the media step for pve01 against the fake BMC, with port 8006 (and 22) answering or not."""
+def guard(f, tmp_path, reinstall=(), answers=False, ssh=None, first_install=()):
+    """Run the media step for pve01 against the fake BMC, with the Proxmox VE API (and port 22)
+    answering or not."""
     doc = bare()
     logs = []
     ssh = answers if ssh is None else ssh
     failed, held, live = cli.media([host(doc)], doc, tmp_path / "installs", list(reinstall), lambda h: f.bmc,
                                    probe=lambda a, p: ssh if p == 22 else answers, log=logs.append,
-                                   err=logs.append)
+                                   err=logs.append, first_install=tuple(first_install))
     return failed, held, live, "\n".join(logs)
 
 
@@ -767,10 +771,47 @@ def test_unreadable_boot_options_hold_the_host(fake_bmc, tmp_path, overrides):
     assert not [c for c in f.calls if c[0] in CHANGES]
 
 
-def test_no_boot_options_offered_installs_with_a_note(fake_bmc, tmp_path):
-    f = fake_bmc(power="Off")
+def test_no_boot_options_and_no_record_is_held_without_first_install(fake_bmc, tmp_path):
+    # A lost state folder looks like a new server: without boot options to read, only the operator knows.
+    f = fake_bmc(power="Off", boot_options=[])
     failed, held, _, out = guard(f, tmp_path)
-    assert (failed, held) == ([], []) and "lists no boot options" in out and f.power == "On"
+    assert (failed, held) == ([], ["pve01"]) and "lists no boot options" in out and "--first-install pve01" in out
+    assert not [c for c in f.calls if c[0] in CHANGES] and cli.read_install(tmp_path / "installs", "pve01") is None
+
+
+def test_first_install_installs_a_host_with_no_evidence_either_way(fake_bmc, tmp_path):
+    f = fake_bmc(power="Off", boot_options=[])
+    failed, held, _, out = guard(f, tmp_path, first_install=["pve01"])
+    assert (failed, held) == ([], []) and "--first-install" in out and f.power == "On"
+    assert cli.read_install(tmp_path / "installs", "pve01")["outcome"] == "in-progress"
+
+
+@pytest.mark.parametrize("opt", [
+    {"Id": "0003", "DisplayName": "UEFI OS", "UefiDevicePath": "PciRoot(0x0)/Pci(0x1,0x0)/NVMe(0x1)/HD(1,GPT,ab)/\\EFI\\BOOT\\BOOTX64.EFI"},
+    {"Id": "0003", "DisplayName": "UEFI OS"},                                       # generic, no path
+    {"Id": "0004", "DisplayName": "Boot0004", "UefiDevicePath": "PciRoot(0x0)/Sata(0x0,0xFFFF,0x0)/HD(2,GPT,cd)"},
+    {"Id": "0005", "DisplayName": "Rocky Linux", "UefiDevicePath": "HD(1,GPT)/\\EFI\\rocky\\shimx64.efi"},
+], ids=["uefi-os-on-disk", "uefi-os-no-path", "unnamed-disk-entry", "other-os"])
+def test_an_os_boot_entry_holds_a_host_without_a_record_even_with_first_install(fake_bmc, tmp_path, opt):
+    f = fake_bmc(power="Off", boot_options=[PXE_OPT, opt])
+    failed, held, _, out = guard(f, tmp_path, first_install=["pve01"])
+    assert (failed, held) == ([], ["pve01"]) and "may load an installed OS" in out and "--reinstall pve01" in out
+    assert not [c for c in f.calls if c[0] in CHANGES]
+
+
+@pytest.mark.parametrize("name,path,os_entry", [
+    ("UEFI PXEv4", "MAC(b8ca3a010301)", False),
+    ("UEFI HTTPv4", "MAC(b8ca3a010301)/IPv4(0.0.0.0)/Uri()", False),
+    ("Virtual CD/DVD", "PciRoot(0x0)/USB(0x1,0x0)", False),
+    ("EFI Shell", "Fv(1)/FvFile(7c04a583)", False),
+    ("Lifecycle Controller", "", False),
+    ("proxmox", "HD(1,GPT)/\\EFI\\proxmox\\grubx64.efi", True),
+    ("UEFI OS", "", True),
+    ("Windows Boot Manager", "HD(2,GPT)/\\EFI\\Microsoft\\Boot\\bootmgfw.efi", True),
+    ("Integrated RAID", "PciRoot(0x0)/Pci(0x2,0x0)/Scsi(0x0,0x0)/HD(1,GPT,ef)", True),
+])
+def test_os_entry_classification(name, path, os_entry):
+    assert redfish.is_os_entry(name, path) is os_entry
 
 
 # --- after the install (cli.detach) ------------------------------------------------------------
@@ -916,3 +957,95 @@ def test_main_exits_0_when_the_eject_fails(run_main):
     code, out, record = run_main(broken)
     assert code == 0 and "by hand" in out and "installed: pve01" in out
     assert record["outcome"] == "installed" and record["media"] == "detach-failed"
+
+
+# --- the Proxmox VE API check (cli.pve_api) ----------------------------------------------------
+
+class FakeHTTPS:
+    """One HTTPS endpoint answering every GET with a fixed status, headers and body."""
+
+    def __init__(self, cert, status, body=b"", headers=None):
+        class Handler(BaseHTTPRequestHandler):
+            server_version = (headers or {}).pop("Server", "nginx/1.27") if headers else "nginx/1.27"
+            sys_version = ""
+
+            def log_message(self, *a):
+                pass
+
+            def do_GET(self):
+                self.send_response(status)
+                for k, v in (headers or {}).items():
+                    self.send_header(k, v)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+        self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.httpd.handle_error = lambda *a: None
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        ctx.load_cert_chain(str(cert["crt"]), str(cert["key"]))
+        self.httpd.socket = ctx.wrap_socket(self.httpd.socket, server_side=True)
+        self.port = self.httpd.server_address[1]
+        threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
+
+    def close(self):
+        self.httpd.shutdown()
+        self.httpd.server_close()
+
+
+PVE_VERSION = json.dumps({"data": {"version": "9.2.0", "release": "9.2", "repoid": "abc123"}}).encode()
+
+
+@pytest.mark.parametrize("status,body,headers,expected", [
+    (401, b"", {"Server": "pve-api-daemon/3.0"}, True),                  # a fresh install, no ticket
+    (200, PVE_VERSION, {"Server": "pve-api-daemon/3.0"}, True),
+    (200, PVE_VERSION, {}, True),                                        # behind a proxy that rewrites Server
+    (401, b"Unauthorized", {}, False),                                   # some other service's login
+    (200, b"<html>It works</html>", {}, False),                          # a web server on 8006
+    (200, json.dumps({"data": {"version": "1"}}).encode(), {}, False),   # JSON, but not Proxmox VE's shape
+    (404, b"", {}, False),
+], ids=["pve-401", "pve-200", "pve-200-proxied", "other-401", "html", "other-json", "404"])
+def test_pve_api_needs_a_proxmox_answer_not_an_open_port(cert, status, body, headers, expected):
+    srv = FakeHTTPS(cert, status, body, dict(headers))
+    try:
+        assert cli.pve_api("127.0.0.1", srv.port, timeout=5) is expected
+    finally:
+        srv.close()
+
+
+def test_pve_api_closed_port_and_plain_tcp_are_not_proxmox():
+    import socket as so
+    s = so.socket()
+    s.bind(("127.0.0.1", 0))
+    port = s.getsockname()[1]
+    s.close()
+    assert cli.pve_api("127.0.0.1", port, timeout=2) is False            # nothing listening
+    lst = so.socket()
+    lst.bind(("127.0.0.1", 0))
+    lst.listen(1)                                                         # open, but no TLS ever answers
+    try:
+        assert cli.port_open("127.0.0.1", lst.getsockname()[1])
+        assert cli.pve_api("127.0.0.1", lst.getsockname()[1], timeout=1) is False
+    finally:
+        lst.close()
+
+
+def test_media_and_wait_use_the_api_for_8006(monkeypatch):
+    seen = []
+    monkeypatch.setattr(cli, "pve_api", lambda a, p: seen.append(("api", p)) or False)
+    monkeypatch.setattr(cli, "port_open", lambda a, p: seen.append(("tcp", p)) or True)
+    assert cli.installed_probe("10.0.0.1", 8006) is False and cli.installed_probe("10.0.0.1", 22) is True
+    assert seen == [("api", 8006), ("tcp", 22)]
+    import inspect
+    for fn in (cli.media, cli.wait_for):
+        assert inspect.signature(fn).parameters["probe"].default is cli.installed_probe
+
+
+def test_first_install_must_name_a_selected_host(tmp_path, monkeypatch, capsys):
+    Site(tmp_path, monkeypatch, capsys)
+    cfg = tmp_path / "dciab.yaml"
+    cfg.write_text(yaml.safe_dump(bare(), sort_keys=False))
+    assert cli.main(["--root", str(ROOT), "--print", "--host", "pve02", "--first-install", "pve01", str(cfg)]) == 2
+    assert "--first-install pve01" in capsys.readouterr().err
+    assert cli.main(["--root", str(ROOT), "--print", "--first-install", "pve01", str(cfg)]) == 0
+    assert "--first-install: installed if nothing shows an existing install" in capsys.readouterr().out

@@ -20,6 +20,26 @@ class RedfishError(Exception):
     """Something the BMC refused or doesn't offer. The message is safe to print."""
 
 
+# Boot option names that load an installed OS. Vendors name entries freely, so this only adds
+# to the device-path test below; "uefi os" is the generic entry firmware creates for a disk's
+# \EFI\BOOT\BOOTX64.EFI (after an NVRAM reset or a board swap, for example).
+OS_HINTS = ("proxmox", "uefi os", "windows boot manager", "rocky", "red hat", "redhat", "centos", "almalinux",
+            "fedora", "debian", "ubuntu", "suse", "sles", "vmware", "esxi", "grub", "shim", "linux")
+# Entries that never load an OS from a local disk, even when their path mentions a partition.
+NOT_OS_HINTS = ("pxe", "http boot", "httpv", "network", "ipv4", "ipv6", "cd", "dvd", "usb", "virtual",
+                "shell", "setup", "diagnostic", "lifecycle", "boot manager menu", "efi shell")
+
+
+def is_os_entry(name: str, device_path: str) -> bool:
+    """Whether a UEFI boot option may load an installed OS from a local disk."""
+    text = f"{name} {device_path}".lower()
+    if "proxmox" in text:
+        return True
+    if any(h in name.lower() for h in NOT_OS_HINTS) and "hd(" not in device_path.lower():
+        return False
+    return "hd(" in device_path.lower() or any(h in text for h in OS_HINTS)
+
+
 class Bmc:
     def __init__(self, address: str, username: str, password: str, trust: Trust, timeout: float = 30.0,
                  task_timeout: float = 300.0, poll: float = 2.0):
@@ -156,10 +176,14 @@ class Bmc:
         return dict(self.state(), attached=bool(slot.get("Inserted")) and slot.get("Image") == image)
 
     def os_boot_entries(self) -> Optional[List[str]]:
-        """Names of UEFI boot options that load an installed Proxmox VE (its loader lives in
-        \\EFI\\proxmox); [] when none does. None when the BMC offers no BootOptions. Reads only.
-        Raises RedfishError when the list can't be read in full or a member makes no sense:
-        the caller must then assume an OS may be there."""
+        """Names of UEFI boot options that may load an installed OS from a disk; [] when none
+        does. None when the BMC offers no BootOptions. Reads only.
+
+        An option counts when it names a known OS loader (Proxmox VE's \\EFI\\proxmox, or the
+        names in OS_HINTS, the generic "UEFI OS" entry firmware makes after an NVRAM reset
+        included) or its device path points into a disk partition (HD(...)). Network, CD/DVD,
+        USB, shell and setup entries don't count. Raises RedfishError when the list can't be
+        read in full or a member makes no sense: the caller must then assume an OS may be there."""
         coll = (self.system().get("Boot") or {}).get("BootOptions")
         if not coll:
             return None
@@ -167,8 +191,7 @@ class Bmc:
             found = []
             for member in self.get(coll["@odata.id"]).get("Members", []):
                 opt = self.get(member["@odata.id"])
-                text = " ".join(str(opt.get(k) or "") for k in ("DisplayName", "UefiDevicePath")).lower()
-                if "proxmox" in text:
+                if is_os_entry(str(opt.get("DisplayName") or ""), str(opt.get("UefiDevicePath") or "")):
                     found.append(str(opt.get("DisplayName") or opt.get("Id") or member["@odata.id"]))
             return found
         except (KeyError, TypeError, AttributeError) as exc:
