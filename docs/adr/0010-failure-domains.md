@@ -15,11 +15,11 @@ Nothing in DCiaB places machines or replicas with the hardware in mind:
 - **No failure-domain model.** No `zone`, `failureDomain`, anti-affinity or `topology.kubernetes.io` key exists in `schema/`, `charts/` (the `r1` classes in `charts/capi-clusterclasses/classes/r1/` and `charts/capi-cluster/`), `addons/` or `lib/`. A VM cluster has sizes and addresses only (`schema/dciab.schema.json:309-321`). Proxmox takes one storage and a flat node list (`:164-186`). CAPMOX gets every node as `allowedNodes` (`lib/dciab_cluster/values.py:135-141`, `charts/capi-clusterclasses/classes/r1/proxmox.yaml:499-501`). The Cluster topology sets control plane replicas and worker pools, with no failure domain (`charts/capi-cluster/templates/cluster.yaml:25-43`).
 - **So quorum can sit on one host.** All three etcd members of MGMT or INFRA, and every Longhorn replica, can land on one hypervisor. Losing that host loses quorum and data. MGMT has no worker pools in the examples (`examples/proxmox-bare.yaml:63` on `main` @ 11cebc3), so its Longhorn replicas live on its control plane nodes too.
 - **The only resilience check** warns on one control plane node or one Longhorn replica (`lib/dciab_validate/checks.py:540-548`).
-- **The bare-Proxmox path is one host.** On `main` @ 11cebc3, `examples/proxmox-bare.yaml:15-20` points at one API (`pve01`), lists three nodes, and uses `local-lvm`. Hosts installed by `dciab hypervisors` aren't clustered; Proxmox clustering and shared storage were in the roadmap's backlog (now a Phase 2 gate, decision 7). A clone on local storage can't target another node: CAPMOX's own clone `target` is "only allowed if the original VM is on shared storage". Every MGMT, INFRA and workload VM therefore lands on `pve01`. Its comment at `:76`, "the Ceph datastore already replicates", is wrong for this example (an open PR rewrites it). The project's design notes accept single-host local storage as a v1 limitation; no product doc says so.
+- **The bare-Proxmox path is one host.** On `main` @ 11cebc3, `examples/proxmox-bare.yaml:15-20` points at one API (`pve01`), lists three nodes, and uses `local-lvm`. Hosts installed by `dciab hypervisors` aren't clustered; Proxmox clustering and shared storage were in the roadmap's backlog (now an `r1beta` gate, decision 7). A clone on local storage can't target another node: CAPMOX's own clone `target` is "only allowed if the original VM is on shared storage". Every MGMT, INFRA and workload VM therefore lands on `pve01`. Its comment at `:76`, "the Ceph datastore already replicates", is wrong for this example (an open PR rewrites it). The project's design notes accept single-host local storage as an `r1alpha` limitation; no product doc says so.
 - **One flat network.** Hypervisors, the bootstrap host, MGMT, INFRA and workload clusters share `network.nodes`: one CIDR, gateway and VLAN (`schema/dciab.schema.json:226-235`). There is no MTU field anywhere. Bare-metal nodes get one untagged `phy` link with no bond (`charts/capi-cluster/templates/_helpers.tpl:60-69`).
 - **No production NTP.** [ADR 0001](0001-day0-hypervisors-and-services.md):77 says the production platform must serve NTP on the DNS service addresses after the handoff whenever `spec.bootstrap.ntp` was used. [COMPONENTS.md](../COMPONENTS.md) has chrony only on the bootstrap host (line 22), and nothing replaces it.
 
-[ADR 0008](0008-provider-pattern.md) decides which block and object providers a site uses. Its v1 block providers are Longhorn, vSphere CSI, the Proxmox CSI driver (the usual choice on Proxmox), ceph-csi when the site supplies a Ceph key, and a pinned set of vendor SAN drivers; OpenEBS is not in v1. The rule is the site's storage first, Longhorn only on local disks, and never two layers of replication. Every cluster DCiaB gives block storage gets the `replicated`, `replicated-retain`, `local` and `local-retain` StorageClasses. [ADR 0009](0009-backup-and-dr.md) decides backups and their targets. This ADR decides where machines and replicas go so that losing one host, rack or zone doesn't take quorum or the only copy with it.
+[ADR 0008](0008-provider-pattern.md) decides which block and object providers a site uses. Its r1 block providers are Longhorn, vSphere CSI, the Proxmox CSI driver (the usual choice on Proxmox), ceph-csi when the site supplies a Ceph key, and a pinned set of vendor SAN drivers; OpenEBS is not in r1. The rule is the site's storage first, Longhorn only on local disks, and never two layers of replication. Every cluster DCiaB gives block storage gets the `replicated`, `replicated-retain`, `local` and `local-retain` StorageClasses. [ADR 0009](0009-backup-and-dr.md) decides backups and their targets. This ADR decides where machines and replicas go so that losing one host, rack or zone doesn't take quorum or the only copy with it.
 
 The `r1` classes are still a draft ([VERSIONING.md](../VERSIONING.md)). Whatever the classes must carry has to land before the first release freezes them.
 
@@ -53,7 +53,7 @@ spec:
         ...
 ```
 
-- **Granularity is the site's choice.** The smallest useful unit is one hypervisor host. A rack, a power feed or a room works too, as long as each domain fails independently. On Proxmox, v1 has one PVE node per domain, named after the node, because the Proxmox CSI driver reads the node name from the same label (decision 3). Domains of several PVE nodes come with CAPMOX failure domains (decision 2).
+- **Granularity is the site's choice.** The smallest useful unit is one hypervisor host. A rack, a power feed or a room works too, as long as each domain fails independently. On Proxmox, r1 has one PVE node per domain, named after the node, because the Proxmox CSI driver reads the node name from the same label (decision 3). Domains of several PVE nodes come with CAPMOX failure domains (decision 2).
 - **One list for the whole site.** A Proxmox site with bare-metal workload clusters uses the same names for both, so `rack-a` means the same rack to every cluster.
 - **Clusters use all of them by default.** A cluster or a worker pool may narrow the list (`failureDomains: [rack-a, rack-b]`), which is how a workload cluster stays in one room.
 - **Fewer than three domains must be acknowledged.** A site with no domains (one failure domain), one or two must set `notHighlyAvailable.reason`, as ADR 0009 does for `offsite: none`. Without it, `validate` errors (decision 6). Single- and two-host sites are allowed, and the docs say plainly that they aren't highly available.
@@ -82,7 +82,7 @@ Cluster API has one model: the infrastructure cluster reports failure domains, K
 
 - **Workers** are placed per MachineDeployment. `ProxmoxMachine` has its own `allowedNodes`, which overrides the cluster's. The class sets it from a per-MachineDeployment `failureDomain` variable to that domain's PVE node, and adds `topology.kubernetes.io/zone=<domain>` to the kubelet's `--node-labels`. The kubelet may set this label on its own Node.
 - **The control plane ships unspread in `r1`.** KubeadmControlPlane uses one machine template, and CAPMOX places each VM on any allowed node by free memory. Three control plane VMs may share a host. DCiaB doesn't work around the upstream gap; it reports it. `validate` warns on every Proxmox site with more than one domain, and `dciab status` lists each quorum member's PVE node and warns when two share one. Control plane spread on Proxmox comes in `r2`, once a CAPMOX release with failure domains is pinned.
-- **Shared storage is required for any spread.** With node-local storage, the template exists on one node and a clone can't go anywhere else. Spreading needs a clustered Proxmox with shared storage (Ceph RBD, or LVM over an iSCSI or FC SAN), which is a Phase 2 gate (decision 7).
+- **Shared storage is required for any spread.** With node-local storage, the template exists on one node and a clone can't go anywhere else. Spreading needs a clustered Proxmox with shared storage (Ceph RBD, or LVM over an iSCSI or FC SAN), which is an `r1beta` gate (decision 7).
 
 ### 3. One topology label, set from the start
 
@@ -167,30 +167,30 @@ After the build, `dciab status` shows each quorum member's host and warns when t
 
 The existing `check_resilience` (`lib/dciab_validate/checks.py:540-548`) becomes part of this check. Its "unless the datastore underneath already replicates" hint goes away: ADR 0008's double-replication rule covers that case.
 
-### 7. The single-host limitation in v1
+### 7. The single-host limitation in `r1alpha`
 
-**Stated plainly:** in v1, a Proxmox site installed from bare servers by `dciab hypervisors` is one failure domain. The hosts aren't clustered, CAPMOX talks to one host's API, and local storage can't clone to another node. Every MGMT, INFRA and workload VM runs on one host. If that host fails, the whole platform stops, and its data survives only in [ADR 0009](0009-backup-and-dr.md)'s backups on the site and off-site targets.
+**Stated plainly:** in `r1alpha`, a Proxmox site installed from bare servers by `dciab hypervisors` is one failure domain. The hosts aren't clustered, CAPMOX talks to one host's API, and local storage can't clone to another node. Every MGMT, INFRA and workload VM runs on one host. If that host fails, the whole platform stops, and its data survives only in [ADR 0009](0009-backup-and-dr.md)'s backups on the site and off-site targets.
 
 How it is surfaced:
 
 - The config must say so: `failureDomains.notHighlyAvailable.reason`, or `validate` errors. With it, `validate` prints one warning on every run: "this site is one failure domain: losing <host> stops MGMT, INFRA and every workload cluster; restore is from backups (ADR 0009)". A second hypervisor that `spec.hypervisors` installs but CAPMOX can't use is an error (decision 6).
 - The product docs say it where an operator chooses the path: `README.md`, `docs/HYPERVISORS.md` and `docs/PROXMOX.md` get a "single failure domain" note, and `examples/proxmox-bare.yaml` lists only `pve01` and says the storage is local to one host (unless an earlier PR has already done so).
-- It ends when Proxmox clustering with shared storage (Ceph, or a SAN) is built. That is now part of Phase 2 and its gate in [ROADMAP.md](../ROADMAP.md). Clustering also gives CAPMOX one API for all nodes; `platform.proxmox.url` should then point at a name or address that more than one node answers, not one host.
+- It ends when Proxmox clustering with shared storage (Ceph, or a SAN) is built. That is now part of `r1beta` and its gate in [ROADMAP.md](../ROADMAP.md). Clustering also gives CAPMOX one API for all nodes; `platform.proxmox.url` should then point at a name or address that more than one node answers, not one host.
 
 ### 8. Network: MTU, bonds and separate VLANs
 
 | Field | Where it goes | When |
 | --- | --- | --- |
-| `mtu` on `network.nodes` and on each `baremetal.networks` entry (optional, default 1500) | Proxmox and vSphere machine NICs (both providers have an `mtu` field), Metal3 `networkData`. Cilium reads the MTU from the node's interface | **v1.** The VM classes need a variable in `r1` |
-| `bond` on a BareMetalHost: `mode` (`802.3ad` or `active-backup`) and the member NICs' MACs | Metal3 `networkData` `bonds` (CAPM3 has `bondMode` and `bondLinks`); the node IP moves to the bond | **v1.** Lives in `capi-cluster`'s `Metal3DataTemplate`, not in a class |
-| `tagged: true` on a `baremetal.networks` entry | A `vlans` link (`vlanID`, `vlanLink`) on the NIC or bond, for trunk ports | **v1**, same place |
+| `mtu` on `network.nodes` and on each `baremetal.networks` entry (optional, default 1500) | Proxmox and vSphere machine NICs (both providers have an `mtu` field), Metal3 `networkData`. Cilium reads the MTU from the node's interface | **r1.** The VM classes need a variable in the `r1` classes |
+| `bond` on a BareMetalHost: `mode` (`802.3ad` or `active-backup`) and the member NICs' MACs | Metal3 `networkData` `bonds` (CAPM3 has `bondMode` and `bondLinks`); the node IP moves to the bond | **r1.** Lives in `capi-cluster`'s `Metal3DataTemplate`, not in a class |
+| `tagged: true` on a `baremetal.networks` entry | A `vlans` link (`vlanID`, `vlanLink`) on the NIC or bond, for trunk ports | **r1**, same place |
 | Bonds and VLANs on hypervisors | `dciab hypervisors` answer files and bridge setup | Roadmap, with the existing "tagged management VLAN, bridge" item |
-| Separate node networks per cluster for VM clusters (`network: <name>`, as Metal3 already has) | Each cluster's port group, or bridge and VLAN | With workload clusters (Phase 4). The bridge and port group are already per-cluster class variables, so no class change |
+| Separate node networks per cluster for VM clusters (`network: <name>`, as Metal3 already has) | Each cluster's port group, or bridge and VLAN | With workload clusters (`r1beta`). The bridge and port group are already per-cluster class variables, so no class change |
 | `network.storage`: one or more storage networks (decision 8a) | One extra NIC per storage network on every node that needs it | **Schema and class support in `r1`**, used only when configured |
 | Longhorn's own replication on a storage network | Longhorn's storage network setting needs Multus | Roadmap |
 | BMC traffic | Already separate: `baremetal.bmcNetworks`, routed | No change |
 
-The reference VLAN plan the docs should show: out-of-band (BMCs), hypervisor management, platform nodes (MGMT and INFRA), tenant nodes, and one or more storage networks. In v1 out-of-band, hypervisor management and storage can be separate, and the platform shares one node network; tenant separation arrives with workload clusters.
+The reference VLAN plan the docs should show: out-of-band (BMCs), hypervisor management, platform nodes (MGMT and INFRA), tenant nodes, and one or more storage networks. In r1 out-of-band, hypervisor management and storage can be separate, and the platform shares one node network; tenant separation arrives with workload clusters.
 
 #### 8a. Storage networks
 
@@ -261,7 +261,7 @@ spec:
 
 ## Alternatives considered
 
-- **Leave placement to the hypervisor.** vSphere DRS rules or Proxmox HA rules alone can keep VMs apart, but Kubernetes, Longhorn and the operators never learn the topology, so replicas can still pile into one zone. Proxmox's HA rules also need a clustered Proxmox with shared storage, which v1 doesn't have. Kept only as CAPV's cluster modules, where CAPV manages the rules itself.
+- **Leave placement to the hypervisor.** vSphere DRS rules or Proxmox HA rules alone can keep VMs apart, but Kubernetes, Longhorn and the operators never learn the topology, so replicas can still pile into one zone. Proxmox's HA rules also need a clustered Proxmox with shared storage, which `r1alpha` doesn't have. Kept only as CAPV's cluster modules, where CAPV manages the rules itself.
 - **Pod anti-affinity on hostname only.** Cheap, and CloudNativePG does it by default. Three VMs on one host are three hostnames, so it protects nothing on its own. Rejected as the only rule.
 - **Reject single- and two-domain sites.** Safer, but it removes the bare-Proxmox path that small and edge sites depend on. Rejected: they need an explicit acknowledgement with a reason, and the docs say they aren't highly available.
 - **A warning only for single-domain sites.** Easy to miss on a long `validate` run. Rejected for the acknowledgement above.
@@ -270,7 +270,7 @@ spec:
 - **A DCiaB controller that copies failure domains to Proxmox control plane Node labels.** Rejected; DCiaB waits for upstream and revisits with `r2`.
 - **A DCiaB controller that moves Proxmox control plane VMs apart.** It would fight CAPMOX's placement and duplicate the upstream proposal. Rejected.
 - **Hard zone anti-affinity in Longhorn always.** With fewer zones than replicas, volumes never become healthy. Rejected; it is hard only when there are enough zones.
-- **Separate VLANs for every tier in v1.** Tenant node networks come with workload clusters and need no class change; Longhorn's storage network needs Multus and is deferred. Storage networks for initiators are in `r1`.
+- **Separate VLANs for every tier in r1.** Tenant node networks come with workload clusters and need no class change; Longhorn's storage network needs Multus and is deferred. Storage networks for initiators are in `r1`.
 - **One second NIC for storage.** Simpler, but it can't carry two independent paths for iSCSI or NVMe-oF multipathing. Rejected for a list of storage networks.
 - **CAPV cluster modules only when the config asks.** Rejected: most sites have DRS, so the safe setting is the default and a site without DRS turns it off.
 - **NTP on the hypervisors.** They are NTP clients of the same addresses, ESXi isn't meant to serve time, and the hypervisors aren't DCiaB's to configure after the install. Rejected.
@@ -284,7 +284,7 @@ spec:
 - `examples/proxmox-bare.yaml` lists one node and acknowledges a single domain, or the new `validate` errors fail it. `examples/proxmox.yaml` already changes under ADR 0008.
 - Every vSphere site needs DRS, or turns cluster modules off.
 - MGMT gains an NTP service that must be up before the DNS addresses move. The DNS handoff test covers NTP too. The shared-address spike runs before `dciab mgmt` takes over DNS (decision 9).
-- Phase 2's gate now includes Proxmox clustering with shared storage, which ends the single-host limitation ([ROADMAP.md](../ROADMAP.md)).
+- The `r1beta` gate now includes Proxmox clustering with shared storage, which ends the single-host limitation ([ROADMAP.md](../ROADMAP.md)).
 
 ## Resolved questions
 
@@ -297,7 +297,7 @@ Decided on 2026-11-23.
 5. **CAPV cluster modules:** on for every vSphere site; sites without DRS turn them off explicitly. The safe setting should be the default.
 6. **Where time settings live:** in `spec.time` now. Upstreams, who serves time and the pivot to the site's service belong together, and `v1alpha1` can still change.
 7. **Storage network:** the optional schema and class support are in `r1`, with one or more extra NICs. iSCSI and NVMe-oF multipathing need independent paths, and adding it later would need a new class revision.
-8. **Proxmox clustering with shared storage:** a Phase 2 gate, now in ROADMAP.md. It ends the single-host limitation.
+8. **Proxmox clustering with shared storage:** an `r1beta` gate, now in ROADMAP.md. It ends the single-host limitation.
 9. **NTP and DNS on shared addresses:** run the spike before `dciab mgmt` takes over DNS; if it fails, NTP gets its own addresses. `time.servers` can already hold them.
 
 ## References

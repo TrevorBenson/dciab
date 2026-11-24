@@ -663,7 +663,7 @@ jobs:
           echo "published: $dest@$(cat "$RUNNER_TEMP/digest")  (pin it as bundle.lock images.backup)"
 
   frozen-classes:
-    # A class revision freezes when a DCiaB release tag first contains it; drafts may change (docs/VERSIONING.md).
+    # A class revision freezes when a DCiaB GA release tag (vN.0.0) first contains it; alpha and beta tags freeze nothing (docs/VERSIONING.md).
     name: released ClusterClasses are unchanged
     runs-on: ubuntu-latest
     steps:

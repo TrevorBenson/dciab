@@ -104,7 +104,7 @@ A volume created before its class had a selector has no group, so it is in the `
 
 ### The site's array
 
-On vSphere CSI, the Proxmox CSI driver and the other array providers, DCiaB backs up no raw volumes: there is no Longhorn-style backup to a target. The platform's stateful services rely on their own backups (OpenBao snapshots, CloudNativePG base backups and WAL), and backing up raw volumes is the array's job, with its own snapshots and replication. Tenant volumes on an array wait for the tenant backup service (Velero), after v1 (ADR 0009, decision 6).
+On vSphere CSI, the Proxmox CSI driver and the other array providers, DCiaB backs up no raw volumes: there is no Longhorn-style backup to a target. The platform's stateful services rely on their own backups (OpenBao snapshots, CloudNativePG base backups and WAL), and backing up raw volumes is the array's job, with its own snapshots and replication. Tenant volumes on an array wait for the tenant backup service (Velero), after r1 (ADR 0009, decision 6).
 
 ## MGMT's etcd and Cluster API state
 

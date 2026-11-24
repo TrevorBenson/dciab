@@ -110,7 +110,7 @@ def render(spec: dict, cluster: str, docs: List[dict]) -> List[dict]:
             continue   # DCiaB nodes are Linux
         if name == "vsphere-csi" and kind == "Deployment" and meta["name"] == "vsphere-csi-controller":
             pod = d["spec"]["template"]["spec"]
-            # No VolumeSnapshot CRDs in v1: the snapshot sidecar would only fail.
+            # No VolumeSnapshot CRDs in r1: the snapshot sidecar would only fail.
             pod["containers"] = [x for x in pod["containers"] if x["name"] != "csi-snapshotter"]
             # One controller per control plane node (anti-affinity), at most upstream's 3.
             d["spec"]["replicas"] = min(3, c["controlPlane"]["replicas"])

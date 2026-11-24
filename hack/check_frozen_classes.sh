@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Released ClusterClass revisions must never change. See docs/VERSIONING.md.
 #
-# A class revision (classes/rN/) is released once a DCiaB release tag (vX.Y.Z) contains it. Until then
-# it is a draft and may change freely. This takes the highest stable release tag reachable
-# from HEAD (prereleases such as v1.2.0-rc1 don't count) and fails if:
+# A class revision (classes/rN/) is released once a DCiaB GA release tag (vN.0.0) contains it. Until
+# then it is a draft and may change freely. This takes the highest GA tag reachable from HEAD
+# (alpha and beta tags such as v1.0.0-alpha.1 or v1.0.0-beta.2 don't count) and fails if:
 #   - any class file in that release was modified, renamed, deleted or changed type, or
 #   - more than one class revision exists that the release doesn't contain: between two
 #     releases there is one draft at most.
@@ -29,7 +29,7 @@ if [ "${#drafts[@]}" -gt 1 ]; then
 fi
 
 if [ -z "$release" ]; then
-  echo "No DCiaB release yet: every class revision is a draft and may change (drafts: ${drafts[*]:-none})."
+  echo "No DCiaB GA release yet: every class revision is a draft and may change (drafts: ${drafts[*]:-none})."
   exit 0
 fi
 

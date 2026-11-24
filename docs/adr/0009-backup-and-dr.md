@@ -121,7 +121,7 @@ Longhorn 1.8 and later model targets as `BackupTarget` objects (the one from Hel
   - `local` (one replica, `strict-local`, `reclaimPolicy: Delete`), for scratch data. No jobs.
 - **Argo CD never prunes PVCs** of platform applications (`Prune=false` on PVCs), so removing an application from Git doesn't delete its data.
 
-The other v1 block providers under ADR 0008 (vSphere CSI, the Proxmox CSI driver, ceph-csi and the pinned vendor SAN drivers) have no Longhorn-style backup to a target. On those, the platform's stateful services rely on their application-level backups (decisions 4, 5 and 7), the four classes keep the same names and roles (ADR 0008 says what backs each one), and backing up raw volumes is the site's array's job. Backing up tenant volumes on those providers waits for the tenant backup service (Velero), which comes after v1.
+The other r1 block providers under ADR 0008 (vSphere CSI, the Proxmox CSI driver, ceph-csi and the pinned vendor SAN drivers) have no Longhorn-style backup to a target. On those, the platform's stateful services rely on their application-level backups (decisions 4, 5 and 7), the four classes keep the same names and roles (ADR 0008 says what backs each one), and backing up raw volumes is the site's array's job. Backing up tenant volumes on those providers waits for the tenant backup service (Velero), which comes after r1.
 
 ### 7. The other stateful services
 
@@ -234,10 +234,10 @@ A backup counts only once a restore from it has passed.
 | --- | --- |
 | Longhorn: back up a volume, restore it to a new PVC, compare checksums | With the first Longhorn RecurringJobs, then before each release |
 | MGMT etcd restore on all members | Before each release; a person approves, as it stops MGMT |
-| MGMT rebuilt from the archive, the config, the recovery bundle and the newest CAPI export | Before each release, and in the Phase 5 gate |
+| MGMT rebuilt from the archive, the config, the recovery bundle and the newest CAPI export | Before each release, and in the `r1` gate |
 | OpenBao restore with a Shamir quorum | With the platform step, then before each release |
 | An NFS-only site target: OpenBao and CloudNativePG back up through the S3 shim, and restore from a new shim on the same export | Before each release |
-| Full-site cold start: every host powered off, then brought back in the documented order | The Phase 5 gate |
+| Full-site cold start: every host powered off, then brought back in the documented order | The `r1` gate |
 
 **At a site,** an in-cluster restore canary restores the newest CloudNativePG backup and one Longhorn backup to a scratch namespace every week, checks them and deletes them. A failed canary is an alert. People drill an OpenBao restore every quarter and a cold start every year.
 
@@ -246,7 +246,7 @@ Every backup job and the copier export the time of their last success. Alertmana
 ## Alternatives considered
 
 - **MGMT backs up to INFRA's SeaweedFS.** One S3 for everything, but restoring either cluster then needs the other. Rejected: MGMT uses the site target, always.
-- **Velero for everything** (cluster objects, and volumes through CSI snapshots or file copy). It's one tool, but its volume backups of databases are crash-consistent with no point-in-time recovery, restoring CAPI objects needs a careful order and loses `status`, and it adds a stateful component to every cluster. Rejected as the platform's mechanism. Velero becomes a DCiaB service for tenant workload backups after v1.
+- **Velero for everything** (cluster objects, and volumes through CSI snapshots or file copy). It's one tool, but its volume backups of databases are crash-consistent with no point-in-time recovery, restoring CAPI objects needs a careful order and loses `status`, and it adds a stateful component to every cluster. Rejected as the platform's mechanism. Velero becomes a DCiaB service for tenant workload backups after r1.
 - **etcd snapshots from a systemd timer on each control plane node,** set by the ClusterClass. It runs even when the API doesn't, but needs a new class revision and a node roll on every cluster, and a snapshot from a failing cluster isn't useful. Rejected for the CronJob.
 - **Only etcd snapshots for MGMT, or only CAPI exports.** An etcd restore needs MGMT's VMs and addresses; an export alone loses `status` and depends on `move` for something it wasn't designed for. Both are kept, for different failures.
 - **CloudNativePG's in-tree `barmanObjectStore`.** Simpler today, but deprecated since 1.26 and removed in 1.32. Rejected; DCiaB starts on the plugin.
@@ -265,10 +265,10 @@ Every backup job and the copier export the time of their last success. Alertmana
 - ADR 0005 is amended (below): OpenBao snapshots go to the site target, not SeaweedFS, and backup-target credentials reach clusters without ESO.
 - On a site whose target is NFS, MGMT runs one more stateful service, the S3 shim (decision 4a).
 - Restoring an etcd snapshot or a CAPI export needs the backup key from OpenBao, or a recipient's identity when OpenBao is lost. Opening the recovery bundle always needs a recipient. Custody of those identities becomes part of operating a site, with a yearly check.
-- Tenants get etcd snapshots of their clusters by default, but their volumes are backed up only when they opt in, until the tenant backup service arrives after v1.
+- Tenants get etcd snapshots of their clusters by default, but their volumes are backed up only when they opt in, until the tenant backup service arrives after r1.
 - Retain classes leave volumes behind after their PVCs go. Removing platform data becomes a deliberate, manual step, and capacity planning must allow for released volumes until someone deletes them.
 - Off-site recovery points lag by up to the copier's interval (one hour by default).
-- Restore drills join CI (kind), the release-gate drills, and the Phase 5 gate.
+- Restore drills join CI (kind), the release-gate drills, and the `r1` gate.
 
 ## Amendment to ADR 0005 (2026-11-23)
 
@@ -289,7 +289,7 @@ Trevor decided these on 2026-11-23; the decisions above include them.
 3. **Who can restore:** backups are encrypted to the recipients and to a separate backup key whose private half is in OpenBao and the recovery bundle (decision 10), so routine restores don't need a recipient.
 4. **Workload clusters:** etcd snapshots are on by default and volume backups are opt-in per tenant (decisions 2 and 6), because a cluster's state is cheap to keep and tenant data is the tenant's choice.
 5. **Forgejo:** platform repositories are push-mirrored to the site's own Git service when one is configured (decision 7), which gives a copy that needs no restore and eases pivoting Git to the site.
-6. **Velero for tenants:** a DCiaB service later, not v1, because the platform's own backups come first.
+6. **Velero for tenants:** a DCiaB service later, not r1, because the platform's own backups come first.
 7. **The copier's tool:** rclone, pinned and checksummed in `bundle.lock` (decision 8), because one tool covers S3 and NFS.
 8. **NFS-only sites:** an S3 shim (SeaweedFS) on MGMT backed by the site's NFS export (decision 4a), because it keeps "S3 or NFS" and keeps the primary copy off INFRA.
 9. **Storage classes:** `replicated`, `replicated-retain`, `local` and `local-retain` (decision 6); platform data that keeps its own copies uses `local-retain`, and scratch uses `local`, so no platform data is lost with its PVC.

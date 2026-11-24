@@ -12,6 +12,7 @@ DCiaB is built by a **planner** (Claude in a cloud session: writes the code and 
 ## Rules for any change
 
 - **Use a branch and a PR for every change.** Never push to `main`.
+- **Releases are `rNalphaM`, `rNbetaM` and `rN`**, with SemVer `N.0.0-alpha.M`, `N.0.0-beta.M` and `N.0.0` in `VERSION` ([docs/VERSIONING.md](docs/VERSIONING.md)). Development is on `r1alpha` (Day 0). Give every new issue a `day0`, `day1` or `day2` label (or `tooling` for CI and repository work) and, once it is scheduled, the milestone of its stage (`r1alpha`, `r1beta`, `r1`). Work outside the current stage's scope still goes to its own stage's milestone.
 - **Never edit a released ClusterClass revision** (`charts/capi-clusterclasses/classes/rN/`). Read `docs/VERSIONING.md` first. CI enforces it.
 - **Every version lives in `bundle.lock`.** Never inline a version in a chart or script.
 - **Product docs stay product-focused.** `README.md`, `docs/` and component READMEs describe DCiaB for any site. Lab specifics and test nuances belong under `handoff/` (`LAB.md`, tasks, reports); see `handoff/README.md`.
