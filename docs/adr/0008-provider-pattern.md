@@ -1,6 +1,6 @@
 # ADR 0008: Providers — one pattern for identity, storage, DNS, IPAM and secrets
 
-- Status: Accepted (2026-11-23); amended 2026-11-24 (block storage has no default and workload clusters opt in: decisions 1, 2 and 4)
+- Status: Accepted (2026-11-23); amended 2026-11-24 (block storage has no default and workload clusters opt in: decisions 1, 2 and 4); **amendment 2 proposed 2026-11-24: MGMT keeps no volumes (decision 4a; decisions 1, 2, 4 and 5)**
 - Date: 2026-11-22
 
 ## Context
@@ -137,6 +137,62 @@ The v1 block providers are Longhorn, the vSphere CSI driver, the Proxmox CSI dri
 - **`existing`.** The cluster already has a CSI driver that DCiaB didn't install. DCiaB uses the named StorageClass and installs nothing.
 
 Each block provider produces a **`replicated`** StorageClass, the cluster default, and a **`replicated-retain`** class (`reclaimPolicy: Retain`) for platform data, so deleting a PVC by mistake doesn't delete the data. Decision 5 adds `local` and `local-retain`. ADRs 0009 and 0010 use these four names.
+
+### 4a. MGMT keeps no volumes (amendment 2, proposed 2026-11-24)
+
+> **Proposed amendment, for review.** If accepted, this replaces "required for MGMT and INFRA" with "required for INFRA" in decisions 1, 2, 4 and 5, and the implementation follows in a separate PR.
+
+**What MGMT has to keep.** MGMT owns every cluster's machines. Its state is the Cluster API objects, and those live in etcd. etcd keeps its own copies on the three control plane nodes, which ADR 0010 spreads across failure domains. Losing more than one of them is a restore, and the restore comes from off-cluster backups: the etcd snapshots and CAPI exports of ADR 0009, written to the site target. A replicated volume on MGMT adds nothing to that.
+
+The services MGMT runs, and where each keeps its state:
+
+| MGMT service | State | Where it lives |
+| --- | --- | --- |
+| Cluster API, providers, IPAM, cert-manager, kubelet-csr-approver, vSphere CPI | Kubernetes objects | etcd |
+| Metal3 Bare Metal Operator and Ironic | BareMetalHost objects; Ironic's own database and image cache | BareMetalHosts in etcd are the source of truth. Ironic's database and cache are ephemeral and rebuilt from them and from the archive's images on restart |
+| DNS (authoritative and recursor) | Zones and records | Records live in etcd as Kubernetes objects (rendered from the config, and from external-dns `DNSEndpoint` objects). The DNS server pods are stateless and build their zones from those objects. The engine is the spike below |
+| Kea DHCP | Host reservations; dynamic leases | Reservations come from the config, so they live in etcd. Leases sit in each Kea's memfile on the pod's own scratch space, and a hot-standby HA pair, one per failure domain, keeps the two copies in step |
+| Production NTP (ADR 0010) | None worth keeping (the drift file) | Scratch space |
+| The S3 shim for NFS-only sites (ADR 0009, decision 4a) | Objects and metadata | The site's NFS export, mounted directly as an NFS volume. It needs no StorageClass |
+
+So **MGMT gets no block storage by default**: no Longhorn, no CSI driver, and no StorageClass. `spec.storage.block` describes INFRA's storage. A site that wants volumes on MGMT anyway (an extra service it runs there) sets `overrides.mgmt` in full, as `overrides.workload` works, and gets the four classes on MGMT. Nothing DCiaB runs on MGMT asks for one.
+
+Why:
+
+- **Nothing on MGMT needs a volume** once DNS keeps its data in etcd and Ironic is treated as the cache Metal3 designs it to be.
+- **Fewer moving parts on the cluster everything else depends on.** Longhorn on MGMT is a storage system to run, upgrade and recover on the one cluster whose failure stops every rebuild.
+- **It removes a known hazard.** On Proxmox, CAPMOX can't add a second disk, so Longhorn on MGMT shares the root disk with etcd. With no volumes, etcd has the disk to itself.
+- **Recovery stays simple.** A new MGMT needs etcd restored and the CAPI export imported, and nothing else.
+
+What it costs:
+
+- **Kea leases.** If both Kea peers restart at the same moment, the dynamic leases are lost, and a client could be offered an address another client still holds until it renews. DCiaB's own hosts, BMCs and nodes use reservations or static addresses, so only dynamic pools are exposed. The open question below asks whether that is acceptable or whether leases need a home.
+- **Ironic restarts take longer.** It re-registers its hosts from the BareMetalHosts after a restart. This is how Metal3 works today, and the BMO already keeps each host's status on the object for `clusterctl move`.
+- **DNS needs a stateless design.** A DNS server that keeps records in its own database (PowerDNS with a SQL or LMDB backend fed by external-dns over its API) would need a volume. The design has to keep the records in etcd instead. That is the spike.
+
+**INFRA is where the classes matter.** Most of INFRA's stateful services keep their own copies and run on `local-retain`, spread across failure domains (ADR 0010). A few keep a single copy and need `replicated-retain`:
+
+| INFRA service | Class |
+| --- | --- |
+| OpenBao (Raft), CloudNativePG clusters (Authentik, Forgejo, NetBox, AWX, Terrakube, OpenVoxDB, Artifact Keeper), OpenSearch, SeaweedFS volume servers, Prometheus | `local-retain` |
+| Forgejo's repository volume, any service that keeps files on disk in a single replica, and any registry storage not on S3 | `replicated-retain` |
+| Scratch (build caches, temporary exports) | `local` |
+
+The provider decides where both come from: on vSphere the datastore through the vSphere CSI driver; on Proxmox with Ceph the Proxmox CSI driver; on bare metal Longhorn plus the nodes' data disks.
+
+**Workload clusters are unchanged** (decision 4): nothing enforced, opt in through `overrides.workload`.
+
+**Alternatives considered for MGMT:**
+
+- **Keep block storage required on MGMT (the 2026-11-24 text).** Simple to state, but it runs a storage system on MGMT for services that don't need one, and on Proxmox it puts Longhorn on etcd's disk.
+- **A local class only on MGMT** (a node-local provisioner, for the services above). Smaller than Longhorn, but it ties each service's data to one node, and every service listed already has a home without it.
+- **Kea leases and DNS data in a CloudNativePG database on MGMT.** Durable, but it brings a database, and its backups, to MGMT for two small services.
+
+**Open questions for this amendment:**
+
+1. **DNS engine (spike).** CoreDNS with zone files rendered from Kubernetes objects (Day 0's `dciab services` already renders zones this way), or PowerDNS with its bind or LMDB backend rebuilt from those objects at start. The spike also decides how external-dns records get in: the CRD (`DNSEndpoint`) source plus a renderer, or RFC 2136 to a primary that only holds data in memory and is rebuilt from etcd. Either way, no volume.
+2. **Kea leases.** Are memfile leases on scratch space with an HA pair acceptable, given DCiaB's hosts use reservations? Or should leases also be written somewhere durable (Kea's lease file on the S3 shim's NFS export when there is one, or a small `overrides.mgmt` volume)?
+3. **Metal3 image cache.** Ironic's cache holds the OS images it serves over virtual media. Rebuilding it from the archive's registry on restart is the proposal; is the restart time acceptable for large images?
 
 ### 5. A local class for services that replicate themselves
 
