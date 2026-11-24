@@ -9,7 +9,7 @@ The checkboxes on this page are the source of truth for what exists. GitHub issu
 | Stage | Scope | Gate |
 | --- | --- | --- |
 | `r1alpha`: Day 0 | Config schema and `validate`; archive build pipeline; the bootstrap appliance, USB and `media`; Day 0 services (DNS, NTP, HTTP) on the bootstrap host; hypervisors installed over Redfish; `seed` (seed registry, kind); `mgmt` (MGMT built and Cluster API moved into it); the minimal INFRA services Day 0 or the pivot need; unit tests for all of it. **Proxmox VE required, vSphere best-effort** (a parallel lane once an ESXi lab is available) | On Proxmox VE, from bare servers installed over Redfish or from an existing Proxmox VE: `services`, `hypervisors`, `seed` and `mgmt` run offline from the archive, and MGMT builds and pivots; a cluster from the Proxmox class survives node replacement; re-running any step changes nothing; unit tests and the hosted CI jobs pass |
-| `r1beta`: Day 1 | Day 0's DNS, NTP, DHCP and Redfish dependencies pivot to production services, on MGMT and INFRA or provided by the site; Metal3; Proxmox VE clustering and shared storage; like-for-like moves from hypervisors DCiaB installed to the site's own (vSphere to vSphere, Proxmox VE to Proxmox VE); `infra` and `platform`, with tested Argo CD app-of-apps Helm templates for INFRA and for Cluster API tenant clusters; identity and platform TLS on INFRA; workload clusters; `finalize`. **vSphere required** | End to end on the lab, on Proxmox VE and vSphere: DNS, NTP and DHCP answer from MGMT, INFRA or the site with the bootstrap host unplugged; a bare-metal host provisions over Redfish virtual media; on Proxmox VE, MGMT and INFRA run on more than one clustered host; `platform` from a clean MGMT ends with every application Synced and the nightly drift job clean; a workload cluster from each class; one like-for-like move per platform |
+| `r1beta`: Day 1 | Day 0's DNS, NTP and Redfish dependencies pivot to production services, on MGMT and INFRA or provided by the site, and DHCP (Kea) comes up there (Day 0 serves none, ADR 0001); Metal3; Proxmox VE clustering and shared storage; like-for-like moves from hypervisors DCiaB installed to the site's own (vSphere to vSphere, Proxmox VE to Proxmox VE); `infra` and `platform`, with tested Argo CD app-of-apps Helm templates for INFRA and for Cluster API tenant clusters; identity and platform TLS on INFRA; OpenVox enrollment of hosts; workload clusters; `finalize`. **vSphere required** | End to end on the lab, on Proxmox VE and vSphere: DNS, NTP and DHCP answer from MGMT, INFRA or the site with the bootstrap host unplugged; a bare-metal host provisions over Redfish virtual media; on Proxmox VE, MGMT and INFRA run on more than one clustered host; `platform` from a clean MGMT ends with every application Synced and the nightly drift job clean; a workload cluster from each class; one like-for-like move per platform; a full run on nested virtualization, with step timings recorded |
 | `r1`: Day 2 | Persistent storage and backups complete; upgrades, rollback and importing a new archive; Kubernetes upgrades and class revision moves; observability; reboot, cold start and failure handling; `verify`; the operator documentation | Every class survives a Kubernetes upgrade and a move to a new class revision; restore drills and a full-site cold start pass; failure injection and an air-gapped rehearsal; an engineer who didn't build it completes a run from the README alone |
 
 Moving clusters between platforms (vSphere to Proxmox VE or back) joins `r1` only if a simple, low-cost way is found; otherwise it is roadmap work for a later release.
@@ -68,6 +68,7 @@ Decided in [ADR 0001](adr/0001-day0-hypervisors-and-services.md).
 
 - [x] `dciab status`: read-only report of the Day 0 pod, the platform CA and registry certificate, the seed registry, the bootstrap cluster and where MGMT's Cluster lives
 - [x] `dciab seed`: platform CA (generated with its key age-encrypted, or imported), read-only Zot loaded from the payload, kind pulling through it, providers and ClusterClasses from the payload, DNS for `registry.<domain>`; `--remove` undoes it on the host ([SEED.md](SEED.md))
+- [ ] Minimal INFRA for Day 0: settle which INFRA services, if any, Day 0 or the pivot need ahead of `r1beta`'s full `dciab infra`, and build them
 - [ ] `dciab mgmt`: builds MGMT, installs Cilium and the providers, and moves Cluster API into MGMT; picks up `dciab seed`'s kubeconfig and trust bundle and runs offline from the payload (CI runs seed then mgmt up to the Cluster; not yet proven on real infrastructure). On vSphere, the cloud provider (CPI) is installed before Cilium (`addons/vsphere-cpi`, the `cpi` step)
 
 ### vSphere lane (best-effort in `r1alpha`, required in `r1beta`)
@@ -102,6 +103,7 @@ Runs in parallel once an ESXi lab is available; otherwise it moves to `r1beta`.
 - [ ] `dciab platform`: repos pushed, Argo CD and OpenTofu bring up the rest; Argo CD app-of-apps Helm templates for INFRA and for Cluster API tenant clusters, and adoption of script-installed releases
 - [ ] Platform TLS: cert-manager issuers from the platform CA and OpenBao PKI
 - [ ] Cilium load balancing, Gateway API and network policies
+- [ ] Enterprise policy: OpenVox Server, OpenVoxDB and the ENC; host enrollment and profiles
 - [ ] Workload clusters and standalone VMs from each class
 - [ ] vSphere CPI for INFRA and workload clusters
 - [ ] Plain (non-Ventoy) stick for strict Secure Boot sites
@@ -147,7 +149,7 @@ Candidates for `r2` and later. Nothing here is scheduled until that release's ro
 
 - Moving clusters between platforms (vSphere to Proxmox VE or back), unless a simple, low-cost way gets it into `r1`
 - Platform services proposed in ADRs 0004–0007: workload identity with SPIFFE/SPIRE ([ADR 0004](adr/0004-identity-and-sso.md)); the IaC path with Terramate, Terratest and Terrakube with OPA ([ADR 0006](adr/0006-iac-path.md)); detection and response with Tetragon, Suricata and a SOAR ([ADR 0007](adr/0007-detection-to-response.md))
-- Enterprise policy with OpenVox (server, OpenVoxDB, the ENC and host enrollment); AWX as an Ansible service for tenants
+- AWX as an Ansible service for tenants
 - Tenant volume backups with Velero (ADR 0009); overrides for one workload cluster at a time; a signed, site-built overlay archive for other vendor CSI drivers; a hybrid `secrets: external` mode; OpenEBS Local PV LVM if a site needs node-local disks beside an array (ADR 0008)
 - **Only if a site needs them:** PXE as a second install method; a direct out-of-band interface on the bootstrap host, with DHCP for BMCs; separate NTP service addresses
 
@@ -162,5 +164,5 @@ Two pieces exist: `dciab cluster-values` already gives each cluster its JWT issu
 
 ## Decisions
 
-- **Node image recipe: image mode (bootc) with CRI-O is the choice.** It builds and boots on Proxmox VE with SELinux enforcing. The image-builder recipe stays until a cluster passes on the bootc template; then it's removed, along with the classes' containerd mirror files.
+- **Node image recipe: image mode (bootc) with CRI-O is the choice.** It builds and boots on Proxmox VE with SELinux enforcing, and a cluster has passed on the bootc template. The image-builder recipe and the classes' containerd mirror files are removed next (open item under `r1alpha`).
 - **CRI-O instead of containerd.** It comes with the bootc recipe, which installs CRI-O. The `r1` classes already write CRI-O's mirror files next to containerd's, and kubeadm finds the only runtime socket on its own. What's left is removing the containerd files and the image-builder recipe.

@@ -12,7 +12,7 @@
 set -euo pipefail
 
 classes="charts/capi-clusterclasses/classes"
-release="$(git tag --merged HEAD --list 'v*' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n 1 || true)"
+release="$(git tag --merged HEAD --list 'v*' | grep -E '^v[0-9]+\.0\.0$' | sort -V | tail -n 1 || true)"
 
 # Revision folders at HEAD that the release does not contain are drafts: one at most.
 mapfile -t head_revisions < <(git ls-tree -d --name-only HEAD "$classes/" | xargs -r -n1 basename | grep -E '^r[0-9]+$' || true)

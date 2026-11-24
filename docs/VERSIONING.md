@@ -29,7 +29,7 @@ A stage can have as many cuts as it needs: work out as many bugs as possible in 
 **Release 1 follows the site's lifecycle** ([GLOSSARY.md](GLOSSARY.md), phases of a site):
 
 - **`r1alpha` is Day 0.** Bootstrap from bare servers or an existing hypervisor: the bootstrap host and its Day 0 services (DNS, NTP, HTTP), hypervisors installed over Redfish, the seed registry, kind, MGMT built and pivoted, and the minimal INFRA services Day 0 or the pivot need. Basic unit tests for all of it. **Proxmox VE is required; vSphere is best-effort.** vSphere becomes a parallel lane once an ESXi lab is available, or moves to `r1beta`.
-- **`r1beta` is Day 1.** From the bootstrap host to production: the Day 0 DNS, NTP, DHCP and Redfish dependencies pivot to production services, hosted by DCiaB's INFRA or provided by the site; like-for-like moves from hypervisors DCiaB installed to the site's own (vSphere to vSphere, Proxmox VE to Proxmox VE); tested Argo CD app-of-apps Helm templates for INFRA and for Cluster API tenant clusters. vSphere is required from here.
+- **`r1beta` is Day 1.** From the bootstrap host to production: the Day 0 DNS, NTP and Redfish dependencies pivot to production services, hosted by DCiaB's INFRA or provided by the site, and DHCP comes up there; like-for-like moves from hypervisors DCiaB installed to the site's own (vSphere to vSphere, Proxmox VE to Proxmox VE); tested Argo CD app-of-apps Helm templates for INFRA and for Cluster API tenant clusters. vSphere is required from here.
 - **`r1` is Day 2.** Production hardening and running the site: persistent storage, backups and restores, upgrades and the rest of Day 2 operations. Day 2 work is built and tested end to end in further `r1beta` cuts once the Day 1 scope is in; `r1` is published when the `r1` milestone and its gates are done.
 
 Moving clusters between platforms (vSphere to Proxmox VE or back, including what vMotion does today) is in `r1` only if a simple, low-cost way is found. Otherwise it is roadmap work for a later release.
@@ -57,7 +57,7 @@ Minor and patch stay `0`, because fixes ship in the next release. SemVer's prece
 - **`VERSION`** holds the SemVer version of the release being developed. Right after a tag is cut, `VERSION` moves to the next cut (`1.0.0-alpha.1` to `1.0.0-alpha.2`, or to `1.0.0-beta.1` once the alpha stage is done).
 - **A release** is a git tag `v` + `VERSION` on a commit of `main`, plus a GitHub release titled with the `rN` name and the SemVer version: `r1alpha1 (v1.0.0-alpha.1)`.
 - **The archive** is named after `VERSION` (`dciab-1.0.0-alpha.1.tar`). A site config names the archive it was written for in `spec.bundleVersion`, and `dciab validate` rejects a config written for a different archive, because the config has to match that archive's `bundle.lock`.
-- **Images DCiaB builds** (the Day 0 chrony image, the backup image, the lab runner) keep content-derived tags and are pinned by digest in `bundle.lock`. They reach a site inside an archive, so they don't need the release version.
+- **Images DCiaB builds** (the Day 0 chrony image, the backup image, the lab runner) keep content-derived tags and are pinned by digest in `bundle.lock`. They reach a site inside an archive, so they don't need the release version. The lab runner's tag starts with `VERSION` (`<VERSION>-<id>`), so every bump of `VERSION` rebuilds and republishes it on the lab runner; re-pin `labRunner` in `bundle.lock` afterwards.
 
 Merging a PR is not a release. Releases are cut when there is something worth testing or shipping, not to unlock development.
 

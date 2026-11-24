@@ -71,15 +71,16 @@ def repo(tmp_path):
     git(r.parent, "init", "-q", "-b", "main", str(r))
     git(r, "config", "user.email", "t@example.com")
     git(r, "config", "user.name", "t")
+    git(r, "config", "tag.gpgsign", "false")
     (r / "charts/capi-clusterclasses/classes/r1/proxmox.yaml").write_text("a: 1\n")
     git(r, "add", "-A")
-    git(r, "commit", "-qm", "r1 draft")
+    git(r, "-c", "commit.gpgsign=false", "commit", "-qm", "r1 draft")
     return r
 
 
 def edit_class_and_check(repo):
     (repo / "charts/capi-clusterclasses/classes/r1/proxmox.yaml").write_text("a: 2\n")
-    git(repo, "commit", "-qam", "edit r1")
+    git(repo, "-c", "commit.gpgsign=false", "commit", "-qam", "edit r1")
     return subprocess.run(["bash", str(SCRIPT)], cwd=repo, capture_output=True, text=True)
 
 
