@@ -116,7 +116,7 @@ nodeImages:
       commit: "7de0140298a426c89d7ca014f127689a596b5cc0"
     manifest: minimal
     # A prebuilt base (image@sha256:...) instead of building the recipe; empty = build it.
-    baseImage: ""
+    baseImage: ghcr.io/trevorbenson/dciab-rocky-bootc-base@sha256:56cfba5c1ad3fb20f5a4e3fb532b01139b8f8089cfb86ef1e3cdc07760f2ebbd   # minimal-7de0140298a4, built by lab-runner-image.yml
     # Turns the OCI image into raw/qcow2/vmdk disks. Pin as image@sha256:<digest>.
     bootcImageBuilder: quay.io/centos-bootc/bootc-image-builder@sha256:dab86ee6b46dcade411b37f4e70b07d93b6a06da0dbfec6fe89247a220e0d9f8
     # CRI-O follows Kubernetes minor versions.
@@ -288,6 +288,9 @@ labRunner:
   actionsRunner:
     version: "2.338.0"
     sha256: "af4b794c1bc41d73d40535e3fe092a39f9679cd8d965954c2aca25a05ca41d32"   # of actions-runner-linux-x64-<version>.tar.gz
+  # Published by .github/workflows/lab-runner-image.yml (tag 0.1.0-e6d2bd7c); pin a newer tag's digests after its publish.
+  image: ghcr.io/trevorbenson/dciab-lab-runner@sha256:082f4f4baca828c45e764d4c8d140c52609f61d4a2632423602e8c568b5764c0
+  disk: ghcr.io/trevorbenson/dciab-lab-runner-disk@sha256:c2dc4152602f037be74fa9496355292e4c86cdd28385cc9d4ab71305a835fe1f
 
 binarySHA256:
   clusterctl-linux-amd64: "c7301a8515ed329562b06c958463051dd55d9649fac591393f5df54a868fa79b"

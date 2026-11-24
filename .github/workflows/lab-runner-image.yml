@@ -81,7 +81,10 @@ jobs:
           read -r manifest commit < <(python3 -c 'import yaml;b=yaml.safe_load(open("bundle.lock"))["nodeImages"]["bootc"];print(b["manifest"],b["sigRecipe"]["commit"][:12])')
           base="ghcr.io/$owner/dciab-rocky-bootc-base:$manifest-$commit"
           base_note="base: already published \`$base\`"
-          if ! skopeo inspect --raw "docker://$base" >/dev/null 2>&1; then
+          if ! sudo podman image exists "localhost/dciab-rocky-bootc-base:$manifest"; then
+            # nodeImages.bootc.baseImage is pinned: this build pulled the base, it built none.
+            base_note="base: pinned in bundle.lock, nothing to publish"
+          elif ! skopeo inspect --raw "docker://$base" >/dev/null 2>&1; then
             sudo podman push --digestfile "$RUNNER_TEMP/base.digest" "localhost/dciab-rocky-bootc-base:$manifest" "docker://$base"
             base_note="base: \`$base@$(cat "$RUNNER_TEMP/base.digest")\` (pin as nodeImages.bootc.baseImage)"
           fi
