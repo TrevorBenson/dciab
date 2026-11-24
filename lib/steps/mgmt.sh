@@ -297,8 +297,11 @@ else
   while read -r line; do echo "  $line"; done <<<"$issuers"
   on_mgmt kubectl apply --server-side --field-manager=dciab --force-conflicts -f - <<<"$bindings"
 fi
-# Bindings this step made earlier for a role, group or issuer the config no longer has.
-for crb in $(on_mgmt kubectl get clusterrolebindings -l dciab.io/identity=roles -o name); do
+# Bindings this step made earlier for a role, group or issuer the config no longer has. Listed
+# first: a failed list must stop the step, not skip the clean-up.
+crbs="$(on_mgmt kubectl get clusterrolebindings -l dciab.io/identity=roles -o name)" \
+  || die "can't list MGMT's role bindings (above)"
+for crb in $crbs; do
   grep -qx "${crb#*/}" <<<"$keep" || on_mgmt kubectl delete "$crb"
 done
 finish_if identity

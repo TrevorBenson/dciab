@@ -46,6 +46,8 @@ from typing import Any, Dict, List, Optional
 # The classes' authentication variable takes at most this many issuers (its maxItems, which
 # keeps the API server's CEL cost estimate for the uniqueness rules small).
 MAX_ISSUERS = 4
+# Kubernetes' own users and groups: no issuer's prefix may reach them.
+SYSTEM_PREFIX = "system:"
 # Namespaces whose pods must run privileged: kube-system (kube-vip, Cilium) and Longhorn.
 # Other components label their own namespaces when they need more than baseline.
 POD_SECURITY_EXEMPT = ["kube-system", "longhorn-system"]
@@ -121,6 +123,12 @@ def check_issuers(issuers: List[dict]) -> List[dict]:
             raise ValuesError(f"authentication issuers: {key} {', '.join(dup)} appears more than once")
     for key in ("usernamePrefix", "groupsPrefix"):
         seen = [i.get(key, i["name"] + ":") for i in issuers]
+        # system: is Kubernetes' own (system:masters bypasses RBAC); so is any prefix that
+        # starts it (sys, then a group named tem:masters). The classes refuse both too.
+        bad = sorted({p for p in seen if p.startswith(SYSTEM_PREFIX) or SYSTEM_PREFIX.startswith(p)})
+        if bad:
+            raise ValuesError(f"authentication issuers: {key} {', '.join(bad)} reaches {SYSTEM_PREFIX}, "
+                              "Kubernetes' own users and groups")
         dup = sorted({v for v in seen if seen.count(v) > 1})
         if dup:
             raise ValuesError(f"authentication issuers: {key} {', '.join(dup)} is shared; give each issuer its own")

@@ -1,6 +1,6 @@
 # ADR 0008: Providers — one pattern for identity, storage, DNS, IPAM and secrets
 
-- Status: Accepted (2026-11-23); amended 2026-11-24 (block storage has no default and workload clusters opt in: decisions 1, 2 and 4); amendment 2 accepted 2026-11-24 (MGMT keeps no volumes: decision 4a, which supersedes "required for MGMT and INFRA" in decisions 1, 2, 4 and 5)
+- Status: Accepted (2026-11-23); amended 2026-11-24 (block storage has no default and workload clusters opt in: decisions 1, 2 and 4); amendment 2 accepted 2026-11-24 (MGMT keeps no volumes: decision 4a, which supersedes "required for MGMT and INFRA" in decisions 1, 2, 4 and 5); amendment 3, 2026-11-24 (a site IdP may serve MGMT and INFRA, and `identity.kubernetes` adds to the provider's issuer: decisions 3, 8 and 9)
 - Date: 2026-11-22
 
 ## Context
@@ -66,9 +66,11 @@ One rule limits overrides. The tiers are created in order: site → bootstrap �
 
 **Protocols.** OIDC is the one protocol DCiaB services consume. Every consumer in the matrix (decision 9) speaks OIDC, except hosts (SSSD reads LDAP) and vCenter (below). LDAP is served only for those. SAML is accepted only as an Authentik upstream, never as a consumer protocol: no DCiaB consumer needs it.
 
-**The Kubernetes issuer comes from config, through structured authentication.** `cluster-values` stops hard-coding the issuer. It reads `identity.kubernetes`: a list of issuers, each with its URL, client ID (audience), claims and CA bundle. With `authentik` the list defaults to today's URL and client `kubernetes`. With `external` it holds the site's issuer and the client given for `kubernetes`.
+**The Kubernetes issuer comes from config, through structured authentication.** `cluster-values` stops hard-coding the issuer. Each cluster's list starts with the provider's issuer, when `kubernetes` is in `consumers`: with `authentik`, today's URL and client `kubernetes`; with `external`, the site's issuer and the client given for `kubernetes`. `identity.kubernetes.issuers` adds more, each with its URL, client ID (audience), claims, CA bundle and the tiers it serves.
 
-The `r1` ClusterClasses, still a draft, switch from the API server's `--oidc-*` flags to an `AuthenticationConfiguration` file (`--authentication-config`). Structured authentication is stable since Kubernetes 1.34, and DCiaB pins v1.36.6. It accepts several JWT issuers at once, so a cluster can trust Authentik and the site IdP together while people move from one to the other. Adding or removing an issuer is a change to the file, not a new flag set. MGMT and INFRA still get no issuer (ADR 0004, decision 4).
+The `r1` ClusterClasses, still a draft, switch from the API server's `--oidc-*` flags to an `AuthenticationConfiguration` file (`--authentication-config`). Structured authentication is stable since Kubernetes 1.34, and DCiaB pins v1.36.6. It accepts several JWT issuers at once, so a cluster can trust Authentik and the site IdP together while people move from one to the other. Adding or removing an issuer is a change to the file, not a new flag set. MGMT and INFRA never trust DCiaB's Authentik (ADR 0004, decision 4). They trust the site's IdP when it is configured (`provider: external`, or a site issuer in `identity.kubernetes.issuers`), and keep their certificate kubeconfigs either way.
+
+> **Amendment 3, 2026-11-24.** As accepted, this decision said "MGMT and INFRA still get no issuer". Now: with `provider: external` (or a site issuer listed in `identity.kubernetes.issuers`), MGMT and INFRA trust the site's IdP too. DCiaB doesn't run that IdP, so trusting it creates no dependency loop: the site comes before every tier (decision 2). DCiaB's own Authentik never serves MGMT or INFRA, and the break-glass certificate kubeconfigs stay on every cluster (ADR 0004, decision 5). Also, `identity.kubernetes` adds issuers to the provider's instead of replacing the list, so the provider's issuer is never typed twice; leaving `kubernetes` out of `consumers` drops it. No issuer's name may start with `system`, so no prefix reaches Kubernetes' own `system:` users and groups.
 
 **Clients are provisioned by blueprints first, then OpenTofu.** With `authentik`, the platform's own applications, providers and groups are Authentik blueprints. Authentik applies blueprint files from its blueprint directory when they appear or change, and rescans it on a schedule, each blueprint in one transaction. The platform step renders them from the site config into ConfigMaps mounted into the worker. They need nothing that isn't already running: not Terrakube, not Forgejo. That matters because those services need their own clients before they can start. Client secrets are generated into OpenBao and reach both Authentik and the consumer through ESO. After the platform step, the blueprints stay the source of truth for platform clients. Tenant applications and later additions go through the IaC path with the Authentik Terraform provider ([ADR 0006](0006-iac-path.md)), where OPA protects "Authentik core".
 
@@ -83,7 +85,7 @@ identity:
 
 | Consumer | `admin` | `operator` | `viewer` |
 | --- | --- | --- | --- |
-| Kubernetes (workload) | `cluster-admin` | `edit`, cluster-wide | `view` |
+| Kubernetes (every cluster with an issuer) | `cluster-admin` | `edit`, cluster-wide | `view` |
 | Argo CD | `role:admin` | a project role with sync | `role:readonly` |
 | Forgejo | site admin | organization owner of platform orgs | read on platform orgs |
 | Grafana | Admin | Editor | Viewer |
@@ -262,10 +264,9 @@ A sketch. Field names are settled in the implementation PR; the structure is the
 spec:
   identity:
     provider: authentik                # authentik | external
-    # kubernetes:                      # optional; defaults to the provider's issuer
+    # kubernetes:                      # optional; issuers added to the provider's (amendment 3)
     #   issuers:                       # rendered into the AuthenticationConfiguration
-    #     - {url: https://auth.dc1.example.net/application/o/kubernetes/, clientID: kubernetes}
-    #     - {url: https://sso.example.net/realms/dc, clientID: k8s, caBundle: {file: ./secrets/sso-ca.pem}}
+    #     - {name: corp, url: https://sso.example.net/realms/dc, clientID: k8s, caBundle: {file: ./secrets/sso-ca.pem}}
     adminGroup: dciab-admins           # unchanged
     initialAdmins: [...]               # unchanged
     roles: {operator: dciab-operators, viewer: dciab-viewers}   # admin is always adminGroup
@@ -340,7 +341,7 @@ One row per consumer. The cells say what the consumer uses with the default prov
 
 | Consumer | Identity | Secrets via ESO | TLS issuer | Storage class / COSI bucket | DB on CNPG | Backup target | DNS record | Metrics |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| Kubernetes API | Workload: JWT issuers in an `AuthenticationConfiguration` (`identity.kubernetes`). MGMT and INFRA: certificates only (ADR 0004) | n/a (hosts ESO) | kubeadm cluster CA | n/a | n/a (etcd) | etcd snapshots to the site target (ADR 0009) | API VIP, written by DCiaB | API server metrics |
+| Kubernetes API | JWT issuers in an `AuthenticationConfiguration` (`identity.kubernetes`): Authentik on workload clusters only; a site IdP on every cluster. Certificates on every cluster as break-glass (ADR 0004) | n/a (hosts ESO) | kubeadm cluster CA | n/a | n/a (etcd) | etcd snapshots to the site target (ADR 0009) | API VIP, written by DCiaB | API server metrics |
 | Argo CD | OIDC | OIDC client secret, repo credentials | platform issuer | none (state is Git) | none | none needed (Git) | external-dns | ServiceMonitor |
 | Forgejo | OIDC auth source | OIDC secret, DB, S3 | platform issuer | `replicated-retain` for repos; bucket for LFS, packages, attachments | yes | CNPG archive + repo volume (ADR 0009) | external-dns | ServiceMonitor |
 | Grafana | Generic OAuth | OIDC secret, DB | platform issuer | none (dashboards from Git) | yes | CNPG archive | external-dns | ServiceMonitor |

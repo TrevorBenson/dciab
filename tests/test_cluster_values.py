@@ -62,7 +62,7 @@ def test_values_match_the_chart_ci_values(example_name, cluster, ci_file):
 @pytest.mark.parametrize("ci_file,kinds", [
     ("vsphere-values.yaml", {"Cluster", "InClusterIPPool", "Secret", "VSphereFailureDomain", "VSphereDeploymentZone"}),
     ("proxmox-values.yaml", {"Cluster", "InClusterIPPool", "Secret"}),
-    ("proxmox-oidc-values.yaml", {"Cluster", "InClusterIPPool", "Secret"}),
+    ("proxmox-oidc-values.yaml", {"Cluster", "Secret"}),   # no storage networks, so no IP pool
     ("metal3-values.yaml", {"Cluster", "IPPool", "Metal3DataTemplate", "Secret"}),
 ])
 def test_rendered_objects_are_kept_by_helm(ci_file, kinds):

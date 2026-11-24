@@ -355,3 +355,62 @@ def test_ca_bundle_must_hold_a_certificate(site):
     (site.dir / "secrets" / "sso-ca.pem").chmod(0o600)
     code, report = site.validate(oidc_site())
     assert code == 1 and errors(report, "spec.identity.external.caBundle")
+
+
+# --- system: stays Kubernetes' own ---------------------------------------------------------
+
+@pytest.mark.parametrize("where", ["external", "kubernetes"])
+@pytest.mark.parametrize("name", ["system", "systems"])
+def test_issuer_names_cant_reach_system(site, where, name):
+    """An issuer named system would map the IdP's group masters to system:masters."""
+    with_ca(site.dir)
+    doc = oidc_site()
+    ident = doc["spec"]["identity"]
+    if where == "external":
+        ident["external"]["name"] = name
+        path = "spec.identity.external.name"
+    else:
+        ident["kubernetes"]["issuers"][0]["name"] = name
+        path = "spec.identity.kubernetes.issuers[0].name"
+    code, report = site.validate(doc)
+    [f] = errors(report, path)
+    assert code == 1 and "system" in f["fix"]
+
+
+@pytest.mark.parametrize("prefix", ["system:", "system:x:", "sys", "s", "system"])
+def test_values_refuse_a_prefix_that_reaches_system(prefix):
+    from dciab_cluster.values import check_issuers
+    a = {"name": "site", "url": "https://a/", "clientID": "k"}
+    with pytest.raises(ValuesError, match="system:"):
+        check_issuers([dict(a, groupsPrefix=prefix)])
+    with pytest.raises(ValuesError, match="system:"):
+        check_issuers([dict(a, usernamePrefix=prefix)])
+    assert check_issuers([dict(a, groupsPrefix="sso:")])
+
+
+def test_chart_schema_refuses_a_system_issuer_name():
+    import json
+    import jsonschema
+    schema = json.loads((CHART / "values.schema.json").read_text())
+    values = yaml.safe_load((CHART / "ci" / "proxmox-oidc-values.yaml").read_text())
+    values = {**(yaml.safe_load((CHART / "values.yaml").read_text()) or {}), **values}
+    jsonschema.validate(values, schema)
+    values["nodes"]["authentication"]["issuers"][1]["name"] = "system"
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(values, schema)
+
+
+@pytest.mark.parametrize("cls", ["vsphere", "proxmox", "metal3"])
+def test_classes_refuse_prefixes_that_reach_system(cls):
+    """The r1 classes' CEL rules, per issuer: neither prefix starts with system: nor is the start of it."""
+    docs = [d for d in yaml.safe_load_all((ROOT / "charts/capi-clusterclasses/classes/r1" / f"{cls}.yaml").read_text()) if d]
+    cc = next(d for d in docs if d["kind"] == "ClusterClass")
+    var = next(v for v in cc["spec"]["variables"] if v["name"] == "authentication")
+    items = var["schema"]["openAPIV3Schema"]["properties"]["issuers"]["items"]
+    rules = [r["rule"] for r in items["x-kubernetes-validations"]]
+    assert len(rules) == 2
+    for rule, key in zip(rules, ("usernamePrefix", "groupsPrefix")):
+        assert f"self.{key}" in rule and ".startsWith('system:')" in rule and "'system:'.startsWith(" in rule
+    # Bounded cost: the prefixes and names they read have a maxLength.
+    for k in ("name", "usernamePrefix", "groupsPrefix"):
+        assert items["properties"][k]["maxLength"] <= 63
