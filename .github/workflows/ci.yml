@@ -366,12 +366,14 @@ jobs:
       - name: dciab seed
         env:
           DCIAB_PVE_TOKEN: ci-not-a-secret
+          DCIAB_PVE_CSI_TOKEN: ci-not-a-secret
         run: |
-          sudo env "PATH=$PATH" "DCIAB_PVE_TOKEN=$DCIAB_PVE_TOKEN" ./dciab seed "$RUNNER_TEMP/site/dciab.yaml" \
+          sudo env "PATH=$PATH" "DCIAB_PVE_TOKEN=$DCIAB_PVE_TOKEN" "DCIAB_PVE_CSI_TOKEN=$DCIAB_PVE_CSI_TOKEN" ./dciab seed "$RUNNER_TEMP/site/dciab.yaml" \
             --payload "$RUNNER_TEMP/payload" --state "$RUNNER_TEMP/state"
       - name: Check the result, then rerun (must change nothing)
         env:
           DCIAB_PVE_TOKEN: ci-not-a-secret
+          DCIAB_PVE_CSI_TOKEN: ci-not-a-secret
         run: |
           set -euo pipefail
           state="$RUNNER_TEMP/state"
@@ -392,7 +394,7 @@ jobs:
                10.30.110.5/ci/test:1 /etc/hostname 2>/dev/null; then
             echo "pushing to the seed registry should fail"; exit 1
           fi
-          sudo env "PATH=$PATH" "DCIAB_PVE_TOKEN=$DCIAB_PVE_TOKEN" ./dciab seed "$RUNNER_TEMP/site/dciab.yaml" \
+          sudo env "PATH=$PATH" "DCIAB_PVE_TOKEN=$DCIAB_PVE_TOKEN" "DCIAB_PVE_CSI_TOKEN=$DCIAB_PVE_CSI_TOKEN" ./dciab seed "$RUNNER_TEMP/site/dciab.yaml" \
             --payload "$RUNNER_TEMP/payload" --state "$RUNNER_TEMP/state" --until kind | tee "$RUNNER_TEMP/rerun.txt"
           grep -q "pki: unchanged" "$RUNNER_TEMP/rerun.txt"
           grep -q "dns: pod dciab-services already runs this config" "$RUNNER_TEMP/rerun.txt"
@@ -402,12 +404,13 @@ jobs:
       - name: dciab mgmt from seed's outputs, offline from the payload (up to the Cluster)
         env:
           DCIAB_PVE_TOKEN: ci-not-a-secret
+          DCIAB_PVE_CSI_TOKEN: ci-not-a-secret
         run: |
           set -euo pipefail
           state="$RUNNER_TEMP/state"
           bin="$RUNNER_TEMP/payload/bin"
           # No --bootstrap-kubeconfig or --trust-bundle: they default to what seed wrote.
-          sudo env "PATH=$bin:$PATH" "DCIAB_PVE_TOKEN=$DCIAB_PVE_TOKEN" ./dciab mgmt "$RUNNER_TEMP/site/dciab.yaml" \
+          sudo env "PATH=$bin:$PATH" "DCIAB_PVE_TOKEN=$DCIAB_PVE_TOKEN" "DCIAB_PVE_CSI_TOKEN=$DCIAB_PVE_CSI_TOKEN" ./dciab mgmt "$RUNNER_TEMP/site/dciab.yaml" \
             --state "$state" --payload "$RUNNER_TEMP/payload" --until cluster
           sudo grep -q "BEGIN CERTIFICATE" "$state/mgmt-values.yaml"   # seed's platform CA reaches the nodes
           sudo "$bin/kubectl" --kubeconfig "$state/bootstrap.kubeconfig" -n cluster-mgmt get cluster mgmt
@@ -582,13 +585,13 @@ jobs:
           sudo ip link add dciab0 type dummy
           sudo ip link set dciab0 address b8:ca:3a:00:00:05 up
           sudo ip addr add 10.30.110.5/24 dev dciab0
-          DCIAB_PVE_TOKEN=placeholder ./dciab services /tmp/site/dciab.yaml --print
+          DCIAB_PVE_TOKEN=placeholder DCIAB_PVE_CSI_TOKEN=placeholder ./dciab services /tmp/site/dciab.yaml --print
       - name: dciab services
-        run: sudo DCIAB_PVE_TOKEN=placeholder DCIAB_CHRONY_IMAGE="$DCIAB_CHRONY_IMAGE" ./dciab services /tmp/site/dciab.yaml
+        run: sudo DCIAB_PVE_TOKEN=placeholder DCIAB_PVE_CSI_TOKEN=placeholder DCIAB_CHRONY_IMAGE="$DCIAB_CHRONY_IMAGE" ./dciab services /tmp/site/dciab.yaml
       - name: A rerun changes nothing
         run: |
           set -euo pipefail
-          out="$(sudo DCIAB_PVE_TOKEN=placeholder DCIAB_CHRONY_IMAGE="$DCIAB_CHRONY_IMAGE" ./dciab services /tmp/site/dciab.yaml)"
+          out="$(sudo DCIAB_PVE_TOKEN=placeholder DCIAB_PVE_CSI_TOKEN=placeholder DCIAB_CHRONY_IMAGE="$DCIAB_CHRONY_IMAGE" ./dciab services /tmp/site/dciab.yaml)"
           echo "$out"
           grep -q "already runs this config" <<<"$out"
           if grep -E "^(wrote|added|opened) " <<<"$out"; then echo "the rerun changed something"; exit 1; fi

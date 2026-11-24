@@ -92,12 +92,11 @@ spec:
 
   storage:
     block:
-      provider: proxmox-csi              # local-lvm: each volume stays on pve01, the one host
-      proxmoxCSI:
-        storage: local-lvm
-        credentials:                     # its own token: the privileges in docs/PROXMOX.md
-          tokenID: csi@pve!dciab
-          tokenSecret: {env: DCIAB_PVE_CSI_TOKEN}
+      provider: longhorn                 # on the root disk: CAPMOX gives VMs no second disk yet (validate warns)
+                                         # Longhorn, not proxmox-csi, for its backups to the site's NAS
+      longhorn:
+        replicaCount: 2                  # local disks on one host: survives a node VM, not the host
+        backupTarget: nfs://nas01.dc3.example.net:/exports/longhorn
 
   pki:
     mode: import-intermediate

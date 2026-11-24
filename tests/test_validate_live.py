@@ -167,6 +167,14 @@ def add_csi_permissions(routes, csi, drop=None):
         routes[key] = (200, {"data": {g.path: privs}})
 
 
+def with_proxmox_csi(spec):
+    """proxmox-bare with the Proxmox CSI plugin on local-lvm, under its own token."""
+    spec["storage"]["block"] = {"provider": "proxmox-csi", "proxmoxCSI": {
+        "storage": "local-lvm",
+        "credentials": {"tokenID": "csi@pve!dciab", "tokenSecret": {"env": "DCIAB_PVE_CSI_TOKEN"}}}}
+    return spec
+
+
 def proxmox_spec(port, pin):
     spec = copy.deepcopy(load_example("proxmox-bare")["spec"])
     spec["platform"]["proxmox"]["url"] = f"https://127.0.0.1:{port}"
@@ -714,10 +722,11 @@ def _validate_live(site, doc, *extra):
 def test_cli_live_end_to_end(cert, servers, site, monkeypatch):
     monkeypatch.setattr(probes, "find_interface", lambda want: None)
     routes = pve_routes()
-    # The example's Proxmox CSI token (its own, on local-lvm) answers from the same server.
+    # A Proxmox CSI token (its own, on local-lvm) answers from the same server.
     add_csi_permissions(routes, {"storage": "local-lvm"})
     pve = servers(cert, routes, PVE_AUTH | {f"PVEAPIToken=csi@pve!dciab={CSI_TOKEN}"})
     doc = copy.deepcopy(load_example("proxmox-bare"))
+    with_proxmox_csi(doc["spec"])
     doc["spec"]["platform"]["proxmox"].update(url=f"https://127.0.0.1:{pve.port}", tlsFingerprint=cert["sha256"])
     for h in doc["spec"]["hypervisors"]["hosts"]:
         bmc = servers(cert, redfish_routes(), BMC_AUTH)
@@ -843,7 +852,7 @@ def csi_routes(storage="local-lvm", drop=None, csi_storage="local-lvm"):
 
 
 def csi_spec(port, pin):
-    spec = proxmox_spec(port, pin)
+    spec = with_proxmox_csi(proxmox_spec(port, pin))
     return spec, spec["storage"]["block"]["proxmoxCSI"]
 
 
@@ -880,7 +889,7 @@ def test_proxmox_csi_token_rejected_and_storage_missing(cert, servers, monkeypat
 
 
 def test_live_tasks_check_each_proxmox_csi_token():
-    spec = load_example("proxmox-bare")["spec"]
+    spec = with_proxmox_csi(copy.deepcopy(load_example("proxmox-bare")["spec"]))
     names = [n for n, _ in live.tasks(spec, Path("."), 1)]
     assert "Proxmox CSI token csi@pve!dciab" in names
     spec["storage"]["block"] = {"provider": "longhorn", "longhorn": {"replicaCount": 2, "backupTarget": "nfs://n:/x"}}

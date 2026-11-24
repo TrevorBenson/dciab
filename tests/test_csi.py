@@ -78,7 +78,12 @@ def test_proxmox_render():
     assert by_kind(docs, "CSIDriver", "csi.proxmox.sinextra.dev")
     [ctrl] = by_kind(docs, "Deployment")
     plugin = next(c for c in ctrl["spec"]["template"]["spec"]["containers"] if c["name"] == "proxmox-csi-plugin-controller")
-    assert {"name": "SSL_CERT_FILE", "value": "/etc/proxmox/ca.pem"} in plugin["env"]
+    # TLS trust comes from the config's ca_file, not the environment: SSL_CERT_FILE would
+    # keep the image's public CAs. The config's Secret is mounted where ca_file points.
+    assert not any(e["name"].startswith("SSL_CERT") for e in plugin.get("env", []))
+    mount = next(m for m in plugin["volumeMounts"] if m["mountPath"].rstrip("/") == "/etc/proxmox")
+    vol = next(v for v in ctrl["spec"]["template"]["spec"]["volumes"] if v["name"] == mount["name"])
+    assert vol["secret"]["secretName"] == "proxmox-csi-plugin"
     assert by_kind(docs, "DaemonSet")
 
 
@@ -120,6 +125,7 @@ def test_proxmox_secret(monkeypatch, tmp_path):
     assert cfg["features"] == {"provider": "capmox"}
     [c] = cfg["clusters"]
     assert c == {"url": "https://pve01.dc3.example.net:8006/api2/json", "insecure": False,
+                 "ca_file": "/etc/proxmox/ca.pem",
                  "token_id": "csi@pve!dciab", "token_secret": "csi-secret", "region": "dc3"}
     assert data["ca.pem"].startswith("-----BEGIN CERTIFICATE-----")
     assert "annotations" not in s["metadata"]
@@ -194,15 +200,18 @@ def test_mgmt_installs_array_drivers():
 # --- validate ------------------------------------------------------------------------------
 
 def test_array_examples_validate_without_storage_warnings(site):
-    for name in ("vsphere", "proxmox", "proxmox-bare"):
+    for name in ("vsphere", "proxmox"):
         _, report = site.validate(load_example(name))
         assert errors(report) == []
         assert not [w for w in warnings(report) if w["path"].startswith("spec.storage")]
 
 
-def test_proxmox_csi_needs_a_zone_on_the_nodes_that_hold_volumes(site):
+def test_proxmox_csi_on_local_storage_needs_a_zone_on_the_nodes_that_hold_volumes(site):
     doc = load_example("proxmox")
-    doc["spec"]["clusters"]["mgmt"]["workerPools"] = []
+    assert doc["spec"]["clusters"]["mgmt"]["workerPools"] == []
+    _, report = site.validate(doc)   # ceph-vm is shared: the plugin needs no zone
+    assert not errors(report, "spec.clusters.mgmt.workerPools")
+    doc["spec"]["storage"]["block"]["proxmoxCSI"]["storage"] = "local-lvm"
     _, report = site.validate(doc)
     assert "ADR 0010" in errors(report, "spec.clusters.mgmt.workerPools")[0]["fix"]
     doc["spec"]["clusters"]["mgmt"]["failureDomains"] = ["pve01"]
@@ -211,5 +220,8 @@ def test_proxmox_csi_needs_a_zone_on_the_nodes_that_hold_volumes(site):
 
 
 def test_proxmox_csi_on_local_storage_says_volumes_stay_on_their_node(site):
-    _, report = site.validate(load_example("proxmox-bare"))
+    doc = load_example("proxmox-bare")
+    doc["spec"]["storage"]["block"] = {"provider": "proxmox-csi", "proxmoxCSI": {
+        "storage": "local-lvm", "credentials": {"tokenID": "csi@pve!dciab", "tokenSecret": {"env": "DCIAB_PVE_CSI_TOKEN"}}}}
+    _, report = site.validate(doc)
     assert any("stay on the PVE node" in n for n in report["notes"])

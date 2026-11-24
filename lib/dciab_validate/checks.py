@@ -644,20 +644,24 @@ class Checker:
                            "the privileges it uses")
 
     def _check_proxmox_csi_zones(self, tier: str, csi: dict) -> None:
-        """The plugin finds a node's PVE node from its topology.kubernetes.io/zone label (ADR
-        0010: the zone is the PVE node name). In r1 a Proxmox control plane gets a zone only on
-        a one-domain site, so a control plane that holds volumes needs one domain."""
+        """The plugin finds VMs by UUID, but a volume on node-local storage carries its PVE node
+        as topology, matched against the nodes' topology.kubernetes.io/zone label (ADR 0010: the
+        zone is the PVE node name). In r1 a Proxmox control plane gets a zone only on a
+        one-domain site. So on node-local storage (offline: a storage named local*), a
+        control plane that holds volumes needs one domain. Shared storage needs no zone."""
+        local = csi["storage"].startswith("local")
         for path, c, klass in self._tier_clusters(tier):
-            if klass != "proxmox":
+            if klass != "proxmox" or not local:
                 continue
             zones = usable_domains(self.spec, c, "proxmox")
             workers = any(p["replicas"] > 0 for p in c.get("workerPools", []))
             if not workers and len(zones) > 1:
-                self.error(path + ("workerPools",), f"none, over {len(zones)} failure domains, with proxmox-csi",
-                           "add a worker pool, or narrow the cluster to one failure domain: the control plane "
-                           "isn't spread in r1, so its nodes get no zone label and the Proxmox CSI plugin can't "
-                           "find their PVE node (ADR 0010)")
-        if csi["storage"].startswith("local"):
+                self.error(path + ("workerPools",),
+                           f"none, over {len(zones)} failure domains, with proxmox-csi on {csi['storage']}",
+                           f"add a worker pool, narrow the cluster to one failure domain, or use shared storage: "
+                           f"volumes on node-local {csi['storage']} need the node's zone label (its PVE node), and "
+                           "the control plane isn't spread in r1, so its nodes get none (ADR 0010)")
+        if local:
             self.notes.append(f"{tier}: Proxmox CSI volumes on {csi['storage']} stay on the PVE node they were made on; "
                               "a pod that uses one runs only there")
 

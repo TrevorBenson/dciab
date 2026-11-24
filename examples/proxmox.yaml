@@ -66,8 +66,7 @@ spec:
       podCIDR: 10.240.0.0/16
       serviceCIDR: 10.241.0.0/16
       controlPlane: {replicas: 3, cpu: 4, memoryGiB: 16, diskGiB: 100}
-      workerPools:                       # MGMT's volumes live on workers: in r1 only they get a zone (PVE node) label
-        - {name: general, replicas: 3, cpu: 4, memoryGiB: 16, diskGiB: 100}
+      workerPools: []
     infra:
       apiVIP: 10.30.110.11
       nodeIPRange: 10.30.110.30-10.30.110.49

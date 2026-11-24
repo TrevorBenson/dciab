@@ -65,8 +65,8 @@ The Proxmox CSI plugin creates each volume as a VM disk on one Proxmox storage (
 Notes:
 - **Nothing else on VMs.** The token can't create, clone, start, stop or delete VMs, or run commands in them. `VM.Config.Disk` lets it add and remove disks of any VM under `/vms`.
 - **Deleting volumes.** `Datastore.Allocate` on the storage is what lets the plugin delete a volume; it also allows deleting other volumes on that storage. Give the plugin a storage of its own if that matters to the site.
-- **TLS.** The plugin trusts only the API certificate whose fingerprint is `spec.platform.proxmox.tlsFingerprint`: `addons/csi` reads the certificate, checks the fingerprint, and gives it to the plugin as its only trusted certificate. Its host name check still applies, so `spec.platform.proxmox.url` must use a name or address the certificate lists.
-- **Zones.** The plugin finds a node's PVE node from its `topology.kubernetes.io/zone` label, which DCiaB sets to the PVE node name (ADR 0010). In `r1` a Proxmox control plane gets a zone only on a one-domain site, so on a site with several domains, volumes go on worker nodes (`dciab validate` checks it).
+- **TLS.** The plugin trusts only the API certificate whose fingerprint is `spec.platform.proxmox.tlsFingerprint`: `addons/csi` reads the certificate, checks the fingerprint, and names it as the plugin's `ca_file`, its only trusted certificate. Its host name check still applies, so `spec.platform.proxmox.url` must use a name or address the certificate lists. When the node's certificate is renewed, update `tlsFingerprint` and run `addons/csi/install.sh` again.
+- **Zones.** The plugin finds node VMs by UUID. On shared storage that is enough. A volume on node-local storage is tied to its PVE node, matched against the nodes' `topology.kubernetes.io/zone` label, which DCiaB sets to the PVE node name (ADR 0010). In `r1` a Proxmox control plane gets a zone only on a one-domain site, so with node-local storage on a site with several domains, volumes go on worker nodes (`dciab validate` checks it).
 
 ```console
 pveum role add DCiaBCSIVMs --privs "VM.Audit,VM.Config.Disk"

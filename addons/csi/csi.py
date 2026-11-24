@@ -14,7 +14,8 @@ in a process's arguments, or in a last-applied annotation.
 
 Proxmox: the plugin trusts only the Proxmox API certificate whose fingerprint is
 spec.platform.proxmox.tlsFingerprint. `secret` reads the certificate from the API, checks
-the fingerprint, and puts it in the Secret as ca.pem (SSL_CERT_FILE of the controller).
+the fingerprint, and puts it in the Secret as ca.pem, which the config names as ca_file: the plugin's
+only trusted root, without the image's public CAs.
 --template leaves it out, and reads no secret, for rendering without the network.
 """
 
@@ -84,10 +85,6 @@ def load_manifests(lock: dict, name: str, folder: Path) -> List[dict]:
     return docs
 
 
-def _containers(doc: dict) -> List[dict]:
-    return doc["spec"]["template"]["spec"]["containers"]
-
-
 def _has_vsphere_domains(spec: dict) -> bool:
     return any("vsphere" in d for d in spec["failureDomains"]["domains"])
 
@@ -107,10 +104,6 @@ def render(spec: dict, cluster: str, docs: List[dict]) -> List[dict]:
             continue   # DCiaB's, above: privileged, for the node plugin
         if kind == "DaemonSet" and meta["name"].endswith("-windows"):
             continue   # DCiaB nodes are Linux
-        if name == "proxmox-csi" and kind == "Deployment":
-            for ctr in _containers(d):
-                if ctr["name"] == "proxmox-csi-plugin-controller":
-                    ctr.setdefault("env", []).append({"name": "SSL_CERT_FILE", "value": PROXMOX_CA})
         if name == "vsphere-csi" and kind == "Deployment" and meta["name"] == "vsphere-csi-controller":
             pod = d["spec"]["template"]["spec"]
             # No VolumeSnapshot CRDs in v1: the snapshot sidecar would only fail.
@@ -161,6 +154,9 @@ def proxmox_config(site: dict, cluster: str, config_dir: Path, redact: bool = Fa
         "clusters": [{
             "url": url,
             "insecure": False,
+            # Trust only this certificate: the plugin builds a new root pool from ca_file,
+            # without the image's public CAs. The Secret carries it as ca.pem.
+            "ca_file": PROXMOX_CA,
             "token_id": csi["credentials"]["tokenID"],
             "token_secret": _secret(csi["credentials"]["tokenSecret"], config_dir, redact),
             # The nodes' topology.kubernetes.io/region (dciab cluster-values: the site name).
