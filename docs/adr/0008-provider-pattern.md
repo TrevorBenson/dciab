@@ -1,6 +1,6 @@
 # ADR 0008: Providers — one pattern for identity, storage, DNS, IPAM and secrets
 
-- Status: Accepted (2026-11-23); amended 2026-11-24 (block storage has no default and workload clusters opt in: decisions 1, 2 and 4); **amendment 2 proposed 2026-11-24: MGMT keeps no volumes (decision 4a; decisions 1, 2, 4 and 5)**
+- Status: Accepted (2026-11-23); amended 2026-11-24 (block storage has no default and workload clusters opt in: decisions 1, 2 and 4); amendment 2 accepted 2026-11-24 (MGMT keeps no volumes: decision 4a, which supersedes "required for MGMT and INFRA" in decisions 1, 2, 4 and 5)
 - Date: 2026-11-22
 
 ## Context
@@ -138,9 +138,9 @@ The v1 block providers are Longhorn, the vSphere CSI driver, the Proxmox CSI dri
 
 Each block provider produces a **`replicated`** StorageClass, the cluster default, and a **`replicated-retain`** class (`reclaimPolicy: Retain`) for platform data, so deleting a PVC by mistake doesn't delete the data. Decision 5 adds `local` and `local-retain`. ADRs 0009 and 0010 use these four names.
 
-### 4a. MGMT keeps no volumes (amendment 2, proposed 2026-11-24)
+### 4a. MGMT keeps no volumes (amendment 2, accepted 2026-11-24)
 
-> **Proposed amendment, for review.** If accepted, this replaces "required for MGMT and INFRA" with "required for INFRA" in decisions 1, 2, 4 and 5, and the implementation follows in a separate PR.
+> **Amendment 2, accepted 2026-11-24.** Where decisions 1, 2, 4 and 5 say block storage is "required for MGMT and INFRA", read "required for INFRA": MGMT keeps no volumes unless `overrides.mgmt` asks for them. The implementation follows in a separate PR.
 
 **What MGMT has to keep.** MGMT owns every cluster's machines. Its state is the Cluster API objects, and those live in etcd. etcd keeps its own copies on the three control plane nodes, which ADR 0010 spreads across failure domains. Losing more than one of them is a restore, and the restore comes from off-cluster backups: the etcd snapshots and CAPI exports of ADR 0009, written to the site target. A replicated volume on MGMT adds nothing to that.
 
