@@ -763,7 +763,15 @@ PXE_OPT = {"Id": "0001", "DisplayName": "UEFI PXEv4"}
     {SYS + "/BootOptions": {"Members": [{"href": "x"}]}},                 # a member without @odata.id
     {SYS + "/BootOptions": {"Members": ["x"]}},                           # a member that isn't an object
     {SYS + "/BootOptions/0": ["not", "an", "object"]},                    # a body that isn't an object
-], ids=["list-error", "member-error-after-match", "no-odata-id", "member-not-object", "body-not-object"])
+    {SYS + "/BootOptions": {"Members": {}}},                              # Members isn't an array
+    {SYS + "/BootOptions": {"Members": "x"}},
+    {SYS + "/BootOptions": {"Members": [{"@odata.id": SYS + "/BootOptions/0"}],
+                            "Members@odata.nextLink": SYS + "/BootOptions"}},  # a list that never ends
+    {SYS + "/BootOptions": {"Members": [{"@odata.id": SYS + "/BootOptions/0"}],
+                            "Members@odata.nextLink": SYS + "/BootOptions?page=2"},
+     SYS + "/BootOptions?page=2": 500},                                   # a later page can't be read
+], ids=["list-error", "member-error-after-match", "no-odata-id", "member-not-object", "body-not-object",
+        "members-object", "members-string", "next-link-loop", "later-page-error"])
 def test_unreadable_boot_options_hold_the_host(fake_bmc, tmp_path, overrides):
     f = fake_bmc(power="Off", boot_options=[PROXMOX_OPT, PXE_OPT], overrides=overrides)
     failed, held, _, out = guard(f, tmp_path)
@@ -788,6 +796,18 @@ def test_an_empty_boot_options_collection_counts_as_none_listed(fake_bmc, tmp_pa
     assert not [c for c in f.calls if c[0] in CHANGES]
     failed, held, _, out = guard(f, tmp_path, first_install=["pve01"])
     assert (failed, held) == ([], []) and f.power == "On"
+
+
+def test_an_os_entry_on_a_later_page_holds_the_host(fake_bmc, tmp_path):
+    os_opt = {"Id": "0003", "DisplayName": "UEFI OS"}
+    f = fake_bmc(power="Off", boot_options=[PXE_OPT, os_opt], overrides={
+        SYS + "/BootOptions": {"Members": [{"@odata.id": SYS + "/BootOptions/0"}],
+                               "Members@odata.nextLink": SYS + "/BootOptions?page=2"},
+        SYS + "/BootOptions?page=2": {"Members": [{"@odata.id": SYS + "/BootOptions/1"}]}})
+    assert f.bmc.os_boot_entries() == ["UEFI OS"]
+    failed, held, _, out = guard(f, tmp_path, first_install=["pve01"])
+    assert (failed, held) == ([], ["pve01"]) and "may load an installed OS" in out
+    assert not [c for c in f.calls if c[0] in CHANGES]
 
 
 def test_network_only_boot_options_dont_need_first_install(fake_bmc, tmp_path):

@@ -51,6 +51,16 @@ def is_os_entry(name: str, device_path: str) -> bool:
     return on_disk or any(h in text for h in OS_HINTS)
 
 
+MAX_PAGES = 64
+
+
+def _members(value: object) -> list:
+    """A collection's Members, which must be a JSON array; anything else is unreadable."""
+    if not isinstance(value, list):
+        raise TypeError(f"Members is {type(value).__name__}, not a list")
+    return value
+
+
 class Bmc:
     def __init__(self, address: str, username: str, password: str, trust: Trust, timeout: float = 30.0,
                  task_timeout: float = 300.0, poll: float = 2.0):
@@ -192,15 +202,27 @@ class Bmc:
         BootOptions collection, or one with no members, so nothing can be told either way and
         the caller needs --first-install. Reads only.
 
-        Raises RedfishError when the list can't be read in full or a member makes no sense: the
-        caller must then assume an OS may be there."""
+        Every page is read (Members@odata.nextLink). Raises RedfishError when the list can't be
+        read in full, its Members isn't an array, or a member makes no sense: the caller must then
+        assume an OS may be there."""
         coll = (self.system().get("Boot") or {}).get("BootOptions")
         if not coll:
             return None
         try:
-            members = self.get(coll["@odata.id"]).get("Members")
+            page = self.get(coll["@odata.id"])
+            members = page.get("Members")
             if members is None or members == []:
                 return None
+            members = list(_members(members))
+            # Follow every page: an OS entry on a later page must still hold the host.
+            seen = {coll["@odata.id"]}
+            while page.get("Members@odata.nextLink"):
+                link = page["Members@odata.nextLink"]
+                if link in seen or len(seen) > MAX_PAGES:
+                    raise RedfishError(f"{self.client.where}: the boot options list doesn't end ({link})")
+                seen.add(link)
+                page = self.get(link)
+                members += _members(page.get("Members", []))
             found = []
             for member in members:
                 opt = self.get(member["@odata.id"])
