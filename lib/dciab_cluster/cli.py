@@ -72,7 +72,8 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     try:
         bundle = _trust_bundle(doc, config_path, args.trust_bundle)
-        values = cluster_values(doc, args.cluster, bundle, load_lock(root / "bundle.lock"))
+        values = cluster_values(doc, args.cluster, bundle, load_lock(root / "bundle.lock"),
+                                config_path.resolve().parent)
     except (ValuesError, OSError) as exc:
         print(f"dciab cluster-values: {exc}", file=sys.stderr)
         return 1

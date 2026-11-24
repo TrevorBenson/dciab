@@ -189,6 +189,14 @@ spec:
               items:
                 type: object
                 required: [name, url, clientID]
+                # system: is Kubernetes' own namespace for users and groups (system:masters
+                # bypasses RBAC). A prefix that starts with it, or that is the start of it
+                # (sys, then a group named tem:masters), would let the IdP name them.
+                x-kubernetes-validations:
+                  - rule: "!(has(self.usernamePrefix) ? self.usernamePrefix : self.name + ':').startsWith('system:') && !'system:'.startsWith(has(self.usernamePrefix) ? self.usernamePrefix : self.name + ':')"
+                    message: an issuer's username prefix must not start with system:, nor be the start of it
+                  - rule: "!(has(self.groupsPrefix) ? self.groupsPrefix : self.name + ':').startsWith('system:') && !'system:'.startsWith(has(self.groupsPrefix) ? self.groupsPrefix : self.name + ':')"
+                    message: an issuer's groups prefix must not start with system:, nor be the start of it
                 properties:
                   name:
                     type: string

@@ -1,0 +1,79 @@
+# CI render: MGMT on Proxmox trusting the site's own OIDC issuer, with its CA, and a second
+# site issuer (examples/proxmox.yaml's MGMT with identity.provider external; tests/test_identity.py,
+# oidc_site). Generated with dciab cluster-values; regenerate rather than edit.
+name: mgmt
+class: proxmox
+kubernetesVersion: v1.36.6
+apiVIP: 10.30.110.10
+podCIDR: 10.240.0.0/16
+serviceCIDR: 10.241.0.0/16
+labels:
+  dciab.io/role: mgmt
+nodes:
+  registryMirror: registry.dc3.example.com
+  mirroredRegistries:
+  - docker.io
+  - quay.io
+  - ghcr.io
+  - registry.k8s.io
+  trustBundle: |
+    -----BEGIN CERTIFICATE-----
+    MIIBdummyCertificateForCIOnly
+    -----END CERTIFICATE-----
+  ntpServers:
+  - 10.30.0.123
+  sshAuthorizedKeys:
+  - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExampleKeyDoNotUseExampleKeyDoNotUse00 tparker
+  dnsServers:
+  - 10.30.110.53
+  - 10.30.110.54
+  authentication:
+    issuers:
+    - name: site
+      url: https://sso.example.com/realms/dc3
+      clientID: dc3-kubernetes
+      usernameClaim: email
+      usernamePrefix: 'site:'
+      groupsClaim: groups
+      groupsPrefix: 'site:'
+      certificateAuthority: |
+        -----BEGIN CERTIFICATE-----
+        MIIBdummyIssuerCAForCIOnly
+        -----END CERTIFICATE-----
+    - name: corp
+      url: https://login.corp.example.com/
+      clientID: k8s-dc3
+      usernameClaim: preferred_username
+      usernamePrefix: 'corp:'
+      groupsClaim: groups
+      groupsPrefix: 'corp:'
+podSecurity:
+  exemptNamespaces:
+  - kube-system
+  - longhorn-system
+encryption:
+  createSecret: true
+network:
+  nodeIPRange: 10.30.110.20-10.30.110.29
+  prefix: 24
+  gateway: 10.30.110.1
+controlPlane:
+  replicas: 3
+  machine:
+    cpu: 4
+    memoryGiB: 16
+    diskGiB: 100
+  schedulable: true
+workerPools: []
+topology:
+  region: dc3
+proxmox:
+  allowedNodes:
+  - pve01
+  - pve02
+  - pve03
+  templateNode: pve01
+  templateID: 9010
+  storage: ceph-vm
+  bridge: vmbr0
+  vlanTag: 110

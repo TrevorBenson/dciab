@@ -44,7 +44,7 @@ What a DCiaB site runs, grouped by capability, and where each piece runs. Versio
 
 | Capability | Components | Runs on | Status |
 | --- | --- | --- | --- |
-| Identity and single sign-on | Authentik: OIDC for Kubernetes and the platform UIs, plus an LDAP outpost | INFRA | Planned ([ADR 0004](adr/0004-identity-and-sso.md)) |
+| Identity and single sign-on | Authentik: OIDC for Kubernetes and the platform UIs, plus an LDAP outpost; or the site's own OIDC issuer (`spec.identity.provider`, [IDENTITY.md](IDENTITY.md)) | INFRA (Authentik) | Config, Kubernetes issuers and role bindings built (`dciab mgmt` binds them on MGMT); Authentik blueprints rendered, Authentik itself planned ([ADR 0004](adr/0004-identity-and-sso.md), [ADR 0008](adr/0008-provider-pattern.md)) |
 | Workload identity | SPIFFE/SPIRE: SPIRE server, plus the agent DaemonSet and CSI driver on every cluster | INFRA (server); every cluster (agents) | Proposed ([ADR 0004](adr/0004-identity-and-sso.md)) |
 | Secrets management | OpenBao (secret store), External Secrets Operator (syncs secrets into each cluster) | INFRA (OpenBao); every cluster (ESO) | Planned ([ADR 0005](adr/0005-secrets.md)) |
 | Certificates and PKI | cert-manager; a platform CA that DCiaB generates or imports (`spec.pki`) | Every cluster | Platform CA built (`dciab seed` generates it, key age-encrypted, or imports it; it reaches nodes); cert-manager installed with the providers, platform issuers planned ([ADR 0005](adr/0005-secrets.md)) |
