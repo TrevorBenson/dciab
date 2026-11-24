@@ -75,6 +75,11 @@ spec:
       - name: vipInterface
         value: {{ . | quote }}
       {{- end }}
+      {{- if $v.controlPlane.schedulable }}
+      # No worker nodes: the control plane nodes run the workloads.
+      - name: controlPlaneSchedulable
+        value: true
+      {{- end }}
       {{- with $v.nodes.authentication }}
       - name: authentication
         value: {{ toJson . }}

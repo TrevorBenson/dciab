@@ -153,6 +153,16 @@ spec:
           items:
             type: string
           description: Public keys for the break-glass user 'dciab' on every node.
+    - name: controlPlaneSchedulable
+      required: false
+      schema:
+        openAPIV3Schema:
+          type: boolean
+          default: false
+          description: >-
+            Register the control plane nodes without kubeadm's
+            node-role.kubernetes.io/control-plane:NoSchedule taint, so ordinary pods run on
+            them. For a cluster without worker nodes, which otherwise has nowhere to run them.
     - name: authentication
       required: false
       schema:
@@ -707,6 +717,25 @@ spec:
                   - name: {{ . | quote }}
                     controlPlane: true
                   {{- end }}
+    - name: controlPlaneSchedulable
+      description: >-
+        A cluster without worker nodes runs its workloads on its control plane nodes:
+        nodeRegistration.taints is empty for kubeadm init and join, instead of kubeadm's
+        default control-plane NoSchedule taint.
+      enabledIf: '{{ if .controlPlaneSchedulable }}true{{ end }}'
+      definitions:
+        - selector:
+            apiVersion: controlplane.cluster.x-k8s.io/v1beta2
+            kind: KubeadmControlPlaneTemplate
+            matchResources:
+              controlPlane: true
+          jsonPatches:
+            - op: add
+              path: /spec/template/spec/kubeadmConfigSpec/initConfiguration/nodeRegistration/taints
+              value: []
+            - op: add
+              path: /spec/template/spec/kubeadmConfigSpec/joinConfiguration/nodeRegistration/taints
+              value: []
 
 ---
 apiVersion: infrastructure.cluster.x-k8s.io/v1beta2

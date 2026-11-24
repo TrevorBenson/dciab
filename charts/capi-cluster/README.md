@@ -16,6 +16,12 @@ Proxmox clusters need no pool object for node addresses: CAPMOX allocates them f
 
 Worker pools with a `failureDomain` (`dciab cluster-values` splits each pool into one per domain, `<pool>-<domain>`) are placed there: on vSphere and Metal3 through the MachineDeployment's `failureDomain`, on Proxmox through the class's `failureDomain` variable.
 
+## Clusters without workers
+
+A cluster with no worker nodes (no `workerPools`, or only pools of 0 replicas, as MGMT often has) runs its workloads on its control plane nodes. `dciab cluster-values` sets `controlPlane.schedulable: true` for such a cluster, and the chart passes the class's `controlPlaneSchedulable` variable: the control plane nodes then register without the `node-role.kubernetes.io/control-plane:NoSchedule` taint. Without it, cert-manager, the Cluster API controllers, Longhorn and everything else would stay Pending. The chart refuses to render a cluster with no worker nodes and no `controlPlane.schedulable: true`.
+
+Adding a worker pool later turns `schedulable` off: the control plane rolls, and its new nodes carry the taint again, so workloads move to the workers.
+
 Values are validated by `values.schema.json`: every site-specific value is required and nothing has a default. [ci/](ci) has a complete values file for each class.
 
 ## The Secret encryption key
