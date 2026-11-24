@@ -1,4 +1,4 @@
-"""The hosted KVM job that boots the node image for pull requests."""
+"""The workflow that builds the node image and boots it under QEMU/KVM on the lab runner."""
 import re
 from pathlib import Path
 
@@ -12,14 +12,16 @@ def wf():
     return yaml.safe_load(WF.read_text())
 
 
-def test_it_runs_hosted_with_no_credentials_for_pull_requests():
+def test_it_runs_on_the_lab_runner_and_never_for_a_pull_request():
+    """Hosted Ubuntu can't do it (#151); the runner hook refuses pull requests."""
     w = wf()
-    job = w["jobs"]["boot"]
-    assert job["runs-on"].startswith("ubuntu-26.04")        # never the credentialed lab runner
-    assert "pull_request" in w[True]
+    assert w["jobs"]["boot"]["runs-on"] == ["self-hosted", "dciab-lab"]
+    assert set(w[True]) == {"push", "workflow_dispatch"}
+    assert w[True]["push"]["branches"] == ["main"]
+    assert w["concurrency"] == {"group": "dciab-lab", "cancel-in-progress": False}
     assert w["permissions"] == {"contents": "read"}
     text = WF.read_text()
-    assert "secrets." not in text and "environment:" not in text and "self-hosted" not in text
+    assert "secrets." not in text and "environment:" not in text
 
 
 def test_actions_are_pinned_by_sha():
@@ -27,15 +29,16 @@ def test_actions_are_pinned_by_sha():
         assert re.search(r"@[0-9a-f]{40}$", uses), uses
 
 
-def test_it_refuses_to_run_without_a_pinned_base():
-    """A hosted runner can't build the base (nested rpm-ostree compose fails on Ubuntu)."""
-    step = next(s for s in wf()["jobs"]["boot"]["steps"] if s.get("name", "").startswith("The base must be pinned"))
-    assert "baseImage" in step["run"] and "sha256" in step["run"]
-    lock = yaml.safe_load((ROOT / "bundle.lock").read_text())
-    assert re.search(r"@sha256:[0-9a-f]{64}$", lock["nodeImages"]["bootc"]["baseImage"])
+def test_it_fails_early_with_a_clear_message_without_qemu_or_kvm():
+    step = next(s for s in wf()["jobs"]["boot"]["steps"] if s.get("name", "").startswith("Tools"))
+    assert "/dev/kvm" in step["run"] and "qemu" in step["run"]
+
+
+def test_the_runner_image_carries_qemu_kvm():
+    assert "qemu-kvm" in (ROOT / "images/lab-runner/Containerfile").read_text()
 
 
 def test_the_boot_script_checks_what_a_proxmox_clone_needs():
     script = (ROOT / "hack/e2e/boot-node-image.sh").read_text()
-    for needle in ("Enforcing", "dciab-qemu-ga", "guest-exec", "cloud-init status --wait", "iscsiadm", "crio"):
+    for needle in ("Enforcing", "dciab-qemu-ga", "guest-exec", "cloud-init status --wait", "iscsiadm", "crio", "/usr/libexec/qemu-kvm"):
         assert needle in script, needle

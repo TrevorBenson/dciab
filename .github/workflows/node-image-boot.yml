@@ -1,18 +1,15 @@
 name: node image boots (KVM)
 
-# Pre-merge coverage for the Rocky 10 bootc node image on a GitHub-hosted runner: build the
-# image on the pinned base (nodeImages.bootc.baseImage, published by lab-runner-image.yml; a
-# hosted runner can pull it but can't build it), turn it into a qcow2 and boot it under KVM.
-# It needs no credentials and touches no hypervisor, so pull requests (forks included, after
-# approval) may run it. The credentialed lab runner never runs pull requests; see #139.
+# Builds the Rocky 10 bootc node image on the self-hosted lab runner and boots its qcow2 under
+# QEMU/KVM (the runner VM needs CPU type host for nested virtualization), then checks what a
+# Proxmox clone depends on. Hosted Ubuntu runners can't do it: the SIG recipe's compose and
+# bootc-image-builder's mount both fail there (#151), and the lab runner is Rocky 10 with
+# SELinux, as the bootstrap host is.
+#
+# The job-started hook refuses pull requests and other branches, so this runs after a merge to
+# main (or a dispatch of main). Pre-merge, run hack/e2e/boot-node-image.sh on a Rocky or Fedora
+# host by hand; an isolated runner for pull requests is planned in #139.
 on:
-  pull_request:
-    paths:
-      - images/node-bootc/**
-      - hack/e2e/boot-node-image.sh
-      - bundle.lock
-      - VERSION
-      - .github/workflows/node-image-boot.yml
   push:
     branches: [main]
     paths:
@@ -26,42 +23,25 @@ on:
 permissions:
   contents: read
 
+# One lab, one set of fixed addresses, shared with hand runs: the lab concurrency group.
 concurrency:
-  group: node-image-boot-${{ github.ref }}
-  cancel-in-progress: true
+  group: dciab-lab
+  cancel-in-progress: false
 
 jobs:
   boot:
-    name: node image boots under KVM (Rocky 10 bootc)
-    runs-on: ubuntu-26.04   # podman 5.x: the node Containerfile uses heredocs (24.04 has podman 4.9)
-    timeout-minutes: 45
+    name: node image boots under QEMU (Rocky 10 bootc)
+    runs-on: [self-hosted, dciab-lab]
+    timeout-minutes: 75
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
-      - name: The base must be pinned
-        run: |
-          python3 - <<'PY'
-          import re, sys, yaml
-          base = yaml.safe_load(open("bundle.lock"))["nodeImages"]["bootc"].get("baseImage") or ""
-          if not re.search(r"@sha256:[0-9a-f]{64}$", base):
-              sys.exit("nodeImages.bootc.baseImage is not pinned: a hosted runner can't build the base "
-                       "(run lab-runner-image.yml on the lab runner, then pin the digest)")
-          print("base:", base)
-          PY
       - name: Tools and KVM
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq qemu-system-x86 qemu-utils xorriso python3-yaml
-          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules >/dev/null
-          sudo udevadm control --reload-rules
-          sudo udevadm trigger --name-match=kvm
-          ls -l /dev/kvm
-          df -h /
-      - name: Let bootc-image-builder mount inside its container (AppArmor)
-        # osbuild mounts the container storage inside bootc-image-builder; Ubuntu's default
-        # AppArmor profile for podman denies it ("mount: /run/osbuild/containers/storage: permission denied").
-        run: |
-          sudo mkdir -p /etc/containers/containers.conf.d
-          printf '[containers]\napparmor_profile = "unconfined"\n' | sudo tee /etc/containers/containers.conf.d/99-dciab.conf >/dev/null
+          [ -x /usr/libexec/qemu-kvm ] || command -v qemu-system-x86_64 >/dev/null \
+            || { echo "::error::no qemu on the runner: the image needs qemu-kvm (rebuild it and update the runner VM)"; exit 1; }
+          [ -w /dev/kvm ] \
+            || { echo "::error::no usable /dev/kvm on the runner VM: set its CPU type to host (nested virtualization is on for pve1)"; exit 1; }
+          df -h /var
       - name: Build the node image and qcow2
         run: sudo images/node-bootc/build.sh --type qcow2
       - name: Boot it and check

@@ -6,7 +6,8 @@
 #
 #   hack/e2e/boot-node-image.sh DISK.qcow2 [SIZE_GIB]     (default 25)
 #
-# Needs: qemu-system-x86_64, qemu-img, xorriso, ssh. KVM is used when /dev/kvm is writable.
+# Needs: qemu-system-x86_64 or Rocky's /usr/libexec/qemu-kvm, qemu-img, xorriso, ssh. KVM is used
+# when /dev/kvm is writable; without it (not possible with Rocky's qemu) emulation is very slow.
 # Exit 0 only if every check passes. The serial console log is printed on failure.
 set -euo pipefail
 
@@ -21,9 +22,19 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# qemu-system-x86_64 (Fedora, Debian, Ubuntu) or Rocky's /usr/libexec/qemu-kvm. Rocky's build has
+# no software emulation, so there /dev/kvm is required.
+qemu="$(command -v qemu-system-x86_64 || true)"
+[[ -n "$qemu" ]] || { qemu=/usr/libexec/qemu-kvm; accel_required=1; }
+[[ -x "$qemu" ]] || { echo "boot-node-image.sh: no qemu found (qemu-system-x86_64 or /usr/libexec/qemu-kvm)" >&2; exit 2; }
 accel=tcg
 [[ -w /dev/kvm ]] && accel=kvm
-echo "== accelerator: $accel"
+if [[ "$accel" == tcg && "${accel_required:-0}" == 1 ]]; then
+  echo "boot-node-image.sh: $qemu has no software emulation and /dev/kvm is not writable (set the VM's CPU type to host)" >&2
+  exit 2
+fi
+cpu=max; [[ "$accel" == kvm ]] && cpu=host
+echo "== qemu: $qemu, accelerator: $accel"
 
 qemu-img convert -O qcow2 "$disk_in" "$work/disk.qcow2"
 qemu-img resize -q "$work/disk.qcow2" "${size}G"
@@ -38,7 +49,7 @@ EOF
 printf 'instance-id: boot-test\nlocal-hostname: boot-test\n' > "$work/meta-data"
 xorriso -as mkisofs -quiet -o "$work/seed.iso" -V cidata -J -r "$work/user-data" "$work/meta-data"
 
-qemu-system-x86_64 -machine q35,accel="$accel" -cpu max -smp 2 -m 4096 \
+"$qemu" -machine q35,accel="$accel" -cpu "$cpu" -smp 2 -m 4096 \
   -drive "file=$work/disk.qcow2,if=virtio,format=qcow2" \
   -drive "file=$work/seed.iso,media=cdrom,readonly=on" \
   -nic "user,model=virtio-net-pci,hostfwd=tcp:127.0.0.1:$port-:22" \
@@ -53,8 +64,9 @@ fail() {
   exit 1
 }
 
-echo "== waiting for SSH (up to 10 minutes)"
-for _ in $(seq 1 120); do
+tries=120; [[ "$accel" == tcg ]] && tries=480   # 10 minutes with KVM, 40 without
+echo "== waiting for SSH (up to $((tries * 5 / 60)) minutes)"
+for _ in $(seq 1 "$tries"); do
   "${ssh_cmd[@]}" true 2>/dev/null && break
   sleep 5
 done
