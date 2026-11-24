@@ -29,7 +29,7 @@ def test_actions_are_pinned_by_sha():
 
 def test_it_refuses_to_run_without_a_pinned_base():
     """A hosted runner can't build the base (nested rpm-ostree compose fails on Ubuntu)."""
-    step = next(s for s in wf()["jobs"]["boot"]["steps"] if s["name"].startswith("The base must be pinned"))
+    step = next(s for s in wf()["jobs"]["boot"]["steps"] if s.get("name", "").startswith("The base must be pinned"))
     assert "baseImage" in step["run"] and "sha256" in step["run"]
     lock = yaml.safe_load((ROOT / "bundle.lock").read_text())
     assert re.search(r"@sha256:[0-9a-f]{64}$", lock["nodeImages"]["bootc"]["baseImage"])
