@@ -26,9 +26,8 @@ spec:
       templateID: 9010
       storage: local-lvm                 # a fresh install's local storage
       bridge: vmbr0
-      # vlanTag: 110                     # honoured, but not usable on a freshly installed host: DCiaB doesn't
-                                         # make its bridge VLAN-aware yet. Not needed here: vmbr0 sits on the
-                                         # access port for network.nodes.vlan
+      # vlanTag: 110                     # [opt] dciab hypervisors makes the bridge VLAN-aware for it. Not needed
+                                         # here: vmbr0 sits on the access port for network.nodes.vlan
       credentials:
         tokenID: dciab@pve!capmox
         tokenSecret: {env: DCIAB_PVE_TOKEN}

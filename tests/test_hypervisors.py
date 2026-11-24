@@ -1026,6 +1026,7 @@ def run_main(tmp_path, monkeypatch, capsys):
         return [], [], []
     monkeypatch.setattr(cli, "media", media)
     monkeypatch.setattr(cli, "wait_for", lambda *a, **k: None)
+    monkeypatch.setattr(cli, "post_install", lambda hosts, *a, **k: [])   # tested on its own below
 
     def go(bmc_for):
         monkeypatch.setattr(cli, "_bmc", lambda h, config_dir: bmc_for(h))
@@ -1477,3 +1478,307 @@ def test_a_storage_list_that_never_ends_is_unreadable_not_a_refusal(fake_bmc, tm
                                             ("Disabled", "Enabled"), ("Disable", "Enable"), ("Enabled", None)])
 def test_only_real_booleans_and_known_strings_are_turned_on(value, expected):
     assert prepare.turned_on(value) == expected
+
+# --- post-install through the Proxmox VE API (post.py, cli.post_install) -----------------------
+
+from urllib.parse import parse_qs  # noqa: E402
+
+from dciab_hypervisors import post  # noqa: E402
+from dciab_validate.proxmox_privs import grants  # noqa: E402
+
+
+class FakePVE:
+    """A stateful Proxmox VE API (one node, pve01): tickets, network, storage, roles, users,
+    tokens and ACLs. Records every write."""
+
+    def __init__(self, cert, password="rootpw", roles=None, users=None, tokens=None, local_content="iso,vztmpl,backup"):
+        self.writes = []
+        self.logins = 0
+        self.ifaces = [{"iface": "eno1", "type": "eth"},
+                       {"iface": "vmbr0", "type": "bridge", "bridge_ports": "eno1", "cidr": "10.30.110.6/24",
+                        "gateway": "10.30.110.1", "autostart": 1}]
+        self.reloaded = False
+        self.storage = {"local": {"storage": "local", "content": local_content, "enabled": 1, "active": 1},
+                        "local-lvm": {"storage": "local-lvm", "content": "images,rootdir", "enabled": 1, "active": 1}}
+        self.roles = dict(roles or {})
+        self.users = set(users or [])
+        self.tokens = dict(tokens or {})          # user -> [token names]
+        self.acl = []
+        fake = self
+
+        class Handler(BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def _send(self, status, data=None):
+                body = json.dumps({"data": data}).encode()
+                self.send_response(status)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def _form(self):
+                n = int(self.headers.get("Content-Length") or 0)
+                return {k: v[0] for k, v in parse_qs(self.rfile.read(n).decode()).items()} if n else {}
+
+            def _authed(self, write):
+                if self.headers.get("Cookie") != "PVEAuthCookie=TICKET":
+                    return False
+                return not write or self.headers.get("CSRFPreventionToken") == "CSRF"
+
+            def do_GET(self):
+                p = self.path.replace("/api2/json", "", 1)
+                if not self._authed(False):
+                    return self._send(401)
+                if p == "/nodes/pve01/network":
+                    return self._send(200, fake.ifaces)
+                if p == "/nodes/pve01/storage":
+                    return self._send(200, list(fake.storage.values()))
+                if p == "/access/roles":
+                    return self._send(200, [{"roleid": r, "privs": v} for r, v in fake.roles.items()])
+                if p.startswith("/access/users/") and p.endswith("/token"):
+                    u = p.split("/")[3].replace("%40", "@")
+                    return self._send(200, [{"tokenid": t} for t in fake.tokens.get(u, [])])
+                if p.startswith("/access/users/"):
+                    u = p.split("/")[3].replace("%40", "@")
+                    return self._send(200, {"userid": u}) if u in fake.users else self._send(500)
+                self._send(404)
+
+            def do_POST(self):
+                p = self.path.replace("/api2/json", "", 1)
+                form = self._form()
+                if p == "/access/ticket":
+                    fake.logins += 1
+                    if form.get("username") == "root@pam" and form.get("password") == password:
+                        return self._send(200, {"ticket": "TICKET", "CSRFPreventionToken": "CSRF"})
+                    return self._send(401)
+                if not self._authed(True):
+                    return self._send(401)
+                fake.writes.append(("POST", p, form))
+                if p == "/access/roles":
+                    fake.roles[form["roleid"]] = form["privs"]
+                elif p == "/access/users":
+                    fake.users.add(form["userid"])
+                elif "/token/" in p:
+                    parts = p.split("/")
+                    u, t = parts[3].replace("%40", "@"), parts[5]
+                    fake.tokens.setdefault(u, []).append(t)
+                    return self._send(200, {"value": "SECRET-7f3a9c", "full-tokenid": f"{u}!{t}"})
+                else:
+                    return self._send(404)
+                self._send(200)
+
+            def do_PUT(self):
+                p = self.path.replace("/api2/json", "", 1)
+                form = self._form()
+                if not self._authed(True):
+                    return self._send(401)
+                fake.writes.append(("PUT", p, form))
+                if p == "/nodes/pve01/network":
+                    fake.reloaded = True
+                elif p.startswith("/nodes/pve01/network/"):
+                    i = next(x for x in fake.ifaces if x["iface"] == p.rsplit("/", 1)[1])
+                    i.clear()
+                    i.update(form, iface=p.rsplit("/", 1)[1])
+                elif p == "/storage/local":
+                    fake.storage["local"]["content"] = form["content"]
+                elif p.startswith("/access/roles/"):
+                    fake.roles[p.rsplit("/", 1)[1]] = form["privs"]
+                elif p == "/access/acl":
+                    fake.acl.append(form)
+                else:
+                    return self._send(404)
+                self._send(200)
+
+        self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.httpd.handle_error = lambda *a: None
+        ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        ctx.load_cert_chain(str(cert["crt"]), str(cert["key"]))
+        self.httpd.socket = ctx.wrap_socket(self.httpd.socket, server_side=True)
+        self.port = self.httpd.server_address[1]
+        threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
+
+    def close(self):
+        self.httpd.shutdown()
+        self.httpd.server_close()
+
+
+@pytest.fixture
+def fake_pve(cert):
+    made = []
+
+    def make(**kw):
+        f = FakePVE(cert, **kw)
+        made.append(f)
+        return f
+    yield make
+    for f in made:
+        f.close()
+
+
+def run_post(f, cert, tmp_path, monkeypatch, doc=None, record=None, site_password="rootpw", identity=None):
+    doc = doc or bare()
+    installs, state = tmp_path / "installs", tmp_path / "state"
+    if record is not False:
+        cli.write_install(installs, "pve01", **(record or {"outcome": "installed", "iso": HOST_ISO}))
+    sealed = {}
+
+    def sealer(recipients, text, dest, what="x"):
+        sealed[str(dest)] = (list(recipients), text, what)
+        dest.write_text("age-encrypted\n")
+        os.chmod(dest, 0o600)
+    monkeypatch.setattr(answer, "seal_with_age", sealer)
+    logs = []
+    failed = cli.post_install([host(doc)], doc, state, installs, tmp_path / "answers", site_password, identity,
+                              api_for=lambda h, pin: post.PveApi("127.0.0.1", pin, timeout=5, port=f.port),
+                              seen=lambda a: cert["pin"], log=logs.append, err=logs.append)
+    return failed, "\n".join(logs), sealed, cli.read_install(installs, "pve01")
+
+
+def test_post_install_creates_the_token_exactly_as_proxmox_privs_says(fake_pve, cert, tmp_path, monkeypatch):
+    f = fake_pve()
+    failed, out, sealed, record = run_post(f, cert, tmp_path, monkeypatch)
+    assert failed == [], out
+    px = bare()["spec"]["platform"]["proxmox"]
+    want = grants(px)
+    assert {r: sorted(v.split(",")) for r, v in f.roles.items()} == {g.role: sorted(g.privileges) for g in want}
+    user, tname = px["credentials"]["tokenID"].split("!")
+    assert user in f.users and f.tokens[user] == [tname]
+    assert next(w for w in f.writes if "/token/" in w[1])[2] == {"privsep": "1", "comment": "DCiaB: CAPMOX"}
+    assert [(a["path"], a["roles"], a["users"], a["tokens"], a["propagate"]) for a in f.acl] == \
+        [(g.path, g.role, user, px["credentials"]["tokenID"], "1" if g.propagate else "0") for g in want]
+    # The secret is sealed to the recipients and written nowhere in plain text.
+    dest = str(post.token_file(tmp_path / "state", "pve01"))
+    assert sealed[dest][0] == bare()["spec"]["bootstrap"]["recipients"] and sealed[dest][1] == "SECRET-7f3a9c"
+    assert sealed[dest][2] == "the CAPMOX token secret"
+    for p in tmp_path.rglob("*"):
+        if p.is_file():
+            assert "SECRET-7f3a9c" not in p.read_text(errors="ignore"), p
+    assert "SECRET-7f3a9c" not in out
+    assert record["post"] == "done" and record["api_fingerprint"] == cert["pin"] and "pinned the API certificate" in out
+    assert not f.reloaded and not [w for w in f.writes if "/network" in w[1]]      # no vlanTag: bridge untouched
+
+
+def test_post_install_runs_once_per_install(fake_pve, cert, tmp_path, monkeypatch):
+    f = fake_pve()
+    assert run_post(f, cert, tmp_path, monkeypatch)[0] == []
+    f.writes.clear()
+    logins = f.logins
+    failed, out, _, _ = run_post(f, cert, tmp_path, monkeypatch, record={"outcome": "installed"})   # merge keeps post
+    assert failed == [] and "post-install done" in out and f.writes == [] and f.logins == logins
+
+
+def test_vlan_tag_makes_the_bridge_vlan_aware_keeping_its_address(fake_pve, cert, tmp_path, monkeypatch):
+    doc = bare()
+    doc["spec"]["platform"]["proxmox"]["vlanTag"] = 110
+    f = fake_pve()
+    failed, out, _, _ = run_post(f, cert, tmp_path, monkeypatch, doc=doc)
+    assert failed == [], out
+    put = next(w for w in f.writes if w[1] == "/nodes/pve01/network/vmbr0")[2]
+    assert put["bridge_vlan_aware"] == "1" and put["cidr"] == "10.30.110.6/24" and put["gateway"] == "10.30.110.1"
+    assert put["bridge_ports"] == "eno1" and f.reloaded and "made VLAN-aware" in out
+
+
+def test_local_gains_iso_content_and_roles_are_corrected(fake_pve, cert, tmp_path, monkeypatch):
+    f = fake_pve(local_content="vztmpl,backup", roles={"DCiaBNodes": "Sys.Audit,Sys.Modify"})
+    failed, out, _, _ = run_post(f, cert, tmp_path, monkeypatch)
+    assert failed == [] and f.storage["local"]["content"] == "vztmpl,backup,iso"
+    assert f.roles["DCiaBNodes"] == "Sys.Audit" and "role DCiaBNodes corrected" in out
+
+
+def test_existing_token_without_its_sealed_secret_fails_clearly(fake_pve, cert, tmp_path, monkeypatch):
+    px = bare()["spec"]["platform"]["proxmox"]
+    user, tname = px["credentials"]["tokenID"].split("!")
+    f = fake_pve(users=[user], tokens={user: [tname]})
+    failed, out, _, record = run_post(f, cert, tmp_path, monkeypatch)
+    assert failed == ["pve01"] and "can't be read back" in out and record["post"] == "failed"
+    assert not [w for w in f.writes if "/token/" in w[1] or w[1] == "/access/acl"]
+
+
+def test_tagged_management_vlan_is_refused_before_any_write(fake_pve, cert, tmp_path, monkeypatch):
+    doc = bare()
+    doc["spec"]["hypervisors"]["managementVLAN"] = "tagged"
+    f = fake_pve()
+    failed, out, _, _ = run_post(f, cert, tmp_path, monkeypatch, doc=doc)
+    assert failed == ["pve01"] and "managementVLAN: tagged isn't built" in out and f.writes == []
+
+
+def test_missing_storage_is_refused(fake_pve, cert, tmp_path, monkeypatch):
+    doc = bare()
+    doc["spec"]["platform"]["proxmox"]["storage"] = "ceph-vm"
+    f = fake_pve()
+    failed, out, _, _ = run_post(f, cert, tmp_path, monkeypatch, doc=doc)
+    assert failed == ["pve01"] and "no storage ceph-vm" in out and "local-lvm" in out
+    assert not [w for w in f.writes if w[1].startswith("/access")]
+
+
+def test_wrong_root_password_fails_at_login(fake_pve, cert, tmp_path, monkeypatch):
+    f = fake_pve()
+    failed, out, _, _ = run_post(f, cert, tmp_path, monkeypatch, site_password="nope")
+    assert failed == ["pve01"] and "logging in as root@pam failed" in out and f.writes == []
+    assert "nope" not in out
+
+
+@pytest.mark.parametrize("record,doc_edit,why", [
+    ({"outcome": "installed"}, None, "not installed by DCiaB"),          # seen installed, never attached by DCiaB
+    ({"outcome": "in-progress", "iso": HOST_ISO}, None, "not installed by DCiaB"),
+    (False, None, "not installed by DCiaB"),                              # no record at all
+    ({"outcome": "installed", "iso": HOST_ISO}, lambda d: d["spec"]["platform"]["proxmox"].update(nodes=["pve02"]),
+     "not in spec.platform.proxmox.nodes"),
+])
+def test_post_install_skips_hosts_it_must_not_touch(fake_pve, cert, tmp_path, monkeypatch, record, doc_edit, why):
+    doc = bare()
+    if doc_edit:
+        doc_edit(doc)
+    f = fake_pve()
+    failed, out, _, _ = run_post(f, cert, tmp_path, monkeypatch, doc=doc, record=record)
+    assert failed == [] and why in out and f.logins == 0
+
+
+def test_generated_root_password_needs_an_age_identity(tmp_path):
+    answers = tmp_path / "answers"
+    answers.mkdir()
+    (answers / "pve01.root-password.age").write_text("sealed\n")
+    with pytest.raises(post.PostError, match="--age-identity"):
+        post.root_password(answers, "pve01", None, None)
+    seen = []
+
+    def run(cmd):
+        seen.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0, "generated-pw\n", "")
+    assert post.root_password(answers, "pve01", None, Path("/k/id.txt"), run=run) == "generated-pw"
+    assert seen == [["age", "-d", "-i", "/k/id.txt", str(answers / "pve01.root-password.age")]]
+    assert post.root_password(answers, "pve01", "site-pw", None) == "site-pw"
+    with pytest.raises(post.PostError, match="unknown"):
+        post.root_password(answers, "pve02", None, Path("/k/id.txt"), run=run)
+
+
+def test_trust_pins_the_platform_fingerprint_when_the_url_names_the_host():
+    doc = bare()
+    px = doc["spec"]["platform"]["proxmox"]
+    px["url"] = "https://pve01.dc3.example.com:8006"
+    h = host(doc)
+    pin = px["tlsFingerprint"]
+    assert post.trust_for(h, doc, {}, seen=lambda a: pin) == (pin, None)
+    with pytest.raises(post.PostError, match="set tlsFingerprint to AB:CD"):
+        post.trust_for(h, doc, {}, seen=lambda a: "AB:CD")
+    px["url"] = "https://10.30.110.99:8006"
+    assert post.trust_for(h, doc, {"api_fingerprint": "11:22"}, seen=lambda a: pytest.fail("re-read")) == ("11:22", None)
+
+
+def test_a_changed_certificate_after_first_contact_is_refused(fake_pve, cert, tmp_path, monkeypatch):
+    f = fake_pve()
+    failed, out, _, _ = run_post(f, cert, tmp_path, monkeypatch,
+                                 record={"outcome": "installed", "iso": HOST_ISO, "api_fingerprint": ":".join(["AB"] * 32)})
+    assert failed == ["pve01"] and "not the pinned one" in out and f.logins == 0
+
+
+def test_print_shows_post_install(tmp_path, monkeypatch, capsys):
+    Site(tmp_path, monkeypatch, capsys)
+    cfg = tmp_path / "dciab.yaml"
+    cfg.write_text(yaml.safe_dump(bare(), sort_keys=False))
+    assert cli.main(["--root", str(ROOT), "--print", str(cfg)]) == 0
+    out = capsys.readouterr().out
+    assert "post-install: bridge vmbr0, storage local-lvm, token dciab@pve!capmox sealed to" in out
+    assert "post-install: none (not in spec.platform.proxmox.nodes)" in out

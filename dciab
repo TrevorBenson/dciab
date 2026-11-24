@@ -24,7 +24,7 @@ Commands:
   services <config> [--state DIR] [--isos DIR] [--until STEP] [--print]
                                            Day 0 DNS, NTP and HTTP on the bootstrap host (as root)
   hypervisors <config> [--state DIR] [--isos DIR] [--host NAME ...] [--until STEP] [--iso FILE]
-              [--reinstall NAME ...] [--first-install NAME ...] [--print]
+              [--reinstall NAME ...] [--first-install NAME ...] [--age-identity FILE] [--print]
                                            Day 0: install Proxmox VE on spec.hypervisors.hosts over Redfish (as root)
   mgmt <config> [--bootstrap-kubeconfig FILE] [--state DIR] [--trust-bundle FILE] [--payload DIR] [--until STEP]
                                            Build MGMT from the bootstrap cluster and move CAPI to it
