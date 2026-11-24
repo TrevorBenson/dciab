@@ -86,10 +86,14 @@ def _to_findings(err: ValidationError) -> List[Finding]:
         return out
 
     if v == "additionalProperties":
-        allowed = set(schema.get("properties", {}))
+        # Not the block's description: that documents the block (docs/CONFIG.md), it isn't a fix.
+        allowed = list(schema.get("properties", {}))
         extras = [k for k in err.instance if k not in allowed] if isinstance(err.instance, dict) else []
-        fix = desc or "remove it, or check its spelling"
+        fix = "remove it, or check its spelling" + (f"; this block takes {', '.join(allowed)}" if allowed else "")
         return [Finding(ERROR, path + (k,), "a field this config does not use", fix) for k in extras]
+
+    if v == "dependentRequired":
+        return [Finding(ERROR, path, "a field without the one it needs", err.message)]
 
     if v == "type":
         expected = err.validator_value

@@ -4,6 +4,8 @@ One archive and one YAML file build a data center platform from bare power and n
 
 What a site runs, by capability and cluster: [docs/COMPONENTS.md](docs/COMPONENTS.md).
 
+Every page, by audience (operators, contributors, agents): [docs/README.md](docs/README.md). Every config key: [docs/CONFIG.md](docs/CONFIG.md). Terms: [docs/GLOSSARY.md](docs/GLOSSARY.md).
+
 **Status:** Phase 1, in progress. Done: the config schema and `dciab validate` (offline and `--live` checks), the pinned `bundle.lock`, the ClusterClass and cluster charts, `cluster-values`, `status`, `media`, `services`, `hypervisors` (Proxmox VE, first part) and `seed`. Implemented, not yet passed end to end: the archive build and `verify-archive` (node images still to come), and `mgmt` (CI runs it up to the Cluster; MGMT's own services still to come). `infra`, `platform` and `finalize` aren't built yet. A Proxmox VE node template has been built and verified; no cluster has passed on real infrastructure yet. [docs/ROADMAP.md](docs/ROADMAP.md) is the source of truth for what exists.
 
 ## The bootstrap host
@@ -136,7 +138,7 @@ handoff/                 development only: lab test tasks and reports (not part 
 examples/                vsphere.yaml, proxmox.yaml, proxmox-bare.yaml, metal3-cluster.yaml
 tests/                   pytest suite
 CLAUDE.md                how AI agents work in this repo
-docs/                    roadmap, versioning (VERSIONING.md) and decision records (adr/)
+docs/                    the docs index (README.md), config reference (CONFIG.md, generated), glossary, roadmap, versioning and decision records (adr/)
 ```
 
 ## Development
