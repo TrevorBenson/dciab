@@ -72,7 +72,7 @@ Authentik runs on INFRA, so the clusters it depends on can't depend on it. MGMT 
 
 Authentik decides who is in which group. OpenVox decides what a group may do on a host: its ENC classifies each host (role, owner, environment) and assigns the access profile, and the OpenVox agent enforces it (SSSD configuration and access rules, sudo rules, the `dciab` break-glass user and its keys). Owners and access are changed in Authentik groups and in the ENC data in Git, never by hand on a host; OpenVox reverts local changes.
 
-How user SSH keys reach hosts (an attribute served through the LDAP outpost and read by SSSD, or keys delivered by OpenVox) is settled when OpenVox enrollment is built (roadmap phase 4). Short-lived SSH certificates from OpenBao's SSH secrets engine are a later option.
+How user SSH keys reach hosts (an attribute served through the LDAP outpost and read by SSSD, or keys delivered by OpenVox) is settled when OpenVox enrollment is built (see [ROADMAP](../ROADMAP.md)). Short-lived SSH certificates from OpenBao's SSH secrets engine are a later option.
 
 ### 7. SPIFFE/SPIRE for workloads
 

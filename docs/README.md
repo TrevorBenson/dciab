@@ -19,7 +19,7 @@ People who plan a site, write its config and run the steps.
 | [MGMT.md](MGMT.md) | `dciab mgmt`: building MGMT and moving Cluster API into it |
 | [IDENTITY.md](IDENTITY.md) | Who logs in, through Authentik or the site's own identity provider |
 | [BACKUP.md](BACKUP.md) | What is backed up, where to, and how to restore it |
-| [ROADMAP.md](ROADMAP.md) | The phases, and what is built today |
+| [ROADMAP.md](ROADMAP.md) | What each release builds (`r1alpha`, `r1beta`, `r1`), and what is built today |
 
 ## Contributors
 
@@ -27,7 +27,7 @@ People who change DCiaB: its code, charts, classes and docs. Read the decision r
 
 | Page | What it covers |
 | --- | --- |
-| [VERSIONING.md](VERSIONING.md) | Version numbers: releases, the config schema, class revisions, charts and pins |
+| [VERSIONING.md](VERSIONING.md) | Release names (`r1alpha1`, `r1beta1`, `r1`) and their SemVer versions, the config schema, class revisions, charts and pins |
 | [CONFIG.md](CONFIG.md) | Generated from `schema/dciab.schema.json` by `hack/gen_config_docs.py`; CI fails when they differ, or when a schema key has no description |
 | [Charts: capi-cluster](../charts/capi-cluster/README.md), [capi-clusterclasses](../charts/capi-clusterclasses/README.md) | One cluster's topology, and the ClusterClasses |
 | [Add-ons](../addons/) | Cilium, Longhorn, the CSI drivers, the vSphere cloud provider and kubelet-csr-approver, each with a README |

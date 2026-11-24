@@ -60,7 +60,7 @@ See also: [Versioning](VERSIONING.md), [dciab media](MEDIA.md).
 | `kind` | string | required |  | `Site` | the config's kind: Site |
 | `metadata` | object | required |  |  | the site's identity; only name is read |
 | `metadata.name` | string | required |  | `^[a-z0-9][a-z0-9-]{0,10}[a-z0-9]$` | short site id: 2-12 characters, lowercase letters, digits and hyphens, not starting or ending with a hyphen |
-| `spec.bundleVersion` | string | required |  | `^\d+\.\d+\.\d+$` | the DCiaB archive version this config is written for, as in the archive's VERSION file. validate checks they match |
+| `spec.bundleVersion` | string | required |  | `^\d+\.0\.0(-(alpha\|beta)\.\d+)?$` | the DCiaB archive version this config is written for, as in the archive's VERSION file: the SemVer form of a release name, N.0.0-alpha.M (rNalphaM), N.0.0-beta.M (rNbetaM) or N.0.0 (rN). validate checks they match |
 
 ## spec.platform
 
@@ -453,7 +453,7 @@ Used at: `spec.storage.block`, `overrides.mgmt` in [blockStorage](#blockstorage)
 | `cephCSI` | object: [cephCSI](#cephcsi) | required when `provider: ceph-csi` |  |  | ceph-csi's settings: required with provider ceph-csi, not allowed with the others. Not installed yet: validate says so |
 | `vendorCSI` | object: [vendorCSI](#vendorcsi) | required when `provider: vendor-csi` |  |  | the vendor driver's settings: required with provider vendor-csi, not allowed with the others. Not installed yet: validate says so |
 | `existing` | object: [existingStorage](#existingstorage) | required when `provider: existing` |  |  | the StorageClass to use: required with provider existing, not allowed with the others |
-| `overrides` | object | optional |  | at least 1 entry | optional, per tier: infra, merged over block; mgmt and workload (every workload cluster), which stand alone. Overrides for one cluster come after v1 |
+| `overrides` | object | optional |  | at least 1 entry | optional, per tier: infra, merged over block; mgmt and workload (every workload cluster), which stand alone. Overrides for one cluster come after r1 |
 | `overrides.mgmt` | object: [blockStorage](#blockstorage) | optional |  |  | optional: block storage for MGMT, complete on its own. Without it, MGMT keeps no volumes (ADR 0008, decision 4a) |
 | `overrides.infra` | object | optional |  | at least 1 entry | optional: merged over block for INFRA |
 | `overrides.infra.provider` | [blockProvider](#types) | optional |  |  | optional: a provider other than block's; then give its settings block too |

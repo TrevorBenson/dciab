@@ -62,7 +62,7 @@ Provider ID: vSphere nodes run with `cloud-provider: external`, so the vSphere C
 
 kube-vip mounts `admin.conf` read-only. It still holds cluster-admin credentials, as in the upstream CAPI provider templates: a static pod has no ServiceAccount when the control plane is first built. A narrower kubeconfig is a candidate for a later class revision. Set `vipInterface` when nodes have several NICs; otherwise kube-vip uses the interface that holds the default route.
 
-## Not in v1 yet
+## Not in the `r1` classes yet
 
 - Separate data disks for Longhorn on Proxmox: CAPMOX can't add a second disk to a machine yet. On Proxmox, use the Proxmox CSI driver instead of Longhorn.
 

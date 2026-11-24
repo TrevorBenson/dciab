@@ -14,7 +14,7 @@ kind: Site
 metadata:
   name: dc3
 spec:
-  bundleVersion: 0.1.0
+  bundleVersion: 1.0.0-alpha.1
 
   platform:
     type: proxmox

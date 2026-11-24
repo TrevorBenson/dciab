@@ -4,9 +4,10 @@ The terms DCiaB's pages use. Config keys are in [CONFIG.md](CONFIG.md); the comp
 
 ## Phases of a site
 
-- **Day 0.** Bringing up what everything else needs before any cluster exists: the bootstrap host, DNS and NTP on it, the hypervisors on bare servers, the seed registry and the bootstrap cluster. Day 0 services are small and temporary; MGMT takes them over ([ADR 0001](adr/0001-day0-hypervisors-and-services.md)).
-- **Day 1.** Building the platform: MGMT, then INFRA and its services, then the first workload clusters, ending with `finalize`. DCiaB's job is Day 0 and Day 1.
-- **Day 2.** Running the site afterwards: upgrades, backups and restores, new clusters through Git, and moving services to the site's own (a pivot). DCiaB leaves the site set up for Day 2; the platform's own tools (Argo CD, OpenTofu, Cluster API) carry it.
+- **Day 0.** Bringing up what everything else needs from nothing: the bootstrap host, the Day 0 services on it (DNS, NTP, DHCP and HTTP, each only when the site doesn't provide its own), the hypervisors on bare servers, the seed registry, the bootstrap cluster, and MGMT built and pivoted off it, with the minimal INFRA services the pivot needs. Day 0 services are small and temporary; production services take them over on Day 1 ([ADR 0001](adr/0001-day0-hypervisors-and-services.md)). Release stage `r1alpha`.
+- **Day 1.** From the bootstrap host to production: Day 0's DNS, NTP, DHCP and Redfish dependencies pivot to production services (on MGMT and INFRA, or the site's own), hypervisors join their manager (Proxmox Datacenter Manager or vCenter), INFRA and its services come up through Argo CD, clusters can move like for like onto the site's hypervisors, and the first workload clusters are built, ending with `finalize`. Release stage `r1beta`.
+- **Day 2.** Running the site afterwards: persistent storage, upgrades, backups and restores, new clusters through Git, and production hardening. The platform's own tools (Argo CD, OpenTofu, Cluster API) carry it. Release `r1`.
+- **Release.** A named DCiaB version: `rNalphaM` (proof of concept, unit-tested), `rNbetaM` (end-to-end tested) or `rN` (GA). Each has a SemVer form, such as `1.0.0-alpha.1` for `r1alpha1`, which `VERSION` and `spec.bundleVersion` hold ([VERSIONING.md](VERSIONING.md)).
 
 ## Hosts and media
 
@@ -32,7 +33,7 @@ The terms DCiaB's pages use. Config keys are in [CONFIG.md](CONFIG.md); the comp
 - **INFRA.** The cluster that runs the platform services: identity, secrets, Git, GitOps, object storage, databases, observability.
 - **Workload cluster.** A cluster for tenants' applications, from one of the ClusterClasses (vSphere, Proxmox VE or Metal3). The first ones can be in the config (`spec.workloadClusters`); later ones are added through Git.
 - **Tier.** One kind of cluster: `mgmt`, `infra` or `workload`. Tiers are created in that order, and a tier may depend only on the site and earlier tiers, never a later one ([ADR 0008](adr/0008-provider-pattern.md), decision 2). Several config blocks take per-tier overrides.
-- **ClusterClass and class revision.** The cluster templates DCiaB ships, one per platform. A released revision (`r1`, `r2`, ...) never changes; a cluster moves to a new revision to get changes ([VERSIONING.md](VERSIONING.md)).
+- **ClusterClass and class revision.** The cluster templates DCiaB ships, one per platform. A revision is named after the GA release that freezes it (`r1`, `r2`, ...) and never changes after that; a cluster moves to a new revision to get changes ([VERSIONING.md](VERSIONING.md)).
 
 ## Placement and recovery
 

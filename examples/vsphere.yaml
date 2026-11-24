@@ -6,7 +6,7 @@ kind: Site
 metadata:
   name: dc1                              # short site id, used in names and DNS labels
 spec:
-  bundleVersion: 0.1.0                   # must equal VERSION in the archive
+  bundleVersion: 1.0.0-alpha.1             # must equal VERSION in the archive
 
   platform:
     type: vsphere                        # vsphere | proxmox

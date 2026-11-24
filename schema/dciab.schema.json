@@ -28,7 +28,7 @@
       "additionalProperties": false,
       "required": ["bundleVersion", "platform", "kubernetes", "bootstrap", "network", "time", "failureDomains", "clusters", "storage", "pki", "identity", "baremetal"],
       "properties": {
-        "bundleVersion": {"type": "string", "pattern": "^\\d+\\.\\d+\\.\\d+$", "description": "the DCiaB archive version this config is written for, as in the archive's VERSION file. validate checks they match"},
+        "bundleVersion": {"type": "string", "pattern": "^\\d+\\.0\\.0(-(alpha|beta)\\.\\d+)?$", "description": "the DCiaB archive version this config is written for, as in the archive's VERSION file: the SemVer form of a release name, N.0.0-alpha.M (rNalphaM), N.0.0-beta.M (rNbetaM) or N.0.0 (rN). validate checks they match"},
         "platform": {"$ref": "#/$defs/platform", "description": "the hypervisor platform MGMT, INFRA and VM workload clusters run on: vSphere or Proxmox VE, one per site. Read by validate --live, seed, cluster-values and mgmt"},
         "kubernetes": {
           "description": "the Kubernetes version of every cluster",
@@ -378,7 +378,7 @@
             "infra": {"$ref": "#/$defs/blockOverride", "description": "optional: merged over block for INFRA"},
             "workload": {"$ref": "#/$defs/workloadBlock", "description": "optional: block storage for every workload cluster, complete on its own. Without it, tenants bring their own"}
           },
-          "description": "optional, per tier: infra, merged over block; mgmt and workload (every workload cluster), which stand alone. Overrides for one cluster come after v1"
+          "description": "optional, per tier: infra, merged over block; mgmt and workload (every workload cluster), which stand alone. Overrides for one cluster come after r1"
         }
       },
       "allOf": [

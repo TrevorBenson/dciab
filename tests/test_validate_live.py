@@ -770,7 +770,7 @@ def test_cli_live_waits_for_offline_errors(site, monkeypatch):
     called = []
     monkeypatch.setattr(live, "run", lambda *a: called.append(a) or ([], []))
     doc = load_example("proxmox")
-    doc["spec"]["bundleVersion"] = "9.9.9"
+    doc["spec"]["bundleVersion"] = "9.0.0"
     code, report, _ = _validate_live(site, doc)
     assert code == 1 and called == []
     assert any("live checks run once the errors above are fixed" in n for n in report["notes"])
