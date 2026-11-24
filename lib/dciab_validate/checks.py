@@ -654,8 +654,9 @@ class Checker:
         replicas = lh["replicaCount"]
         rpath = self._block_path(tier, "longhorn", "replicaCount")
         if replicas == 1:
-            self.warn(rpath, "1", "use 2 or 3: with one replica a volume is lost with its node, unless the storage "
-                                  "under the nodes already replicates (Ceph, vSAN, a SAN array)")
+            self.warn(rpath, "1", "use 2 or 3: with one replica a volume is lost with its node. On VMs, Longhorn's "
+                                  "data is on the VM's own disk, which is deleted when a node is replaced, so a "
+                                  "replicated datastore doesn't keep it; use the array's CSI driver instead")
         for path, c, klass in self._tier_clusters(tier):
             if klass == "metal3":
                 continue
@@ -678,13 +679,15 @@ class Checker:
             ds = self.spec["platform"]["vsphere"]["datastore"]
             self.warn(rpath, f"{replicas} Longhorn replicas for {tier} on vSphere datastore {ds}",
                       "if the datastore replicates (vSAN, a replicated array), every write is replicated twice: "
-                      "use provider vsphere-csi there (ADR 0008, decision 4)")
+                      "use provider vsphere-csi there (ADR 0008, decision 4). Don't lower replicaCount instead: "
+                      "a replaced node takes its VM disk, and its replica, with it")
         px = self.spec["platform"]["proxmox"]["storage"] if "proxmox" in classes else ""
         # local, local-lvm and local-zfs are a Proxmox host's own disks, which don't replicate.
         if replicas > 1 and px and not px.startswith("local"):
             self.warn(rpath, f"{replicas} Longhorn replicas for {tier} on Proxmox storage {px}",
                       "if the storage is shared and replicated (Ceph RBD, a SAN LUN), every write is replicated twice: "
-                      "use provider proxmox-csi there (ADR 0008, decision 4)")
+                      "use provider proxmox-csi there (ADR 0008, decision 4). Don't lower replicaCount instead: "
+                      "a replaced node takes its VM disk, and its replica, with it")
         for path, c, klass in self._tier_clusters(tier):
             if klass == "proxmox":
                 self.warn(path, "Longhorn on Proxmox VMs, on the root disk that etcd uses",
@@ -702,11 +705,14 @@ class Checker:
         return [(cpath + ("controlPlane",), c["controlPlane"])]
 
     def _check_longhorn_disks(self, cpath: Path, c: dict) -> None:
+        # The old form (spec.storage.longhorn) still validates as before, with a warning: the
+        # error is for configs written in the new form.
+        report = self.warn if st.legacy(self.spec) else self.error
         for gpath, g in self._longhorn_nodes(cpath, c):
             if "dataDiskGiB" not in g:
-                self.error(gpath + ("dataDiskGiB",), "missing",
-                           "add dataDiskGiB: Longhorn runs on these nodes and needs its own disk, "
-                           "never the root disk etcd uses (ADR 0008, decision 4)")
+                report(gpath + ("dataDiskGiB",), "missing",
+                       "add dataDiskGiB: Longhorn runs on these nodes and needs its own disk, "
+                       "never the root disk etcd uses (ADR 0008, decision 4)")
 
     def _check_data_disks(self, cpath: Path, c: dict, klass: str) -> None:
         if klass == "metal3":

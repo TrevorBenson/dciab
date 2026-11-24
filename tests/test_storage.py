@@ -469,3 +469,27 @@ def test_existing_needs_a_class_name(site):
         c.pop("dataDiskGiB", None)
     _, report = site.validate(copy.deepcopy(doc))
     assert errors(report) == []
+
+
+def test_old_form_on_vsphere_without_data_disks_only_warns(site):
+    doc = legacy_doc("vsphere")
+    for c in (doc["spec"]["clusters"]["mgmt"]["controlPlane"], doc["spec"]["clusters"]["infra"]["workerPools"][0],
+              doc["spec"]["workloadClusters"][0]["workerPools"][0]):
+        c.pop("dataDiskGiB", None)
+    code, report = site.validate(doc)
+    assert errors(report) == [] and code == 0
+    assert warnings(report, "spec.clusters.mgmt.controlPlane.dataDiskGiB")
+
+
+def test_one_replica_on_vms_warns_that_a_replaced_node_takes_it(site):
+    doc = load_example("proxmox")
+    doc["spec"]["storage"]["block"]["longhorn"]["replicaCount"] = 1
+    _, report = site.validate(doc)
+    fix = next(w["fix"] for w in warnings(report, "spec.storage.block.longhorn.replicaCount") if w["found"] == "1")
+    assert "deleted when a node is replaced" in fix
+
+
+def test_until_longhorn_still_means_storage():
+    text = (ROOT / "lib" / "steps" / "mgmt.sh").read_text()
+    assert 'if [[ "$until" == longhorn ]]; then' in text and "until=storage" in text
+    assert text.index("until=storage") < text.index("--until must be one of")

@@ -51,7 +51,8 @@
 # the run with what to do about it (docs/MGMT.md).
 # Each step prints how long it took.
 #
-# --until STEP stops after STEP. <state> defaults to .dciab/state next to the config
+# --until STEP stops after STEP (longhorn, the storage step's old name, still works for one
+# minor release). <state> defaults to .dciab/state next to the config
 # (/var/lib/dciab/work/state on the bootstrap appliance; lib/dciab_state).
 set -euo pipefail
 
@@ -77,6 +78,11 @@ while (( $# )); do
 done
 [[ -n "$config" ]] || usage
 [[ -f "$config" ]] || die "no such config: $config"
+# --until longhorn: the storage step's old name, accepted for one minor release.
+if [[ "$until" == longhorn ]]; then
+  echo "dciab mgmt: --until longhorn is now --until storage; the old name goes in the next minor release" >&2
+  until=storage
+fi
 if [[ -n "$until" ]] && ! printf '%s\n' "${STEPS[@]}" | grep -qx "$until"; then
   die "--until must be one of: ${STEPS[*]}"
 fi

@@ -31,7 +31,7 @@ Read first:
 
 **Out of scope:**
 - DNS for `registry.<domain>`: nothing serves it yet, so MGMT's nodes can't use the seed registry by name. Their containerd and CRI-O fall back to the upstream registries, which this lab reaches. Only the bootstrap cluster pulls through the seed registry (by address).
-- MGMT services other than Longhorn (cert-manager comes with the providers; Metal3, PowerDNS and Kea don't). `dciab mgmt` ends with its `longhorn` step, which needs the template from task 0006 run 5 (iSCSI and NFS clients).
+- MGMT services other than Longhorn (cert-manager comes with the providers; Metal3, PowerDNS and Kea don't). `dciab mgmt` ends with its `storage` step (Longhorn here; formerly named `longhorn`), which needs the template from task 0006 run 5 (iSCSI and NFS clients).
 - The DNS handoff.
 
 ## Needs

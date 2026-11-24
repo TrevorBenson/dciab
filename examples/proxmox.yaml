@@ -84,7 +84,7 @@ spec:
     block:
       provider: longhorn                 # on the root disk: CAPMOX gives VMs no second disk yet
       longhorn:
-        replicaCount: 1                  # one copy: the Ceph datastore already replicates (ADR 0008)
+        replicaCount: 2                  # VM root disks go with a replaced node, so Longhorn keeps its own copies
         backupTarget: nfs://nas01.dc3.example.net:/exports/longhorn
 
   pki:
