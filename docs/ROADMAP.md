@@ -35,7 +35,7 @@ What each phase builds, against the component list in [COMPONENTS.md](COMPONENTS
 - [ ] Node templates for vSphere and Metal3: the bootc recipe builds them (`vmdk` with VMware Tools; a `metal` variant with drivers and firmware); not yet tested on either platform
 - [ ] Node image for the Kubernetes upgrade gate: the recipe builds it (`build.sh --upgrade-from`); not yet used in a test
 - [x] Cilium install for any cluster (`addons/cilium`), with kube-proxy replaced
-- [ ] Real-cluster spike on Proxmox from the template
+- [x] Real-cluster spike on Proxmox from the template (handoff task 0003: a 3+1 cluster on the bootc template with Cilium, node replacement without `/readyz` failures; the move to a new class revision was checked only briefly, see #202)
 - [ ] Archive build pipeline (`build/README.md` in the source repository; not shipped in the archive): image inventory, image pull, charts, providers, binaries, checksums, SBOMs, packaging and signing (`dciab verify-archive`) done; node images next
 - [x] `dciab cluster-values`: capi-cluster values for MGMT, INFRA and workload clusters, generated from the site config
 - [x] `dciab status`: read-only report of the Day 0 pod, the platform CA and registry certificate, the seed registry, the bootstrap cluster and where MGMT's Cluster lives
