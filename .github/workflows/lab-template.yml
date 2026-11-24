@@ -1,0 +1,61 @@
+name: lab template
+
+# Reusable: build the node image on the lab runner, publish it as a Proxmox template through
+# the API, and test a clone (growth, SELinux, guest-exec, iSCSI, reboot). Task 0006's steps.
+# The caller sets the concurrency group (a reusable workflow that repeats its caller's group
+# is cancelled), and the lab-write Environment holds the credentials.
+on:
+  workflow_call:
+    inputs:
+      name:
+        description: Template name; default dciab-node-<commit>
+        type: string
+        default: ""
+    outputs:
+      template-name:
+        description: The published template's name (look it up by name; VMIDs change)
+        value: ${{ jobs.template.outputs.name }}
+
+permissions:
+  contents: read
+
+jobs:
+  template:
+    runs-on: [self-hosted, dciab-lab]
+    environment: lab-write
+    timeout-minutes: 75
+    outputs:
+      name: ${{ steps.name.outputs.name }}
+    env:
+      PVE_URL: ${{ vars.PVE_URL }}
+      PVE_TLS_FINGERPRINT: ${{ vars.PVE_TLS_FINGERPRINT }}
+      PVE_TOKEN_ID: ${{ secrets.PVE_TOKEN_ID }}
+      PVE_TOKEN_SECRET: ${{ secrets.PVE_TOKEN_SECRET }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      - uses: ./.github/actions/lab-pve
+        with:
+          url: ${{ vars.PVE_URL }}
+          fingerprint: ${{ vars.PVE_TLS_FINGERPRINT }}
+          token-id: ${{ secrets.PVE_TOKEN_ID }}
+          token-secret: ${{ secrets.PVE_TOKEN_SECRET }}
+      - name: Template name
+        id: name
+        env:
+          INPUT_NAME: ${{ inputs.name }}
+        run: echo "name=${INPUT_NAME:-dciab-node-${GITHUB_SHA::7}}" >> "$GITHUB_OUTPUT"
+      - name: Build the node image (root, rootful podman)
+        run: sudo images/node-bootc/build.sh --type qcow2
+      - name: Publish the template (API only)
+        env:
+          TEMPLATE_NAME: ${{ steps.name.outputs.name }}
+        run: hack/lab/template.sh publish images/node-bootc/output/qcow2/disk.qcow2 "$TEMPLATE_NAME"
+      - name: Test a clone
+        env:
+          TEMPLATE_NAME: ${{ steps.name.outputs.name }}
+        run: hack/lab/template.sh test "$TEMPLATE_NAME"
+      - name: Delete a template that failed its test
+        if: failure()
+        env:
+          TEMPLATE_NAME: ${{ steps.name.outputs.name }}
+        run: hack/lab/template.sh delete "$TEMPLATE_NAME"

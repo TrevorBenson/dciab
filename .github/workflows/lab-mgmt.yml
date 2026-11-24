@@ -1,0 +1,59 @@
+name: lab mgmt
+
+# Reusable: dciab seed and dciab mgmt on Proxmox (task 0007's steps): the payload (cached on
+# the runner by bundle.lock), seed twice, mgmt with each step timed, checks that MGMT manages
+# itself, a replacement on MGMT, and a re-run that must change nothing. It always cleans up.
+# The caller sets the concurrency group.
+on:
+  workflow_call:
+    inputs:
+      template-name:
+        description: Name of the node template to clone
+        type: string
+        required: true
+      untaint-control-plane:
+        description: Remove the control plane NoSchedule taint after Cilium (workaround for issue 112)
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  mgmt:
+    runs-on: [self-hosted, dciab-lab]
+    environment: lab-write
+    timeout-minutes: 180
+    env:
+      PVE_URL: ${{ vars.PVE_URL }}
+      PVE_TLS_FINGERPRINT: ${{ vars.PVE_TLS_FINGERPRINT }}
+      PVE_TOKEN_ID: ${{ secrets.PVE_TOKEN_ID }}
+      PVE_TOKEN_SECRET: ${{ secrets.PVE_TOKEN_SECRET }}
+      CAPMOX_TOKEN_ID: ${{ secrets.CAPMOX_TOKEN_ID }}
+      CAPMOX_TOKEN_SECRET: ${{ secrets.CAPMOX_TOKEN_SECRET }}
+      UNTAINT_CONTROL_PLANE: ${{ inputs.untaint-control-plane && '1' || '' }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      - uses: ./.github/actions/lab-pve
+        with:
+          url: ${{ vars.PVE_URL }}
+          fingerprint: ${{ vars.PVE_TLS_FINGERPRINT }}
+          token-id: ${{ secrets.CAPMOX_TOKEN_ID }}
+          token-secret: ${{ secrets.CAPMOX_TOKEN_SECRET }}
+      - name: Payload (cached by bundle.lock)
+        run: hack/lab/mgmt.sh payload
+      - name: Site config
+        env:
+          TEMPLATE_NAME: ${{ inputs.template-name }}
+        run: hack/lab/mgmt.sh config "$TEMPLATE_NAME"
+      - name: dciab seed, twice
+        run: hack/lab/mgmt.sh seed
+      - name: dciab mgmt
+        run: hack/lab/mgmt.sh mgmt
+      - name: MGMT manages itself, and replaces a node
+        run: hack/lab/mgmt.sh checks
+      - name: dciab mgmt again changes nothing
+        run: hack/lab/mgmt.sh rerun
+      - name: Clean up
+        if: always()
+        run: hack/lab/mgmt.sh down

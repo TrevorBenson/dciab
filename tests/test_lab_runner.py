@@ -251,26 +251,36 @@ def test_root_grows_with_the_node_images_script():
     assert (ROOT / "images/node-bootc/rootfs/usr/libexec/dciab/growroot").is_file()
 
 
+def triggers_of(wf):
+    t = wf.get(True, wf.get("on"))  # PyYAML reads the key `on` as True
+    return set(t) if isinstance(t, (dict, list)) else {t}
+
+
 def lab_workflows():
+    """Every workflow that runs on the lab runner, or is an entry or reusable lab workflow."""
     for f in sorted((ROOT / ".github/workflows").glob("*.yml")):
         wf = yaml.safe_load(f.read_text())
         jobs = wf.get("jobs", {})
-        if any("self-hosted" in (j.get("runs-on") if isinstance(j.get("runs-on"), list) else [j.get("runs-on")])
-               for j in jobs.values()):
+        on_lab = any("self-hosted" in (j.get("runs-on") if isinstance(j.get("runs-on"), list) else [j.get("runs-on")])
+                     for j in jobs.values())
+        if on_lab or f.name == "lab.yml":
             yield f, wf
 
 
 def test_lab_workflows_follow_the_rules():
     found = list(lab_workflows())
-    assert any(f.name == "lab-runner-smoke.yml" for f, _ in found)
+    assert {"lab-runner-smoke.yml", "lab.yml", "lab-template.yml", "lab-cluster.yml", "lab-mgmt.yml"} <= {f.name for f, _ in found}
     for f, wf in found:
-        triggers = wf.get(True, wf.get("on"))  # PyYAML reads the key `on` as True
-        names = set(triggers) if isinstance(triggers, (dict, list)) else {triggers}
+        names = triggers_of(wf)
         assert not names & {"pull_request", "pull_request_target", "workflow_run"}, f.name
-        assert wf.get("concurrency") == {"group": "dciab-lab", "cancel-in-progress": False}, f.name
+        if names == {"workflow_call"}:
+            # A reusable workflow that repeats its caller's concurrency group is cancelled.
+            assert "concurrency" not in wf, f"{f.name}: the caller sets the concurrency group"
+        else:
+            assert wf.get("concurrency") == {"group": "dciab-lab", "cancel-in-progress": False}, f.name
         for job in wf["jobs"].values():
             for step in job.get("steps", []):
-                if "uses" in step:
+                if "uses" in step and not step["uses"].startswith("./"):
                     assert re.fullmatch(r"[\w.-]+/[\w./-]+@[0-9a-f]{40}", step["uses"]), f"{f.name}: pin {step['uses']} by SHA"
 
 

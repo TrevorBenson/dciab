@@ -1,0 +1,53 @@
+name: lab cluster
+
+# Reusable: a real cluster on Proxmox from the dciab-proxmox class (task 0003's steps): kind
+# management cluster, 3 control plane nodes and a worker, Cilium, checks, node replacement.
+# It always cleans up. The caller sets the concurrency group.
+on:
+  workflow_call:
+    inputs:
+      template-name:
+        description: Name of the node template to clone (look it up; VMIDs change)
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  cluster:
+    runs-on: [self-hosted, dciab-lab]
+    environment: lab-write
+    timeout-minutes: 120
+    env:
+      PVE_URL: ${{ vars.PVE_URL }}
+      PVE_TLS_FINGERPRINT: ${{ vars.PVE_TLS_FINGERPRINT }}
+      PVE_TOKEN_ID: ${{ secrets.PVE_TOKEN_ID }}
+      PVE_TOKEN_SECRET: ${{ secrets.PVE_TOKEN_SECRET }}
+      CAPMOX_TOKEN_ID: ${{ secrets.CAPMOX_TOKEN_ID }}
+      CAPMOX_TOKEN_SECRET: ${{ secrets.CAPMOX_TOKEN_SECRET }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      - uses: ./.github/actions/lab-pve
+        with:
+          url: ${{ vars.PVE_URL }}
+          fingerprint: ${{ vars.PVE_TLS_FINGERPRINT }}
+          token-id: ${{ secrets.CAPMOX_TOKEN_ID }}
+          token-secret: ${{ secrets.CAPMOX_TOKEN_SECRET }}
+      - name: Management cluster (kind)
+        run: hack/lab/cluster.sh kind
+      - name: Values, secrets and CA
+        env:
+          TEMPLATE_NAME: ${{ inputs.template-name }}
+        run: hack/lab/cluster.sh values "$TEMPLATE_NAME"
+      - name: Build lab01
+        run: hack/lab/cluster.sh build
+      - name: Cilium
+        run: hack/lab/cluster.sh cilium
+      - name: Checks
+        run: hack/lab/cluster.sh checks
+      - name: Replace a worker and a control plane node
+        run: hack/lab/cluster.sh replace
+      - name: Clean up
+        if: always()
+        run: hack/lab/cluster.sh down

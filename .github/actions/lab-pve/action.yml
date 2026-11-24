@@ -1,0 +1,25 @@
+name: Check the Proxmox token
+description: Checks that the lab's Proxmox API token works (TLS fingerprint, token, node), and masks its secret. Run after actions/checkout.
+inputs:
+  url:
+    description: Proxmox API URL (PVE_URL)
+    required: true
+  fingerprint:
+    description: Proxmox TLS certificate sha256 fingerprint (PVE_TLS_FINGERPRINT)
+    required: true
+  token-id:
+    description: API token ID (user@realm!name)
+    required: true
+  token-secret:
+    description: API token secret
+    required: true
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        PVE_URL: ${{ inputs.url }}
+        PVE_TLS_FINGERPRINT: ${{ inputs.fingerprint }}
+        PVE_TOKEN_ID: ${{ inputs.token-id }}
+        PVE_TOKEN_SECRET: ${{ inputs.token-secret }}
+      run: hack/lab/check-token.sh
