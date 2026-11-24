@@ -146,9 +146,25 @@ def test_cli_prints_the_jobs(tmp_path):
 
 def test_longhorn_install_applies_the_jobs_server_side():
     text = (ROOT / "addons" / "longhorn" / "install.sh").read_text()
-    apply = text.split("python3 -m dciab_backup longhorn-jobs", 1)[1].split("\n", 2)[1]
+    line, apply = text.split("python3 -m dciab_backup longhorn-jobs", 1)[1].split("\n", 2)[:2]
     assert "kubectl apply --server-side --field-manager=dciab" in apply
+    # The jobs are the cluster's own (--cluster), never assumed to be MGMT's.
+    assert '"$config" "$cluster"' in line
     assert text.index("storage-classes.sh") < text.index("dciab_backup longhorn-jobs")
+
+
+def test_longhorn_install_for_another_cluster():
+    """Longhorn's values, target and jobs follow the cluster that runs it: here a workload
+    cluster of the metal3 example, whose tier backs up to the site target."""
+    r = subprocess.run([str(ROOT / "addons" / "longhorn" / "install.sh"), str(ROOT / "examples" / "metal3-cluster.yaml"),
+                        "--print-values", "--cluster", "metal01"], capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
+    v = yaml.safe_load(r.stdout)
+    assert v["defaultSettings"]["defaultReplicaCount"] == 2
+    assert v["defaultBackupStore"]["backupTarget"] == "s3://dciab-backup@us-east-1/dc2"
+    r = subprocess.run([str(ROOT / "addons" / "longhorn" / "install.sh"), str(ROOT / "examples" / "vsphere.yaml"),
+                        "--print-values", "--cluster", "mgmt"], capture_output=True, text=True)
+    assert r.returncode == 1 and "not longhorn" in r.stderr
 
 
 # --- validate ----------------------------------------------------------------------------

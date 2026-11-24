@@ -60,7 +60,7 @@ A config without `spec.backup` still works for one minor release: the site targe
 DCiaB writes only under `dciab/`, so the target can hold other data. Longhorn keeps its own layout at the target's root.
 
 ```text
-backupstore/...                 Longhorn's volume backups (MGMT)
+backupstore/...                 Longhorn's volume backups, from a cluster that runs Longhorn
 dciab/<cluster>/etcd/...        etcd snapshots, age-encrypted
 dciab/mgmt/capi/...             CAPI exports, age-encrypted
 dciab/recovery/...              the backup key's private half, sealed to the recipients
@@ -88,7 +88,7 @@ schedules:
 
 ### Longhorn
 
-When a cluster's block storage is Longhorn, its default backup target is the tier's target (MGMT: the site target), and `addons/longhorn/install.sh` applies two `RecurringJob`s server-side after the StorageClasses. Each StorageClass puts its volumes in a group through its `recurringJobSelector`:
+Longhorn's jobs follow the cluster that runs Longhorn, from that cluster's block storage settings; DCiaB never assumes a cluster runs it. When a cluster's block storage is Longhorn, its default backup target is its tier's target (MGMT's: the site target), and `addons/longhorn/install.sh --cluster <name>` applies two `RecurringJob`s server-side after the StorageClasses. Each StorageClass puts its volumes in a group through its `recurringJobSelector`:
 
 | Class | Group | MGMT and INFRA | Workload clusters |
 | --- | --- | --- | --- |
@@ -99,7 +99,7 @@ When a cluster's block storage is Longhorn, its default backup target is the tie
 
 On a workload cluster a tenant opts a volume in to the `backup` group (the same schedule) with Longhorn's PVC labels: `recurring-job.longhorn.io/source: enabled` and `recurring-job-group.longhorn.io/backup: enabled`.
 
-A volume created before its class had a selector has no group, so it is in the `default` group. On MGMT that group is backed up; label a `local` or `local-retain` volume made earlier if it shouldn't be.
+A volume created before its class had a selector has no group, so it is in the `default` group. On MGMT and INFRA that group is backed up; label a `local` or `local-retain` volume made earlier if it shouldn't be.
 
 ### The site's array
 

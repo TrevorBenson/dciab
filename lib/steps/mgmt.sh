@@ -259,7 +259,7 @@ echo "block storage: $provider"
 case "$provider" in
   longhorn)
     # The chart comes from $DCIAB_PAYLOAD/charts when DCIAB_PAYLOAD is set.
-    "$ROOT/addons/longhorn/install.sh" "$config" "$mgmt_kubeconfig"
+    "$ROOT/addons/longhorn/install.sh" "$config" "$mgmt_kubeconfig" --cluster mgmt
     ;;
   vsphere-csi|proxmox-csi)
     # The manifest comes from $DCIAB_PAYLOAD/providers when DCIAB_PAYLOAD is set.

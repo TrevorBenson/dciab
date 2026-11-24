@@ -25,7 +25,7 @@ Longhorn is DCiaB's own block storage (CSI), the `longhorn` provider of `spec.st
 - **UI and API:** the UI and the manager's API are ClusterIP Services without authentication. Restrict them with network policy, and front the UI with the platform's gateway and SSO, when those exist.
 
 ```console
-$ addons/longhorn/install.sh <config> <kubeconfig>     # install or upgrade, wait for the manager, apply the StorageClasses
+$ addons/longhorn/install.sh <config> <kubeconfig> [--cluster NAME]   # install or upgrade (default: mgmt), wait for the manager, apply the StorageClasses and recurring jobs
 $ addons/longhorn/install.sh <config> --print-values   # show the per-site values
 $ addons/longhorn/install.sh <config> --template       # render the manifests; needs no cluster
 $ addons/longhorn/install.sh <config> --images         # every image the release runs (for the archive inventory)

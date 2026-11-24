@@ -1,14 +1,15 @@
 #!/usr/bin/env bash
 # Install or upgrade Longhorn on one DCiaB cluster.
 #
-#   addons/longhorn/install.sh <config> <kubeconfig> [--chart TGZ]    install, then wait for the manager; apply the StorageClasses and recurring jobs
-#   addons/longhorn/install.sh <config> --template [--chart TGZ]      render the manifests; no cluster needed
+#   addons/longhorn/install.sh <config> <kubeconfig> [--chart TGZ] [--cluster NAME]   install, then wait for the manager;
+#                                                         apply the StorageClasses and recurring jobs
+#   addons/longhorn/install.sh <config> --template [--chart TGZ] [--cluster NAME]     render the manifests; no cluster needed
 #   addons/longhorn/install.sh <config> --images [--chart TGZ]        every image the release runs, one per line
-#   addons/longhorn/install.sh <config> --print-values                print the per-site values
+#   addons/longhorn/install.sh <config> --print-values [--cluster NAME]   print the per-site values
 #
-# <config> is the site config (MGMT's Longhorn settings from spec.storage.block, its backup
-# target and schedules from spec.backup; MGMT's worker pools decide whether Longhorn
-# tolerates the control plane taint). The chart comes from --chart, else from
+# <config> is the site config; --cluster names the cluster (default mgmt), whose block storage
+# must be longhorn: its settings from spec.storage.block, its backup target and schedules from
+# spec.backup, its worker pools decide whether Longhorn tolerates the control plane taint. The chart comes from --chart, else from
 # $DCIAB_PAYLOAD/charts when DCIAB_PAYLOAD is set, else from the pinned repository; its sha256
 # is checked against bundle.lock chartDigests.longhorn. DCiaB's defaults: values.yaml here.
 set -euo pipefail
@@ -18,17 +19,21 @@ ROOT="$(cd "$HERE/../.." && pwd)"
 NS=longhorn-system
 
 usage() {
-  sed -n '3,14p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2
+  sed -n '3,15p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2
   exit 2
 }
-[[ $# -eq 2 || $# -eq 4 ]] || usage
+[[ $# -ge 2 ]] || usage
 config="$1"
 mode="$2"
-chart=""
-if [[ $# -eq 4 ]]; then
-  [[ "$3" == --chart ]] || usage
-  chart="$4"
-fi
+shift 2
+chart="" cluster=mgmt
+while (( $# )); do
+  case "$1" in
+    --chart) [[ $# -ge 2 ]] || usage; chart="$2"; shift 2 ;;
+    --cluster) [[ $# -ge 2 ]] || usage; cluster="$2"; shift 2 ;;
+    *) usage ;;
+  esac
+done
 [[ -f "$config" ]] || { echo "install.sh: no such file: $config" >&2; exit 2; }
 if [[ -n "$chart" ]]; then
   [[ -f "$chart" ]] || { echo "install.sh: no such chart: $chart" >&2; exit 2; }
@@ -38,7 +43,7 @@ workdir="$(mktemp -d)"
 trap 'rm -rf "$workdir"' EXIT
 overrides="$workdir/site-values.yaml"
 
-python3 "$HERE/longhorn_values.py" values "$config" > "$overrides"
+python3 "$HERE/longhorn_values.py" values "$config" "$cluster" > "$overrides"
 read -r version repo digest < <(python3 - "$ROOT/bundle.lock" <<'PY'
 import sys
 import yaml
@@ -103,7 +108,7 @@ case "$mode" in
     # credentials in the last-applied-configuration annotation (#121). One left by an
     # earlier install is removed.
     if grep -q backupTargetCredentialSecret "$overrides"; then
-      python3 "$HERE/longhorn_values.py" secret "$config" "$NS" \
+      python3 "$HERE/longhorn_values.py" secret "$config" "$NS" "$cluster" \
         | kubectl apply --server-side --field-manager=dciab --force-conflicts -f -
       kubectl -n "$NS" annotate secret longhorn-backup-credentials kubectl.kubernetes.io/last-applied-configuration- >/dev/null || true   # absent: nothing to remove
     else
@@ -113,11 +118,12 @@ case "$mode" in
     echo "== waiting for the Longhorn manager on every node"
     kubectl -n "$NS" rollout status daemonset/longhorn-manager --timeout=10m
     echo "== StorageClasses"
-    "$ROOT/lib/steps/storage-classes.sh" "$config" mgmt "$kubeconfig"
+    "$ROOT/lib/steps/storage-classes.sh" "$config" "$cluster" "$kubeconfig"
     # The snapshot and backup schedules (ADR 0009, decision 6): one RecurringJob per task,
-    # for the groups the StorageClasses put their volumes in. Server-side, like the Secret.
+    # for the groups the StorageClasses put their volumes in, from this cluster's tier.
+    # Server-side, like the Secret.
     echo "== recurring snapshots and backups"
-    PYTHONPATH="$ROOT/lib${PYTHONPATH:+:$PYTHONPATH}" python3 -m dciab_backup longhorn-jobs "$config" mgmt \
+    PYTHONPATH="$ROOT/lib${PYTHONPATH:+:$PYTHONPATH}" python3 -m dciab_backup longhorn-jobs "$config" "$cluster" \
       | kubectl apply --server-side --field-manager=dciab --force-conflicts -f -
     kubectl -n "$NS" get recurringjobs.longhorn.io
     ;;
