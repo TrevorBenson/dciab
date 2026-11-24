@@ -539,6 +539,55 @@ jobs:
           podman push --digestfile "$RUNNER_TEMP/digest" "$TAG" "docker://$dest"
           echo "published: $dest@$(cat "$RUNNER_TEMP/digest")  (pin it as bundle.lock day0.images.chrony)"
 
+  backup-image:
+    # DCiaB's backup image (images/backup): age, rclone, kubectl, clusterctl and the backup
+    # runner, for MGMT's etcd snapshot and CAPI export CronJobs. Built here, never at the
+    # site; published on main once per recipe. bundle.lock pins it as images.backup.
+    name: backup image
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install pyyaml
+      - name: Build
+        id: build
+        run: echo "tag=$(images/backup/build.sh)" >> "$GITHUB_OUTPUT"
+      - name: The tools run and the pin matches this recipe
+        env:
+          TAG: ${{ steps.build.outputs.tag }}
+        run: |
+          set -euo pipefail
+          for tool in "age --version" "rclone version" "kubectl version --client" "clusterctl version"; do
+            podman run --rm --network none --entrypoint sh "$TAG" -c "$tool"
+          done
+          podman run --rm --network none "$TAG" --help >/dev/null
+          pinned="$(python3 -c 'import yaml; print(yaml.safe_load(open("bundle.lock"))["images"].get("backup") or "")')"
+          id="$(images/backup/build.sh --recipe-id)"
+          tagged="${pinned%@*}"
+          if [[ "$tagged" != *":$id" ]]; then
+            echo "::warning::bundle.lock images.backup (${pinned:-unpinned}) isn't built from this recipe ($id); pin the image this job publishes on main"
+          fi
+      - name: Publish (main only)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          TAG: ${{ steps.build.outputs.tag }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          dest="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/dciab-backup:$(images/backup/build.sh --recipe-id)"
+          echo "$GH_TOKEN" | podman login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          # A recipe is published once: bundle.lock pins its digest, so it's never overwritten.
+          if skopeo inspect --raw "docker://$dest" >/dev/null 2>&1; then
+            echo "already published: $dest"; exit 0
+          fi
+          podman push --digestfile "$RUNNER_TEMP/digest" "$TAG" "docker://$dest"
+          echo "published: $dest@$(cat "$RUNNER_TEMP/digest")  (pin it as bundle.lock images.backup)"
+
   frozen-classes:
     # A class revision freezes when a DCiaB release tag first contains it; drafts may change (docs/VERSIONING.md).
     name: released ClusterClasses are unchanged
@@ -622,7 +671,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: shellcheck dciab hack/e2e/run.sh hack/check_frozen_classes.sh images/node/build.sh lib/steps/mgmt.sh lib/steps/mgmt-pivot.sh lib/steps/services.sh lib/steps/capi-providers.sh lib/steps/storage-classes.sh images/node-bootc/build.sh images/node-bootc/rootfs/usr/libexec/dciab/growroot images/bootstrap-bootc/build.sh images/usb/build.sh images/day0-chrony/build.sh images/lab-runner/build.sh images/lab-runner/rootfs/usr/libexec/dciab-lab-runner/loop images/lab-runner/rootfs/usr/libexec/dciab-lab-runner/job-started.sh addons/cilium/install.sh addons/longhorn/install.sh addons/vsphere-cpi/install.sh addons/csi/install.sh addons/kubelet-csr-approver/install.sh hack/lab/runner-image-id.sh hack/lab/fetch-runner-disk.sh hack/lab/pve.sh hack/lab/check-token.sh hack/lab/template.sh hack/lab/cluster.sh hack/lab/mgmt.sh
+      - run: shellcheck dciab hack/e2e/run.sh hack/check_frozen_classes.sh images/node/build.sh lib/steps/mgmt.sh lib/steps/mgmt-pivot.sh lib/steps/services.sh lib/steps/capi-providers.sh lib/steps/storage-classes.sh images/node-bootc/build.sh images/node-bootc/rootfs/usr/libexec/dciab/growroot images/bootstrap-bootc/build.sh images/usb/build.sh images/day0-chrony/build.sh images/backup/build.sh images/lab-runner/build.sh images/lab-runner/rootfs/usr/libexec/dciab-lab-runner/loop images/lab-runner/rootfs/usr/libexec/dciab-lab-runner/job-started.sh addons/cilium/install.sh addons/longhorn/install.sh addons/vsphere-cpi/install.sh addons/csi/install.sh addons/kubelet-csr-approver/install.sh hack/lab/runner-image-id.sh hack/lab/fetch-runner-disk.sh hack/lab/pve.sh hack/lab/check-token.sh hack/lab/template.sh hack/lab/cluster.sh hack/lab/mgmt.sh
 
   rocky10:
     # The validator must run on the bootstrap host with distro packages only.

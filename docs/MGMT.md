@@ -27,6 +27,8 @@ Then the step checks the result:
 
 `adopt` runs only after that check passes, so it never creates a second Cluster.
 
+Before `clusterctl move` starts, the step exports everything the move takes (`clusterctl move --to-directory`), encrypts it, and puts it on the backup site target. If the export fails, nothing is moved. If the bootstrap host dies part-way through the move, that export lets a new one take over MGMT's VMs ([BACKUP.md](BACKUP.md#cluster-api-state-from-an-export)). The run that moves MGMT exports it once more after `adopt`.
+
 The ClusterClass stays on the bootstrap cluster, paused (clusterctl copies a ClusterClass from another namespace and never resumes the source). That is harmless: the bootstrap cluster isn't used for MGMT again.
 
 If clusterctl stops in phase 4, the Cluster is only on MGMT but still paused. A re-run resumes it: the bootstrap cluster no longer has a copy, so that is safe.

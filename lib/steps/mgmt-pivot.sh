@@ -1,8 +1,9 @@
 # shellcheck shell=bash
 # The pivot of dciab mgmt: where MGMT's Cluster object is, the move, and the checks around
 # it. Sourced by lib/steps/mgmt.sh, which sets NS, bootstrap (the bootstrap cluster's
-# kubeconfig), mgmt_kubeconfig, platform and die(); tests/test_mgmt_pivot.py runs it with
-# fake tools. docs/MGMT.md explains the states and what to do in each.
+# kubeconfig), mgmt_kubeconfig, platform, die() and capi_backup() (an encrypted CAPI export
+# to the site target, docs/BACKUP.md); tests/test_mgmt_pivot.py runs it with fake tools.
+# docs/MGMT.md explains the states and what to do in each.
 # shellcheck disable=SC2154   # NS, bootstrap, mgmt_kubeconfig and platform come from mgmt.sh
 
 PAUSED_ANNOTATION=cluster.x-k8s.io/paused
@@ -299,6 +300,9 @@ move_mgmt() {
       KUBECONFIG="$bootstrap" kubectl -n "$NS" wait cluster/mgmt --for=condition=Available --timeout=45m
       before="$(machines_on "$bootstrap")" || die "can't read Machines on the bootstrap cluster"
       (( before > 0 )) || die "Cluster mgmt has no Machines on the bootstrap cluster; nothing to move"
+      # An export of everything the move takes, on the site target, before anything moves: if
+      # the bootstrap host dies part-way, MGMT's VMs aren't orphaned (ADR 0009, decision 3).
+      capi_backup "$bootstrap" before-move || die "the CAPI export before the move failed (above); nothing was moved"
       # Without --namespace, clusterctl reads the kubeconfig's namespace (default) and moves
       # nothing.
       clusterctl move --kubeconfig "$bootstrap" --to-kubeconfig "$mgmt_kubeconfig" --namespace "$NS"

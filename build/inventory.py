@@ -47,7 +47,7 @@ PINNED_REF = re.compile(r"^[a-z0-9.-]+(:[0-9]+)?/[^\s@]+@sha256:[0-9a-f]{64}$")
 
 # Images DCiaB builds itself: CI publishes each, then bundle.lock pins it by digest. Until
 # then the inventory can't list it; --require-built makes that an error (the full archive).
-BUILT = ("images.pveAssistant", "day0.images.chrony")
+BUILT = ("images.pveAssistant", "images.backup", "day0.images.chrony")
 
 
 class InventoryError(Exception):

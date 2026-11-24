@@ -98,8 +98,9 @@ def test_unpublished_built_images_block_the_full_archive(capsys):
     lock = yaml.safe_load((ROOT / "bundle.lock").read_text())
     lock["day0"]["images"]["chrony"] = ""
     lock["images"]["pveAssistant"] = "ghcr.io/example/dciab-pve-assistant:9"   # tag only
-    assert unpublished(lock) == ["images.pveAssistant", "day0.images.chrony"]
-    assert set(BUILT) == {"images.pveAssistant", "day0.images.chrony"}
+    lock["images"]["backup"] = ""
+    assert unpublished(lock) == ["images.pveAssistant", "images.backup", "day0.images.chrony"]
+    assert set(BUILT) == {"images.pveAssistant", "images.backup", "day0.images.chrony"}
     real = yaml.safe_load((ROOT / "bundle.lock").read_text())
     rc = inventory_main(["--require-built"])
     if unpublished(real):

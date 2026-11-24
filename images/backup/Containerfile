@@ -1,0 +1,20 @@
+# DCiaB's backup image: what MGMT's etcd snapshot and CAPI export CronJobs run
+# (docs/BACKUP.md, ADR 0009).
+#
+# age encrypts every backup to the recipients and the backup key; rclone uploads to an S3
+# site target; kubectl and clusterctl take the CAPI exports; python3 runs the runner
+# (lib/dciab_backup/runner.py, standard library only). The binaries are the ones bundle.lock
+# pins, checked by build.sh before they reach this build. The image holds no site values.
+#
+# BASE_IMAGE is bundle.lock backupImage.base (pinned by digest).
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE}
+
+RUN microdnf -y install python3 \
+ && microdnf clean all \
+ && rm -rf /var/cache/yum /var/cache/dnf
+
+COPY bin/ /usr/local/bin/
+COPY backup-runner /usr/libexec/dciab/backup-runner
+
+ENTRYPOINT ["python3", "/usr/libexec/dciab/backup-runner"]

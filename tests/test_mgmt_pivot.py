@@ -182,6 +182,8 @@ def lab(tmp_path):
         def run(self, command, **env):
             script = (f'set -euo pipefail\nNS={NS} bootstrap="{self.bootstrap}" mgmt_kubeconfig="{self.mgmt}"'
                       ' platform=proxmox\ndie() { echo "dciab mgmt: $*" >&2; exit 1; }\n'
+                      # mgmt.sh's encrypted CAPI export; FAKE_BACKUP_FAIL makes it fail.
+                      'capi_backup() { echo "backup $(basename "$1") $2" >> "$FAKE_LOG"; [[ -z "${FAKE_BACKUP_FAIL:-}" ]]; }\n'
                       f'source "{LIB}"\n{command}\n')
             return subprocess.run(["bash", "-c", script], capture_output=True, text=True, env={**self.env, **env})
 
@@ -464,3 +466,29 @@ def test_an_unreadable_pause_stops_the_check(lab):
     lab.side(lab.mgmt, mgmt_objects(), unreadable=True)
     r = lab.run("check_moved")
     assert r.returncode == 1 and "can't read Cluster mgmt on MGMT" in r.stderr and "not paused" not in r.stdout
+
+
+def test_an_export_comes_before_the_move(lab):
+    """ADR 0009, decision 3: the bootstrap cluster's CAPI state is on the site target before
+    anything moves."""
+    lab.side(lab.bootstrap, mgmt_objects() + [HELM_RECORD])
+    lab.side(lab.mgmt)
+    r = lab.run("move_mgmt")
+    assert r.returncode == 0, r.stderr
+    log = lab.log.read_text().splitlines()
+    first_move = next(i for i, x in enumerate(log) if x.startswith("clusterctl"))
+    assert "backup bootstrap.kubeconfig before-move" in log[:first_move]
+
+
+def test_no_move_without_the_export(lab):
+    lab.side(lab.bootstrap, mgmt_objects() + [HELM_RECORD])
+    lab.side(lab.mgmt)
+    r = lab.run("move_mgmt", FAKE_BACKUP_FAIL="1")
+    assert r.returncode == 1 and "nothing was moved" in r.stderr
+    assert lab.moves() == []
+
+
+def test_mgmt_exports_after_the_move_only_when_it_moved():
+    text = (ROOT / "lib" / "steps" / "mgmt.sh").read_text()
+    adopt = text.split("step adopt", 1)[1].split("finish_if adopt", 1)[0]
+    assert 'if [[ "$pivot" != mgmt ]]' in adopt and 'capi_backup "$mgmt_kubeconfig" after-move' in adopt

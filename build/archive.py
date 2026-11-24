@@ -41,6 +41,7 @@ import sys
 import tarfile
 import tempfile
 import urllib.request
+import zipfile
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Sequence
 
@@ -304,6 +305,10 @@ def binary_list(lock: dict) -> List[tuple]:
          b.get("age-linux-amd64.tar.gz", ""), "age/age"),
         ("age-keygen", f"https://github.com/FiloSottile/age/releases/download/{tools['age']}/age-{tools['age']}-linux-amd64.tar.gz",
          b.get("age-linux-amd64.tar.gz", ""), "age/age-keygen"),
+        # Uploads dciab mgmt's CAPI exports to an S3 site target (docs/BACKUP.md).
+        ("rclone", f"https://github.com/rclone/rclone/releases/download/{tools['rclone']}/"
+                   f"rclone-{tools['rclone']}-linux-amd64.zip",
+         b.get("rclone-linux-amd64.zip", ""), f"rclone-{tools['rclone']}-linux-amd64/rclone"),
         # Checks the archive's signed MANIFEST at the site (dciab verify-archive).
         ("cosign", f"https://github.com/sigstore/cosign/releases/download/{tools['cosign']}/cosign-linux-amd64",
          b.get("cosign-linux-amd64", ""), None),
@@ -336,12 +341,21 @@ def fetch_binaries(lock: dict, out: Path, fetch: Callable[[str, Path], None] = d
             if got != want:
                 raise ArchiveError(f"{name}: {url} has sha256 {got}, bundle.lock says {want}")
             if member:
-                with tarfile.open(got_file) as tar:
-                    src = tar.extractfile(member)
-                    if src is None:
-                        raise ArchiveError(f"{name}: {member} is not a file in {url}")
-                    with (Path(tmp) / name).open("wb") as f:
-                        shutil.copyfileobj(src, f)
+                with (Path(tmp) / name).open("wb") as f:
+                    if url.endswith(".zip"):
+                        with zipfile.ZipFile(got_file) as zf:
+                            try:
+                                src = zf.open(member)
+                            except KeyError:
+                                raise ArchiveError(f"{name}: {member} is not a file in {url}") from None
+                            with src:
+                                shutil.copyfileobj(src, f)
+                    else:
+                        with tarfile.open(got_file) as tar:
+                            src = tar.extractfile(member)
+                            if src is None:
+                                raise ArchiveError(f"{name}: {member} is not a file in {url}")
+                            shutil.copyfileobj(src, f)
                 got_file = Path(tmp) / name
             target = dest / name
             shutil.move(str(got_file), target)
