@@ -253,6 +253,13 @@ def test_world_readable_secret_is_a_warning(site):
 
 def test_bundle_version_mismatch(site):
     doc = load_example("vsphere")
+    doc["spec"]["bundleVersion"] = "9.0.0"   # a valid release form, so the archive comparison runs
+    _, report = site.validate(doc)
+    assert any("the version of this archive" in f["fix"] for f in errors(report, "spec.bundleVersion"))
+
+
+def test_bundle_version_outside_the_release_forms(site):
+    doc = load_example("vsphere")
     doc["spec"]["bundleVersion"] = "9.9.9"
     _, report = site.validate(doc)
     assert errors(report, "spec.bundleVersion")
