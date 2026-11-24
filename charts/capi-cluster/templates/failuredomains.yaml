@@ -1,0 +1,63 @@
+{{- /*
+vSphere failure domains (ADR 0010): a VSphereFailureDomain and a VSphereDeploymentZone per
+domain the cluster uses. Both kinds are cluster-scoped, so they are named and labelled per
+cluster (<cluster>-<domain>, dciab.io/cluster); the class's failureDomainSelector picks this
+cluster's zones only. The tag categories, tags and DRS groups they name are the site's.
+*/ -}}
+{{- $v := .Values }}
+{{- if eq $v.class "vsphere" }}
+{{- range $v.vsphereFailureDomains }}
+{{- $name := printf "%s-%s" $v.name .name }}
+---
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
+kind: VSphereFailureDomain
+metadata:
+  name: {{ $name | quote }}
+  labels:
+    {{- include "capi-cluster.labels" $ | nindent 4 }}
+    dciab.io/cluster: {{ $v.name | quote }}
+  annotations:
+    {{- include "capi-cluster.annotations" $ | nindent 4 }}
+spec:
+  region:
+    {{- if .hostGroup }}
+    name: {{ .computeCluster | quote }}
+    type: ComputeCluster
+    {{- else }}
+    name: {{ $v.vsphere.datacenter | quote }}
+    type: Datacenter
+    {{- end }}
+    tagCategory: k8s-region
+  zone:
+    name: {{ .name | quote }}
+    type: {{ if .hostGroup }}HostGroup{{ else }}ComputeCluster{{ end }}
+    tagCategory: k8s-zone
+  topology:
+    datacenter: {{ $v.vsphere.datacenter | quote }}
+    computeCluster: {{ .computeCluster | quote }}
+    {{- if .hostGroup }}
+    hosts:
+      hostGroupName: {{ .hostGroup | quote }}
+      vmGroupName: {{ .vmGroup | quote }}
+    {{- end }}
+    datastore: {{ .datastore | default $v.vsphere.datastore | quote }}
+    networks: [{{ .network | default $v.vsphere.network | quote }}]
+---
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
+kind: VSphereDeploymentZone
+metadata:
+  name: {{ $name | quote }}
+  labels:
+    {{- include "capi-cluster.labels" $ | nindent 4 }}
+    dciab.io/cluster: {{ $v.name | quote }}
+  annotations:
+    {{- include "capi-cluster.annotations" $ | nindent 4 }}
+spec:
+  server: {{ $v.vsphere.server | quote }}
+  failureDomain: {{ $name | quote }}
+  controlPlane: true
+  placementConstraint:
+    resourcePool: {{ $v.vsphere.resourcePool | quote }}
+    folder: {{ $v.vsphere.folder | quote }}
+{{- end }}
+{{- end }}

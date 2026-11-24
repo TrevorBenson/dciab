@@ -1,4 +1,5 @@
 # CI render: the INFRA cluster on Proxmox (matches examples/proxmox.yaml).
+# Generated from the example with dciab cluster-values; regenerate rather than edit.
 name: infra
 class: proxmox
 kubernetesVersion: v1.36.6
@@ -7,26 +8,78 @@ podCIDR: 10.242.0.0/16
 serviceCIDR: 10.243.0.0/16
 nodes:
   registryMirror: registry.dc3.example.com
+  mirroredRegistries:
+  - docker.io
+  - quay.io
+  - ghcr.io
+  - registry.k8s.io
   trustBundle: |
     -----BEGIN CERTIFICATE-----
     MIIBdummyCertificateForCIOnly
     -----END CERTIFICATE-----
-  ntpServers: [10.30.0.123]
-  sshAuthorizedKeys: ["ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExampleKeyDoNotUseExampleKeyDoNotUse00 tparker"]
-  dnsServers: [10.30.110.53, 10.30.110.54]
+  ntpServers:
+  - 10.30.0.123
+  sshAuthorizedKeys:
+  - ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIExampleKeyDoNotUseExampleKeyDoNotUse00 tparker
+  dnsServers:
+  - 10.30.110.53
+  - 10.30.110.54
+podSecurity:
+  exemptNamespaces:
+  - kube-system
+  - longhorn-system
+encryption:
+  createSecret: true
 network:
   nodeIPRange: 10.30.110.30-10.30.110.49
   prefix: 24
   gateway: 10.30.110.1
 controlPlane:
   replicas: 3
-  machine: {cpu: 4, memoryGiB: 16, diskGiB: 100}
+  machine:
+    cpu: 4
+    memoryGiB: 16
+    diskGiB: 100
 workerPools:
-  - name: general
-    replicas: 3
-    machine: {cpu: 8, memoryGiB: 32, diskGiB: 150}
+- name: general-pve01
+  replicas: 1
+  machine:
+    cpu: 8
+    memoryGiB: 32
+    diskGiB: 150
+  failureDomain: pve01
+- name: general-pve02
+  replicas: 1
+  machine:
+    cpu: 8
+    memoryGiB: 32
+    diskGiB: 150
+  failureDomain: pve02
+- name: general-pve03
+  replicas: 1
+  machine:
+    cpu: 8
+    memoryGiB: 32
+    diskGiB: 150
+  failureDomain: pve03
+storageNetworks:
+- name: san-a
+  ipRange: 10.40.10.30-10.40.10.49
+  prefix: 24
+  vlan: 410
+  mtu: 9000
+- name: san-b
+  ipRange: 10.40.20.30-10.40.20.49
+  prefix: 24
+  vlan: 420
+  mtu: 9000
+topology:
+  region: dc3
 proxmox:
-  allowedNodes: [pve01, pve02, pve03]
+  allowedNodes:
+  - pve01
+  - pve02
+  - pve03
   templateNode: pve01
   templateID: 9010
   storage: ceph-vm

@@ -13,7 +13,7 @@ copy is what everything reads. Then this module makes the appliance reachable:
 
 Admin logins are set up whenever identity is usable, so the operator can reach the
 console-less appliance to fix the rest. The network is configured only when `dciab
-validate` finds no errors under spec.bootstrap, spec.network or spec.identity, so a
+validate` finds no errors under spec.bootstrap, spec.network, spec.time or spec.identity, so a
 wrong address is never put on the site network.
 
 plan_admins() and plan_network() are pure (they only read the config) and tested in CI;
@@ -36,7 +36,7 @@ MAC_RE = re.compile(r"^[0-9a-fA-F]{2}(:[0-9a-fA-F]{2}){5}$")
 CONNECTION = "dciab-node"
 SUDOERS = "/etc/sudoers.d/dciab-admins"
 ROSTER = "/var/lib/dciab/bootstrap-admins"
-NETWORK_PATHS = ("spec.bootstrap", "spec.network", "spec.identity")
+NETWORK_PATHS = ("spec.bootstrap", "spec.network", "spec.time", "spec.identity")
 
 
 class ConfigError(Exception):

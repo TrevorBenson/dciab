@@ -354,12 +354,12 @@ def _virtual_media(client: HttpsClient, auth: dict, system: dict) -> Optional[Li
 # -- NTP and DNS ---------------------------------------------------------------------------
 
 def ntp_targets(spec: dict) -> List[Tuple[Path, str]]:
-    """The NTP servers that must answer now. With bootstrap.ntp set, network.ntpServers are the
-    DNS service IPs, which DCiaB itself serves later, so only the bootstrap host's upstream counts."""
-    if "ntp" in spec["bootstrap"]:
-        return [(("spec", "bootstrap", "ntp", "upstream", i), s)
-                for i, s in enumerate(spec["bootstrap"]["ntp"]["upstream"])]
-    return [(("spec", "network", "ntpServers", i), s) for i, s in enumerate(spec["network"]["ntpServers"])]
+    """The NTP servers that must answer now. With time.servedBy dciab, the node-facing servers
+    are the DNS service IPs, which DCiaB itself serves later, so only its upstream counts."""
+    t = spec["time"]
+    if t["servedBy"] == "dciab":
+        return [(("spec", "time", "upstream", i), s) for i, s in enumerate(t["upstream"])]
+    return [(("spec", "time", "servers", i), s) for i, s in enumerate(t["servers"])]
 
 
 def check_ntp(path: Path, server: str, timeout: float) -> Results:
@@ -388,8 +388,8 @@ def dns_names(spec: dict) -> List[str]:
     target = spec["storage"]["longhorn"]["backupTarget"]
     host = target.split("://", 1)[1].split("@", 1)[-1].split(":", 1)[0].split("/", 1)[0]
     names.append(host)
-    names.extend(spec["network"]["ntpServers"])
-    names.extend(spec["bootstrap"].get("ntp", {}).get("upstream", []))
+    names.extend(spec["time"].get("servers", []))
+    names.extend(spec["time"].get("upstream", []))
     out = []
     for n in names:
         if not n or _is_ip(n) or n == domain or n.endswith("." + domain) or n in out:

@@ -1,0 +1,29 @@
+{{- /*
+The EncryptionConfiguration the API server encrypts Secrets with (the class's
+secretEncryption patch reads it). The key is made here, once: an upgrade finds the Secret
+and keeps its key, because a new key would make every stored Secret unreadable. It is
+never in Git or in the values; README.md lists every place it does exist. clusterctl move
+carries it with the cluster.
+With encryption.createSecret false the chart leaves the Secret alone, for a renderer that
+can't read the cluster (helm template, Argo CD): it must then already exist. See README.md.
+*/ -}}
+{{- if .Values.encryption.createSecret }}
+{{- $name := printf "%s-encryption-config" .Values.name }}
+{{- $existing := lookup "v1" "Secret" .Release.Namespace $name }}
+apiVersion: v1
+kind: Secret
+metadata:
+  name: {{ $name | quote }}
+  labels:
+    {{- include "capi-cluster.labels" . | nindent 4 }}
+    clusterctl.cluster.x-k8s.io/move: ""
+  annotations:
+    {{- include "capi-cluster.annotations" . | nindent 4 }}
+type: Opaque
+data:
+  {{- if and $existing (index ($existing.data | default dict) "config.yaml") }}
+  config.yaml: {{ index $existing.data "config.yaml" }}
+  {{- else }}
+  config.yaml: {{ include "capi-cluster.encryptionConfig" (randBytes 32) | b64enc }}
+  {{- end }}
+{{- end }}

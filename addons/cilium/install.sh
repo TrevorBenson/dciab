@@ -36,9 +36,13 @@ cluster = yaml.safe_load(open(sys.argv[2]))
 for key in ("name", "apiVIP"):
     if not cluster.get(key):
         sys.exit(f"install.sh: {sys.argv[2]} has no {key}")
+# The operator's replicas refuse to share a node, and while Cilium installs only control
+# plane nodes may exist: one replica per control plane node, at most two.
+cp = cluster.get("controlPlane", {}).get("replicas", 1)
 values = {
     "k8sServiceHost": cluster["apiVIP"],
     "cluster": {"name": cluster["name"]},
+    "operator": {"replicas": max(1, min(2, cp))},
 }
 yaml.safe_dump(values, open(sys.argv[3], "w"), sort_keys=False)
 # Nodes the cluster should end up with: control plane plus every worker pool.

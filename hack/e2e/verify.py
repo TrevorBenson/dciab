@@ -6,8 +6,9 @@
 For every values file it waits for the Cluster's TopologyReconciled condition, then
 checks that the class patches landed with the values from that file:
   - the control plane: Kubernetes version, replicas, kube-vip (VIP and pinned image),
-    platform CA, registry mirrors, NTP, the break-glass user, OIDC flags when set,
-    the API server audit policy, flags and mounts;
+    platform CA, registry mirrors, NTP, the break-glass user, JWT issuers when set,
+    the API server audit policy, flags and mounts, Pod Security defaults, Secret
+    encryption, kubelet serving certificates and the certificate-expiry rollout;
   - the infrastructure cluster: control plane endpoint, credentials, provider settings;
   - the control plane and worker machine templates: placement, size, addressing,
     with each worker pool's overrides;
@@ -30,10 +31,13 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
 LOCK = yaml.safe_load((ROOT / "bundle.lock").read_text())
-MIRRORED = ["docker.io", "quay.io", "ghcr.io", "registry.k8s.io"]
 WAIT_SECONDS = 360
 AUDIT_POLICY = "/etc/kubernetes/audit/policy.yaml"
 AUDIT_DIR = "/var/log/kubernetes/audit"
+ADMISSION_CONFIG = "/etc/kubernetes/admission/config.yaml"
+AUTHENTICATION_CONFIG = "/etc/kubernetes/authentication/config.yaml"
+ENCRYPTION_CONFIG = "/etc/kubernetes/encryption/config.yaml"
+KUBELET_PATCH = "/etc/kubernetes/patches/kubeletconfiguration+merge.yaml"
 AUDIT_ARGS = {
     "audit-policy-file": AUDIT_POLICY,
     "audit-log-path": f"{AUDIT_DIR}/audit.log",
@@ -109,7 +113,7 @@ class Verifier:
         ca = files.get("/etc/pki/ca-trust/source/anchors/dciab-platform-ca.crt", "")
         self.expect_true(f"{where}: platform CA file holds the trust bundle",
                          nodes["trustBundle"].strip() in ca)
-        for upstream in MIRRORED:
+        for upstream in nodes["mirroredRegistries"]:
             hosts = files.get(f"/etc/containerd/certs.d/{upstream}/hosts.toml", "")
             self.expect_true(f"{where}: {upstream} mirrors through {nodes['registryMirror']}",
                              f'https://{nodes["registryMirror"]}/v2/{upstream}' in hosts)
@@ -120,9 +124,11 @@ class Verifier:
             entries = []
             self.expect_true(f"{where}: CRI-O mirror file is valid TOML ({e})", False)
         mirrors = {r.get("prefix"): [m.get("location") for m in r.get("mirror", [])] for r in entries}
-        for upstream in MIRRORED:
+        for upstream in nodes["mirroredRegistries"]:
             self.expect(f"{where}: CRI-O mirrors {upstream}", mirrors.get(upstream),
                         [f'{nodes["registryMirror"]}/{upstream}'])
+        self.expect(f"{where}: kubelet serverTLSBootstrap patch",
+                    yaml.safe_load(files.get(KUBELET_PATCH) or "{}"), {"serverTLSBootstrap": True})
         self.expect(f"{where}: NTP servers", config.get("ntp", {}).get("servers"), nodes["ntpServers"])
         users = {u["name"]: u for u in config.get("users", [])}
         self.expect(f"{where}: break-glass user keys", users.get("dciab", {}).get("sshAuthorizedKeys"),
@@ -156,15 +162,46 @@ class Verifier:
         args = {a["name"]: a["value"] for a in
                 cfg.get("clusterConfiguration", {}).get("apiServer", {}).get("extraArgs", [])}
         self.check_audit(files, cfg.get("clusterConfiguration", {}).get("apiServer", {}), args)
-        oidc = self.v["nodes"].get("oidc")
-        if oidc:
-            self.expect("API server oidc-issuer-url", args.get("oidc-issuer-url"), oidc["issuerURL"])
-            self.expect("API server oidc-client-id", args.get("oidc-client-id"), oidc["clientID"])
-            self.expect("API server oidc-username-claim", args.get("oidc-username-claim"),
-                        oidc.get("usernameClaim", "preferred_username"))
-            self.expect("API server oidc-groups-claim", args.get("oidc-groups-claim"), oidc.get("groupsClaim", "groups"))
+        self.check_hardening(cfg, files, args)
+        self.expect("certificate-expiry rollout", spec.get("rollout", {}).get("before", {}).get("certificatesExpiryDays"), 60)
+        auth = self.v["nodes"].get("authentication")
+        self.expect_true("no --oidc-* flags (structured authentication replaces them)",
+                         not any(k.startswith("oidc-") for k in args))
+        if auth:
+            self.expect("API server authentication-config", args.get("authentication-config"), AUTHENTICATION_CONFIG)
+            try:
+                config = yaml.safe_load(files.get(AUTHENTICATION_CONFIG) or "{}") or {}
+            except yaml.YAMLError as e:
+                config = {}
+                self.expect_true(f"authentication config is valid YAML ({e})", False)
+            self.expect("AuthenticationConfiguration kind", config.get("kind"), "AuthenticationConfiguration")
+            self.expect("JWT issuers", [(j.get("issuer", {}).get("url"), j.get("issuer", {}).get("audiences"))
+                                        for j in config.get("jwt", [])],
+                        [(i["url"], [i["clientID"]]) for i in auth["issuers"]])
         else:
-            self.expect_true("no OIDC flags without oidc values", "oidc-issuer-url" not in args)
+            self.expect_true("no authentication-config without issuers", "authentication-config" not in args)
+
+    def check_hardening(self, cfg: dict, files: dict, args: dict) -> None:
+        """Pod Security defaults and Secret encryption: flags, files, mounts."""
+        self.expect("API server admission-control-config-file", args.get("admission-control-config-file"), ADMISSION_CONFIG)
+        self.expect("API server encryption-provider-config", args.get("encryption-provider-config"), ENCRYPTION_CONFIG)
+        try:
+            admission = yaml.safe_load(files.get(ADMISSION_CONFIG) or "{}") or {}
+        except yaml.YAMLError as e:
+            admission = {}
+            self.expect_true(f"admission config is valid YAML ({e})", False)
+        psa = next((p.get("configuration", {}) for p in admission.get("plugins", []) if p.get("name") == "PodSecurity"), {})
+        self.expect("Pod Security enforce", psa.get("defaults", {}).get("enforce"), "baseline")
+        self.expect("Pod Security warn", psa.get("defaults", {}).get("warn"), "restricted")
+        self.expect("Pod Security audit", psa.get("defaults", {}).get("audit"), "restricted")
+        self.expect("Pod Security exempt namespaces", psa.get("exemptions", {}).get("namespaces"),
+                    self.v["podSecurity"]["exemptNamespaces"])
+        enc = next((f for f in cfg.get("files", []) if f.get("path") == ENCRYPTION_CONFIG), {})
+        self.expect("encryption config from the cluster's Secret", enc.get("contentFrom"),
+                    {"secret": {"name": f"{self.name}-encryption-config", "key": "config.yaml"}})
+        mounts = {v.get("mountPath"): v for v in cfg.get("clusterConfiguration", {}).get("apiServer", {}).get("extraVolumes", [])}
+        for path in (ADMISSION_CONFIG, ENCRYPTION_CONFIG):
+            self.expect(f"API server mount {path}", mounts.get(path, {}).get("hostPath"), path)
 
     def check_audit(self, files: dict, api_server: dict, args: dict) -> None:
         """The API server gets an audit policy, writes its log to the host and rotates it."""
@@ -223,7 +260,11 @@ class Verifier:
                 self.expect(f"{where}: numCPUs", spec.get("numCPUs"), m["cpu"])
                 self.expect(f"{where}: memoryMiB", spec.get("memoryMiB"), m["memoryGiB"] * 1024)
                 self.expect(f"{where}: diskGiB", spec.get("diskGiB"), m["diskGiB"])
-                dev = (spec.get("network", {}).get("devices") or [{}])[0]
+                devices = spec.get("network", {}).get("devices") or [{}]
+                dev = devices[0]
+                self.expect(f"{where}: NICs (node + storage networks)", [d.get("networkName") for d in devices],
+                            [vs["network"]] + [n["portGroup"] for n in self.v.get("storageNetworks", [])])
+                self.expect(f"{where}: node NIC MTU", dev.get("mtu"), self.v["nodes"].get("mtu"))
                 self.expect(f"{where}: port group", dev.get("networkName"), vs["network"])
                 self.expect(f"{where}: node IP pool", dev.get("addressesFromPools"),
                             [{"apiGroup": "ipam.cluster.x-k8s.io", "kind": "InClusterIPPool", "name": f"{self.name}-nodes"}])
@@ -236,7 +277,12 @@ class Verifier:
                 self.expect(f"{where}: numCores", spec.get("numCores"), m["cpu"])
                 self.expect(f"{where}: memoryMiB", spec.get("memoryMiB"), m["memoryGiB"] * 1024)
                 self.expect(f"{where}: boot disk", spec.get("disks", {}).get("bootVolume", {}).get("sizeGb"), m["diskGiB"])
-                dev = (spec.get("network", {}).get("networkDevices") or [{}])[0]
+                devices = spec.get("network", {}).get("networkDevices") or [{}]
+                dev = devices[0]
+                self.expect(f"{where}: NICs (node + storage networks)", len(devices), 1 + len(self.v.get("storageNetworks", [])))
+                if role_name != "controlplane":
+                    self.expect(f"{where}: allowedNodes", spec.get("allowedNodes"),
+                                [role["failureDomain"]] if role.get("failureDomain") else px["allowedNodes"])
                 self.expect(f"{where}: bridge", dev.get("bridge"), px["bridge"])
                 self.expect(f"{where}: VLAN", dev.get("vlan"), px.get("vlanTag"))
                 self.expect(f"{where}: provider ID injection", spec.get("metadataSettings", {}).get("providerIDInjection"), True)
@@ -247,21 +293,22 @@ class Verifier:
             data_template = spec.get("dataTemplate", {}).get("name")
             self.expect(f"{where}: dataTemplate", data_template, f"{self.name}-{role_name}")
             if data_template:
-                self.check_metal3_addressing(where, data_template, role["network"])
+                pool = f"{self.name}-{role.get('addressPool', role_name)}"
+                self.check_metal3_addressing(where, data_template, pool, role["network"])
 
-    def check_metal3_addressing(self, where: str, name: str, network: dict) -> None:
+    def check_metal3_addressing(self, where: str, name: str, pool_name: str, network: dict) -> None:
         """The data template's IPPool hands out the role's range, prefix, gateway and DNS."""
         try:
             dt = kubectl("-n", self.ns, "get", "metal3datatemplate", name)
-            pool = kubectl("-n", self.ns, "get", "ippools.ipam.metal3.io", name)
+            pool = kubectl("-n", self.ns, "get", "ippools.ipam.metal3.io", pool_name)
         except subprocess.CalledProcessError as exc:
             self.failures.append(f"{self.name}: {where}: {exc.stderr.strip() or exc}")
             return
         nd = dt["spec"].get("networkData", {})
         ipv4 = (nd.get("networks", {}).get("ipv4") or [{}])[0]
-        self.expect(f"{where}: data template address pool", ipv4.get("fromPoolRef", {}).get("name"), name)
+        self.expect(f"{where}: data template address pool", ipv4.get("fromPoolRef", {}).get("name"), pool_name)
         route = (ipv4.get("routes") or [{}])[0]
-        self.expect(f"{where}: default route gateway pool", route.get("gateway", {}).get("fromPoolRef", {}).get("name"), name)
+        self.expect(f"{where}: default route gateway pool", route.get("gateway", {}).get("fromPoolRef", {}).get("name"), pool_name)
         self.expect(f"{where}: data template DNS", nd.get("services", {}).get("dns"), self.v["nodes"]["dnsServers"])
         first, last = network["nodeIPRange"].split("-")
         spec = pool["spec"]

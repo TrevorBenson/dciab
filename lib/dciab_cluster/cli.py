@@ -37,7 +37,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     from dciab_validate.findings import ERROR, WARNING
     from dciab_validate.loader import LoadError, load
 
-    from .values import ValuesError, cluster_names, cluster_values, unsupported
+    from .values import ValuesError, cluster_names, cluster_values, load_lock, unsupported
 
     root = FsPath(args.root).resolve()
     config_path = FsPath(args.config)
@@ -72,7 +72,7 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     try:
         bundle = _trust_bundle(doc, config_path, args.trust_bundle)
-        values = cluster_values(doc, args.cluster, bundle)
+        values = cluster_values(doc, args.cluster, bundle, load_lock(root / "bundle.lock"))
     except (ValuesError, OSError) as exc:
         print(f"dciab cluster-values: {exc}", file=sys.stderr)
         return 1

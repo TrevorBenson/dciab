@@ -5,7 +5,7 @@ Every DCiaB cluster runs Cilium as its CNI. Cilium also **replaces kube-proxy**:
 `install.sh` installs or upgrades Cilium on one cluster:
 - **Version and chart source:** `bundle.lock` (`charts.cilium`, `chartRepositories.cilium`). The chart's sha256 is checked against `chartDigests.cilium`; a mismatch stops the install.
 - **DCiaB defaults:** `values.yaml`, the same on every cluster.
-- **Per-cluster values:** taken from the cluster's `capi-cluster` values. `k8sServiceHost` is the API VIP, because without kube-proxy Cilium reaches the API server directly. `cluster.name` is the cluster name.
+- **Per-cluster values:** taken from the cluster's `capi-cluster` values. `k8sServiceHost` is the API VIP, because without kube-proxy Cilium reaches the API server directly. `cluster.name` is the cluster name. `operator.replicas` is the number of control plane nodes, at most 2: operator replicas never share a node, and only control plane nodes may exist while Cilium installs.
 
 ```console
 $ addons/cilium/install.sh <capi-cluster values> <kubeconfig>     # install or upgrade, then wait for every node to be Ready

@@ -33,9 +33,14 @@ def run(*args, env=None):
 
 
 def test_values_come_from_the_vsphere_config():
-    v = cv.site_values(load_example("vsphere"))
+    doc = load_example("vsphere")
+    v = cv.site_values(doc)
+    # The example declares vSphere failure domains, so the CPI reads the zone tags.
     assert v == {"config": {"vcenter": "vcsa.dc1.example.net", "datacenter": "DC1",
-                            "thumbprint": load_example("vsphere")["spec"]["platform"]["vsphere"]["thumbprint"]}}
+                            "thumbprint": doc["spec"]["platform"]["vsphere"]["thumbprint"],
+                            "region": "k8s-region", "zone": "k8s-zone"}}
+    doc["spec"]["failureDomains"] = {"domains": [], "notHighlyAvailable": {"reason": "one compute cluster here"}}
+    assert "zone" not in cv.site_values(doc)["config"]
 
 
 def test_secret_reads_the_password_reference(tmp_path):
@@ -128,6 +133,7 @@ def fake_tools(tmp_path):
     tools = {
         "clusterctl": f"#!/bin/sh\necho {want}\n",
         "kubectl": '#!/bin/sh\ncase "$KUBECONFIG $*" in\n'
+                   '  *"get crd clusters.cluster.x-k8s.io"*) echo customresourcedefinition.apiextensions.k8s.io/x ;;\n'
                    '  *mgmt.kubeconfig*"get cluster mgmt"*) echo cluster.cluster.x-k8s.io/mgmt ;;\n'
                    '  *"config current-context"*) echo mgmt ;;\n'
                    "esac\nexit 0\n",
@@ -166,6 +172,8 @@ def test_mgmt_cpi_step_runs_only_on_vsphere(site, tmp_path, platform):
     else:
         assert r.returncode == 0, r.stderr
         assert "not needed on proxmox" in r.stdout
+        assert re.search(r"^== mgmt: preflight done in \d+s$", r.stdout, re.M), r.stdout
+        assert re.search(r"^== mgmt: cpi done in \d+s$", r.stdout, re.M), r.stdout
         assert not (tmp_path / "helm.log").exists()
 
 

@@ -27,6 +27,7 @@ What a DCiaB site runs, grouped by capability, and where each piece runs. Versio
 | Node operating system | Rocky Linux 10 in image mode (bootc, from the RESF SIG/Containers recipe), built with bootc-image-builder | Every node | Recipe built, not tested in CI; boots on Proxmox VE, no cluster has passed on it yet, vSphere and Metal3 disks untested |
 | Container runtime | CRI-O | Every node | Comes with the node image; same status |
 | Control plane endpoint | kube-vip | Every cluster | Built |
+| Kubelet serving certificates | kubelet-csr-approver, for the classes' `serverTLSBootstrap` | Every cluster | Installer built for MGMT (`dciab mgmt`'s `cilium` step, [addons/kubelet-csr-approver](../addons/kubelet-csr-approver/README.md)); INFRA and workload clusters planned |
 
 ## Networking and network security
 
