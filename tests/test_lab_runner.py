@@ -282,3 +282,12 @@ def test_smoke_leaves_state_that_the_next_run_checks():
         assert marker in leave and marker.replace(".", "\\.") in check or marker in check, marker
     assert steps["Always runs (refused jobs must never get here)"]["if"] == "always()"
     assert "$PAUSE_IMAGE" in leave
+
+
+def test_runner_unit_is_not_ordered_after_cloud_final_from_multi_user():
+    """cloud-final.service runs after multi-user.target; a unit wanted by multi-user that
+    is After=cloud-final.service is an ordering cycle and its start job is deleted."""
+    unit = (ROOT / "images/lab-runner/rootfs/usr/lib/systemd/system/dciab-lab-runner.service").read_text()
+    assert "After=network-online.target cloud-final.service" in unit
+    assert "WantedBy=cloud-init.target" in unit
+    assert "WantedBy=multi-user.target" not in unit
