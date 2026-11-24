@@ -72,7 +72,7 @@ jobs:
           owner="${GITHUB_REPOSITORY_OWNER,,}"
           image="ghcr.io/$owner/dciab-lab-runner:$TAG"
           disk="ghcr.io/$owner/dciab-lab-runner-disk:$TAG"
-          oras=images/lab-runner/build/bin/oras
+          oras=oras   # in the runner image (/usr/bin)
           echo "$GH_TOKEN" | sudo podman login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
           echo "$GH_TOKEN" | "$oras" login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
           # The Rocky bootc base (the SIG recipe), once per recipe commit and manifest. Hosted
@@ -86,17 +86,27 @@ jobs:
             base_note="base: \`$base@$(cat "$RUNNER_TEMP/base.digest")\` (pin as nodeImages.bootc.baseImage)"
           fi
           echo "- $base_note" >> "$GITHUB_STEP_SUMMARY"
-          # A tag is published once: bundle.lock pins its digests, so it is never overwritten.
-          if skopeo inspect --raw "docker://$image" >/dev/null 2>&1 || "$oras" manifest fetch "$disk" >/dev/null 2>&1; then
-            echo "already published: $TAG"; exit 0
+          # A tag is published once per artifact: bundle.lock pins its digests, so a published
+          # tag is never overwritten. Each artifact is checked on its own, so a run that
+          # stopped after the image still pushes the disk.
+          if skopeo inspect --raw "docker://$image" >/dev/null 2>&1; then
+            image_digest="$(skopeo inspect --format '{{.Digest}}' "docker://$image")"
+            echo "image already published: $TAG"
+          else
+            sudo podman push --digestfile "$RUNNER_TEMP/image.digest" "localhost/dciab-lab-runner:$(<VERSION)" "docker://$image"
+            image_digest="$(cat "$RUNNER_TEMP/image.digest")"
           fi
-          sudo podman push --digestfile "$RUNNER_TEMP/image.digest" localhost/dciab-lab-runner:$(<VERSION) "docker://$image"
-          (cd images/lab-runner/output/qcow2 && "$oras" push --artifact-type application/vnd.dciab.lab-runner.disk \
-            "$disk" disk.qcow2:application/x-qemu-disk disk.qcow2.sha256:text/plain) | tee "$RUNNER_TEMP/disk.out"
-          disk_digest="$(sed -n 's/^Digest: //p' "$RUNNER_TEMP/disk.out")"
+          if "$oras" manifest fetch "$disk" >/dev/null 2>&1; then
+            disk_digest="$("$oras" manifest fetch --descriptor "$disk" | python3 -c 'import json,sys;print(json.load(sys.stdin)["digest"])')"
+            echo "disk already published: $TAG"
+          else
+            (cd images/lab-runner/output/qcow2 && "$oras" push --artifact-type application/vnd.dciab.lab-runner.disk \
+              "$disk" disk.qcow2:application/x-qemu-disk disk.qcow2.sha256:text/plain) | tee "$RUNNER_TEMP/disk.out"
+            disk_digest="$(sed -n 's/^Digest: //p' "$RUNNER_TEMP/disk.out")"
+          fi
           {
             echo "### Published $TAG"
-            echo "- image: \`$image@$(cat "$RUNNER_TEMP/image.digest")\`"
+            echo "- image: \`$image@$image_digest\`"
             echo "- disk: \`$disk@$disk_digest\`"
             echo "- pin both in bundle.lock (labRunner.image, labRunner.disk), and make the packages public so the lab can pull without a login"
             echo "- fetch: \`hack/lab/fetch-runner-disk.sh $TAG\`"
