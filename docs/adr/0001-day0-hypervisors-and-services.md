@@ -103,5 +103,7 @@ HTTP listens on `bootstrap.address`: only installers and BMCs use it, and it goe
 - **vCenter deployment** on the first ESXi host, and creating its datacenter, cluster and networks. Until then, ESXi sites need an existing vCenter.
 - **Proxmox VE clustering** and shared storage across the installed hosts.
 - **PXE** as a second install method, for servers without licensed virtual media.
+- **Day 0 DHCP** on the bootstrap host, when a site needs it and has none (PXE installs, BMC addressing). DCiaB provides each Day 0 service when required and uses the site's own out of the box ([ROADMAP](../ROADMAP.md)).
 - **A direct out-of-band interface** on the bootstrap host, and DHCP for BMCs.
+- **Joining hypervisors to a manager** (Proxmox Datacenter Manager, vCenter): Day 1, `r1beta` ([ROADMAP](../ROADMAP.md)).
 - **Separate NTP service addresses**, if sharing the DNS service addresses proves limiting.
