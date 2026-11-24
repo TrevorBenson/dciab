@@ -18,7 +18,7 @@ Each step runs for every selected host and is safe to re-run.
 | --- | --- |
 | `answer` | Renders the host's `answer.toml` into `<state>/answers/<host>.toml` (folder 700, file 600, written atomically). For a host no longer in the config, its answer file and root password files (`.root-hash`, `.root-salt`, `.root-password.age`) are removed. If it has an install record, its password files and the record are kept and the run says so: the server may still use that password. Delete the password files by hand once the server is wiped or retired |
 | `iso` | Builds `<state>/host-isos/<host>.iso` (folder 700, file 600): the Proxmox VE installer ISO with that host's answer file inside (`proxmox-auto-install-assistant prepare-iso --fetch-from iso`, run with no network from the image built from `images/pve-assistant`). The base ISO is checked against `bundle.lock` first. An ISO is rebuilt only when its answer file or the base ISO changed. Caddy serves it at `http://<bootstrap.address>/host-isos/<host>.iso` to that host's BMC address only |
-| `media` | Skipped when the host's Proxmox VE API already answers, and held when anything shows an existing install ([the reinstall guard](#the-reinstall-guard)). Otherwise, over Redfish: finds the system's CD/DVD virtual media slot (under the System or its Manager), ejects other media, attaches the host's ISO, sets a one-time UEFI boot from `Cd`, and resets the server (`ForceRestart` when on, `On` when off; a server in a transitional power state is left alone). Redfish tasks a BMC accepts with HTTP 202 are waited for. The installer boots its "Automated Installation" entry and reads the answer file from the ISO: no DHCP and no answer server |
+| `media` | Skipped when the host's Proxmox VE API already answers, and held when anything shows an existing install ([the reinstall guard](#the-reinstall-guard)). Otherwise, it first [prepares the server](#redfish-preparation) over Redfish (boot mode, Secure Boot, virtualization, the disk), and refuses the install on a clear disk mismatch. Then, over Redfish: finds the system's CD/DVD virtual media slot (under the System or its Manager), ejects other media, attaches the host's ISO, sets a one-time UEFI boot from `Cd`, and resets the server (`ForceRestart` when on, `On` when off; a server in a transitional power state is left alone). Redfish tasks a BMC accepts with HTTP 202 are waited for. The installer boots its "Automated Installation" entry and reads the answer file from the ISO: no DHCP and no answer server |
 | `wait` | Waits for SSH (22) and then the Proxmox VE API on the host's address (an answer from `/api2/json/version` on 8006, not just an open port), and records the install as done. Then, for a host whose ISO DCiaB attached, ejects that ISO and clears the boot override DCiaB set if it still points at `Cd`, so a fallback to CD never boots the installer again. Other media and overrides are left alone. The result goes in the install record (`media`: `detached`, `detach-failed`, or `detach-unverified` when other media is in the slot). Only `detached` is final: otherwise the run says how to eject by hand, and the next run checks again. This never fails the run. Each new install (`media`, `--reinstall` too) starts the record's `media` over at `attached` |
 
 BMC trust comes from each host's `bmc.tlsFingerprint` or `bmc.caBundle`, as for `dciab validate --live`; the certificate is checked before credentials are sent.
@@ -43,6 +43,21 @@ Fixed value: `filesystem = "ext4"`, which gives the `local` and `local-lvm` stor
 - **DCiaB and CAPMOX** at run time: the Proxmox VE API with a dedicated API token, never SSH. [PROXMOX.md](PROXMOX.md) lists its exact privileges.
 - **Existing hypervisors** (a site that already runs Proxmox VE or vSphere): DCiaB never touches root; it uses only the API token or vCenter account in the config.
 
+## Redfish preparation
+
+Before `media` attaches the ISO to a host it is going to install (never to a host the guard holds), it prepares the server over Redfish. Changes are staged to apply at the reset that boots the installer. `--print` lists what will be checked and set; it doesn't talk to the BMC.
+
+| Check | How | When it can't be read |
+| --- | --- | --- |
+| UEFI boot mode | The BIOS `BootMode` attribute. A legacy value (`Bios`, `LegacyBios`, `Legacy`) is staged to `Uefi` | A note: the installer is booted in UEFI mode, which fails on a server set to legacy boot |
+| Secure Boot | `ComputerSystem.SecureBoot`: `SecureBootEnable` set on for `bootMode: UEFISecureBoot`, off for `UEFI` | A note: set it in the firmware setup to match `bootMode` |
+| Virtualization extensions | A known BIOS attribute (`ProcVirtualization`, `IntelVirtualizationTechnology`, `VirtualizationTechnology`, `IntelVTX`, `VMX`, `SVMMode`, `AmdVirtualization`, ...) set to `Disabled` is staged to `Enabled` | A note: VMs won't start on the host without them |
+| The disk | `rootDeviceHints` against the drives and volumes under the system's `Storage`. `serialNumber` and `wwn` must match exactly; `model` and `vendor` match a part, ignoring case and spaces | No drives listed, only `deviceName`, or only `model`/`vendor` that don't match: a note, and the installer decides |
+
+The install is **refused** (the host fails the run, and nothing is written to the BMC, not even the BIOS or Secure Boot changes) when the BMC lists drives, none has the hinted `serialNumber` or `wwn`, and the storage has no RAID volumes. With RAID volumes the installer may see a virtual disk under other identifiers, so a mismatch there is a note.
+
+BIOS changes go to the settings object the Bios resource names (`Bios/Settings`), with `@Redfish.SettingsApplyTime: OnReset` when the BMC offers it. Attribute names vary by vendor; a server whose firmware uses other names gets notes, not failures.
+
 ## The reinstall guard
 
 `media` resets a server only when nothing suggests it already holds an install. It holds a host, does nothing to it, and exits 1 when:
@@ -64,6 +79,5 @@ The installer ISO and the answer files travel over plain HTTP from the bootstrap
 ## Not done yet
 
 - **A tagged management VLAN** (`managementVLAN: tagged`): the answer file can't set a VLAN, so the installer's network only works on an untagged port until post-install configuration exists.
-- **Redfish preparation**: checking or setting UEFI boot mode, Secure Boot per `bootMode`, virtualization extensions, and that a disk matches `rootDeviceHints`.
 - **Post-install**: the CAPMOX API token (`platform.proxmox.credentials.tokenID`), the bridge and its VLAN-aware setting, and the storage, through the Proxmox VE API.
 - **ESXi.**

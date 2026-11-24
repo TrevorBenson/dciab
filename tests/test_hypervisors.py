@@ -291,8 +291,11 @@ class FakeBMC:
     PXE entry (a new server's firmware); [] means the BMC lists no boot options at all."""
 
     def __init__(self, cert, media="manager", actions=True, power="On", inserted=None, boot_options=None,
-                 reset_status=204, overrides=None):
+                 reset_status=204, overrides=None, bios=None, secure_boot=None, drives=None, apply_times=True,
+                 volumes=None):
         boot_options = DEFAULT_OPTS if boot_options is None else boot_options
+        # Preparation (prepare.py): BIOS attributes, Secure Boot, drives; None means the BMC offers none.
+        self.bios, self.pending, self.secure_boot = bios, {}, secure_boot
         self.calls = []
         self.power = power
         self.slot = {"Inserted": inserted is not None, "Image": inserted}
@@ -308,6 +311,19 @@ class FakeBMC:
                     "Actions": {"#ComputerSystem.Reset": {"target": SYS + "/Actions/ComputerSystem.Reset"}}}
             if media == "system":
                 body["VirtualMedia"] = {"@odata.id": coll}
+            if fake.bios is not None:
+                body["Bios"] = {"@odata.id": SYS + "/Bios"}
+            if fake.secure_boot is not None:
+                body["SecureBoot"] = {"@odata.id": SYS + "/SecureBoot"}
+            if drives is not None:
+                body["Storage"] = {"@odata.id": SYS + "/Storage"}
+            return body
+
+        def bios_body():
+            body = {"Attributes": dict(fake.bios),
+                    "@Redfish.Settings": {"SettingsObject": {"@odata.id": SYS + "/Bios/Settings"}}}
+            if apply_times:
+                body["@Redfish.Settings"]["SupportedApplyTimes"] = ["OnReset", "Immediate"]
             return body
 
         def manager():
@@ -323,6 +339,19 @@ class FakeBMC:
         gets = {SYS: system, "/redfish/v1/Managers/1": manager,
                 coll: lambda: {"Members": [{"@odata.id": coll + "/USB"}, {"@odata.id": slot_path}]},
                 coll + "/USB": lambda: {"MediaTypes": ["USBStick"]}, slot_path: slot}
+        gets[SYS + "/Bios"] = bios_body
+        gets[SYS + "/SecureBoot"] = lambda: {"SecureBootEnable": fake.secure_boot, "SecureBootMode": "UserMode"}
+        gets[SYS + "/Storage"] = lambda: {"Members": [{"@odata.id": SYS + "/Storage/RAID"}]}
+        gets[SYS + "/Storage/RAID"] = lambda: dict({"Drives": [{"@odata.id": f"{SYS}/Storage/RAID/Drives/{i}"}
+                                                               for i in range(len(drives or []))]},
+                                                   **({"Volumes": {"@odata.id": SYS + "/Storage/RAID/Volumes"}}
+                                                      if volumes is not None else {}))
+        gets[SYS + "/Storage/RAID/Volumes"] = lambda: {"Members": [{"@odata.id": f"{SYS}/Storage/RAID/Volumes/{i}"}
+                                                                   for i in range(len(volumes or []))]}
+        for i, v in enumerate(volumes or []):
+            gets[f"{SYS}/Storage/RAID/Volumes/{i}"] = (lambda v=v: v)
+        for i, d in enumerate(drives or []):
+            gets[f"{SYS}/Storage/RAID/Drives/{i}"] = (lambda d=d: d)
         for i, opt in enumerate(boot_options or []):
             gets[f"{SYS}/BootOptions/{i}"] = (lambda o=opt: o)
         gets[SYS + "/BootOptions"] = lambda: {"Members": [{"@odata.id": f"{SYS}/BootOptions/{i}"}
@@ -378,6 +407,10 @@ class FakeBMC:
                 fake.calls.append(("PATCH", self.path, body))
                 if self.path == SYS:
                     fake.boot = dict(fake.boot, **body["Boot"])
+                elif self.path == SYS + "/Bios/Settings" and fake.bios is not None:
+                    fake.pending = dict(fake.pending, **body["Attributes"])
+                elif self.path == SYS + "/SecureBoot" and fake.secure_boot is not None:
+                    fake.secure_boot = body["SecureBootEnable"]
                 elif self.path == slot_path and not actions:
                     if body["Inserted"] and fake.slot["Inserted"]:
                         return self._send(409)
@@ -612,10 +645,15 @@ def test_assistant_image_needs_a_pin_unless_overridden(monkeypatch):
 
 # --- the reinstall guard (cli.media) -------------------------------------------------------
 
-def guard(f, tmp_path, reinstall=(), answers=False, ssh=None, first_install=(), port_8006=False):
+def guard(f, tmp_path, reinstall=(), answers=False, ssh=None, first_install=(), port_8006=False, hints=None,
+          boot_mode=None):
     """Run the media step for pve01 against the fake BMC, with the Proxmox VE API (and port 22)
     answering or not."""
     doc = bare()
+    if hints is not None:
+        host(doc)["rootDeviceHints"] = hints
+    if boot_mode is not None:
+        doc["spec"]["hypervisors"]["bootMode"] = boot_mode
     logs = []
     ssh = answers if ssh is None else ssh
     failed, held, live = cli.media([host(doc)], doc, tmp_path / "installs", list(reinstall), lambda h: f.bmc,
@@ -1205,3 +1243,116 @@ def test_an_optical_drive_on_a_disk_bus_is_not_os_evidence(path):
     assert not redfish.is_os_entry("Boot0004", path)
     # A partition on the same path still counts (an installed OS, not a disc).
     assert redfish.is_os_entry("Boot0005", path + "/HD(1,GPT,ab)")
+
+
+# --- Redfish preparation before an install (prepare.py) ----------------------------------------
+
+from dciab_hypervisors import prepare  # noqa: E402
+
+BOSS = {"Id": "0", "Manufacturer": "DELL", "Model": "Dell BOSS-N1", "SerialNumber": "CN0WW56VFCP0008900AB",
+        "CapacityBytes": 480103981056, "Identifiers": [{"DurableNameFormat": "NAA", "DurableName": "500A0751E5C1D2E3"}]}
+DATA = {"Id": "1", "Manufacturer": "SEAGATE", "Model": "ST4000NM0035", "SerialNumber": "ZC1A2B3C",
+        "CapacityBytes": 4000787030016, "Identifiers": [{"DurableNameFormat": "NAA", "DurableName": "5000C500A1B2C3D4"}]}
+
+
+def test_preparation_stages_uefi_virtualization_and_secure_boot_before_the_reset(fake_bmc, tmp_path):
+    f = fake_bmc(power="Off", bios={"BootMode": "Bios", "ProcVirtualization": "Disabled"}, secure_boot=False,
+                 drives=[DATA, BOSS])
+    failed, held, _, out = guard(f, tmp_path, boot_mode="UEFISecureBoot")
+    assert (failed, held) == ([], [])
+    assert f.pending == {"BootMode": "Uefi", "ProcVirtualization": "Enabled"} and f.secure_boot is True
+    patch = next(c for c in f.calls if c[1] == SYS + "/Bios/Settings")
+    assert patch[2]["@Redfish.SettingsApplyTime"] == {"ApplyTime": "OnReset"}
+    assert "disk matching model=Dell BOSS-N1: DELL Dell BOSS-N1" in out and "Secure Boot set on" in out
+    # Every preparation write comes before the reset that applies it.
+    order = [c[1] for c in f.calls]
+    assert order.index(SYS + "/Bios/Settings") < order.index(SYS + "/Actions/ComputerSystem.Reset")
+    assert order.index(SYS + "/SecureBoot") < order.index(SYS + "/Actions/ComputerSystem.Reset")
+
+
+def test_preparation_changes_nothing_that_already_matches(fake_bmc, tmp_path):
+    f = fake_bmc(power="Off", bios={"BootMode": "Uefi", "ProcVirtualization": "Enabled"}, secure_boot=False,
+                 drives=[BOSS])
+    failed, held, _, out = guard(f, tmp_path, boot_mode="UEFI")
+    assert (failed, held) == ([], []) and f.pending == {} and f.secure_boot is False
+    assert not [c for c in f.calls if c[1] in (SYS + "/Bios/Settings", SYS + "/SecureBoot")]
+    assert "boot mode Uefi" in out and "Secure Boot off (UEFI)" in out
+
+
+def test_secure_boot_follows_boot_mode_off(fake_bmc, tmp_path):
+    f = fake_bmc(power="Off", bios={"BootMode": "Uefi"}, secure_boot=True, drives=[BOSS])
+    assert guard(f, tmp_path, boot_mode="UEFI")[:2] == ([], [])
+    assert f.secure_boot is False
+
+
+@pytest.mark.parametrize("hints", [{"serialNumber": "NOPE123"}, {"wwn": "0x5000c500deadbeef"},
+                                   {"serialNumber": "CN0WW56VFCP0008900AB", "wwn": "0x5000c500a1b2c3d4"}],
+                         ids=["serial", "wwn", "serial-and-wwn-on-different-disks"])
+def test_a_clear_disk_mismatch_refuses_the_install_and_writes_nothing(fake_bmc, tmp_path, hints):
+    f = fake_bmc(power="Off", bios={"BootMode": "Bios", "ProcVirtualization": "Disabled"}, secure_boot=False,
+                 drives=[DATA, BOSS])
+    failed, held, _, out = guard(f, tmp_path, hints=hints)
+    assert failed == ["pve01"] and "no drive the BMC lists matches rootDeviceHints" in out and "ST4000NM0035" in out
+    assert not [c for c in f.calls if c[0] in CHANGES]                         # not even BIOS or Secure Boot
+    assert f.pending == {} and f.secure_boot is False and cli.read_install(tmp_path / "installs", "pve01") is None
+
+
+def test_model_mismatch_or_nothing_to_compare_is_only_a_note(fake_bmc, tmp_path):
+    f = fake_bmc(power="Off", drives=[DATA], bios={"SomethingElse": "x"})
+    failed, held, _, out = guard(f, tmp_path, hints={"model": "Dell BOSS-N1"})
+    assert (failed, held) == ([], []) and "the installer decides" in out
+    assert "boot mode can't be read" in out and "virtualization extensions can't be read" in out
+    assert "offers no Secure Boot setting" in out and f.power == "On"
+    f2 = fake_bmc(power="Off")
+    _, _, _, out2 = guard(f2, tmp_path / "b", hints={"deviceName": "/dev/sda"})
+    assert "deviceName names the installer's view" in out2 and f2.power == "On"
+
+
+def test_preparation_without_apply_time_patches_plain_settings(fake_bmc, tmp_path):
+    f = fake_bmc(power="Off", bios={"IntelVirtualizationTechnology": "Disable"}, drives=[BOSS], apply_times=False)
+    assert guard(f, tmp_path)[:2] == ([], [])
+    patch = next(c for c in f.calls if c[1] == SYS + "/Bios/Settings")
+    assert patch[2] == {"Attributes": {"IntelVirtualizationTechnology": "Enable"}}
+
+
+def test_installed_host_gets_no_preparation(fake_bmc, tmp_path):
+    # The guard holds it first: an installed hypervisor's BIOS and Secure Boot are never touched.
+    cli.write_install(tmp_path / "installs", "pve01", outcome="installed")
+    f = fake_bmc(power="On", bios={"BootMode": "Bios"}, secure_boot=False, drives=[BOSS])
+    assert guard(f, tmp_path, boot_mode="UEFISecureBoot")[:2] == ([], ["pve01"])
+    assert f.calls == [] and f.pending == {} and f.secure_boot is False
+
+
+@pytest.mark.parametrize("hints,drive,expected", [
+    ({"wwn": "0x500a0751e5c1d2e3"}, BOSS, True),
+    ({"wwn": "naa.500A0751E5C1D2E3"}, BOSS, True),
+    ({"serialNumber": "cn0ww56vfcp0008900ab"}, BOSS, True),
+    ({"model": "BOSS"}, BOSS, True),                         # "or a part of it"
+    ({"vendor": "dell", "model": "boss-n1"}, BOSS, True),
+    ({"vendor": "Seagate"}, BOSS, False),
+    ({"serialNumber": "X"}, {"Id": "9"}, False),             # a drive that reports nothing
+])
+def test_drive_matching(hints, drive, expected):
+    assert prepare.match_drive(hints, drive) is expected
+
+
+def test_print_shows_the_preparation(tmp_path, monkeypatch, capsys):
+    Site(tmp_path, monkeypatch, capsys)
+    cfg = tmp_path / "dciab.yaml"
+    cfg.write_text(yaml.safe_dump(bare(), sort_keys=False))
+    assert cli.main(["--root", str(ROOT), "--print", str(cfg)]) == 0
+    out = capsys.readouterr().out
+    assert "Redfish preparation before the install: UEFI boot mode, Secure Boot on (UEFISecureBoot)" in out
+
+
+def test_raid_volumes_or_no_drives_make_a_serial_mismatch_a_note(fake_bmc, tmp_path):
+    vol = {"Id": "Disk.Virtual.0", "Name": "BOSS RAID1", "CapacityBytes": 480103981056,
+           "Identifiers": [{"DurableNameFormat": "NAA", "DurableName": "6D0946606F3E2A00"}]}
+    f = fake_bmc(power="Off", drives=[BOSS], volumes=[vol])
+    failed, held, _, out = guard(f, tmp_path, hints={"serialNumber": "VIRTUALDISK0"})
+    assert (failed, held) == ([], []) and "behind a RAID controller" in out and "volume BOSS RAID1" in out
+    f2 = fake_bmc(power="Off", drives=[])
+    failed, _, _, out = guard(f2, tmp_path / "b", hints={"serialNumber": "X"})
+    assert failed == [] and "lists no drives" in out
+    f3 = fake_bmc(power="Off", drives=[BOSS], volumes=[vol])
+    assert guard(f3, tmp_path / "c", hints={"wwn": "0x6d0946606f3e2a00"})[:2] == ([], [])   # matches the volume
