@@ -108,3 +108,8 @@ def test_publish_uses_oras_from_the_runner_and_checks_each_artifact_alone():
     assert 'skopeo inspect --raw "docker://$image"' in publish
     assert '"$oras" manifest fetch "$disk"' in publish
     assert "exit 0" not in publish
+
+
+def test_a_pinned_base_is_not_republished():
+    publish = next(s for s in wf()["jobs"]["image"]["steps"] if s.get("name", "").startswith("Publish"))["run"]
+    assert 'podman image exists "localhost/dciab-rocky-bootc-base:$manifest"' in publish
