@@ -1,6 +1,6 @@
 # ADR 0008: Providers — one pattern for identity, storage, DNS, IPAM and secrets
 
-- Status: Accepted (2026-11-23); amended 2026-11-24 (block storage has no default: decision 4)
+- Status: Accepted (2026-11-23); amended 2026-11-24 (block storage has no default and workload clusters opt in: decisions 1, 2 and 4)
 - Date: 2026-11-22
 
 ## Context
@@ -131,7 +131,7 @@ The v1 block providers are Longhorn, the vSphere CSI driver, the Proxmox CSI dri
 
 - **`longhorn`.** Today's provider. Keeps `replicaCount`, `backupTarget` and `backupCredentials`, and moves under `storage.block.longhorn`. Its data goes on the worker data disk (`dataDiskGiB`), not the root disk, which is a fix the review asked for and the implementation of this ADR must include. Replication across hosts depends on failure domains (ADR 0010).
 - **`vsphere-csi`.** The vSphere CSI driver, which provisions volumes through vCenter's Cloud Native Storage. Node VMs need hardware version 15 or later, VMware Tools, and `disk.EnableUUID` set. The driver is pinned in `bundle.lock` with the vSphere cloud provider (CPI) that CAPV clusters need anyway; the current release line supports Kubernetes 1.34 to 1.36. Only `vsphere`-class clusters can use it.
-- **`proxmox-csi`.** The Proxmox CSI plugin (Apache 2.0) creates volumes as VM disks through the Proxmox API, on the storage the config names, and attaches them to the node VM. It needs only a Proxmox API token: a separate, privilege-separated token with the disk and storage privileges it uses, defined next to the CAPMOX token in `lib/dciab_validate/proxmox_privs.py` and checked by `validate --live`. It needs no Ceph key and no access to the storage network. It works with any Proxmox storage that can hold VM disks: Ceph RBD, LVM on a shared iSCSI or FC LUN, NFS, or local LVM and ZFS. On shared storage the volume follows the pod to another host; on local storage it stays on one host. The default for Proxmox with shared storage. Only `proxmox`-class clusters can use it.
+- **`proxmox-csi`.** The Proxmox CSI plugin (Apache 2.0) creates volumes as VM disks through the Proxmox API, on the storage the config names, and attaches them to the node VM. It needs only a Proxmox API token: a separate, privilege-separated token with the disk and storage privileges it uses, defined next to the CAPMOX token in `lib/dciab_validate/proxmox_privs.py` and checked by `validate --live`. It needs no Ceph key and no access to the storage network. It works with any Proxmox storage that can hold VM disks: Ceph RBD, LVM on a shared iSCSI or FC LUN, NFS, or local LVM and ZFS. On shared storage the volume follows the pod to another host; on local storage it stays on one host. The usual choice for Proxmox with shared storage. Only `proxmox`-class clusters can use it.
 - **`ceph-csi`.** RBD (block) and optionally CephFS (shared files) against a site Ceph cluster, Proxmox's included: monitors, cluster ID, pool and a Ceph client key. Offered when the site supplies that key, for sites that want Ceph features the Proxmox API doesn't expose (CephFS, RBD snapshots and clones), or for Metal3 clusters next to a Ceph cluster. DCiaB runs only the CSI driver; it doesn't run Ceph.
 - **`vendor-csi`.** A SAN or NAS array through its vendor's CSI driver (NetApp Trident, Dell CSM, Pure, HPE and so on). iSCSI has no standard API for creating LUNs, so a generic iSCSI driver can only attach LUNs someone already made on the array. Dynamic provisioning, snapshots and resizing need the array's API, which only the vendor's driver has. democratic-csi covers ZFS-based appliances (TrueNAS, generic ZFS over SSH) and Synology, over iSCSI, NFS and SMB, not arbitrary arrays; it fits a site whose "SAN" is one of those. DCiaB installs the driver's Helm chart from the archive with the site's values. In v1 that is a small set of vendor drivers, pinned in `bundle.lock` and tested before release; the set is chosen in the implementing PR. A signed overlay archive built by the site, carrying other drivers, comes later.
 - **`existing`.** The cluster already has a CSI driver that DCiaB didn't install. DCiaB uses the named StorageClass and installs nothing.
@@ -140,7 +140,7 @@ Each block provider produces a **`replicated`** StorageClass, the cluster defaul
 
 ### 5. A local class for services that replicate themselves
 
-CloudNativePG, OpenSearch, OpenBao (Raft) and SeaweedFS volume servers keep their own copies. On a replicated class they double-replicate inside the cluster too. So every cluster also has two **local** classes:
+CloudNativePG, OpenSearch, OpenBao (Raft) and SeaweedFS volume servers keep their own copies. On a replicated class they double-replicate inside the cluster too. So MGMT and INFRA, and workload clusters that opt in, also have two **local** classes:
 
 - **`local-retain`** (`reclaimPolicy: Retain`) for platform data that keeps its own copies: the services above.
 - **`local`** (`reclaimPolicy: Delete`) for scratch data.

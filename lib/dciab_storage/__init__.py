@@ -7,8 +7,8 @@ overrides.workload names a provider, and its settings, of its own. Without it, t
 their own storage. The old form, spec.storage.longhorn, reads as
 block: {provider: longhorn, longhorn: <it>}.
 
-Every cluster gets the same four StorageClasses, whatever backs them, so platform charts
-never change from site to site:
+Every cluster DCiaB gives block storage gets the same four StorageClasses, whatever backs
+them, so platform charts never change from site to site:
 
     replicated          the cluster default; reclaimPolicy Delete
     replicated-retain   for platform data with no copies of its own; Retain
