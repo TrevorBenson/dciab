@@ -55,6 +55,13 @@ jobs:
         run: |
           echo "tag=$(hack/lab/runner-image-id.sh)" >> "$GITHUB_OUTPUT"
           df -h /
+      - name: Allow the recipe's nested rpm-ostree compose (user namespaces)
+        # ubuntu-24.04 restricts unprivileged user namespaces with AppArmor; the recipe's
+        # rpm-ostree compose runs bwrap inside the build and its groupadd fails without them
+        # ("cannot open /etc/gshadow: Permission denied").
+        run: |
+          sysctl kernel.apparmor_restrict_unprivileged_userns kernel.unprivileged_userns_clone 2>&1 || true
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - name: Base image (the SIG recipe, minimal manifest)
         run: sudo images/node-bootc/build.sh --base-only
       - name: Lab runner image and qcow2 disk
