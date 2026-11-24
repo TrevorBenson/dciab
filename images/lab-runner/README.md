@@ -66,6 +66,23 @@ Every job has root on this VM and reaches real infrastructure. The repository is
 - Scope it to this repository alone, give it a short expiry, and rotate it.
 - **Narrower:** an organization-owned repository can register runners with the organization permission "Self-hosted runners: write" instead, and put the runner in a runner group restricted to this repository (and, where the plan allows, to chosen workflows). The hook stays as defense in depth.
 
+## Published image (CI builds it, the lab only pulls)
+
+The workflow `.github/workflows/lab-runner-image.yml` builds the base, the image and the qcow2 disk on a GitHub-hosted runner. A pull request builds everything and publishes nothing. On `main` it publishes, once per tag, to GHCR:
+
+- `ghcr.io/<owner>/dciab-lab-runner:<tag>`: the bootc image (for `bootc switch`/`upgrade` on a running runner)
+- `ghcr.io/<owner>/dciab-lab-runner-disk:<tag>`: the qcow2 plus its sha256, as an OCI artifact (for a new VM)
+
+The tag is `<VERSION>-<id>` (`hack/lab/runner-image-id.sh`): it changes when the image would. After the first publish, pin both digests in `bundle.lock` (`labRunner.image`, `labRunner.disk`), as for the other published images, and make the packages public (GitHub: the package's settings) so the lab can pull without a login.
+
+To create the runner VM you then need no build and no root:
+
+```console
+$ hack/lab/fetch-runner-disk.sh <tag>        # oras pull + sha256 check into ~/.dciab/lab-runner/disk
+```
+
+and import `disk.qcow2` into Proxmox as in "Deploy". `sudo images/lab-runner/build.sh` stays for building locally, for development.
+
 ## Build
 
 On a host with the Rocky 10 bootc base (from `images/node-bootc/build.sh`, or `nodeImages.bootc.baseImage` when pinned):

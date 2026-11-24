@@ -2,7 +2,7 @@
 # Build the DCiaB node image in image mode (bootc), then disk images from it.
 #
 #   sudo images/node-bootc/build.sh [--type raw] [--type qcow2] [--type vmdk]
-#                                   [--variant vm|metal] [--upgrade-from] [--print]
+#                                   [--variant vm|metal] [--upgrade-from] [--base-only] [--print]
 #
 # 1. Base: Rocky Linux 10 bootc. Either a prebuilt image pinned by digest
 #    (nodeImages.bootc.baseImage), or built from the RESF SIG/Containers rocky-bootc
@@ -17,7 +17,8 @@
 # Everything is pinned in bundle.lock (kubernetes, nodeImages.bootc). Output: the OCI
 # image localhost/dciab-node:<k8s version>[-metal] in root's container storage, and disk
 # images under images/node-bootc/output/ (ignored by Git), each with a .sha256sum file
-# (Metal3 checks it). --print shows the plan only.
+# (Metal3 checks it). --print shows the plan only. --base-only stops after the base image
+# (the lab runner and CI build only that, then their own image on top).
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -28,11 +29,13 @@ types=()
 print_only=false
 variant=vm
 upgrade_from=false
+base_only=false
 while (( $# )); do
   case "$1" in
     --type) types+=(--type "${2:?--type needs a value: raw, qcow2, vmdk, ...}"); shift 2 ;;
     --variant) variant="${2:?--variant needs a value: vm or metal}"; shift 2 ;;
     --upgrade-from) upgrade_from=true; shift ;;
+    --base-only) base_only=true; shift ;;
     --print) print_only=true; shift ;;
     *) echo "build.sh: unknown argument '$1'" >&2; exit 2 ;;
   esac
@@ -133,6 +136,11 @@ if [[ "$base_image" == - ]]; then
   # The recipe's own build invocation: nested rpm-ostree compose needs these privileges.
   (cd "$src" && podman build --security-opt=label=disable --cap-add=all --device /dev/fuse \
      -v "$src:/buildcontext" --build-arg "MANIFEST=$manifest" -t "$local_base" .)
+fi
+
+if [[ "$base_only" == true ]]; then
+  echo "== base: $base"
+  exit 0
 fi
 
 echo "== node: $tag"
