@@ -90,7 +90,7 @@ images:
   # runner), for the etcd snapshot and CAPI export CronJobs (docs/BACKUP.md). Built and
   # published by CI on main; pinned by digest once published. dciab mgmt's backups step
   # refuses an unpinned one.
-  backup: ""
+  backup: ghcr.io/trevorbenson/dciab-backup:8b7eed0a1365@sha256:6a74ac23fc02c987645948e19b2dcbeae48e6d9c55b6ec6b0628a60bc493074a
 
 # Upstream registries nodes pull through the site registry (registry.<domain>/v2/<upstream>/).
 # dciab cluster-values passes them to the mirroredRegistries ClusterClass variable, which

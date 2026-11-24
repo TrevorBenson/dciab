@@ -258,6 +258,17 @@ jobs:
           [[ "$before" == "$after" ]] || { echo "the storage step changed StorageClasses or PVCs:"; diff <(echo "$before") <(echo "$after"); exit 1; }
           [[ -z "$(kubectl get storageclass -l app.kubernetes.io/managed-by=dciab -o name)" ]]
           ! kubectl get namespace longhorn-system csi-proxmox vmware-system-csi 2>/dev/null | grep -q Active
+      - name: Nothing dciab mgmt installed on the kind cluster asks for a volume (ADR 0008, decision 4a)
+        run: |
+          set -euo pipefail
+          # What is really there after dciab mgmt (the providers and the mgmt release), read
+          # back from the cluster; Secrets hold no volumes and are left out. kind's own
+          # StorageClass and local-path provisioner aren't DCiaB's.
+          kubectl get "$(kubectl api-resources --verbs=list --namespaced=true -o name \
+              | grep -vE '^(events|events.events.k8s.io|secrets)$' | paste -sd, -)" -A -o yaml > "$RUNNER_TEMP/live-namespaced.yaml"
+          kubectl get storageclass,persistentvolume -o yaml > "$RUNNER_TEMP/live-cluster.yaml"
+          python hack/check_no_volumes.py --ignore StorageClass/standard --ignore-namespace local-path-storage \
+            "$RUNNER_TEMP/live-namespaced.yaml" "$RUNNER_TEMP/live-cluster.yaml"
 
   archive-inventory:
     # Every image a site needs, then a small archive payload built from it (build/archive.py).

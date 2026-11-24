@@ -21,7 +21,7 @@ Read first:
 - `docs/adr/0009-backup-and-dr.md`, decisions 2, 3 and 10
 - task 0007 (building MGMT on Proxmox from a payload)
 
-**Out of scope:** Longhorn's recurring jobs (MGMT on the lab uses the Proxmox CSI driver), the off-site copier, the S3 shim, INFRA and workload clusters.
+**Out of scope:** Longhorn's recurring jobs (MGMT keeps no volumes and runs no Longhorn: ADR 0008, decision 4a), the off-site copier, the S3 shim, INFRA and workload clusters.
 
 ## Needs
 

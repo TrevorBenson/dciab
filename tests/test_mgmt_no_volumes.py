@@ -88,6 +88,28 @@ def test_the_cli_fails_on_a_claim(tmp_path):
     assert r.returncode == 0, r.stdout + r.stderr
 
 
+def test_the_check_can_leave_out_what_a_live_test_cluster_brings(tmp_path):
+    """CI reads the kind cluster dciab mgmt ran against; kind's own StorageClass and its
+    local-path provisioner aren't DCiaB's."""
+    live = {"kind": "List", "items": [
+        {"kind": "StorageClass", "metadata": {"name": "standard"}},
+        {"kind": "Deployment", "metadata": {"name": "local-path-provisioner", "namespace": "local-path-storage"},
+         "spec": {"template": {"spec": {"volumes": [{"name": "d", "persistentVolumeClaim": {"claimName": "x"}}]}}}},
+        {"kind": "PersistentVolumeClaim", "metadata": {"name": "data", "namespace": "cluster-mgmt"}},
+    ]}
+    f = tmp_path / "live.yaml"
+    f.write_text(yaml.safe_dump(live))
+    cmd = [sys.executable, str(ROOT / "hack" / "check_no_volumes.py"), "--ignore", "StorageClass/standard",
+           "--ignore-namespace", "local-path-storage", str(f)]
+    r = subprocess.run(cmd, capture_output=True, text=True)
+    assert r.returncode == 1 and r.stdout.count("\n") == 1 and "PersistentVolumeClaim/data" in r.stdout
+    live["items"].pop()
+    f.write_text(yaml.safe_dump(live))
+    r = subprocess.run(cmd, capture_output=True, text=True)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert subprocess.run(cmd[:2] + ["--bogus", str(f)], capture_output=True).returncode == 2
+
+
 # --- what dciab mgmt installs on MGMT ---------------------------------------------------
 
 @pytest.mark.parametrize("name", EXAMPLES)
