@@ -42,7 +42,8 @@
 #               never holds up the pivot, and the bootstrap cluster can go once it finishes
 #
 # A Cluster left on both clusters (a move that stopped part-way, or a second Cluster on MGMT
-# from an earlier run whose move moved nothing) stops the run with what to do about it.
+# from an earlier run whose move moved nothing), or paused on the bootstrap cluster, stops
+# the run with what to do about it (docs/MGMT.md).
 # Each step prints how long it took.
 #
 # --until STEP stops after STEP. <state> defaults to .dciab/state next to the config
@@ -123,7 +124,7 @@ step_done() {   # step_done <exit status>
 }
 step() { step_done 0; step_name="$1" step_start=$SECONDS; echo; echo "== mgmt: $1"; }
 trap 'step_done $?' EXIT
-finish_if() { if [[ "$until" == "$1" ]]; then echo "dciab mgmt: stopped after '$1' (--until)"; exit 0; fi; }
+finish_if() { if [[ "$until" == "$1" ]]; then step_done 0; echo "dciab mgmt: stopped after '$1' (--until)"; exit 0; fi; }
 
 platform="$(python3 -c 'import sys, yaml; print(yaml.safe_load(open(sys.argv[1]))["spec"]["platform"]["type"])' "$config")"
 
@@ -144,9 +145,11 @@ have="$(clusterctl version -o short 2>/dev/null || true)"
 [[ "$have" == "$want" ]] || die "clusterctl is ${have:-unknown}; bundle.lock pins Cluster API $want and clusterctl must match"
 # Read once: values and the cluster steps go by it.
 pivot="$(pivot_state)"
-# On both clusters: stop before anything changes, with what to do.
-[[ "$pivot" != split && "$pivot" != interrupted ]] || die "$(both_help "$pivot")"
-if [[ "$pivot" == bootstrap ]]; then
+# Paused, or on both clusters: stop before anything changes, with what to do.
+# rerun: a move stopped part-way, and the bootstrap cluster still has everything and is in
+# charge again; the move step moves again.
+[[ "$pivot" == bootstrap || "$pivot" == rerun || "$pivot" == mgmt ]] || die "$(pivot_help "$pivot")"
+if [[ "$pivot" != mgmt ]]; then
   seed_hint="run dciab seed (or: KUBECONFIG=$bootstrap $ROOT/lib/steps/capi-providers.sh --with-classes)"
   on_bootstrap kubectl -n capi-system get deployment capi-controller-manager >/dev/null 2>&1 \
     || die "the bootstrap cluster has no Cluster API; $seed_hint"
@@ -233,5 +236,6 @@ finish_if adopt
 step longhorn
 # The chart comes from $DCIAB_PAYLOAD/charts when DCIAB_PAYLOAD is set.
 "$ROOT/addons/longhorn/install.sh" "$config" "$mgmt_kubeconfig"
+step_done 0
 echo
 echo "dciab mgmt: done. MGMT manages itself; kubeconfig: $mgmt_kubeconfig"
