@@ -1,16 +1,22 @@
 import os
 import subprocess
 
-from conftest import ROOT, errors, load_example, warnings
+from conftest import ROOT, errors, load_example, longhorn_example, warnings
 
 
 # --- the shipped examples ---------------------------------------------------------
 
 # Warnings an example is meant to show on every run (ADR 0010): a site that isn't highly
 # available says so, and so does a Proxmox control plane that r1 can't spread.
+# proxmox-bare runs Longhorn, for its backups, on VM root disks (CAPMOX gives no data disk),
+# which warns for MGMT and INFRA.
+# metal3-cluster runs Longhorn on MGMT and INFRA VMs on a vSAN datastore, which replicates
+# twice: the example keeps it to show Longhorn on VMs with data disks.
 EXPECTED_WARNINGS = {
+    "metal3-cluster": {"spec.storage.block.longhorn.replicaCount"},
     "proxmox": {"spec.failureDomains.domains"},
-    "proxmox-bare": {"spec.failureDomains.notHighlyAvailable", "spec.time.serveLocalClock"},
+    "proxmox-bare": {"spec.failureDomains.notHighlyAvailable", "spec.time.serveLocalClock",
+                     "spec.clusters.mgmt", "spec.clusters.infra"},
 }
 
 
@@ -212,17 +218,17 @@ def test_ironic_ip_must_be_in_mgmt_pool(site):
 
 
 def test_s3_target_needs_credentials(site):
-    doc = load_example("vsphere")
-    del doc["spec"]["storage"]["longhorn"]["backupCredentials"]
+    doc = longhorn_example("vsphere")
+    del doc["spec"]["storage"]["block"]["longhorn"]["backupCredentials"]
     _, report = site.validate(doc)
-    assert errors(report, "spec.storage.longhorn.backupCredentials")
+    assert errors(report, "spec.storage.block.longhorn.backupCredentials")
 
 
 def test_nfs_target_rejects_credentials(site):
-    doc = load_example("proxmox")
-    doc["spec"]["storage"]["longhorn"]["backupCredentials"] = {"file": "./secrets/longhorn-s3.env"}
+    doc = longhorn_example("proxmox")
+    doc["spec"]["storage"]["block"]["longhorn"]["backupCredentials"] = {"file": "./secrets/longhorn-s3.env"}
     _, report = site.validate(doc)
-    assert "remove it" in errors(report, "spec.storage.longhorn.backupCredentials")[0]["fix"]
+    assert "remove it" in errors(report, "spec.storage.block.longhorn.backupCredentials")[0]["fix"]
 
 
 def test_missing_secret_file(site):
@@ -368,13 +374,37 @@ def test_hypervisor_duplicate_mac_and_bmc(site):
     assert errors(report, "spec.hypervisors.hosts[2].bmc.address")
 
 
-def test_hypervisor_not_in_proxmox_nodes_is_a_warning(site):
+def test_unclustered_hypervisors_list_only_the_template_node(site):
+    # ADR 0010: the installed hosts aren't clustered, so nodes: [pve01] is right and the
+    # other hosts get a note: notHighlyAvailable already warns about the single host.
     doc = load_example("proxmox-bare")
-    doc["spec"]["hypervisors"]["hosts"][2]["name"] = "pve09"
+    assert doc["spec"]["platform"]["proxmox"]["nodes"] == ["pve01"]
     code, report = site.validate(doc)
     assert code == 0
-    assert warnings(report, "spec.hypervisors.hosts[2].name")
-    assert any("pve03" in n for n in report["notes"])
+    assert not errors(report, "spec.platform.proxmox.nodes")
+    assert not warnings(report, "spec.hypervisors.hosts")
+    assert any(n.startswith("pve02, pve03 are installed but not in") for n in report["notes"])
+    assert not any("won't install" in n for n in report["notes"])
+
+
+def test_unclustered_hosts_in_nodes_on_local_storage_is_an_error(site):
+    doc = load_example("proxmox-bare")
+    doc["spec"]["platform"]["proxmox"]["nodes"] = ["pve01", "pve02", "pve03"]
+    code, report = site.validate(doc)
+    assert code != 0
+    [e] = errors(report, "spec.platform.proxmox.nodes")
+    assert "[pve01]" in e["fix"] and "pve02, pve03" in e["fix"]
+    assert not any("installed but not in" in n for n in report["notes"])
+
+
+def test_more_nodes_on_shared_storage_are_accepted(site):
+    doc = load_example("proxmox-bare")
+    px = doc["spec"]["platform"]["proxmox"]
+    px["storage"], px["nodes"] = "ceph-rbd", ["pve01", "pve02", "pve09"]
+    _, report = site.validate(doc)
+    assert not errors(report, "spec.platform.proxmox.nodes")
+    assert any(n.startswith("pve03 is installed but not in") for n in report["notes"])
+    assert any("pve09" in n and "won't install" in n for n in report["notes"])
 
 
 def test_hypervisor_root_password_must_exist_when_given(site):

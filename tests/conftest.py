@@ -45,6 +45,31 @@ def load_example(name: str) -> dict:
     return yaml.safe_load((ROOT / "examples" / f"{name}.yaml").read_text())
 
 
+# Longhorn settings for examples whose block storage is an array driver, so Longhorn tests
+# can use them: an S3 target on vSphere, NFS on Proxmox.
+LONGHORN = {
+    "vsphere": {"replicaCount": 3, "backupTarget": "s3://longhorn@minio.dc1.example.net/dc1",
+                "backupCredentials": {"file": "./secrets/longhorn-s3.env"}},
+    "proxmox": {"replicaCount": 2, "backupTarget": "nfs://nas01.dc3.example.net:/exports/longhorn"},
+}
+
+
+def longhorn_example(name: str) -> dict:
+    """An example with Longhorn as its block storage (and, on vSphere, a data disk on every
+    node group Longhorn runs on)."""
+    doc = load_example(name)
+    spec = doc["spec"]
+    spec["storage"] = {"block": {"provider": "longhorn", "longhorn": copy.deepcopy(LONGHORN[spec["platform"]["type"]])}}
+    if spec["platform"]["type"] == "vsphere":
+        clusters = [spec["clusters"]["mgmt"], spec["clusters"]["infra"]] + \
+            [wc for wc in spec.get("workloadClusters", []) if wc["class"] == "vsphere"]
+        for c in clusters:
+            pools = [p for p in c["workerPools"] if p["replicas"] > 0]
+            for g in pools or [c["controlPlane"]]:
+                g["dataDiskGiB"] = 500 if g is not c["controlPlane"] else 200
+    return doc
+
+
 class Site:
     """A temporary folder with a config and its secret files, ready to validate."""
 
@@ -59,6 +84,7 @@ class Site:
         # The examples import an intermediate, and validate reads its certificate.
         (tmp_path / "secrets" / "pki" / "intermediate.crt").write_text(intermediate_pem())
         monkeypatch.setenv("DCIAB_PVE_TOKEN", "not-a-real-token")
+        monkeypatch.setenv("DCIAB_PVE_CSI_TOKEN", "not-a-real-csi-token")
 
     def validate_text(self, text: str):
         path = self.dir / "dciab.yaml"

@@ -395,6 +395,12 @@ def main(argv: Optional[List[str]] = None) -> int:
     if stray:
         print(f"dciab hypervisors: --reinstall {', '.join(stray)}: not a selected host", file=sys.stderr)
         return 2
+    # Before the state folder is made or migrated: run as another user, hypervisors would
+    # leave it owned by that user (as #102 was for seed). --print writes nothing.
+    if not args.print_only and os.geteuid() != 0:
+        print("dciab hypervisors: must run as root: answer files go in the root-only state folder "
+              "(try: sudo dciab hypervisors ...)", file=sys.stderr)
+        return 2
     from dciab_state import default_state
     state = Path(args.state) if args.state else default_state(config, migrate=not args.print_only)
     answers = _answers_dir(state)
@@ -427,10 +433,6 @@ def main(argv: Optional[List[str]] = None) -> int:
             print(mask(text), end="")
         return 0
 
-    if os.geteuid() != 0:
-        print("dciab hypervisors: must run as root: answer files go in the root-only state folder "
-              "(try: sudo dciab hypervisors ...)", file=sys.stderr)
-        return 2
     state.mkdir(parents=True, exist_ok=True)
     os.chmod(state, 0o700)
     if state.stat().st_uid != 0:

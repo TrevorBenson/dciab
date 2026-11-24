@@ -16,7 +16,9 @@
 #               ClusterClasses (dciab seed installs them)
 #   values      dciab cluster-values for mgmt -> <state>/mgmt-values.yaml
 #   cluster     the platform credentials Secret and the capi-cluster release "mgmt" in
-#               namespace cluster-mgmt, on the bootstrap cluster
+#               namespace cluster-mgmt, on the bootstrap cluster. The Secret is applied
+#               server-side; a last-applied annotation an older dciab left on it is removed
+#               (the adopt step does the same on MGMT)
 #   control-plane
 #               wait for the first control plane node; save <state>/mgmt.kubeconfig
 #   cpi         vSphere only: addons/vsphere-cpi/install.sh, the cloud provider the vSphere
@@ -37,21 +39,26 @@
 #               on MGMT and none are left on the bootstrap cluster
 #   adopt       the classes and mgmt Helm releases on MGMT take over the moved objects; it
 #               refuses to run unless the moved Cluster is on MGMT
-#   longhorn    addons/longhorn/install.sh: Longhorn, MGMT's default StorageClass, backed up
-#               to spec.storage.longhorn's target; after the move, so a storage problem
-#               never holds up the pivot, and the bootstrap cluster can go once it finishes
+#   storage     MGMT's block storage (spec.storage.block, with its mgmt override) and the
+#               four StorageClasses, replicated the default (lib/steps/storage-classes.sh).
+#               longhorn: addons/longhorn/install.sh, backed up to its target; vsphere-csi
+#               and proxmox-csi: addons/csi/install.sh, the site's array; existing: the
+#               classes copy the StorageClass the config names. After the move, so a storage
+#               problem never holds up the pivot, and the bootstrap cluster can go once it
+#               finishes
 #
 # A Cluster left on both clusters (a move that stopped part-way, or a second Cluster on MGMT
 # from an earlier run whose move moved nothing), or paused on the bootstrap cluster, stops
 # the run with what to do about it (docs/MGMT.md).
 # Each step prints how long it took.
 #
-# --until STEP stops after STEP. <state> defaults to .dciab/state next to the config
+# --until STEP stops after STEP (longhorn, the storage step's old name, still works for one
+# minor release). <state> defaults to .dciab/state next to the config
 # (/var/lib/dciab/work/state on the bootstrap appliance; lib/dciab_state).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-STEPS=(preflight values cluster control-plane cpi cilium providers move adopt longhorn)
+STEPS=(preflight values cluster control-plane cpi cilium providers move adopt storage)
 NS=cluster-mgmt
 CLASS_NS=dciab-clusterclasses
 
@@ -72,6 +79,11 @@ while (( $# )); do
 done
 [[ -n "$config" ]] || usage
 [[ -f "$config" ]] || die "no such config: $config"
+# --until longhorn: the storage step's old name, accepted for one minor release.
+if [[ "$until" == longhorn ]]; then
+  echo "dciab mgmt: --until longhorn is now --until storage; the old name goes in the next minor release" >&2
+  until=storage
+fi
 if [[ -n "$until" ]] && ! printf '%s\n' "${STEPS[@]}" | grep -qx "$until"; then
   die "--until must be one of: ${STEPS[*]}"
 fi
@@ -167,7 +179,14 @@ finish_if values
 
 apply_credentials() {   # apply_credentials <kubeconfig>
   KUBECONFIG="$1" kubectl create namespace "$NS" --dry-run=client -o yaml | KUBECONFIG="$1" kubectl apply -f -
-  python3 -m dciab_cluster.credentials "$config" mgmt "$NS" | KUBECONFIG="$1" kubectl apply -f -
+  # Server-side apply: a client-side apply would keep a copy of the Secret, token or password
+  # included, in the last-applied-configuration annotation.
+  python3 -m dciab_cluster.credentials "$config" mgmt "$NS" \
+    | KUBECONFIG="$1" kubectl apply --server-side --force-conflicts --field-manager=dciab -f -
+  # A Secret an older dciab applied client-side still has that annotation, and server-side
+  # apply keeps it up to date where it exists: remove it, after the apply. No-op once gone.
+  KUBECONFIG="$1" kubectl -n "$NS" annotate secret "mgmt-$platform-credentials" \
+    kubectl.kubernetes.io/last-applied-configuration- >/dev/null
 }
 
 if [[ "$pivot" == mgmt ]]; then
@@ -233,9 +252,25 @@ on_mgmt helm upgrade --install mgmt "$ROOT/charts/capi-cluster" --namespace "$NS
 on_mgmt kubectl -n "$NS" get cluster mgmt
 finish_if adopt
 
-step longhorn
-# The chart comes from $DCIAB_PAYLOAD/charts when DCIAB_PAYLOAD is set.
-"$ROOT/addons/longhorn/install.sh" "$config" "$mgmt_kubeconfig"
+step storage
+provider="$(python3 -m dciab_storage provider "$config" mgmt)"
+echo "block storage: $provider"
+case "$provider" in
+  longhorn)
+    # The chart comes from $DCIAB_PAYLOAD/charts when DCIAB_PAYLOAD is set.
+    "$ROOT/addons/longhorn/install.sh" "$config" "$mgmt_kubeconfig"
+    ;;
+  vsphere-csi|proxmox-csi)
+    # The manifest comes from $DCIAB_PAYLOAD/providers when DCIAB_PAYLOAD is set.
+    "$ROOT/addons/csi/install.sh" "$config" mgmt "$mgmt_kubeconfig"
+    ;;
+  existing)
+    "$ROOT/lib/steps/storage-classes.sh" "$config" mgmt "$mgmt_kubeconfig"
+    ;;
+  *)
+    die "block storage $provider isn't installed by DCiaB yet (dciab validate says so); choose longhorn, vsphere-csi, proxmox-csi or existing for MGMT"
+    ;;
+esac
 step_done 0
 echo
 echo "dciab mgmt: done. MGMT manages itself; kubeconfig: $mgmt_kubeconfig"

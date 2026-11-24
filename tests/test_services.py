@@ -340,7 +340,7 @@ CHRONY_LOCAL = "localhost/dciab/day0-chrony:test"
 
 
 def run(*args, env_extra=None):
-    env = {**os.environ, "DCIAB_PVE_TOKEN": "x", "DCIAB_CHRONY_IMAGE": CHRONY_LOCAL, **(env_extra or {})}
+    env = {**os.environ, "DCIAB_PVE_TOKEN": "x", "DCIAB_PVE_CSI_TOKEN": "y", "DCIAB_CHRONY_IMAGE": CHRONY_LOCAL, **(env_extra or {})}
     env = {k: v for k, v in env.items() if v is not None}
     return subprocess.run([str(ROOT / "dciab"), "services", *map(str, args)],
                           capture_output=True, text=True, env=env)

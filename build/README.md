@@ -29,7 +29,7 @@ $ python3 build/inventory.py --manifests "$crds" --extra cilium.yaml --kubeadm-i
 The sources are:
 - **`bundle.lock`:** every image it pins by digest: kube-vip, the kind node image, the Day 0 services, bootc-image-builder, and so on.
 - **Images DCiaB builds itself,** such as the Day 0 chrony image (`images/day0-chrony/build.sh`). CI builds and publishes each on `main`, once per version, and `bundle.lock` pins its digest (`day0.images.chrony`). From then on it is listed like any other pinned image. Until it is pinned the inventory leaves it out with a warning, and `--require-built` (used by the full archive build) refuses.
-- **The Cluster API, provider and cert-manager manifests**, rendered with the provider variables DCiaB installs them with.
+- **The Cluster API, provider and cert-manager manifests**, rendered with the provider variables DCiaB installs them with, and the CSI driver manifests (`bundle.lock` `csiDrivers`).
 - **Rendered add-ons:** Cilium and Longhorn. Longhorn's manager starts most of its images itself, so `addons/longhorn/install.sh <config> --images` lists them from the chart's values and CI passes each as `--image`.
 - **The Kubernetes control plane images** kubeadm pulls for the bundle's version.
 

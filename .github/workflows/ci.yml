@@ -83,14 +83,20 @@ jobs:
             addons/kubelet-csr-approver/install.sh "$values" --template > /dev/null
             echo "ok: kubelet-csr-approver renders for $values"
           done
-      - name: Render Longhorn for every example config
+      - name: Render MGMT's block storage for every example config
+        env:
+          DCIAB_PVE_CSI_TOKEN: placeholder
         run: |
           set -euo pipefail
           for config in examples/*.yaml; do
-            addons/longhorn/install.sh "$config" --template > /dev/null
-            echo "ok: longhorn renders for $config"
+            provider="$(PYTHONPATH=lib python3 -m dciab_storage provider "$config" mgmt)"
+            case "$provider" in
+              longhorn) addons/longhorn/install.sh "$config" --template > /dev/null ;;
+              *-csi) addons/csi/install.sh "$config" mgmt --template > /dev/null ;;
+            esac
+            echo "ok: $provider renders for $config"
           done
-          addons/longhorn/install.sh examples/proxmox.yaml --images
+          addons/longhorn/install.sh examples/metal3-cluster.yaml --images
       - name: Render the vSphere CPI
         run: addons/vsphere-cpi/install.sh examples/vsphere.yaml --template > /dev/null
       - name: Bad values fail the render, with the expected message
@@ -193,7 +199,7 @@ jobs:
           openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -keyout /dev/null -subj /CN=dciab-ci -days 3650 -addext basicConstraints=critical,CA:TRUE -out "$site/secrets/pki/intermediate.crt" 2>/dev/null
           chmod -R go-rwx "$site/secrets"
           kind get kubeconfig --name dciab-e2e > "$site/bootstrap.kubeconfig"
-          export DCIAB_PVE_TOKEN=placeholder
+          export DCIAB_PVE_TOKEN=placeholder DCIAB_PVE_CSI_TOKEN=placeholder
           ./dciab mgmt "$site/dciab.yaml" --bootstrap-kubeconfig "$site/bootstrap.kubeconfig" --until cluster
           # Re-running changes nothing.
           ./dciab mgmt "$site/dciab.yaml" --bootstrap-kubeconfig "$site/bootstrap.kubeconfig" --until cluster
@@ -245,8 +251,8 @@ jobs:
           addons/cilium/install.sh charts/capi-cluster/ci/proxmox-values.yaml --template > "$RUNNER_TEMP/cilium.yaml"
           addons/kubelet-csr-approver/install.sh charts/capi-cluster/ci/proxmox-values.yaml --template > "$RUNNER_TEMP/kubelet-csr-approver.yaml"
           # Longhorn's manager starts most of its images itself: list them from the chart values too.
-          addons/longhorn/install.sh examples/proxmox.yaml --template > "$RUNNER_TEMP/longhorn.yaml"
-          addons/longhorn/install.sh examples/proxmox.yaml --images > "$RUNNER_TEMP/longhorn-images.txt"
+          addons/longhorn/install.sh examples/metal3-cluster.yaml --template > "$RUNNER_TEMP/longhorn.yaml"
+          addons/longhorn/install.sh examples/metal3-cluster.yaml --images > "$RUNNER_TEMP/longhorn-images.txt"
           addons/vsphere-cpi/install.sh examples/vsphere.yaml --template > "$RUNNER_TEMP/vsphere-cpi.yaml"
           mapfile -t longhorn < "$RUNNER_TEMP/longhorn-images.txt"
           (( ${#longhorn[@]} > 0 )) || { echo "no Longhorn images listed" >&2; exit 1; }
@@ -360,12 +366,14 @@ jobs:
       - name: dciab seed
         env:
           DCIAB_PVE_TOKEN: ci-not-a-secret
+          DCIAB_PVE_CSI_TOKEN: ci-not-a-secret
         run: |
-          sudo env "PATH=$PATH" "DCIAB_PVE_TOKEN=$DCIAB_PVE_TOKEN" ./dciab seed "$RUNNER_TEMP/site/dciab.yaml" \
+          sudo env "PATH=$PATH" "DCIAB_PVE_TOKEN=$DCIAB_PVE_TOKEN" "DCIAB_PVE_CSI_TOKEN=$DCIAB_PVE_CSI_TOKEN" ./dciab seed "$RUNNER_TEMP/site/dciab.yaml" \
             --payload "$RUNNER_TEMP/payload" --state "$RUNNER_TEMP/state"
       - name: Check the result, then rerun (must change nothing)
         env:
           DCIAB_PVE_TOKEN: ci-not-a-secret
+          DCIAB_PVE_CSI_TOKEN: ci-not-a-secret
         run: |
           set -euo pipefail
           state="$RUNNER_TEMP/state"
@@ -386,7 +394,7 @@ jobs:
                10.30.110.5/ci/test:1 /etc/hostname 2>/dev/null; then
             echo "pushing to the seed registry should fail"; exit 1
           fi
-          sudo env "PATH=$PATH" "DCIAB_PVE_TOKEN=$DCIAB_PVE_TOKEN" ./dciab seed "$RUNNER_TEMP/site/dciab.yaml" \
+          sudo env "PATH=$PATH" "DCIAB_PVE_TOKEN=$DCIAB_PVE_TOKEN" "DCIAB_PVE_CSI_TOKEN=$DCIAB_PVE_CSI_TOKEN" ./dciab seed "$RUNNER_TEMP/site/dciab.yaml" \
             --payload "$RUNNER_TEMP/payload" --state "$RUNNER_TEMP/state" --until kind | tee "$RUNNER_TEMP/rerun.txt"
           grep -q "pki: unchanged" "$RUNNER_TEMP/rerun.txt"
           grep -q "dns: pod dciab-services already runs this config" "$RUNNER_TEMP/rerun.txt"
@@ -396,12 +404,13 @@ jobs:
       - name: dciab mgmt from seed's outputs, offline from the payload (up to the Cluster)
         env:
           DCIAB_PVE_TOKEN: ci-not-a-secret
+          DCIAB_PVE_CSI_TOKEN: ci-not-a-secret
         run: |
           set -euo pipefail
           state="$RUNNER_TEMP/state"
           bin="$RUNNER_TEMP/payload/bin"
           # No --bootstrap-kubeconfig or --trust-bundle: they default to what seed wrote.
-          sudo env "PATH=$bin:$PATH" "DCIAB_PVE_TOKEN=$DCIAB_PVE_TOKEN" ./dciab mgmt "$RUNNER_TEMP/site/dciab.yaml" \
+          sudo env "PATH=$bin:$PATH" "DCIAB_PVE_TOKEN=$DCIAB_PVE_TOKEN" "DCIAB_PVE_CSI_TOKEN=$DCIAB_PVE_CSI_TOKEN" ./dciab mgmt "$RUNNER_TEMP/site/dciab.yaml" \
             --state "$state" --payload "$RUNNER_TEMP/payload" --until cluster
           sudo grep -q "BEGIN CERTIFICATE" "$state/mgmt-values.yaml"   # seed's platform CA reaches the nodes
           sudo "$bin/kubectl" --kubeconfig "$state/bootstrap.kubeconfig" -n cluster-mgmt get cluster mgmt
@@ -576,13 +585,13 @@ jobs:
           sudo ip link add dciab0 type dummy
           sudo ip link set dciab0 address b8:ca:3a:00:00:05 up
           sudo ip addr add 10.30.110.5/24 dev dciab0
-          DCIAB_PVE_TOKEN=placeholder ./dciab services /tmp/site/dciab.yaml --print
+          DCIAB_PVE_TOKEN=placeholder DCIAB_PVE_CSI_TOKEN=placeholder ./dciab services /tmp/site/dciab.yaml --print
       - name: dciab services
-        run: sudo DCIAB_PVE_TOKEN=placeholder DCIAB_CHRONY_IMAGE="$DCIAB_CHRONY_IMAGE" ./dciab services /tmp/site/dciab.yaml
+        run: sudo DCIAB_PVE_TOKEN=placeholder DCIAB_PVE_CSI_TOKEN=placeholder DCIAB_CHRONY_IMAGE="$DCIAB_CHRONY_IMAGE" ./dciab services /tmp/site/dciab.yaml
       - name: A rerun changes nothing
         run: |
           set -euo pipefail
-          out="$(sudo DCIAB_PVE_TOKEN=placeholder DCIAB_CHRONY_IMAGE="$DCIAB_CHRONY_IMAGE" ./dciab services /tmp/site/dciab.yaml)"
+          out="$(sudo DCIAB_PVE_TOKEN=placeholder DCIAB_PVE_CSI_TOKEN=placeholder DCIAB_CHRONY_IMAGE="$DCIAB_CHRONY_IMAGE" ./dciab services /tmp/site/dciab.yaml)"
           echo "$out"
           grep -q "already runs this config" <<<"$out"
           if grep -E "^(wrote|added|opened) " <<<"$out"; then echo "the rerun changed something"; exit 1; fi
@@ -613,7 +622,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: shellcheck dciab hack/e2e/run.sh hack/check_frozen_classes.sh images/node/build.sh lib/steps/mgmt.sh lib/steps/mgmt-pivot.sh lib/steps/services.sh lib/steps/capi-providers.sh images/node-bootc/build.sh images/node-bootc/rootfs/usr/libexec/dciab/growroot images/bootstrap-bootc/build.sh images/usb/build.sh images/day0-chrony/build.sh images/lab-runner/build.sh images/lab-runner/rootfs/usr/libexec/dciab-lab-runner/loop images/lab-runner/rootfs/usr/libexec/dciab-lab-runner/job-started.sh addons/cilium/install.sh addons/longhorn/install.sh addons/vsphere-cpi/install.sh addons/kubelet-csr-approver/install.sh hack/lab/pve.sh hack/lab/check-token.sh hack/lab/template.sh hack/lab/cluster.sh hack/lab/mgmt.sh
+      - run: shellcheck dciab hack/e2e/run.sh hack/check_frozen_classes.sh images/node/build.sh lib/steps/mgmt.sh lib/steps/mgmt-pivot.sh lib/steps/services.sh lib/steps/capi-providers.sh lib/steps/storage-classes.sh images/node-bootc/build.sh images/node-bootc/rootfs/usr/libexec/dciab/growroot images/bootstrap-bootc/build.sh images/usb/build.sh images/day0-chrony/build.sh images/lab-runner/build.sh images/lab-runner/rootfs/usr/libexec/dciab-lab-runner/loop images/lab-runner/rootfs/usr/libexec/dciab-lab-runner/job-started.sh addons/cilium/install.sh addons/longhorn/install.sh addons/vsphere-cpi/install.sh addons/csi/install.sh addons/kubelet-csr-approver/install.sh hack/lab/runner-image-id.sh hack/lab/fetch-runner-disk.sh hack/lab/pve.sh hack/lab/check-token.sh hack/lab/template.sh hack/lab/cluster.sh hack/lab/mgmt.sh
 
   rocky10:
     # The validator must run on the bootstrap host with distro packages only.
@@ -626,6 +635,7 @@ jobs:
       - name: Validate every example with placeholder secrets
         env:
           DCIAB_PVE_TOKEN: placeholder
+          DCIAB_PVE_CSI_TOKEN: placeholder
         run: |
           set -euo pipefail
           for example in examples/*.yaml; do

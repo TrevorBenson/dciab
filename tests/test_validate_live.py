@@ -151,10 +151,40 @@ def add_permissions(routes, px, drop=None, extra_root=None):
 
 
 PVE_AUTH = {f"PVEAPIToken=dciab@pve!capmox={TOKEN}"}
+CSI_TOKEN = "not-a-real-csi-token"   # tests/conftest.py's DCIAB_PVE_CSI_TOKEN
+
+
+def add_csi_permissions(routes, csi, drop=None, shared=0):
+    """Add the Proxmox CSI token's grants to the permission answers (one server answers both
+    tokens, so the privileges of a shared path are merged), and GET /storage/<id>. Proxmox
+    leaves shared out for node-local storage."""
+    from urllib.parse import quote
+    conf = {"storage": csi["storage"], "type": "rbd" if shared else "lvmthin"}
+    if shared:
+        conf["shared"] = 1
+    routes[("GET", f"/api2/json/storage/{quote(csi['storage'])}")] = (200, {"data": conf})
+
+    from dciab_validate.proxmox_privs import csi_grants
+    for g in csi_grants(csi):
+        key = ("GET", f"/api2/json/access/permissions?path={quote(g.path, safe='')}")
+        privs = dict(routes.get(key, (200, {"data": {g.path: {}}}))[1]["data"][g.path])
+        privs.update({p: int(g.propagate) for p in g.privileges if p != drop})
+        routes[key] = (200, {"data": {g.path: privs}})
+
+
+def with_proxmox_csi(spec):
+    """proxmox-bare with the Proxmox CSI plugin on local-lvm, under its own token."""
+    spec["storage"]["block"] = {"provider": "proxmox-csi", "proxmoxCSI": {
+        "storage": "local-lvm", "shared": False,
+        "credentials": {"tokenID": "csi@pve!dciab", "tokenSecret": {"env": "DCIAB_PVE_CSI_TOKEN"}}}}
+    return spec
 
 
 def proxmox_spec(port, pin):
     spec = copy.deepcopy(load_example("proxmox-bare")["spec"])
+    # The live Proxmox checks run against a three-node cluster (pve_routes); the example
+    # lists only pve01 because its hosts aren't clustered.
+    spec["platform"]["proxmox"]["nodes"] = ["pve01", "pve02", "pve03"]
     spec["platform"]["proxmox"]["url"] = f"https://127.0.0.1:{port}"
     spec["platform"]["proxmox"]["tlsFingerprint"] = pin
     return spec
@@ -699,8 +729,12 @@ def _validate_live(site, doc, *extra):
 
 def test_cli_live_end_to_end(cert, servers, site, monkeypatch):
     monkeypatch.setattr(probes, "find_interface", lambda want: None)
-    pve = servers(cert, pve_routes(), PVE_AUTH)
+    routes = pve_routes()
+    # A Proxmox CSI token (its own, on local-lvm) answers from the same server.
+    add_csi_permissions(routes, {"storage": "local-lvm"})
+    pve = servers(cert, routes, PVE_AUTH | {f"PVEAPIToken=csi@pve!dciab={CSI_TOKEN}"})
     doc = copy.deepcopy(load_example("proxmox-bare"))
+    with_proxmox_csi(doc["spec"])
     doc["spec"]["platform"]["proxmox"].update(url=f"https://127.0.0.1:{pve.port}", tlsFingerprint=cert["sha256"])
     for h in doc["spec"]["hypervisors"]["hosts"]:
         bmc = servers(cert, redfish_routes(), BMC_AUTH)
@@ -808,3 +842,90 @@ def test_compare_counts_non_propagated_privileges_as_held():
     have = {"/storage/x": {"Datastore.Audit": 0, "Sys.Modify": 0}}
     assert compare(want, have) == ([], ["/storage/x: Sys.Modify"])
     assert compare(want, {"/storage/x": {}})[0] == ["/storage/x: Datastore.Audit"]
+
+
+# --- the Proxmox CSI plugin's token ----------------------------------------------------------
+
+CSI_AUTH = {f"PVEAPIToken=csi@pve!dciab={CSI_TOKEN}"}
+CSI_BLOCK = ("spec", "storage", "block", "proxmoxCSI")
+
+
+def csi_routes(storage="local-lvm", drop=None, csi_storage="local-lvm", shared=0):
+    routes = pve_routes(storage=storage)
+    for key in [k for k in routes if "access/permissions" in k[1]]:
+        del routes[key]
+    add_csi_permissions(routes, {"storage": csi_storage}, drop=drop, shared=shared)
+    routes[("GET", "/api2/json/access/permissions?path=%2F")] = (200, {"data": {"/": {}}})
+    return routes
+
+
+def csi_spec(port, pin):
+    spec = with_proxmox_csi(proxmox_spec(port, pin))
+    return spec, spec["storage"]["block"]["proxmoxCSI"]
+
+
+def test_proxmox_csi_token_all_good(cert, servers, monkeypatch, tmp_path):
+    monkeypatch.setenv("DCIAB_PVE_CSI_TOKEN", CSI_TOKEN)
+    srv = servers(cert, csi_routes(), CSI_AUTH)
+    spec, csi = csi_spec(srv.port, cert["sha256"])
+    r = live.check_proxmox_csi(spec, CSI_BLOCK, csi, tmp_path, 3)
+    assert r.findings == []
+    assert any("csi@pve!dciab has every privilege" in n for n in r.notes)
+
+
+def test_proxmox_csi_token_missing_a_privilege(cert, servers, monkeypatch, tmp_path):
+    monkeypatch.setenv("DCIAB_PVE_CSI_TOKEN", CSI_TOKEN)
+    srv = servers(cert, csi_routes(drop="VM.Config.Disk"), CSI_AUTH)
+    spec, csi = csi_spec(srv.port, cert["sha256"])
+    [f] = live.check_proxmox_csi(spec, CSI_BLOCK, csi, tmp_path, 3).findings
+    assert f.path == CSI_BLOCK + ("credentials", "tokenID")
+    assert "/vms: VM.Config.Disk" in f.found and "Proxmox CSI" in f.fix
+
+
+def test_proxmox_csi_token_rejected_and_storage_missing(cert, servers, monkeypatch, tmp_path):
+    monkeypatch.setenv("DCIAB_PVE_CSI_TOKEN", "wrong")
+    srv = servers(cert, csi_routes(), CSI_AUTH)
+    spec, csi = csi_spec(srv.port, cert["sha256"])
+    [f] = live.check_proxmox_csi(spec, CSI_BLOCK, csi, tmp_path, 3).findings
+    assert "HTTP 401" in f.found and "DCIAB_PVE_CSI_TOKEN" in f.fix
+    monkeypatch.setenv("DCIAB_PVE_CSI_TOKEN", CSI_TOKEN)
+    srv = servers(cert, csi_routes(storage="ceph", csi_storage="ceph-vm"), CSI_AUTH)
+    spec, csi = csi_spec(srv.port, cert["sha256"])
+    csi["storage"] = "ceph-vm"
+    found = [f.found for f in live.check_proxmox_csi(spec, CSI_BLOCK, csi, tmp_path, 3).findings]
+    assert any("ceph-vm: no such storage" in x for x in found)
+
+
+def test_proxmox_csi_shared_must_match_the_storage(cert, servers, monkeypatch, tmp_path):
+    monkeypatch.setenv("DCIAB_PVE_CSI_TOKEN", CSI_TOKEN)
+    srv = servers(cert, csi_routes(shared=1), CSI_AUTH)   # Proxmox has local-lvm as shared
+    spec, csi = csi_spec(srv.port, cert["sha256"])         # the config says shared: false
+    [f] = live.check_proxmox_csi(spec, CSI_BLOCK, csi, tmp_path, 3).findings
+    assert f.path == CSI_BLOCK + ("shared",) and f.severity == "error"
+    assert "set shared: true" in f.fix
+    csi["shared"] = True
+    assert live.check_proxmox_csi(spec, CSI_BLOCK, csi, tmp_path, 3).findings == []
+    srv = servers(cert, csi_routes(shared=0), CSI_AUTH)
+    spec, csi = csi_spec(srv.port, cert["sha256"])
+    csi["shared"] = True
+    [f] = live.check_proxmox_csi(spec, CSI_BLOCK, csi, tmp_path, 3).findings
+    assert "not shared (node-local)" in f.found and "set shared: false" in f.fix
+
+
+def test_live_tasks_check_each_proxmox_csi_token():
+    spec = with_proxmox_csi(copy.deepcopy(load_example("proxmox-bare")["spec"]))
+    names = [n for n, _ in live.tasks(spec, Path("."), 1)]
+    assert "Proxmox CSI token csi@pve!dciab" in names
+    spec["storage"]["block"] = {"provider": "longhorn", "longhorn": {"replicaCount": 2, "backupTarget": "nfs://n:/x"}}
+    assert not any("CSI" in n for n, _ in live.tasks(spec, Path("."), 1))
+
+
+def test_proxmox_doc_matches_the_csi_grants():
+    from dciab_validate.proxmox_privs import csi_grants
+    doc = (ROOT / "docs" / "PROXMOX.md").read_text()
+    for g in csi_grants({"storage": "<csi storage>"}):
+        row = f"| `{g.role}` | `{g.path}` | {'yes' if g.propagate else 'no'} | " + \
+              ", ".join(f"`{p}`" for p in g.privileges)
+        assert row in doc, f"docs/PROXMOX.md is out of date for {g.role}"
+    for p in ("VM.Allocate", "VM.PowerMgmt", "VM.Clone"):
+        assert all(p not in g.privileges for g in csi_grants({"storage": "x"}))

@@ -75,15 +75,20 @@ spec:
       serviceCIDR: 10.243.0.0/16
       controlPlane: {replicas: 3, cpu: 4, memoryGiB: 16, diskGiB: 100}
       workerPools:
-        - {name: general, replicas: 3, cpu: 8, memoryGiB: 32, diskGiB: 150}   # Longhorn data shares the root disk
+        - {name: general, replicas: 3, cpu: 8, memoryGiB: 32, diskGiB: 150}
       storageIPRanges:                   # [opt] a NIC on each storage network, for every INFRA node
         san-a: 10.40.10.30-10.40.10.49
         san-b: 10.40.20.30-10.40.20.49
 
   storage:
-    longhorn:
-      replicaCount: 2                    # the Ceph datastore already replicates
-      backupTarget: nfs://nas01.dc3.example.net:/exports/longhorn
+    block:
+      provider: proxmox-csi              # volumes are VM disks on a Proxmox storage; Ceph replicates them
+      proxmoxCSI:
+        storage: ceph-vm
+        shared: true                     # Ceph RBD: every PVE node reaches it (validate --live checks)
+        credentials:                     # its own token: the privileges in docs/PROXMOX.md
+          tokenID: csi@pve!dciab
+          tokenSecret: {env: DCIAB_PVE_CSI_TOKEN}
 
   pki:
     mode: import-intermediate

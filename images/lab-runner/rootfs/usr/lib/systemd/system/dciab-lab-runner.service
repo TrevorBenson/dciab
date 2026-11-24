@@ -14,4 +14,6 @@ RestartSec=30
 TimeoutStopSec=60
 
 [Install]
-WantedBy=multi-user.target
+# Not multi-user.target: cloud-final.service runs after it, so After=cloud-final.service
+# from multi-user.target is an ordering cycle and systemd deletes the start job.
+WantedBy=cloud-init.target

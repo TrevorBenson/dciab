@@ -19,10 +19,11 @@ Commands:
                                            Print a cluster's capi-cluster values (--list: cluster names)
   media <config> (--key PUB | --checksums-only) [--source DIR] [--until STEP] [--print]
                                            Copy the archive to spec.bootstrap.workDisk and put container
-                                           storage there (as root)
+                                           storage there (as root); prints the next steps with --state
+                                           and --isos on the work disk
   services <config> [--state DIR] [--isos DIR] [--until STEP] [--print]
                                            Day 0 DNS, NTP and HTTP on the bootstrap host (as root)
-  hypervisors <config> [--state DIR] [--host NAME ...] [--until STEP] [--iso FILE] [--print]
+  hypervisors <config> [--state DIR] [--isos DIR] [--host NAME ...] [--until STEP] [--iso FILE] [--print]
                                            Day 0: install Proxmox VE on spec.hypervisors.hosts over Redfish (as root)
   mgmt <config> [--bootstrap-kubeconfig FILE] [--state DIR] [--trust-bundle FILE] [--payload DIR] [--until STEP]
                                            Build MGMT from the bootstrap cluster and move CAPI to it

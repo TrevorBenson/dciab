@@ -1,16 +1,20 @@
 # DCiaB defaults for Longhorn on every cluster that runs it (MGMT first).
 # Per-site values (replica count, backup target and its credentials Secret) are added by
-# install.sh from the config's spec.storage.longhorn. Version and chart source: bundle.lock.
+# install.sh from the cluster's Longhorn settings (spec.storage.block). Version and chart
+# source: bundle.lock.
 # Images: nodes pull every upstream image through the site registry's mirrors (the
 # ClusterClasses configure them), so the chart keeps its upstream image names.
 
-# Longhorn is the cluster's default StorageClass ("longhorn").
+# The chart's own StorageClass ("longhorn") isn't the default: DCiaB's four classes are
+# (replicated is the default; lib/dciab_storage, applied by install.sh).
 persistence:
-  defaultClass: true
+  defaultClass: false
   reclaimPolicy: Delete
 
 defaultSettings:
-  # Image-mode nodes have read-only /usr and /opt; replica data lives under /var.
+  # Image-mode nodes have read-only /usr and /opt; replica data lives under /var. On vSphere
+  # nodes with dataDiskGiB, the class mounts the data disk here, so replicas never share the
+  # root disk with etcd.
   defaultDataPath: /var/lib/longhorn
   # Don't schedule replicas on a disk with less than this much free space (percent).
   storageMinimalAvailablePercentage: 15

@@ -17,6 +17,7 @@ from datetime import datetime, timezone
 from pathlib import Path as FsPath
 from typing import Dict, List, Optional, Tuple
 
+import dciab_storage as st
 from dciab_cluster.values import place_pools, usable_domains
 
 from . import netutil as nu
@@ -498,12 +499,25 @@ class Checker:
             bmcs.setdefault(addr, hp)
 
         if ptype == "proxmox" and hv["type"] == "proxmox":
-            nodes = self.spec["platform"]["proxmox"]["nodes"]
+            # ADR 0010 (decisions 6 and 7): the hosts dciab hypervisors installs aren't clustered
+            # and have only a fresh install's local storage, so CAPMOX clones every VM on the
+            # template's node. nodes lists just that node; the other hosts wait for clustering.
+            px = self.spec["platform"]["proxmox"]
+            nodes, template = px["nodes"], px["templateNode"]
             names = [h["name"] for h in hv["hosts"]]
-            for i, name in enumerate(names):
-                if name not in nodes:
-                    self.warn(base + ("hosts", i, "name"), name,
-                              "add it to spec.platform.proxmox.nodes, or CAPMOX will never place VMs on it")
+            extra = [n for n in nodes if n != template]
+            # Matched by name offline; a renamed local pool is caught by --live's shared-flag check.
+            if extra and px["storage"] in ("local", "local-lvm", "local-zfs"):
+                self.error(("spec", "platform", "proxmox", "nodes"), ", ".join(nodes),
+                           f"list only the template node ([{template}]): on {px['storage']}, local to one host, "
+                           f"CAPMOX can't clone the template to {', '.join(extra)} (ADR 0010)")
+            idle = [n for n in names if n not in nodes]
+            if idle:
+                # A note, not a warning: notHighlyAvailable already warns once about the single host
+                # (ADR 0010 decision 7), and there's nothing here for the operator to change.
+                verb = "is" if len(idle) == 1 else "are"
+                self.notes.append(f"{', '.join(idle)} {verb} installed but not in spec.platform.proxmox.nodes: "
+                                  "CAPMOX uses them once they're clustered with shared storage (ADR 0010)")
             missing = [n for n in nodes if n not in names]
             if missing:
                 self.notes.append("spec.platform.proxmox.nodes lists hosts DCiaB won't install ("
@@ -551,22 +565,221 @@ class Checker:
                 out[item[key]] = item
         return out
 
+    # -- block storage (ADR 0008, decisions 4 and 5) ----------------------------------
+
+    def _tiers(self) -> List[str]:
+        """The tiers DCiaB gives block storage: MGMT and INFRA always, workload clusters only
+        through overrides.workload (tenants otherwise bring their own)."""
+        over = (st.base_block(self.spec).get("overrides") or {})
+        return ["mgmt", "infra"] + (["workload"] if "workload" in over else [])
+
+    def _tier_clusters(self, tier: str):
+        """(path, cluster, class) of each cluster in a tier."""
+        if tier in ("mgmt", "infra"):
+            yield ("spec", "clusters", tier), self.spec["clusters"][tier], self.spec["platform"]["type"]
+            return
+        for i, wc in enumerate(self.spec.get("workloadClusters", [])):
+            yield ("spec", "workloadClusters", i), wc, wc["class"]
+
+    def _block_path(self, tier: str, key: Optional[str] = None, field: Optional[str] = None) -> Path:
+        """Where a tier's provider (key None) or one of its settings is written."""
+        if st.legacy(self.spec):
+            return ("spec", "storage", "longhorn") + ((field,) if field else ())
+        base = ("spec", "storage", "block")
+        if tier == "workload":
+            # The workload override stands alone: nothing in it comes from block.
+            return base + ("overrides", "workload", key or "provider") + ((field,) if field else ())
+        over = (self.spec["storage"]["block"].get("overrides") or {}).get(tier) or {}
+        if key is None:
+            return base + (("overrides", tier, "provider") if "provider" in over else ("provider",))
+        sub = over.get(key)
+        if isinstance(sub, dict) and (field is None or field in sub):
+            return base + ("overrides", tier, key) + ((field,) if field else ())
+        return base + (key,) + ((field,) if field else ())
+
     def check_storage(self) -> None:
-        lh = self.spec["storage"]["longhorn"]
-        p = ("spec", "storage", "longhorn")
+        if st.legacy(self.spec):
+            import yaml
+
+            new = yaml.safe_dump({"storage": {"block": {"provider": "longhorn",
+                                                        "longhorn": self.spec["storage"]["longhorn"]}}},
+                                 sort_keys=False, default_flow_style=None).strip().replace("\n", "; ")
+            self.warn(("spec", "storage", "longhorn"), "the old form of block storage",
+                      f"write it as {new} (ADR 0008); the old form is accepted for one minor release")
+        else:
+            over = self.spec["storage"]["block"].get("overrides") or {}
+            base_provider = self.spec["storage"]["block"]["provider"]
+            for tier, o in over.items():
+                provider = o.get("provider", base_provider)
+                for key in st.SETTINGS.values():
+                    if key in o and key != st.SETTINGS[provider]:
+                        self.error(("spec", "storage", "block", "overrides", tier, key), f"set for provider {provider}",
+                                   "remove it, or set provider in this override to the one it belongs to")
+        for tier in self._tiers():
+            self._check_tier_storage(tier)
+        for cpath, c, klass in self._all_clusters():
+            self._check_data_disks(cpath, c, klass)
+
+    def _all_clusters(self):
+        for tier in ("mgmt", "infra", "workload"):
+            for cpath, c, klass in self._tier_clusters(tier):
+                yield cpath, c, klass
+
+    def _check_tier_storage(self, tier: str) -> None:
+        b = st.tier_block(self.spec, tier)
+        provider, settings = b["provider"], b["settings"]
+        key = st.SETTINGS[provider]
+        ppath = self._block_path(tier)
+        if not settings and provider != "vsphere-csi":
+            self.error(self._block_path(tier, key), "missing", f"add {key}: the settings of provider {provider} for {tier}")
+            return
+        if provider not in st.INSTALLED:
+            fix = ("choose a provider DCiaB installs today (" + ", ".join(st.INSTALLED) + "); "
+                   f"{provider} is accepted so the config can be written, and comes in a later release")
+            if provider == "vendor-csi":
+                fix += ". No vendor driver is pinned in bundle.lock yet"
+            (self.error if tier == "mgmt" else self.warn)(ppath, f"{provider}: not yet installed by DCiaB", fix)
+        if provider in st.CLASS_ONLY:
+            want = st.CLASS_ONLY[provider]
+            for cpath, _, klass in self._tier_clusters(tier):
+                if klass != want:
+                    self.error(ppath, f"{provider} for {format_path(cpath)}, a {klass} cluster",
+                               f"{provider} works only on {want} clusters; give {tier} another provider "
+                               "(overrides.workload for workload clusters)")
+        if provider == "longhorn":
+            self._check_longhorn(tier, settings)
+        if provider == "proxmox-csi" and self.spec["platform"]["type"] == "proxmox":
+            self._check_proxmox_csi_zones(tier, settings)
+            capmox = self.spec["platform"]["proxmox"]["credentials"]["tokenID"]
+            if settings["credentials"]["tokenID"] == capmox:
+                self.error(self._block_path(tier, key, "credentials"), f"tokenID {capmox}, CAPMOX's token",
+                           "give the Proxmox CSI driver a token of its own (docs/PROXMOX.md), so each holds only "
+                           "the privileges it uses")
+
+    def _check_proxmox_csi_zones(self, tier: str, csi: dict) -> None:
+        """The plugin finds VMs by UUID, but a volume on node-local storage carries its PVE node
+        as topology, matched against the nodes' topology.kubernetes.io/zone label (ADR 0010: the
+        zone is the PVE node name). In r1 a Proxmox control plane gets a zone only on a
+        one-domain site. So on node-local storage (proxmoxCSI.shared: false), a control plane
+        that holds volumes needs one domain. Shared storage needs no zone."""
+        local = not csi["shared"]
+        for path, c, klass in self._tier_clusters(tier):
+            if klass != "proxmox" or not local:
+                continue
+            zones = usable_domains(self.spec, c, "proxmox")
+            workers = any(p["replicas"] > 0 for p in c.get("workerPools", []))
+            if not workers and len(zones) > 1:
+                self.error(path + ("workerPools",),
+                           f"none, over {len(zones)} failure domains, with proxmox-csi on {csi['storage']}",
+                           f"add a worker pool, narrow the cluster to one failure domain, or use shared storage: "
+                           f"volumes on node-local storage (shared: false) need the node's zone label (its PVE node), and "
+                           "the control plane isn't spread in r1, so its nodes get none (ADR 0010)")
+        if local:
+            self.notes.append(f"{tier}: Proxmox CSI volumes on {csi['storage']} stay on the PVE node they were made on; "
+                              "a pod that uses one runs only there")
+
+    def _check_longhorn(self, tier: str, lh: dict) -> None:
         target = lh["backupTarget"]
+        tpath = self._block_path(tier, "longhorn", "backupTarget")
+        cpath = self._block_path(tier, "longhorn", "backupCredentials")
         if target.startswith("s3://"):
             if not re.match(r"^s3://[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]@[A-Za-z0-9.-]+(:\d+)?(/\S*)?$", target):
-                self.error(p + ("backupTarget",), target, "use s3://<bucket>@<endpoint>[/<path>]")
+                self.error(tpath, target, "use s3://<bucket>@<endpoint>[/<path>]")
             if "backupCredentials" not in lh:
-                self.error(p + ("backupCredentials",), "missing",
-                           "add backupCredentials: {file: <path>} holding the S3 access key and secret")
+                self.error(cpath, "missing", "add backupCredentials: {file: <path>} holding the S3 access key and secret")
         else:
             if not re.match(r"^nfs://[A-Za-z0-9.-]+:/\S*$", target):
-                self.error(p + ("backupTarget",), target, "use nfs://<server>:/<export>")
+                self.error(tpath, target, "use nfs://<server>:/<export>")
             if "backupCredentials" in lh:
-                self.error(p + ("backupCredentials",), "set for an NFS target",
-                           "remove it: NFS targets take no credentials")
+                self.error(cpath, "set for an NFS target", "remove it: NFS targets take no credentials")
+        replicas = lh["replicaCount"]
+        rpath = self._block_path(tier, "longhorn", "replicaCount")
+        if replicas == 1:
+            self.warn(rpath, "1", "use 2 or 3: with one replica a volume is lost with its node. On VMs, Longhorn's "
+                                  "data is on the VM's own disk, which is deleted when a node is replaced, so a "
+                                  "replicated datastore doesn't keep it; use the array's CSI driver instead")
+        for path, c, klass in self._tier_clusters(tier):
+            if klass == "metal3":
+                continue
+            nodes = sum(g.get("replicas", 0) for _, g in self._longhorn_nodes(path, c))
+            if nodes < replicas:
+                self.warn(rpath, f"{replicas} replicas, but {format_path(path)} has {nodes} node(s) that hold Longhorn data",
+                          f"use at most {nodes} replica(s), or add nodes: each replica needs a node of its own, so "
+                          "every volume stays degraded")
+        if tier == "mgmt":
+            mgmt = self.spec["clusters"]["mgmt"]
+            zones = len(usable_domains(self.spec, mgmt, self.spec["platform"]["type"]))
+            if 0 < zones < replicas and "notHighlyAvailable" not in self.spec["failureDomains"]:
+                self.warn(rpath, f"{replicas}, over {zones} failure domain(s) on MGMT",
+                          "two replicas will share a domain; Longhorn then allows it (soft zone anti-affinity), "
+                          "but losing that domain loses both")
+        # Workload clusters of another VM class than the platform are an error of their own.
+        ptype = self.spec["platform"]["type"]
+        classes = {klass for _, _, klass in self._tier_clusters(tier)} & {ptype, "metal3"}
+        if replicas > 1 and "vsphere" in classes:
+            ds = self.spec["platform"]["vsphere"]["datastore"]
+            self.warn(rpath, f"{replicas} Longhorn replicas for {tier} on vSphere datastore {ds}",
+                      "if the datastore replicates (vSAN, a replicated array), every write is replicated twice: "
+                      "use provider vsphere-csi there (ADR 0008, decision 4). Don't lower replicaCount instead: "
+                      "a replaced node takes its VM disk, and its replica, with it")
+        px = self.spec["platform"]["proxmox"]["storage"] if "proxmox" in classes else ""
+        # local, local-lvm and local-zfs are a Proxmox host's own disks, which don't replicate.
+        if replicas > 1 and px and not px.startswith("local"):
+            self.warn(rpath, f"{replicas} Longhorn replicas for {tier} on Proxmox storage {px}",
+                      "if the storage is shared and replicated (Ceph RBD, a SAN LUN), every write is replicated twice: "
+                      "use provider proxmox-csi there (ADR 0008, decision 4). Don't lower replicaCount instead: "
+                      "a replaced node takes its VM disk, and its replica, with it")
+        for path, c, klass in self._tier_clusters(tier):
+            if klass == "proxmox":
+                self.warn(path, "Longhorn on Proxmox VMs, on the root disk that etcd uses",
+                          "CAPMOX can't give a machine a second disk yet, so Longhorn's I/O competes with etcd and "
+                          "a full Longhorn disk fills the node; use provider proxmox-csi for this tier")
+            elif klass == "vsphere":
+                self._check_longhorn_disks(path, c)
+
+    def _longhorn_nodes(self, cpath: Path, c: dict):
+        """(path, group) of the node groups Longhorn runs on: the worker pools, or the control
+        plane when there are no worker nodes."""
+        pools = c.get("workerPools", [])
+        if any(p["replicas"] > 0 for p in pools):
+            return [(cpath + ("workerPools", j), p) for j, p in enumerate(pools)]
+        return [(cpath + ("controlPlane",), c["controlPlane"])]
+
+    def _check_longhorn_disks(self, cpath: Path, c: dict) -> None:
+        # The old form (spec.storage.longhorn) still validates as before, with a warning: the
+        # error is for configs written in the new form.
+        report = self.warn if st.legacy(self.spec) else self.error
+        for gpath, g in self._longhorn_nodes(cpath, c):
+            if "dataDiskGiB" not in g:
+                report(gpath + ("dataDiskGiB",), "missing",
+                       "add dataDiskGiB: Longhorn runs on these nodes and needs its own disk, "
+                       "never the root disk etcd uses (ADR 0008, decision 4)")
+
+    def _check_data_disks(self, cpath: Path, c: dict, klass: str) -> None:
+        if klass == "metal3":
+            return
+        tier = st.tier_of(self.spec, cpath[-1] if cpath[1] == "clusters" else c["name"])[0]
+        block = st.tier_block(self.spec, tier)
+        provider = block["provider"] if block else None
+        groups = [(cpath + ("controlPlane",), c["controlPlane"])] + \
+                 [(cpath + ("workerPools", j), p) for j, p in enumerate(c.get("workerPools", []))]
+        for gpath, g in groups:
+            if "dataDiskGiB" not in g:
+                continue
+            dpath = gpath + ("dataDiskGiB",)
+            if klass == "proxmox":
+                self.error(dpath, str(g["dataDiskGiB"]),
+                           "remove it: CAPMOX can't give a machine a second disk yet; use provider proxmox-csi")
+            elif provider is None:
+                self.warn(dpath, f"{g['dataDiskGiB']}, on a workload cluster DCiaB gives no block storage",
+                          "remove it, or opt in with spec.storage.block.overrides.workload {provider: longhorn, ...}: "
+                          "the data disk is only for Longhorn, so these machines don't get it")
+            elif provider != "longhorn":
+                self.warn(dpath, f"{g['dataDiskGiB']}, with block storage {provider}",
+                          "remove it: the data disk is only for Longhorn, so these machines don't get it")
+            elif g["dataDiskGiB"] == g["diskGiB"]:
+                self.error(dpath, f"{g['dataDiskGiB']}, the same as diskGiB",
+                           "give the data disk another size: the node finds it by its size")
 
     def check_resilience(self) -> None:
         for name in ("mgmt", "infra"):
@@ -574,16 +787,6 @@ class Checker:
             if cp["replicas"] == 1:
                 self.warn(("spec", "clusters", name, "controlPlane", "replicas"), "1",
                           "use 3 for production: one control plane node is a single point of failure")
-        replicas = self.spec["storage"]["longhorn"]["replicaCount"]
-        if replicas == 1:
-            self.warn(("spec", "storage", "longhorn", "replicaCount"), "1",
-                      "use 2 or 3: with one replica a volume is lost with its node")
-        mgmt = self.spec["clusters"]["mgmt"]
-        zones = len(usable_domains(self.spec, mgmt, self.spec["platform"]["type"]))
-        if 0 < zones < replicas and "notHighlyAvailable" not in self.spec["failureDomains"]:
-            self.warn(("spec", "storage", "longhorn", "replicaCount"), f"{replicas}, over {zones} failure domain(s) on MGMT",
-                      "two replicas will share a domain; Longhorn then allows it (soft zone anti-affinity), "
-                      "but losing that domain loses both")
 
     # -- failure domains (ADR 0010) -------------------------------------------------
 

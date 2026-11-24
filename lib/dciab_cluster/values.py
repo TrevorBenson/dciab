@@ -21,6 +21,10 @@ Site-wide conventions, the same for every cluster:
   platform (narrowed by its own failureDomains list). With two or more, each worker pool
   becomes one MachineDeployment per domain, <pool>-<domain>, with the replicas split
   evenly; with one, the pools are placed in it
+- block storage (lib/dciab_storage): a vSphere cluster whose tier runs Longhorn gets its
+  dataDiskGiB on the machines that set it, a second disk the class mounts at
+  /var/lib/longhorn, so Longhorn never writes to the root disk that etcd uses. CAPMOX has no
+  second disk, so Proxmox machines get none
 - a cluster with no worker nodes (no worker pools, or only pools of 0 replicas, as MGMT
   often has) runs its workloads on its control plane nodes: controlPlane.schedulable,
   which the classes turn into control plane nodes without the NoSchedule taint
@@ -81,8 +85,20 @@ def _cluster(spec: dict, name: str):
                       + "".join(f", {wc['name']}" for wc in spec.get("workloadClusters", [])))
 
 
-def _machine(pool: dict) -> Dict[str, int]:
-    return {"cpu": pool["cpu"], "memoryGiB": pool["memoryGiB"], "diskGiB": pool["diskGiB"]}
+def _machine(pool: dict, data_disk: bool = False) -> Dict[str, int]:
+    m = {"cpu": pool["cpu"], "memoryGiB": pool["memoryGiB"], "diskGiB": pool["diskGiB"]}
+    if data_disk and pool.get("dataDiskGiB"):
+        m["dataDiskGiB"] = pool["dataDiskGiB"]
+    return m
+
+
+def data_disks(spec: dict, name: str, klass: str) -> bool:
+    """Whether this cluster's machines get their dataDiskGiB: vSphere clusters whose block
+    storage is Longhorn."""
+    from dciab_storage import cluster_block
+
+    block = cluster_block(spec, name)
+    return klass == "vsphere" and block is not None and block["provider"] == "longhorn"
 
 
 def _prefix(cidr: str) -> int:
@@ -156,14 +172,19 @@ def place_pools(pools: List[dict], domains: List[str]) -> List[dict]:
 
 
 def unsupported(site: dict, name: str) -> List[str]:
-    """Settings in the config that the capi-cluster chart can't express yet."""
-    _, c, klass = _cluster(site["spec"], name)
+    """Settings in the config that this cluster's machines don't get."""
+    spec = site["spec"]
+    _, c, klass = _cluster(spec, name)
     notes = []
-    if klass != "metal3":
-        for p in c["workerPools"]:
-            if "dataDiskGiB" in p:
-                notes.append(f"worker pool {p['name']}: dataDiskGiB ({p['dataDiskGiB']}) is not in the "
-                             "capi-cluster chart yet; nodes get no data disk")
+    if klass == "metal3":
+        return notes
+    used = data_disks(spec, name, klass)
+    groups = [("the control plane", c["controlPlane"])] + [(f"worker pool {p['name']}", p) for p in c["workerPools"]]
+    for label, g in groups:
+        if "dataDiskGiB" in g and not used:
+            why = ("CAPMOX can't add a second disk" if klass == "proxmox"
+                   else "it is only for Longhorn, and this cluster's block storage isn't Longhorn")
+            notes.append(f"{label}: dataDiskGiB ({g['dataDiskGiB']}) is ignored: {why}")
     return notes
 
 
@@ -232,11 +253,12 @@ def _vm(values: dict, spec: dict, c: dict, klass: str, site_name: str) -> None:
     }
     if "mtu" in nodes_net:
         values["nodes"]["mtu"] = nodes_net["mtu"]
-    values["controlPlane"] = {"replicas": c["controlPlane"]["replicas"], "machine": _machine(c["controlPlane"])}
+    disks = data_disks(spec, values["name"], klass)
+    values["controlPlane"] = {"replicas": c["controlPlane"]["replicas"], "machine": _machine(c["controlPlane"], disks)}
     domains = usable_domains(spec, c, klass)
     names = [d["name"] for d in domains]
     values["workerPools"] = place_pools(
-        [dict({"name": p["name"], "replicas": p["replicas"], "machine": _machine(p)},
+        [dict({"name": p["name"], "replicas": p["replicas"], "machine": _machine(p, disks)},
               **({"failureDomains": p["failureDomains"]} if p.get("failureDomains") else {}))
          for p in c["workerPools"]], names)
     platform = spec["platform"]

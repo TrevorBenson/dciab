@@ -246,6 +246,25 @@ def test_print_changes_nothing(tmp_path, monkeypatch, capsys):
     assert not (tmp_path / ".dciab").exists()
 
 
+@pytest.mark.parametrize("state_arg", [True, False])
+def test_non_root_creates_nothing(tmp_path, monkeypatch, capsys, state_arg):
+    # The root check comes before the state folder is made or default_state migrates it.
+    Site(tmp_path, monkeypatch, capsys)
+    cfg = tmp_path / "dciab.yaml"
+    cfg.write_text(yaml.safe_dump(bare(), sort_keys=False))
+    monkeypatch.setattr(cli.os, "geteuid", lambda: 1000)
+    import dciab_state
+
+    def no_default_state(*a, **kw):
+        raise AssertionError("default_state (which may migrate state) ran before the root check")
+    monkeypatch.setattr(dciab_state, "default_state", no_default_state)
+    before = sorted(p.relative_to(tmp_path) for p in tmp_path.rglob("*"))
+    extra = ["--state", str(tmp_path / "s")] if state_arg else []
+    code = cli.main(["--root", str(ROOT), *extra, str(cfg)])
+    assert code == 2 and "must run as root" in capsys.readouterr().err
+    assert sorted(p.relative_to(tmp_path) for p in tmp_path.rglob("*")) == before
+
+
 # --- a fake BMC --------------------------------------------------------------------------------
 
 @pytest.fixture(scope="module")

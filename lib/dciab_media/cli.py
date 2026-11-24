@@ -22,7 +22,10 @@ re-run, and a finished run changes nothing:
   isos     <work>/isos, with the archive's installer ISOs (payload/isos/) if it has any
 
 Then it prints the commands that run the next steps from the copy, with their state on
-the work disk.
+the work disk (--state <work>/state) and services and hypervisors given the ISOs the isos
+step placed (--isos <work>/isos). On the appliance they name the config by the stable
+SITE path (/var/lib/dciab/site/...), never the versioned folder it links to, which the
+next boot's sync replaces.
 
 Exit codes: 0 done, 1 a step failed, 2 could not run.
 """
@@ -43,6 +46,7 @@ from typing import Callable, Dict, List, NamedTuple, Optional, Sequence
 import yaml
 
 from dciab_archive import verify as verify_mod
+from dciab_state import SITE
 
 STEPS = ["target", "copy", "verify", "storage", "isos"]
 # On the appliance, the root filesystem is on workDisk.disk; dciab's state lives under /var.
@@ -385,6 +389,20 @@ def place_isos(archive: Path, isos: Path) -> List[str]:
 
 # ---------------------------------------------------------------- main
 
+def stable_config(config: str, site: Optional[Path] = None) -> Path:
+    """The config path to print: absolute, symlinks kept. On the appliance, `site` links to a
+    versioned folder that the next boot's sync_site replaces, so a config inside it (named
+    either way) is given by the `site` path, which survives the sync."""
+    path = Path(os.path.abspath(config))
+    site = site or SITE
+    if site.is_symlink():
+        try:
+            return site / path.resolve().relative_to(site.resolve())
+        except (OSError, ValueError):
+            pass
+    return path
+
+
 def next_commands(dest: Path, config: Path, work: Path) -> List[str]:
     q = shlex.quote
     dciab, state, isos = q(str(dest / "dciab")), q(str(work / "state")), q(str(work / "isos"))
@@ -419,7 +437,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     if args.key is not None and not args.key.is_file():
         print(f"dciab media: {args.key}: no such key file", file=sys.stderr)
         return 2
-    config = Path(args.config).resolve()
+    config = stable_config(args.config)
     try:
         doc = yaml.safe_load(config.read_text()) or {}
     except (OSError, yaml.YAMLError) as exc:

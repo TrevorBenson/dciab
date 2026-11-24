@@ -54,6 +54,7 @@ To really delete a revision:
 - **Kubelet serving certificates**: `serverTLSBootstrap: true` (a kubeadm patch in `/etc/kubernetes/patches`), so serving certificates come from the cluster CA and rotate. [kubelet-csr-approver](../../addons/kubelet-csr-approver/README.md) approves their CSRs.
 - **Health checks**: a MachineHealthCheck for the control plane and each worker pool. A machine whose Node is `NotReady` or `Unknown` for 5 minutes, or that never gets a Node (20 minutes on VMs, 60 on bare metal), is replaced. Only one unhealthy machine at a time is replaced, in the control plane and in each worker pool (an absolute limit, so pools of one or two are repaired too); with two or more unhealthy at once nothing is replaced. The control plane never remediates so that etcd loses quorum, and retries a failing machine at most 3 times, 10 minutes apart. On Proxmox a replacement control plane VM may land on the same host as a survivor until CAPMOX spreads the control plane (ADR 0010).
 - **Deleting machines**: draining a node stops after 30 minutes and waiting for its volumes to detach after 10, so a stuck pod can't block an upgrade or a replacement forever. Longhorn's drain policy, `block-for-eviction-if-contains-last-replica` ([addons/longhorn](../../addons/longhorn/values.yaml)), moves a volume's last replica off the node during the drain, so the timeout doesn't delete it.
+- **Data disk for Longhorn** (vSphere): a machine whose `machine` variable has `dataDiskGiB` gets a second disk of that size (`additionalDisksGiB`). Before kubeadm runs, `/etc/dciab/data-disk.sh` formats the blank disk of exactly that size once (XFS, label `dciab-data`) and mounts it at `/var/lib/longhorn` through `/etc/fstab`, so Longhorn never writes to the root disk that etcd uses. With no such disk, the bootstrap fails. The size must differ from `diskGiB`. CAPMOX has no second disk, so the Proxmox class has none.
 - **Certificate expiry**: control plane machines are replaced 60 days before their kubeadm certificates expire, so a cluster that is never upgraded never runs on expired certificates.
 - **API audit log**: an audit policy at `/etc/kubernetes/audit/policy.yaml` on the control plane nodes (Metadata by default; full bodies for RBAC changes; never Secret, ConfigMap or token review bodies; no health checks, events or system leases). The API server writes `/var/log/kubernetes/audit/audit.log`, rotated at 100 MB; a rotated file is deleted after 30 days, or sooner once there are more than 10.
 
@@ -63,7 +64,7 @@ kube-vip mounts `admin.conf` read-only. It still holds cluster-admin credentials
 
 ## Not in v1 yet
 
-- Separate data disks for Longhorn (Longhorn uses the root disk).
+- Separate data disks for Longhorn on Proxmox: CAPMOX can't add a second disk to a machine yet. On Proxmox, use the Proxmox CSI driver instead of Longhorn.
 
 ## Checking
 
