@@ -1,0 +1,64 @@
+name: node image boots (KVM)
+
+# Pre-merge coverage for the Rocky 10 bootc node image on a GitHub-hosted runner: build the
+# image on the pinned base (nodeImages.bootc.baseImage, published by lab-runner-image.yml; a
+# hosted runner can pull it but can't build it), turn it into a qcow2 and boot it under KVM.
+# It needs no credentials and touches no hypervisor, so pull requests (forks included, after
+# approval) may run it. The credentialed lab runner never runs pull requests; see #139.
+on:
+  pull_request:
+    paths:
+      - images/node-bootc/**
+      - hack/e2e/boot-node-image.sh
+      - bundle.lock
+      - VERSION
+      - .github/workflows/node-image-boot.yml
+  push:
+    branches: [main]
+    paths:
+      - images/node-bootc/**
+      - hack/e2e/boot-node-image.sh
+      - bundle.lock
+      - VERSION
+      - .github/workflows/node-image-boot.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: node-image-boot-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  boot:
+    name: node image boots under KVM (Rocky 10 bootc)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+      - name: The base must be pinned
+        run: |
+          python3 - <<'PY'
+          import re, sys, yaml
+          base = yaml.safe_load(open("bundle.lock"))["nodeImages"]["bootc"].get("baseImage") or ""
+          if not re.search(r"@sha256:[0-9a-f]{64}$", base):
+              sys.exit("nodeImages.bootc.baseImage is not pinned: a hosted runner can't build the base "
+                       "(run lab-runner-image.yml on the lab runner, then pin the digest)")
+          print("base:", base)
+          PY
+      - name: Tools and KVM
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq qemu-system-x86 qemu-utils xorriso python3-yaml
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules >/dev/null
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          ls -l /dev/kvm
+          df -h /
+      - name: Build the node image and qcow2
+        run: sudo images/node-bootc/build.sh --type qcow2
+      - name: Boot it and check
+        run: |
+          sudo chown -R "$(id -u):$(id -g)" images/node-bootc/output
+          hack/e2e/boot-node-image.sh images/node-bootc/output/qcow2/disk.qcow2 25
