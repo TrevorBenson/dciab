@@ -2,14 +2,15 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/TrevorBenson/dciab/schema/dciab.schema.json",
   "title": "DCiaB site configuration",
-  "description": "The single input to DCiaB. Every site-specific field is required; nothing has a default.",
+  "description": "The single input to DCiaB. Every site-specific field is required and has no default; an optional field's default is the same for every site.",
   "type": "object",
   "additionalProperties": false,
   "required": ["apiVersion", "kind", "metadata", "spec"],
   "properties": {
-    "apiVersion": {"const": "dciab.io/v1alpha1", "description": "use dciab.io/v1alpha1"},
-    "kind": {"const": "Site", "description": "use Site"},
+    "apiVersion": {"const": "dciab.io/v1alpha1", "description": "the config format's version: dciab.io/v1alpha1"},
+    "kind": {"const": "Site", "description": "the config's kind: Site"},
     "metadata": {
+      "description": "the site's identity; only name is read",
       "type": "object",
       "additionalProperties": false,
       "required": ["name"],
@@ -22,21 +23,24 @@
       }
     },
     "spec": {
+      "description": "the site: its platform, network, clusters and the services DCiaB builds",
       "type": "object",
       "additionalProperties": false,
       "required": ["bundleVersion", "platform", "kubernetes", "bootstrap", "network", "time", "failureDomains", "clusters", "storage", "pki", "identity", "baremetal"],
       "properties": {
-        "bundleVersion": {"type": "string", "pattern": "^\\d+\\.\\d+\\.\\d+$", "description": "the archive version, as in its VERSION file"},
-        "platform": {"$ref": "#/$defs/platform"},
+        "bundleVersion": {"type": "string", "pattern": "^\\d+\\.\\d+\\.\\d+$", "description": "the DCiaB archive version this config is written for, as in the archive's VERSION file. validate checks they match"},
+        "platform": {"$ref": "#/$defs/platform", "description": "the hypervisor platform MGMT, INFRA and VM workload clusters run on: vSphere or Proxmox VE, one per site. Read by validate --live, seed, cluster-values and mgmt"},
         "kubernetes": {
+          "description": "the Kubernetes version of every cluster",
           "type": "object",
           "additionalProperties": false,
           "required": ["version"],
           "properties": {
-            "version": {"type": "string", "pattern": "^v1\\.\\d+\\.\\d+$", "description": "a Kubernetes version such as v1.34.2"}
+            "version": {"type": "string", "pattern": "^v1\\.\\d+\\.\\d+$", "description": "the Kubernetes version, vX.Y.Z. It must be the one this archive's bundle.lock pins, which its node images and ClusterClasses are built for (validate checks)"}
           }
         },
         "bootstrap": {
+          "description": "the bootstrap host (server zero, or a Rocky Linux 10 host you provide): its network, its work disk and the keys that open break-glass material. Read by media, services, seed and every later step",
           "type": "object",
           "additionalProperties": false,
           "required": ["interface", "address", "recipients"],
@@ -46,7 +50,7 @@
             "workDisk": {
               "oneOf": [
                 {"type": "object", "additionalProperties": false, "required": ["disk"],
-                 "properties": {"disk": {"$ref": "#/$defs/rootDeviceHints"}},
+                 "properties": {"disk": {"$ref": "#/$defs/rootDeviceHints", "description": "the disk, by one or more root device hints"}},
                  "description": "disk: the local disk the DCiaB appliance installs onto and works from (wiped), selected like rootDeviceHints"},
                 {"type": "object", "additionalProperties": false, "required": ["path"],
                  "properties": {"path": {"type": "string", "pattern": "^/", "description": "an absolute directory"}},
@@ -54,7 +58,7 @@
               ],
               "description": "where the bootstrap host keeps the payload dciab media copies from the USB, and its heavy state (container storage, kind, the seed registry)"
             },
-            "address": {"$ref": "#/$defs/ipv4"},
+            "address": {"$ref": "#/$defs/ipv4", "description": "the bootstrap host's IPv4 address on the node network. The seed registry (registry.<network.domain>) and the Day 0 services answer on it; validate checks it is inside network.nodes.cidr and that nothing else uses it"},
             "recipients": {
               "type": "array",
               "minItems": 2,
@@ -64,24 +68,25 @@
             }
           }
         },
-        "network": {"$ref": "#/$defs/network"},
-        "time": {"$ref": "#/$defs/time"},
-        "failureDomains": {"$ref": "#/$defs/failureDomains"},
+        "network": {"$ref": "#/$defs/network", "description": "the node network, DNS, storage networks and load balancing that every cluster shares"},
+        "time": {"$ref": "#/$defs/time", "description": "where nodes, hypervisors and BMCs get their time (ADR 0010, decision 9)"},
+        "failureDomains": {"$ref": "#/$defs/failureDomains", "description": "the hardware that fails independently, and how clusters spread across it (ADR 0010)"},
         "clusters": {
+          "description": "the two platform clusters, both on platform.type. Workload clusters are in workloadClusters",
           "type": "object",
           "additionalProperties": false,
           "required": ["mgmt", "infra"],
           "properties": {
-            "mgmt": {"$ref": "#/$defs/vmCluster"},
-            "infra": {"$ref": "#/$defs/vmCluster"}
+            "mgmt": {"$ref": "#/$defs/vmCluster", "description": "MGMT: the self-managing cluster that owns every cluster's machines through Cluster API, built by dciab mgmt. Its lbPool must hold baremetal.ironicIP"},
+            "infra": {"$ref": "#/$defs/vmCluster", "description": "INFRA: the cluster for platform services (identity, secrets, Git, GitOps, object storage, observability), built by the infra step (planned)"}
           }
         },
-        "storage": {"$ref": "#/$defs/storage"},
-        "backup": {"$ref": "#/$defs/backup"},
-        "pki": {"$ref": "#/$defs/pki"},
-        "identity": {"$ref": "#/$defs/identity"},
-        "baremetal": {"$ref": "#/$defs/baremetal"},
-        "hypervisors": {"$ref": "#/$defs/hypervisors"},
+        "storage": {"$ref": "#/$defs/storage", "description": "block storage (ADR 0008, decisions 4 and 4a): INFRA's provider, and overrides for MGMT and workload clusters. The storage step of dciab mgmt reads it for MGMT"},
+        "backup": {"$ref": "#/$defs/backup", "description": "backups and disaster recovery (ADR 0009). Leave it out only on a config in the old form: validate then reads the site target from the Longhorn settings' backupTarget and warns, and errors when there is none"},
+        "pki": {"$ref": "#/$defs/pki", "description": "the platform CA that nodes, the seed registry and platform services trust: generated by seed, or the site's intermediate (ADR 0005)"},
+        "identity": {"$ref": "#/$defs/identity", "description": "who administers the site and how people log in (ADR 0004; ADR 0008, decision 3; docs/IDENTITY.md)"},
+        "baremetal": {"$ref": "#/$defs/baremetal", "description": "bare-metal servers that Metal3 provisions as nodes of metal3 workload clusters (planned). Set enabled: false when the site has none"},
+        "hypervisors": {"$ref": "#/$defs/hypervisors", "description": "optional: hypervisors that dciab hypervisors installs on bare servers before seed. Leave it out when the hypervisors already exist"},
         "workloadClusters": {
           "type": "array",
           "items": {"$ref": "#/$defs/workloadCluster"},
@@ -124,12 +129,12 @@
         {
           "additionalProperties": false,
           "required": ["file"],
-          "properties": {"file": {"type": "string", "minLength": 1}}
+          "properties": {"file": {"type": "string", "minLength": 1, "description": "a file that holds the secret: a path relative to the config's folder, or absolute. validate checks it exists and isn't readable by others"}}
         },
         {
           "additionalProperties": false,
           "required": ["env"],
-          "properties": {"env": {"type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"}}
+          "properties": {"env": {"type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]*$", "description": "an environment variable that holds the secret when the step runs"}}
         }
       ]
     },
@@ -143,23 +148,24 @@
       "additionalProperties": false,
       "required": ["server", "thumbprint", "datacenter", "cluster", "datastore", "folder", "resourcePool", "network", "template", "credentials"],
       "properties": {
-        "server": {"$ref": "#/$defs/hostname"},
-        "thumbprint": {"$ref": "#/$defs/fingerprint"},
-        "datacenter": {"type": "string", "minLength": 1},
-        "cluster": {"type": "string", "minLength": 1},
-        "datastore": {"type": "string", "minLength": 1},
+        "server": {"$ref": "#/$defs/hostname", "description": "vCenter's DNS name. CAPV, the vSphere cloud provider (CPI) and the vSphere CSI driver reach vCenter at it"},
+        "thumbprint": {"$ref": "#/$defs/fingerprint", "description": "the fingerprint of vCenter's TLS certificate. CAPV and validate --live trust vCenter by it"},
+        "datacenter": {"type": "string", "minLength": 1, "description": "the vSphere datacenter that holds the compute cluster, datastore, folder and network"},
+        "cluster": {"type": "string", "minLength": 1, "description": "the compute cluster that runs MGMT and INFRA VMs; validate --live checks it exists. A failure domain may name its own (failureDomains.domains[].vsphere.computeCluster)"},
+        "datastore": {"type": "string", "minLength": 1, "description": "the datastore for node VM disks. A failure domain may name its own"},
         "folder": {"type": "string", "pattern": "^/", "description": "an absolute inventory path such as /DC1/vm/dciab"},
-        "resourcePool": {"type": "string", "pattern": "^/", "description": "an absolute inventory path"},
+        "resourcePool": {"type": "string", "pattern": "^/", "description": "the resource pool for node VMs, an absolute inventory path such as /DC1/host/Cluster1/Resources/dciab"},
         "network": {"type": "string", "minLength": 1, "description": "the port group for MGMT and INFRA nodes"},
-        "template": {"type": "string", "minLength": 1, "description": "the VM template name"},
-        "clusterModules": {"type": "boolean", "description": "optional, default true: CAPV cluster modules (DRS VM-VM anti-affinity) keep each group's VMs on separate hosts. Set false only on a site without DRS"},
+        "template": {"type": "string", "minLength": 1, "description": "the node VM template, built from DCiaB's node image recipe for this archive's Kubernetes version"},
+        "clusterModules": {"type": "boolean", "description": "optional, default true: CAPV cluster modules (DRS VM-VM anti-affinity) keep each group's VMs on separate hosts. Set false only on a site without DRS", "default": true},
         "credentials": {
+          "description": "the vCenter account that CAPV, the CPI and the vSphere CSI driver use; mgmt puts it in each cluster's <cluster>-vsphere-credentials Secret",
           "type": "object",
           "additionalProperties": false,
           "required": ["username", "password"],
           "properties": {
-            "username": {"type": "string", "minLength": 1},
-            "password": {"$ref": "#/$defs/secretRef"}
+            "username": {"type": "string", "minLength": 1, "description": "the vCenter user, such as dciab@vsphere.local"},
+            "password": {"$ref": "#/$defs/secretRef", "description": "the user's password, a secret reference"}
           }
         }
       }
@@ -170,20 +176,21 @@
       "required": ["url", "tlsFingerprint", "nodes", "templateNode", "templateID", "storage", "bridge", "credentials"],
       "properties": {
         "url": {"type": "string", "pattern": "^https://[^/]+(:\\d+)?/?$", "description": "the Proxmox API URL, such as https://pve01.example.net:8006"},
-        "tlsFingerprint": {"$ref": "#/$defs/fingerprint"},
-        "nodes": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1}},
+        "tlsFingerprint": {"$ref": "#/$defs/fingerprint", "description": "the fingerprint of the Proxmox API's TLS certificate. CAPMOX and validate --live trust the API by it"},
+        "nodes": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1}, "description": "the PVE nodes DCiaB may use, at least one. templateNode and every failure domain's proxmox.node must be one of them; validate --live checks each is a node of the cluster"},
         "templateNode": {"type": "string", "minLength": 1, "description": "the node that holds the VM template; CAPMOX clones from it (one of nodes)"},
-        "templateID": {"type": "integer", "minimum": 100, "description": "the VM template ID"},
-        "storage": {"type": "string", "minLength": 1},
-        "bridge": {"type": "string", "minLength": 1},
-        "vlanTag": {"type": "integer", "minimum": 1, "maximum": 4094},
+        "templateID": {"type": "integer", "minimum": 100, "description": "the node VM template's ID, 100 or more"},
+        "storage": {"type": "string", "minLength": 1, "description": "the Proxmox storage that CAPMOX clones node VM disks onto. On local storage (local-lvm, ZFS) a clone stays on the template's node"},
+        "bridge": {"type": "string", "minLength": 1, "description": "the bridge node VMs' NIC attaches to (the node network), such as vmbr0"},
+        "vlanTag": {"type": "integer", "minimum": 1, "maximum": 4094, "description": "optional: the VLAN tag on node VMs' NIC, 1-4094, for a VLAN-aware bridge. Unset: the NIC is untagged"},
         "credentials": {
+          "description": "CAPMOX's API token. docs/PROXMOX.md lists the privileges it needs; validate --live checks them",
           "type": "object",
           "additionalProperties": false,
           "required": ["tokenID", "tokenSecret"],
           "properties": {
             "tokenID": {"type": "string", "pattern": "^[^@\\s]+@[^!\\s]+![^\\s]+$", "description": "an API token ID such as dciab@pve!capmox"},
-            "tokenSecret": {"$ref": "#/$defs/secretRef"}
+            "tokenSecret": {"$ref": "#/$defs/secretRef", "description": "the token's secret, a secret reference"}
           }
         }
       }
@@ -193,9 +200,9 @@
       "additionalProperties": false,
       "required": ["type"],
       "properties": {
-        "type": {"enum": ["vsphere", "proxmox"], "description": "vsphere or proxmox"},
-        "vsphere": {"$ref": "#/$defs/vsphere"},
-        "proxmox": {"$ref": "#/$defs/proxmox"}
+        "type": {"enum": ["vsphere", "proxmox"], "description": "vsphere or proxmox: the platform MGMT and INFRA run on. Give the matching block (vsphere or proxmox) and not the other"},
+        "vsphere": {"$ref": "#/$defs/vsphere", "description": "the vSphere settings: required with type vsphere, not allowed with proxmox"},
+        "proxmox": {"$ref": "#/$defs/proxmox", "description": "the Proxmox VE settings: required with type proxmox, not allowed with vsphere"}
       },
       "allOf": [
         {
@@ -213,7 +220,7 @@
       "additionalProperties": false,
       "required": ["domain", "upstreamResolvers", "nodes", "dnsServiceIPs", "loadBalancer"],
       "properties": {
-        "domain": {"$ref": "#/$defs/hostname"},
+        "domain": {"$ref": "#/$defs/hostname", "description": "the site's DNS domain, served by the seed DNS on Day 0 and by MGMT later. Platform names live under it: registry.<domain> (the site registry), auth.<domain> (Authentik), ironic.<domain> (Metal3 images). Hypervisor host names get it appended"},
         "upstreamResolvers": {
           "type": "array",
           "uniqueItems": true,
@@ -221,18 +228,20 @@
           "description": "upstream DNS servers the seed DNS forwards other names to; an empty list forwards nothing (set isolated: true to say that is intended)"
         },
         "isolated": {
+          "default": false,
           "type": "boolean",
           "description": "optional, default false. true: the site has no upstream DNS on purpose, and upstreamResolvers is empty. Nodes resolve only network.domain, so everything they pull must come through the seed registry. Without it, an empty upstreamResolvers is a warning"
         },
         "nodes": {
+          "description": "the node network: MGMT and INFRA nodes, the bootstrap host, the DNS service IPs and hypervisor management addresses sit in it",
           "type": "object",
           "additionalProperties": false,
           "required": ["cidr", "gateway", "vlan"],
           "properties": {
-            "cidr": {"$ref": "#/$defs/cidr"},
-            "gateway": {"$ref": "#/$defs/ipv4"},
-            "vlan": {"type": "integer", "minimum": 1, "maximum": 4094},
-            "mtu": {"$ref": "#/$defs/mtu"}
+            "cidr": {"$ref": "#/$defs/cidr", "description": "the node network. Every address and range of the VM clusters must be inside it"},
+            "gateway": {"$ref": "#/$defs/ipv4", "description": "the node network's default gateway, inside cidr"},
+            "vlan": {"type": "integer", "minimum": 1, "maximum": 4094, "description": "the node network's VLAN ID, 1-4094. The bootstrap host tags it when bootstrap.managementVLAN is tagged"},
+            "mtu": {"$ref": "#/$defs/mtu", "description": "optional MTU of the node NICs, 1280-9216 (default: the platform's, usually 1500)"}
           }
         },
         "storage": {
@@ -249,18 +258,21 @@
           "description": "exactly two addresses in the node network for the DNS service"
         },
         "loadBalancer": {
+          "description": "how LoadBalancer addresses (each cluster's lbPool) are announced: by BGP to the site's routers, or by L2 (ARP). Cilium LB IPAM, planned",
           "type": "object",
           "additionalProperties": false,
           "required": ["mode"],
           "properties": {
-            "mode": {"enum": ["bgp", "l2"], "description": "bgp or l2"},
+            "mode": {"enum": ["bgp", "l2"], "description": "bgp: announce addresses to the peers below; l2: answer ARP for them on the node network"},
             "bgp": {
+              "description": "the BGP settings: required with mode bgp, not allowed with l2",
               "type": "object",
               "additionalProperties": false,
               "required": ["localASN", "peers"],
               "properties": {
-                "localASN": {"type": "integer", "minimum": 1, "maximum": 4294967295},
+                "localASN": {"type": "integer", "minimum": 1, "maximum": 4294967295, "description": "the clusters' own AS number, 1-4294967295"},
                 "peers": {
+                  "description": "the site routers the clusters peer with, at least one",
                   "type": "array",
                   "minItems": 1,
                   "items": {
@@ -268,8 +280,8 @@
                     "additionalProperties": false,
                     "required": ["address", "asn"],
                     "properties": {
-                      "address": {"$ref": "#/$defs/ipv4"},
-                      "asn": {"type": "integer", "minimum": 1, "maximum": 4294967295}
+                      "address": {"$ref": "#/$defs/ipv4", "description": "the peer's IPv4 address; usually on the node network (validate warns otherwise)"},
+                      "asn": {"type": "integer", "minimum": 1, "maximum": 4294967295, "description": "the peer's AS number, 1-4294967295"}
                     }
                   }
                 }
@@ -295,10 +307,10 @@
       "required": ["replicas", "cpu", "memoryGiB", "diskGiB"],
       "properties": {
         "replicas": {"enum": [1, 3, 5], "description": "1, 3 or 5 (an odd number for etcd quorum)"},
-        "cpu": {"type": "integer", "minimum": 2},
-        "memoryGiB": {"type": "integer", "minimum": 4},
-        "diskGiB": {"type": "integer", "minimum": 25},
-        "dataDiskGiB": {"type": "integer", "minimum": 10, "description": "optional second disk for Longhorn on a cluster with no workers (vSphere): mounted at /var/lib/longhorn"}
+        "cpu": {"type": "integer", "minimum": 2, "description": "vCPUs per control plane VM, at least 2"},
+        "memoryGiB": {"type": "integer", "minimum": 4, "description": "memory per control plane VM, in GiB, at least 4"},
+        "diskGiB": {"type": "integer", "minimum": 25, "description": "the root disk, in GiB, at least 25. It holds the OS, the container images and etcd"},
+        "dataDiskGiB": {"type": "integer", "minimum": 10, "description": "optional, vSphere only: a second disk, in GiB (at least 10), mounted at /var/lib/longhorn so Longhorn never writes to the root disk etcd uses. Applied only when the cluster's block storage is Longhorn. On Proxmox validate rejects it (CAPMOX can't add a second disk); with no block storage or another provider, validate warns and the machines don't get it"}
       }
     },
     "vmWorkerPool": {
@@ -307,12 +319,12 @@
       "required": ["name", "replicas", "cpu", "memoryGiB", "diskGiB"],
       "properties": {
         "name": {"type": "string", "pattern": "^[a-z][a-z0-9-]{0,18}[a-z0-9]$", "description": "2-20 characters, lowercase letters, digits and hyphens"},
-        "replicas": {"type": "integer", "minimum": 0},
-        "cpu": {"type": "integer", "minimum": 2},
-        "memoryGiB": {"type": "integer", "minimum": 4},
-        "diskGiB": {"type": "integer", "minimum": 25},
-        "dataDiskGiB": {"type": "integer", "minimum": 10, "description": "optional second disk for Longhorn (vSphere): mounted at /var/lib/longhorn, so Longhorn never writes to the root disk"},
-        "failureDomains": {"$ref": "#/$defs/domainList"}
+        "replicas": {"type": "integer", "minimum": 0, "description": "how many worker VMs, 0 or more. Over two or more failure domains the pool becomes one MachineDeployment per domain (<pool>-<domain>), with the replicas split evenly"},
+        "cpu": {"type": "integer", "minimum": 2, "description": "vCPUs per worker VM, at least 2"},
+        "memoryGiB": {"type": "integer", "minimum": 4, "description": "memory per worker VM, in GiB, at least 4"},
+        "diskGiB": {"type": "integer", "minimum": 25, "description": "the root disk, in GiB, at least 25"},
+        "dataDiskGiB": {"type": "integer", "minimum": 10, "description": "optional, vSphere only: a second disk, in GiB (at least 10), mounted at /var/lib/longhorn so Longhorn never writes to the root disk. Applied only when the cluster's block storage is Longhorn. On Proxmox validate rejects it; with no block storage or another provider, validate warns and the machines don't get it"},
+        "failureDomains": {"$ref": "#/$defs/domainList", "description": "optional: the failure domains this pool uses (default: the cluster's)"}
       }
     },
     "vmCluster": {
@@ -320,22 +332,22 @@
       "additionalProperties": false,
       "required": ["apiVIP", "nodeIPRange", "lbPool", "podCIDR", "serviceCIDR", "controlPlane", "workerPools"],
       "properties": {
-        "apiVIP": {"$ref": "#/$defs/ipv4"},
-        "nodeIPRange": {"$ref": "#/$defs/ipRange"},
-        "lbPool": {"$ref": "#/$defs/ipRange"},
-        "podCIDR": {"$ref": "#/$defs/cidr"},
-        "serviceCIDR": {"$ref": "#/$defs/cidr"},
-        "controlPlane": {"$ref": "#/$defs/vmControlPlane"},
+        "apiVIP": {"$ref": "#/$defs/ipv4", "description": "the Kubernetes API's virtual IP, held by kube-vip on the control plane nodes. In the node network, and used by nothing else"},
+        "nodeIPRange": {"$ref": "#/$defs/ipRange", "description": "the addresses CAPI's in-cluster IPAM gives this cluster's nodes, in the node network. It must hold every node plus one spare for rolling updates"},
+        "lbPool": {"$ref": "#/$defs/ipRange", "description": "the addresses for this cluster's LoadBalancer Services (Cilium LB IPAM, planned), in the node network and used by nothing else. MGMT's must hold baremetal.ironicIP"},
+        "podCIDR": {"$ref": "#/$defs/cidr", "description": "the pod network, /22 or larger (Cilium gives each node a /24). It must not overlap the site's networks"},
+        "serviceCIDR": {"$ref": "#/$defs/cidr", "description": "the Service network, no larger than /12 (the API server's limit). It must not overlap the site's networks"},
+        "controlPlane": {"$ref": "#/$defs/vmControlPlane", "description": "the control plane VMs"},
         "workerPools": {"type": "array", "items": {"$ref": "#/$defs/vmWorkerPool"}, "description": "a list, which may be empty: then control plane nodes run workloads"},
-        "failureDomains": {"$ref": "#/$defs/domainList"},
-        "storageIPRanges": {"$ref": "#/$defs/storageIPRanges"}
+        "failureDomains": {"$ref": "#/$defs/domainList", "description": "optional: the failure domains this cluster uses (default: every domain of its platform)"},
+        "storageIPRanges": {"$ref": "#/$defs/storageIPRanges", "description": "optional: an address range on each storage network these nodes join, by network.storage name"}
       }
     },
     "storage": {
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "block": {"$ref": "#/$defs/blockStorage"},
+        "block": {"$ref": "#/$defs/blockStorage", "description": "INFRA's block storage: the provider and its settings, plus overrides for MGMT and workload clusters (ADR 0008)"},
         "longhorn": {"$ref": "#/$defs/longhorn", "description": "the old form of block: {provider: longhorn, longhorn: {...}}, accepted for one minor release. It describes INFRA; MGMT gets no block storage from it (ADR 0008, decision 4a)"}
       },
       "oneOf": [{"required": ["block"]}, {"required": ["longhorn"]}],
@@ -343,7 +355,7 @@
     },
     "blockProvider": {
       "enum": ["longhorn", "vsphere-csi", "proxmox-csi", "ceph-csi", "vendor-csi", "existing"],
-      "description": "longhorn, vsphere-csi, proxmox-csi, ceph-csi, vendor-csi or existing"
+      "description": "longhorn, vsphere-csi, proxmox-csi, ceph-csi, vendor-csi or existing (ADR 0008, decision 4). DCiaB installs longhorn, vsphere-csi and proxmox-csi, and uses existing; ceph-csi and vendor-csi are accepted but not installed yet"
     },
     "blockStorage": {
       "type": "object",
@@ -351,20 +363,20 @@
       "required": ["provider"],
       "properties": {
         "provider": {"$ref": "#/$defs/blockProvider", "description": "required, no default: INFRA's block storage provider. Usually vsphere-csi on vSphere, proxmox-csi on Proxmox, longhorn on bare metal (Metal3)"},
-        "longhorn": {"$ref": "#/$defs/longhorn"},
-        "vsphereCSI": {"$ref": "#/$defs/vsphereCSI"},
-        "proxmoxCSI": {"$ref": "#/$defs/proxmoxCSI"},
-        "cephCSI": {"$ref": "#/$defs/cephCSI"},
-        "vendorCSI": {"$ref": "#/$defs/vendorCSI"},
-        "existing": {"$ref": "#/$defs/existingStorage"},
+        "longhorn": {"$ref": "#/$defs/longhorn", "description": "Longhorn's settings: required with provider longhorn, not allowed with the others"},
+        "vsphereCSI": {"$ref": "#/$defs/vsphereCSI", "description": "the vSphere CSI driver's settings: optional with provider vsphere-csi, not allowed with the others"},
+        "proxmoxCSI": {"$ref": "#/$defs/proxmoxCSI", "description": "the Proxmox CSI plugin's settings: required with provider proxmox-csi, not allowed with the others"},
+        "cephCSI": {"$ref": "#/$defs/cephCSI", "description": "ceph-csi's settings: required with provider ceph-csi, not allowed with the others. Not installed yet: validate says so"},
+        "vendorCSI": {"$ref": "#/$defs/vendorCSI", "description": "the vendor driver's settings: required with provider vendor-csi, not allowed with the others. Not installed yet: validate says so"},
+        "existing": {"$ref": "#/$defs/existingStorage", "description": "the StorageClass to use: required with provider existing, not allowed with the others"},
         "overrides": {
           "type": "object",
           "additionalProperties": false,
           "minProperties": 1,
           "properties": {
-            "mgmt": {"$ref": "#/$defs/mgmtBlock"},
-            "infra": {"$ref": "#/$defs/blockOverride"},
-            "workload": {"$ref": "#/$defs/workloadBlock"}
+            "mgmt": {"$ref": "#/$defs/mgmtBlock", "description": "optional: block storage for MGMT, complete on its own. Without it, MGMT keeps no volumes (ADR 0008, decision 4a)"},
+            "infra": {"$ref": "#/$defs/blockOverride", "description": "optional: merged over block for INFRA"},
+            "workload": {"$ref": "#/$defs/workloadBlock", "description": "optional: block storage for every workload cluster, complete on its own. Without it, tenants bring their own"}
           },
           "description": "optional, per tier: infra, merged over block; mgmt and workload (every workload cluster), which stand alone. Overrides for one cluster come after v1"
         }
@@ -394,13 +406,13 @@
       "additionalProperties": false,
       "minProperties": 1,
       "properties": {
-        "provider": {"$ref": "#/$defs/blockProvider"},
-        "longhorn": {"$ref": "#/$defs/longhorn"},
-        "vsphereCSI": {"$ref": "#/$defs/vsphereCSI"},
-        "proxmoxCSI": {"$ref": "#/$defs/proxmoxCSI"},
-        "cephCSI": {"$ref": "#/$defs/cephCSI"},
-        "vendorCSI": {"$ref": "#/$defs/vendorCSI"},
-        "existing": {"$ref": "#/$defs/existingStorage"}
+        "provider": {"$ref": "#/$defs/blockProvider", "description": "optional: a provider other than block's; then give its settings block too"},
+        "longhorn": {"$ref": "#/$defs/longhorn", "description": "Longhorn's settings, complete"},
+        "vsphereCSI": {"$ref": "#/$defs/vsphereCSI", "description": "the vSphere CSI driver's settings, complete"},
+        "proxmoxCSI": {"$ref": "#/$defs/proxmoxCSI", "description": "the Proxmox CSI plugin's settings, complete"},
+        "cephCSI": {"$ref": "#/$defs/cephCSI", "description": "ceph-csi's settings, complete"},
+        "vendorCSI": {"$ref": "#/$defs/vendorCSI", "description": "the vendor driver's settings, complete"},
+        "existing": {"$ref": "#/$defs/existingStorage", "description": "the StorageClass to use, complete"}
       },
       "allOf": [
         {"if": {"properties": {"provider": {"const": "longhorn"}}, "required": ["provider"]}, "then": {"description": "with provider longhorn, keep only its longhorn block and remove the others", "not": {"anyOf": [{"required": ["vsphereCSI"]}, {"required": ["proxmoxCSI"]}, {"required": ["cephCSI"]}, {"required": ["vendorCSI"]}, {"required": ["existing"]}]}}},
@@ -431,9 +443,9 @@
         "url": {"type": "string", "pattern": "^(s3|nfs)://.+", "description": "copy: the off-site target, s3://<bucket>@<endpoint>[/<path>] or nfs://<server>:/<export>"},
         "credentials": {"$ref": "#/$defs/secretRef", "description": "copy, S3: credentials that can write but not delete"},
         "readCredentials": {"$ref": "#/$defs/secretRef", "description": "copy, S3, optional: read-only credentials for restores"},
-        "caBundle": {"$ref": "#/$defs/secretRef"},
-        "retentionDays": {"type": "integer", "minimum": 1, "description": "what the off-site store keeps, in days; default 90"},
-        "everyDays": {"type": "integer", "minimum": 1, "description": "removable: how often to export, in days; default 7"},
+        "caBundle": {"$ref": "#/$defs/secretRef", "description": "copy, S3, optional: the private CA that signed the off-site endpoint's certificate, in PEM"},
+        "retentionDays": {"type": "integer", "minimum": 1, "description": "what the off-site store keeps, in days; default 90", "default": 90},
+        "everyDays": {"type": "integer", "minimum": 1, "description": "removable: how often to export, in days; default 7", "default": 7},
         "reason": {"type": "string", "minLength": 3, "description": "none: why this site has no off-site copy"}
       },
       "allOf": [
@@ -459,15 +471,15 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "cron": {"$ref": "#/$defs/cronSchedule"},
-        "keep": {"$ref": "#/$defs/backupKeep"}
+        "cron": {"$ref": "#/$defs/cronSchedule", "description": "when the job runs: five cron fields, in UTC"},
+        "keep": {"$ref": "#/$defs/backupKeep", "description": "what the target keeps"}
       }
     },
     "longhornSchedule": {
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "cron": {"$ref": "#/$defs/cronSchedule"},
+        "cron": {"$ref": "#/$defs/cronSchedule", "description": "when the job runs: five cron fields, in UTC"},
         "retain": {"type": "integer", "minimum": 1, "maximum": 100, "description": "how many Longhorn keeps"}
       }
     },
@@ -477,6 +489,7 @@
       "required": ["targets"],
       "properties": {
         "targets": {
+          "description": "where backups go: the site target and the off-site copy",
           "type": "object",
           "additionalProperties": false,
           "required": ["site", "offsite"],
@@ -489,12 +502,12 @@
           "type": "object",
           "additionalProperties": false,
           "properties": {
-            "mgmt": {"type": "object", "additionalProperties": false, "properties": {"target": {"enum": ["site", "objectStore"], "description": "site, always: MGMT never backs up to INFRA (validate rejects anything else)"}}},
-            "infra": {"type": "object", "additionalProperties": false, "properties": {"target": {"enum": ["site", "objectStore"], "description": "objectStore (the default: storage.object, SeaweedFS on INFRA) or site"}}},
-            "workloads": {"type": "object", "additionalProperties": false, "properties": {
-              "target": {"enum": ["site", "objectStore"], "description": "objectStore (the default) or site"},
-              "etcdSnapshots": {"type": "boolean", "description": "default true: every workload cluster's etcd is snapshotted"},
-              "volumeBackups": {"type": "boolean", "description": "default false: tenants opt volumes in; true backs up every volume of the replicated classes"}
+            "mgmt": {"type": "object", "additionalProperties": false, "properties": {"target": {"enum": ["site", "objectStore"], "description": "site, always: MGMT never backs up to INFRA (validate rejects anything else)", "default": "site"}}, "description": "MGMT's backups"},
+            "infra": {"type": "object", "additionalProperties": false, "properties": {"target": {"enum": ["site", "objectStore"], "description": "objectStore (the default: INFRA's object store, SeaweedFS by default; spec.storage.object is planned) or site", "default": "objectStore"}}, "description": "INFRA's backups"},
+            "workloads": {"type": "object", "additionalProperties": false, "description": "every workload cluster's backups", "properties": {
+              "target": {"enum": ["site", "objectStore"], "description": "objectStore (the default: INFRA's object store; spec.storage.object is planned) or site", "default": "objectStore"},
+              "etcdSnapshots": {"type": "boolean", "description": "default true: every workload cluster's etcd is snapshotted", "default": true},
+              "volumeBackups": {"type": "boolean", "description": "default false: tenants opt volumes in; true backs up every volume of the replicated classes", "default": false}
             }}
           },
           "description": "where each tier backs up (ADR 0009, decision 1). Defaults: mgmt site, infra objectStore, workloads objectStore"
@@ -510,15 +523,15 @@
           "type": "object",
           "additionalProperties": false,
           "properties": {
-            "etcd": {"type": "object", "additionalProperties": false, "properties": {
-              "mgmt": {"$ref": "#/$defs/backupSchedule"},
-              "infra": {"$ref": "#/$defs/backupSchedule"},
-              "workloads": {"$ref": "#/$defs/backupSchedule"}
+            "etcd": {"type": "object", "additionalProperties": false, "description": "etcd snapshots, per tier", "properties": {
+              "mgmt": {"$ref": "#/$defs/backupSchedule", "default": {"cron": "0 * * * *", "keep": {"hourly": 24, "daily": 14}}, "description": "MGMT's etcd snapshots"},
+              "infra": {"$ref": "#/$defs/backupSchedule", "default": {"cron": "0 * * * *", "keep": {"hourly": 24, "daily": 14}}, "description": "INFRA's etcd snapshots"},
+              "workloads": {"$ref": "#/$defs/backupSchedule", "default": {"cron": "0 */6 * * *", "keep": {"days": 7}}, "description": "every workload cluster's etcd snapshots"}
             }},
-            "capiExport": {"$ref": "#/$defs/backupSchedule"},
-            "longhorn": {"type": "object", "additionalProperties": false, "properties": {
-              "snapshot": {"$ref": "#/$defs/longhornSchedule"},
-              "backup": {"$ref": "#/$defs/longhornSchedule"}
+            "capiExport": {"$ref": "#/$defs/backupSchedule", "default": {"cron": "30 2 * * *", "keep": {"daily": 14}}, "description": "the export of MGMT's Cluster API objects"},
+            "longhorn": {"type": "object", "additionalProperties": false, "description": "Longhorn's recurring jobs, on every cluster that runs Longhorn", "properties": {
+              "snapshot": {"$ref": "#/$defs/longhornSchedule", "default": {"cron": "0 * * * *", "retain": 24}, "description": "Longhorn snapshots, kept on the volume"},
+              "backup": {"$ref": "#/$defs/longhornSchedule", "default": {"cron": "0 1 * * *", "retain": 14}, "description": "Longhorn backups to the tier's target"}
             }}
           },
           "description": "optional: DCiaB's defaults (ADR 0009) apply to anything not given"
@@ -531,9 +544,9 @@
       "additionalProperties": false,
       "required": ["replicaCount"],
       "properties": {
-        "replicaCount": {"type": "integer", "minimum": 1, "maximum": 3},
+        "replicaCount": {"type": "integer", "minimum": 1, "maximum": 3, "description": "the replicas of each volume in the replicated classes, 1-3. Each needs a node of its own: validate warns when the cluster has fewer nodes that hold Longhorn data, at 1, and when the datastore under it may replicate already (use the array's CSI driver there)"},
         "backupTarget": {"type": "string", "pattern": "^(s3|nfs)://.+", "description": "the old place of the site's backup target, read only when spec.backup is absent (ADR 0009): s3://bucket@endpoint/path or nfs://server:/export"},
-        "backupCredentials": {"$ref": "#/$defs/secretRef"}
+        "backupCredentials": {"$ref": "#/$defs/secretRef", "description": "the old place of the S3 target's credentials (KEY=VALUE lines with AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY), read only when spec.backup is absent"}
       }
     },
     "vsphereCSI": {
@@ -554,12 +567,13 @@
         "storage": {"type": "string", "minLength": 1, "description": "the Proxmox storage that holds the volumes (any storage that holds VM disks)"},
         "shared": {"type": "boolean", "description": "required, no default: true when the storage is shared in Proxmox (every node reaches it: Ceph RBD, NFS, LVM on a shared LUN), false when it is node-local (local LVM, ZFS, a directory). Storage names don't say which; validate --live checks it against the storage's shared flag"},
         "credentials": {
+          "description": "the Proxmox CSI plugin's API token",
           "type": "object",
           "additionalProperties": false,
           "required": ["tokenID", "tokenSecret"],
           "properties": {
             "tokenID": {"type": "string", "pattern": "^[^@\\s]+@[^!\\s]+![^\\s]+$", "description": "an API token of its own, not CAPMOX's, such as csi@pve!dciab (docs/PROXMOX.md)"},
-            "tokenSecret": {"$ref": "#/$defs/secretRef"}
+            "tokenSecret": {"$ref": "#/$defs/secretRef", "description": "the token's secret, a secret reference"}
           }
         }
       }
@@ -573,7 +587,7 @@
         "monitors": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1}, "description": "monitor addresses, host[:port]"},
         "pool": {"type": "string", "minLength": 1, "description": "the RBD pool"},
         "userID": {"type": "string", "minLength": 1, "description": "the Ceph client name without client., such as kubernetes"},
-        "key": {"$ref": "#/$defs/secretRef"}
+        "key": {"$ref": "#/$defs/secretRef", "description": "the Ceph client's key, a secret reference"}
       }
     },
     "vendorCSI": {
@@ -597,11 +611,11 @@
       "additionalProperties": false,
       "required": ["mode", "commonName"],
       "properties": {
-        "mode": {"enum": ["generate-root", "import-intermediate"], "description": "generate-root or import-intermediate"},
-        "commonName": {"type": "string", "minLength": 1},
-        "certificate": {"$ref": "#/$defs/secretRef"},
-        "key": {"$ref": "#/$defs/secretRef"},
-        "chain": {"$ref": "#/$defs/secretRef"}
+        "mode": {"enum": ["generate-root", "import-intermediate"], "description": "generate-root: seed creates the platform root CA, its key stored only encrypted to bootstrap.recipients. import-intermediate: the site's intermediate CA, from certificate, key and chain"},
+        "commonName": {"type": "string", "minLength": 1, "description": "generate-root: the common name of the root CA seed creates, such as Example Platform CA. import-intermediate: not used"},
+        "certificate": {"$ref": "#/$defs/secretRef", "description": "import-intermediate: the site's intermediate CA certificate, in PEM. validate checks it is a CA that can sign CAs, and that its path length allows the 3 CAs DCiaB puts below it"},
+        "key": {"$ref": "#/$defs/secretRef", "description": "import-intermediate: the intermediate's private key, in PEM. It is never copied into the state"},
+        "chain": {"$ref": "#/$defs/secretRef", "description": "import-intermediate: the chain from the intermediate up to the site's root, in PEM. It becomes the trust bundle nodes and the bootstrap cluster trust"}
       },
       "allOf": [
         {
@@ -623,8 +637,9 @@
       "additionalProperties": false,
       "required": ["adminGroup", "initialAdmins"],
       "properties": {
-        "adminGroup": {"type": "string", "minLength": 1},
+        "adminGroup": {"type": "string", "minLength": 1, "description": "the group whose members administer the platform: cluster-admin on every cluster that trusts an issuer, and admin of Authentik and the platform services. On Kubernetes it carries the issuer's prefix (<name>:adminGroup). With provider external it must be in the site IdP's groups claim"},
         "initialAdmins": {
+          "description": "the first administrators, at least one. With authentik, each becomes an Authentik user in adminGroup. Every admin's SSH key goes onto every node (user dciab) and onto the hypervisors DCiaB installs",
           "type": "array",
           "minItems": 1,
           "items": {
@@ -633,12 +648,12 @@
             "required": ["username", "email", "sshPublicKey"],
             "properties": {
               "username": {"type": "string", "pattern": "^[a-z_][a-z0-9_.-]{0,31}$", "description": "a POSIX-style user name"},
-              "email": {"type": "string", "pattern": "^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$"},
+              "email": {"type": "string", "pattern": "^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$", "description": "the admin's email address, for their Authentik user"},
               "sshPublicKey": {"type": "string", "pattern": "^(ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp(256|384|521)|sk-ssh-ed25519@openssh\\.com) [A-Za-z0-9+/=]+( .*)?$", "description": "one OpenSSH public key line"}
             }
           }
         },
-        "provider": {"enum": ["authentik", "external"], "description": "authentik (default): DCiaB's Authentik on INFRA; external: the site's own OIDC issuer, with no Authentik (ADR 0008, decision 3)"},
+        "provider": {"enum": ["authentik", "external"], "description": "authentik (default): DCiaB's Authentik on INFRA; external: the site's own OIDC issuer, with no Authentik (ADR 0008, decision 3)", "default": "authentik"},
         "roles": {
           "type": "object",
           "additionalProperties": false,
@@ -649,12 +664,14 @@
           "description": "optional groups for the operator and viewer platform roles; admin is always adminGroup"
         },
         "consumers": {
+          "default": ["kubernetes", "argocd", "forgejo", "grafana", "netbox", "openbao", "awx", "terrakube", "opensearch", "openvox"],
           "type": "array",
           "uniqueItems": true,
           "items": {"enum": ["kubernetes", "argocd", "forgejo", "grafana", "netbox", "openbao", "awx", "terrakube", "opensearch", "openvox", "proxmox", "vcenter"]},
           "description": "what logs in through the identity provider. Default: every platform service, not the hypervisors; add proxmox or vcenter to let DCiaB change the hypervisors' identity source"
         },
         "kubernetes": {
+          "description": "optional: JWT issuers the Kubernetes APIs trust in addition to the provider's",
           "type": "object",
           "additionalProperties": false,
           "required": ["issuers"],
@@ -669,13 +686,14 @@
           }
         },
         "external": {
+          "description": "the site's OIDC issuer: required with provider external, not allowed with authentik",
           "type": "object",
           "additionalProperties": false,
           "required": ["issuer", "claims", "clients"],
           "properties": {
-            "name": {"$ref": "#/$defs/issuerName", "description": "the issuer's short name, the prefix of its users and groups on Kubernetes (<name>:). Default: site"},
+            "name": {"$ref": "#/$defs/issuerName", "description": "the issuer's short name, the prefix of its users and groups on Kubernetes (<name>:). Default: site", "default": "site"},
             "issuer": {"type": "string", "pattern": "^https://", "maxLength": 512, "description": "the site's OIDC issuer URL"},
-            "claims": {"$ref": "#/$defs/jwtClaims"},
+            "claims": {"$ref": "#/$defs/jwtClaims", "description": "the ID token claims that hold the user name and groups"},
             "caBundle": {"$ref": "#/$defs/secretRef", "description": "optional: the CA of the issuer's TLS certificate (PEM), when the platform CA doesn't cover it"},
             "clients": {
               "type": "object",
@@ -685,8 +703,8 @@
                 "additionalProperties": false,
                 "required": ["clientID"],
                 "properties": {
-                  "clientID": {"type": "string", "minLength": 1, "maxLength": 256},
-                  "clientSecret": {"$ref": "#/$defs/secretRef"}
+                  "clientID": {"type": "string", "minLength": 1, "maxLength": 256, "description": "the client ID the site's IdP gave this consumer"},
+                  "clientSecret": {"$ref": "#/$defs/secretRef", "description": "the client's secret, a secret reference. Every client except kubernetes, which is public, needs one"}
                 }
               },
               "description": "one client per OIDC consumer, created by the site's IdP team: its client ID and, except for the public kubernetes client, a secret reference"
@@ -697,10 +715,10 @@
               "required": ["url", "bindDN", "bindPassword", "userBaseDN", "groupBaseDN"],
               "properties": {
                 "url": {"type": "string", "pattern": "^ldaps://", "description": "an ldaps:// URL"},
-                "bindDN": {"type": "string", "minLength": 1},
-                "bindPassword": {"$ref": "#/$defs/secretRef"},
-                "userBaseDN": {"type": "string", "minLength": 1},
-                "groupBaseDN": {"type": "string", "minLength": 1}
+                "bindDN": {"type": "string", "minLength": 1, "description": "the DN DCiaB binds as, read-only"},
+                "bindPassword": {"$ref": "#/$defs/secretRef", "description": "its password, a secret reference"},
+                "userBaseDN": {"type": "string", "minLength": 1, "description": "where the directory's users are"},
+                "groupBaseDN": {"type": "string", "minLength": 1, "description": "where the directory's groups are"}
               },
               "description": "optional: the site's directory, for SSSD on hosts (openvox) and vCenter's identity source"
             },
@@ -737,9 +755,9 @@
       "required": ["name", "url", "clientID"],
       "properties": {
         "name": {"$ref": "#/$defs/issuerName", "description": "short name, the prefix of its users and groups on Kubernetes (<name>:)"},
-        "url": {"type": "string", "pattern": "^https://", "maxLength": 512},
+        "url": {"type": "string", "pattern": "^https://", "maxLength": 512, "description": "the issuer URL, https, exactly as its tokens' iss claim gives it"},
         "clientID": {"type": "string", "minLength": 1, "maxLength": 256, "description": "the audience its ID tokens carry"},
-        "claims": {"$ref": "#/$defs/jwtClaims", "description": "optional; default preferred_username and groups"},
+        "claims": {"$ref": "#/$defs/jwtClaims", "description": "optional; default preferred_username and groups", "default": {"username": "preferred_username", "groups": "groups"}},
         "caBundle": {"$ref": "#/$defs/secretRef", "description": "optional: the CA of the issuer's TLS certificate (PEM)"},
         "tiers": {
           "type": "array",
@@ -755,11 +773,12 @@
       "additionalProperties": false,
       "required": ["name", "bmc", "bootMACAddress", "rootDeviceHints", "labels"],
       "properties": {
-        "name": {"type": "string", "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$"},
-        "bmc": {"$ref": "#/$defs/bmc"},
-        "bootMACAddress": {"$ref": "#/$defs/macAddress"},
-        "rootDeviceHints": {"$ref": "#/$defs/rootDeviceHints"},
+        "name": {"type": "string", "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$", "description": "the host's name, a DNS label, unique; its BareMetalHost is named after it"},
+        "bmc": {"$ref": "#/$defs/bmc", "description": "the host's BMC"},
+        "bootMACAddress": {"$ref": "#/$defs/macAddress", "description": "the MAC address of the NIC the host boots from"},
+        "rootDeviceHints": {"$ref": "#/$defs/rootDeviceHints", "description": "the disk the OS image is written to"},
         "labels": {
+          "description": "labels on the host, at least one. Metal3 clusters' hostSelectors pick hosts by them",
           "type": "object",
           "minProperties": 1,
           "additionalProperties": {"type": "string", "minLength": 1}
@@ -771,11 +790,12 @@
       "type": "object",
       "required": ["enabled"],
       "properties": {
-        "enabled": {"type": "boolean", "description": "true or false"},
-        "bootMode": {"enum": ["UEFI", "UEFISecureBoot"]},
-        "ironicIP": {"$ref": "#/$defs/ipv4"},
-        "bmcNetworks": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/cidr"}},
+        "enabled": {"type": "boolean", "description": "true: the site has bare-metal servers for Metal3, and every other baremetal field is required. false: give no other field"},
+        "bootMode": {"enum": ["UEFI", "UEFISecureBoot"], "description": "UEFI or UEFISecureBoot: how Metal3 boots the hosts"},
+        "ironicIP": {"$ref": "#/$defs/ipv4", "description": "Ironic's fixed LoadBalancer address on MGMT, inside clusters.mgmt.lbPool. Hosts fetch OS images from https://ironic.<network.domain>/images/"},
+        "bmcNetworks": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/cidr"}, "description": "the networks the BMCs are on, at least one; MGMT must reach them. validate checks they don't overlap the site's other networks"},
         "images": {
+          "description": "the OS images Metal3 writes to hosts, from the archive's os-images/, at least one",
           "type": "array",
           "minItems": 1,
           "items": {
@@ -783,12 +803,13 @@
             "additionalProperties": false,
             "required": ["name", "file"],
             "properties": {
-              "name": {"type": "string", "pattern": "^[a-z0-9][a-z0-9.-]*$"},
+              "name": {"type": "string", "pattern": "^[a-z0-9][a-z0-9.-]*$", "description": "the image's name, which control planes and worker pools name"},
               "file": {"type": "string", "pattern": "^os-images/[^/]+$", "description": "a path under os-images/ in the archive"}
             }
           }
         },
         "networks": {
+          "description": "the networks Metal3 nodes are on, at least one",
           "type": "array",
           "minItems": 1,
           "items": {
@@ -796,14 +817,14 @@
             "additionalProperties": false,
             "required": ["name", "cidr", "gateway", "vlan"],
             "properties": {
-              "name": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$"},
-              "cidr": {"$ref": "#/$defs/cidr"},
-              "gateway": {"$ref": "#/$defs/ipv4"},
-              "vlan": {"type": "integer", "minimum": 1, "maximum": 4094}
+              "name": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]*$", "description": "the network's name, which control planes and worker pools name"},
+              "cidr": {"$ref": "#/$defs/cidr", "description": "the network"},
+              "gateway": {"$ref": "#/$defs/ipv4", "description": "the network's default gateway, inside cidr"},
+              "vlan": {"type": "integer", "minimum": 1, "maximum": 4094, "description": "the network's VLAN ID, 1-4094"}
             }
           }
         },
-        "hosts": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/bmcHost"}}
+        "hosts": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/bmcHost"}, "description": "the servers Metal3 provisions, at least one"}
       },
       "if": {"properties": {"enabled": {"const": true}}, "required": ["enabled"]},
       "then": {
@@ -826,9 +847,9 @@
       "properties": {
         "replicas": {"enum": [1, 3, 5], "description": "1, 3 or 5 (an odd number for etcd quorum)"},
         "network": {"type": "string", "minLength": 1, "description": "the name of a spec.baremetal.networks entry"},
-        "nodeIPRange": {"$ref": "#/$defs/ipRange"},
+        "nodeIPRange": {"$ref": "#/$defs/ipRange", "description": "the addresses for these nodes, inside the named network"},
         "image": {"type": "string", "minLength": 1, "description": "the name of a spec.baremetal.images entry"},
-        "hostSelector": {"type": "object", "minProperties": 1, "additionalProperties": {"type": "string"}}
+        "hostSelector": {"type": "object", "minProperties": 1, "additionalProperties": {"type": "string"}, "description": "labels a host must carry, every one of them, to be chosen"}
       }
     },
     "metal3WorkerPool": {
@@ -836,20 +857,20 @@
       "additionalProperties": false,
       "required": ["name", "replicas", "network", "nodeIPRange", "image", "hostSelector"],
       "properties": {
-        "name": {"type": "string", "pattern": "^[a-z][a-z0-9-]{0,18}[a-z0-9]$"},
-        "replicas": {"type": "integer", "minimum": 0},
+        "name": {"type": "string", "pattern": "^[a-z][a-z0-9-]{0,18}[a-z0-9]$", "description": "2-20 characters, lowercase letters, digits and hyphens, unique in the cluster"},
+        "replicas": {"type": "integer", "minimum": 0, "description": "how many hosts, 0 or more. Over two or more failure domains the pool is split per domain, as on VMs"},
         "network": {"type": "string", "minLength": 1, "description": "the name of a spec.baremetal.networks entry"},
-        "nodeIPRange": {"$ref": "#/$defs/ipRange"},
+        "nodeIPRange": {"$ref": "#/$defs/ipRange", "description": "the addresses for these nodes, inside the named network"},
         "image": {"type": "string", "minLength": 1, "description": "the name of a spec.baremetal.images entry"},
-        "hostSelector": {"type": "object", "minProperties": 1, "additionalProperties": {"type": "string"}},
-        "failureDomains": {"$ref": "#/$defs/domainList"}
+        "hostSelector": {"type": "object", "minProperties": 1, "additionalProperties": {"type": "string"}, "description": "labels a host must carry, every one of them, to be chosen"},
+        "failureDomains": {"$ref": "#/$defs/domainList", "description": "optional: the failure domains this pool uses (default: the cluster's)"}
       }
     },
     "workloadCluster": {
       "type": "object",
       "required": ["name", "class"],
       "properties": {
-        "name": {"$ref": "#/$defs/clusterName"},
+        "name": {"$ref": "#/$defs/clusterName", "description": "the cluster's name: unique, and not mgmt or infra"},
         "class": {"enum": ["vsphere", "proxmox", "metal3"], "description": "vsphere, proxmox or metal3: the ClusterClass, one provider per cluster"}
       },
       "if": {"properties": {"class": {"const": "metal3"}}, "required": ["class"]},
@@ -859,13 +880,13 @@
         "properties": {
           "name": true,
           "class": true,
-          "apiVIP": {"$ref": "#/$defs/ipv4"},
-          "lbPool": {"$ref": "#/$defs/ipRange"},
-          "podCIDR": {"$ref": "#/$defs/cidr"},
-          "serviceCIDR": {"$ref": "#/$defs/cidr"},
-          "controlPlane": {"$ref": "#/$defs/metal3ControlPlane"},
-          "workerPools": {"type": "array", "items": {"$ref": "#/$defs/metal3WorkerPool"}},
-          "failureDomains": {"$ref": "#/$defs/domainList"}
+          "apiVIP": {"$ref": "#/$defs/ipv4", "description": "the Kubernetes API's virtual IP, on the control plane's network"},
+          "lbPool": {"$ref": "#/$defs/ipRange", "description": "the addresses for this cluster's LoadBalancer Services, on the control plane's network"},
+          "podCIDR": {"$ref": "#/$defs/cidr", "description": "the pod network, /22 or larger"},
+          "serviceCIDR": {"$ref": "#/$defs/cidr", "description": "the Service network, no larger than /12"},
+          "controlPlane": {"$ref": "#/$defs/metal3ControlPlane", "description": "the control plane hosts"},
+          "workerPools": {"type": "array", "items": {"$ref": "#/$defs/metal3WorkerPool"}, "description": "a list, which may be empty: then control plane nodes run workloads"},
+          "failureDomains": {"$ref": "#/$defs/domainList", "description": "optional: the failure domains this cluster uses (default: every domain that has hosts)"}
         }
       },
       "else": {
@@ -874,15 +895,15 @@
         "properties": {
           "name": true,
           "class": true,
-          "apiVIP": {"$ref": "#/$defs/ipv4"},
-          "nodeIPRange": {"$ref": "#/$defs/ipRange"},
-          "lbPool": {"$ref": "#/$defs/ipRange"},
-          "podCIDR": {"$ref": "#/$defs/cidr"},
-          "serviceCIDR": {"$ref": "#/$defs/cidr"},
-          "controlPlane": {"$ref": "#/$defs/vmControlPlane"},
-          "workerPools": {"type": "array", "items": {"$ref": "#/$defs/vmWorkerPool"}},
-          "failureDomains": {"$ref": "#/$defs/domainList"},
-          "storageIPRanges": {"$ref": "#/$defs/storageIPRanges"}
+          "apiVIP": {"$ref": "#/$defs/ipv4", "description": "the Kubernetes API's virtual IP, in the node network"},
+          "nodeIPRange": {"$ref": "#/$defs/ipRange", "description": "the addresses for this cluster's nodes, in the node network"},
+          "lbPool": {"$ref": "#/$defs/ipRange", "description": "the addresses for this cluster's LoadBalancer Services, in the node network"},
+          "podCIDR": {"$ref": "#/$defs/cidr", "description": "the pod network, /22 or larger"},
+          "serviceCIDR": {"$ref": "#/$defs/cidr", "description": "the Service network, no larger than /12"},
+          "controlPlane": {"$ref": "#/$defs/vmControlPlane", "description": "the control plane VMs"},
+          "workerPools": {"type": "array", "items": {"$ref": "#/$defs/vmWorkerPool"}, "description": "a list, which may be empty: then control plane nodes run workloads"},
+          "failureDomains": {"$ref": "#/$defs/domainList", "description": "optional: the failure domains this cluster uses (default: every domain of its class)"},
+          "storageIPRanges": {"$ref": "#/$defs/storageIPRanges", "description": "optional: an address range on each storage network these nodes join, by network.storage name"}
         }
       }
     },
@@ -892,15 +913,16 @@
       "required": ["address", "credentials"],
       "properties": {
         "address": {"type": "string", "pattern": "^redfish-virtualmedia\\+https://\\S+$", "description": "a Redfish virtual-media address: redfish-virtualmedia+https://<bmc>/redfish/v1/Systems/<id>"},
-        "tlsFingerprint": {"$ref": "#/$defs/fingerprint"},
-        "caBundle": {"$ref": "#/$defs/secretRef"},
+        "tlsFingerprint": {"$ref": "#/$defs/fingerprint", "description": "the fingerprint of the BMC's TLS certificate"},
+        "caBundle": {"$ref": "#/$defs/secretRef", "description": "the CA that signed the BMC's certificate, in PEM"},
         "credentials": {
+          "description": "the BMC account",
           "type": "object",
           "additionalProperties": false,
           "required": ["username", "password"],
           "properties": {
-            "username": {"type": "string", "minLength": 1},
-            "password": {"$ref": "#/$defs/secretRef"}
+            "username": {"type": "string", "minLength": 1, "description": "the BMC user"},
+            "password": {"$ref": "#/$defs/secretRef", "description": "its password, a secret reference"}
           }
         }
       },
@@ -916,14 +938,14 @@
       "additionalProperties": false,
       "minProperties": 1,
       "properties": {
-        "deviceName": {"type": "string", "pattern": "^/dev/"},
-        "serialNumber": {"type": "string", "minLength": 1},
-        "wwn": {"type": "string", "minLength": 1},
-        "model": {"type": "string", "minLength": 1},
-        "vendor": {"type": "string", "minLength": 1},
-        "hctl": {"type": "string", "minLength": 1},
-        "minSizeGigabytes": {"type": "integer", "minimum": 1},
-        "rotational": {"type": "boolean"}
+        "deviceName": {"type": "string", "pattern": "^/dev/", "description": "a disk such as /dev/sda. For a Proxmox VE install (dciab hypervisors) it can't be combined with other hints"},
+        "serialNumber": {"type": "string", "minLength": 1, "description": "the disk's serial number"},
+        "wwn": {"type": "string", "minLength": 1, "description": "the disk's World Wide Name"},
+        "model": {"type": "string", "minLength": 1, "description": "the disk's model, or a part of it"},
+        "vendor": {"type": "string", "minLength": 1, "description": "the disk's vendor, or a part of it"},
+        "hctl": {"type": "string", "minLength": 1, "description": "the SCSI address, host:channel:target:lun. Not for a Proxmox VE install (dciab hypervisors), whose installer can't match it"},
+        "minSizeGigabytes": {"type": "integer", "minimum": 1, "description": "the smallest size to accept, in GB. Not for a Proxmox VE install (dciab hypervisors)"},
+        "rotational": {"type": "boolean", "description": "true for a spinning disk, false for an SSD or NVMe. Not for a Proxmox VE install (dciab hypervisors)"}
       }
     },
     "time": {
@@ -931,7 +953,7 @@
       "additionalProperties": false,
       "required": ["servedBy"],
       "properties": {
-        "servedBy": {"enum": ["dciab", "site"], "description": "dciab: DCiaB serves time on the node-facing addresses (the bootstrap host on Day 0, the platform after); site: the site's own NTP servers"},
+        "servedBy": {"enum": ["dciab", "site"], "description": "dciab: DCiaB serves time on the node-facing addresses (the bootstrap host on Day 0, the platform after); for now it needs spec.hypervisors, whose dciab services runs the Day 0 NTP. site: the site's own NTP servers"},
         "upstream": {
           "type": "array",
           "uniqueItems": true,
@@ -994,17 +1016,19 @@
       "properties": {
         "name": {"type": "string", "pattern": "^[a-z0-9]([a-z0-9-]{0,18}[a-z0-9])?$", "description": "1-20 characters, lowercase letters, digits and hyphens; the value of topology.kubernetes.io/zone on its nodes"},
         "proxmox": {
+          "description": "a Proxmox VE domain: one PVE node",
           "type": "object",
           "additionalProperties": false,
           "required": ["node"],
           "properties": {"node": {"type": "string", "minLength": 1, "description": "the PVE node in this domain; the domain is named after it"}}
         },
         "vsphere": {
+          "description": "a vSphere domain: a compute cluster, or a host group within one",
           "type": "object",
           "additionalProperties": false,
           "required": ["computeCluster"],
           "properties": {
-            "computeCluster": {"type": "string", "minLength": 1},
+            "computeCluster": {"type": "string", "minLength": 1, "description": "the compute cluster of this domain"},
             "hostGroup": {"type": "string", "minLength": 1, "description": "a DRS host group, when several domains share one compute cluster"},
             "vmGroup": {"type": "string", "minLength": 1, "description": "the DRS VM group that goes with hostGroup"},
             "datastore": {"type": "string", "minLength": 1, "description": "default: platform.vsphere.datastore"},
@@ -1029,9 +1053,9 @@
       "required": ["name", "cidr"],
       "properties": {
         "name": {"type": "string", "pattern": "^[a-z0-9]([a-z0-9-]{0,13}[a-z0-9])?$", "description": "1-15 characters, lowercase letters, digits and hyphens"},
-        "cidr": {"$ref": "#/$defs/cidr"},
+        "cidr": {"$ref": "#/$defs/cidr", "description": "the storage network"},
         "vlan": {"type": "integer", "minimum": 1, "maximum": 4094, "description": "proxmox: the VLAN tag on the storage NIC"},
-        "mtu": {"$ref": "#/$defs/mtu"},
+        "mtu": {"$ref": "#/$defs/mtu", "description": "optional MTU of the storage NIC, 1280-9216, often 9000 (default: the platform's)"},
         "bridge": {"type": "string", "minLength": 1, "description": "proxmox: the bridge (default: platform.proxmox.bridge)"},
         "portGroup": {"type": "string", "minLength": 1, "description": "vsphere: the port group (required on vSphere)"}
       },
@@ -1049,10 +1073,10 @@
       "required": ["name", "address", "bmc", "bootMACAddress", "rootDeviceHints"],
       "properties": {
         "name": {"type": "string", "pattern": "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$", "description": "the host name, without the domain (network.domain is added)"},
-        "address": {"$ref": "#/$defs/ipv4"},
-        "bmc": {"$ref": "#/$defs/bmc"},
-        "bootMACAddress": {"$ref": "#/$defs/macAddress"},
-        "rootDeviceHints": {"$ref": "#/$defs/rootDeviceHints"}
+        "address": {"$ref": "#/$defs/ipv4", "description": "the host's management address, in the node network and used by nothing else"},
+        "bmc": {"$ref": "#/$defs/bmc", "description": "the host's BMC, which dciab hypervisors drives over Redfish"},
+        "bootMACAddress": {"$ref": "#/$defs/macAddress", "description": "the MAC address of the management NIC"},
+        "rootDeviceHints": {"$ref": "#/$defs/rootDeviceHints", "description": "the disk the hypervisor is installed on"}
       }
     },
     "hypervisors": {
@@ -1060,12 +1084,12 @@
       "additionalProperties": false,
       "required": ["type", "method", "bootMode", "managementVLAN", "hosts"],
       "properties": {
-        "type": {"enum": ["proxmox", "esxi"], "description": "proxmox or esxi"},
-        "bootMode": {"enum": ["UEFI", "UEFISecureBoot"], "description": "UEFI or UEFISecureBoot; set on each server over Redfish before installing"},
+        "type": {"enum": ["proxmox", "esxi"], "description": "proxmox (Proxmox VE, built in part) or esxi (planned)"},
+        "bootMode": {"enum": ["UEFI", "UEFISecureBoot"], "description": "UEFI or UEFISecureBoot: the boot mode each server should use. Setting it over Redfish before installing is planned (docs/HYPERVISORS.md)"},
         "method": {"enum": ["virtualmedia"], "description": "virtualmedia: the installer ISO is attached through each host's BMC (Redfish)"},
         "installerFile": {"type": "string", "minLength": 1, "description": "esxi only: path to the ESXi installer ISO, which DCiaB doesn't ship; its sha256 must match bundle.lock"},
         "rootPassword": {"$ref": "#/$defs/secretRef", "description": "optional: the root password for every host DCiaB installs. Unset: DCiaB generates one per host and stores it encrypted to spec.bootstrap.recipients. Either way people log in with the identity.initialAdmins SSH keys"},
-        "managementVLAN": {"enum": ["tagged", "untagged"], "description": "tagged: the management NIC tags network.nodes.vlan; untagged: it sits on an access port"},
+        "managementVLAN": {"enum": ["tagged", "untagged"], "description": "tagged: the management NIC tags network.nodes.vlan; untagged: it sits on an access port. Only untagged works today: the Proxmox VE installer can't set a VLAN (docs/HYPERVISORS.md)"},
         "installer": {
           "type": "object",
           "additionalProperties": false,
@@ -1077,7 +1101,7 @@
           },
           "description": "proxmox: locale settings the Proxmox VE installer requires"
         },
-        "hosts": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/hypervisorHost"}}
+        "hosts": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/hypervisorHost"}, "description": "the servers to install, at least one"}
       },
       "allOf": [
         {"if": {"properties": {"type": {"const": "esxi"}}, "required": ["type"]}, "then": {"required": ["installerFile"]}},

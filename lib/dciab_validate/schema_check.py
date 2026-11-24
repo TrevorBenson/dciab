@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path as FsPath
 from typing import Any, List
 
@@ -19,6 +20,7 @@ _NOT_FIXES = {
     "identity": "remove external, or set provider: external: external is only used with the site's own IdP",
     "workload": "remove overrides: the workload override is complete on its own and takes no overrides",
     "mgmt": "remove overrides: the mgmt override is complete on its own and takes no overrides",
+    "domains": "give a failure domain proxmox or vsphere, not both",
 }
 
 
@@ -63,7 +65,8 @@ def _block_provider_hint(doc: Any, f: Finding) -> Finding:
 def _to_findings(err: ValidationError) -> List[Finding]:
     path: Path = tuple(err.absolute_path)
     schema = err.schema if isinstance(err.schema, dict) else {}
-    desc = schema.get("description")
+    full = schema.get("description")  # oneOf and not: the whole rule, which says what to do
+    desc = _short(full)
 
     if schema.get("x-secret"):
         return [Finding(ERROR, path, "a value that is not a secret reference (value not shown)",
@@ -71,8 +74,8 @@ def _to_findings(err: ValidationError) -> List[Finding]:
 
     v = err.validator
     if v in ("oneOf", "anyOf") and err.context:
-        if desc:
-            return [Finding(ERROR, path, _brief(err.instance), desc)]
+        if full:
+            return [Finding(ERROR, path, _brief(err.instance), full)]
         return _to_findings(best_match(err.context))
 
     if v == "required":
@@ -80,16 +83,20 @@ def _to_findings(err: ValidationError) -> List[Finding]:
         props = schema.get("properties", {})
         out = []
         for k in missing:
-            hint = props.get(k, {}).get("description") if isinstance(props.get(k), dict) else None
+            hint = _short(props.get(k, {}).get("description")) if isinstance(props.get(k), dict) else None
             fix = f"add {k}" + (f": {hint}" if hint else "")
             out.append(Finding(ERROR, path + (k,), "missing", fix))
         return out
 
     if v == "additionalProperties":
-        allowed = set(schema.get("properties", {}))
+        # Not the block's description: that documents the block (docs/CONFIG.md), it isn't a fix.
+        allowed = list(schema.get("properties", {}))
         extras = [k for k in err.instance if k not in allowed] if isinstance(err.instance, dict) else []
-        fix = desc or "remove it, or check its spelling"
+        fix = "remove it, or check its spelling" + (f"; this block takes {', '.join(allowed)}" if allowed else "")
         return [Finding(ERROR, path + (k,), "a field this config does not use", fix) for k in extras]
+
+    if v == "dependentRequired":
+        return [Finding(ERROR, path, "a field without the one it needs", err.message)]
 
     if v == "type":
         expected = err.validator_value
@@ -106,7 +113,7 @@ def _to_findings(err: ValidationError) -> List[Finding]:
     if v == "not":
         last = next((p for p in reversed(path) if isinstance(p, str)), "")
         return [Finding(ERROR, path, "a combination of fields that cannot be used together",
-                        _NOT_FIXES.get(last, desc or err.message))]
+                        _NOT_FIXES.get(last, full or err.message))]
 
     if v in ("minItems", "maxItems"):
         n = len(err.instance) if isinstance(err.instance, list) else "?"
@@ -120,6 +127,15 @@ def _to_findings(err: ValidationError) -> List[Finding]:
 
     # pattern, minimum, maximum, minLength and anything else
     return [Finding(ERROR, path, _brief(err.instance), desc or err.message)]
+
+
+def _short(desc: Any) -> Any:
+    """A schema description as a fix hint: its first sentence, without a leading "optional:".
+    The whole text documents the key (docs/CONFIG.md); a fix stays short."""
+    if not isinstance(desc, str):
+        return desc
+    text = re.sub(r"^optional\b[,;:]?\s*", "", " ".join(desc.split()))
+    return re.split(r"(?<=[^.\s]{2})\. (?=[A-Z])", text, maxsplit=1)[0].rstrip(".")
 
 
 def _brief(value: Any) -> str:

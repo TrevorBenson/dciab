@@ -83,6 +83,27 @@ What a DCiaB site runs, grouped by capability, and where each piece runs. Versio
 | Log analytics and SIEM | OpenSearch and OpenSearch Dashboards, with the Security Analytics plugin (Sigma-based detectors) | INFRA | Planned ([ADR 0007](adr/0007-detection-to-response.md)) |
 | Security orchestration and response (SOAR) | Shuffle or Tracecat, one of the two; Tracecat runs its workflows on Temporal | INFRA | Proposed ([ADR 0007](adr/0007-detection-to-response.md)) |
 
+## Integration matrix
+
+What each consumer wires to, from [ADR 0008, decision 9](adr/0008-provider-pattern.md). The cells name what the consumer uses with the default providers; with a site provider (`spec.identity.provider: external`, a site S3 or DNS), the same wiring points at the site's service. Each cell says whether that wiring is *built* or *planned*. A consumer that isn't built yet has every cell planned.
+
+| Consumer | Identity | Secrets via ESO | TLS issuer | Storage class / COSI bucket | DB on CNPG | Backup target | DNS record | Metrics |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Kubernetes API | JWT issuers in an `AuthenticationConfiguration` (`spec.identity`, `identity.kubernetes`): Authentik on workload clusters only, a site IdP on every cluster; certificate kubeconfigs as break-glass on every cluster *(built)* | n/a (it hosts ESO) | kubeadm cluster CA *(built)* | n/a | n/a (etcd) | etcd snapshots to the site target: MGMT *(built)*, INFRA and workload clusters *(planned)* | API VIP, written by DCiaB *(planned)* | API server metrics *(planned)* |
+| Argo CD | OIDC *(planned)* | OIDC client secret, repo credentials *(planned)* | platform issuer *(planned)* | none (state is Git) | none | none needed (Git) | external-dns *(planned)* | ServiceMonitor *(planned)* |
+| Forgejo | OIDC auth source *(planned)* | OIDC secret, DB, S3 *(planned)* | platform issuer *(planned)* | `replicated-retain` for repos; bucket for LFS, packages, attachments *(planned)* | yes *(planned)* | CNPG archive and the repo volume *(planned)* | external-dns *(planned)* | ServiceMonitor *(planned)* |
+| Grafana | Generic OAuth *(planned)* | OIDC secret, DB *(planned)* | platform issuer *(planned)* | none (dashboards from Git) | yes *(planned)* | CNPG archive *(planned)* | external-dns *(planned)* | ServiceMonitor *(planned)* |
+| NetBox | OIDC *(planned)* | OIDC secret, DB, API tokens *(planned)* | platform issuer *(planned)* | bucket for media *(planned)* | yes *(planned)* | CNPG archive *(planned)* | external-dns *(planned)* | ServiceMonitor *(planned)* |
+| OpenBao | OIDC auth method, for people *(planned)* | n/a (it is the store) | platform CA, issued at the platform step *(planned)* | `local-retain` (Raft) *(planned)* | none (Raft) | Raft snapshots to the site target *(planned)* | external-dns *(planned)* | telemetry endpoint *(planned)* |
+| AWX | OIDC *(planned)* | OIDC secret, DB, tenant credentials *(planned)* | platform issuer *(planned)* | `replicated-retain` for projects *(planned)* | yes *(planned)* | CNPG archive *(planned)* | external-dns *(planned)* | ServiceMonitor *(planned)* |
+| Terrakube | OIDC, through Dex *(planned)* | OIDC secret, DB, S3 *(planned)* | platform issuer *(planned)* | bucket for state and run outputs *(planned)* | yes *(planned)* | CNPG archive; versioned state bucket *(planned)* | external-dns *(planned)* | ServiceMonitor *(planned)* |
+| OpenSearch | OIDC, Security plugin *(planned)* | OIDC secret, internal users *(planned)* | platform issuer, HTTP and transport *(planned)* | `local-retain` *(planned)* | none | snapshots to a bucket *(planned)* | external-dns *(planned)* | exporter *(planned)* |
+| OpenVox | hosts: LDAP outpost to SSSD *(planned)* | ENC and Hiera keys *(planned)* | platform issuer for web endpoints, OpenVox CA for agents *(planned)* | `replicated-retain` for code and the OpenVox CA *(planned)* | OpenVoxDB *(planned)* | CNPG archive and the OpenVox CA *(planned)* | external-dns *(planned)* | exporter *(planned)* |
+| Proxmox VE | OIDC realm, opt-in (`proxmox` in `identity.consumers`) *(planned)* | CAPMOX token from OpenBao *(planned; from the config today)* | the site's, or the platform CA by opt-in *(planned)* | provides VM disks; volumes through `proxmox-csi` *(built)* | n/a | the site's, outside DCiaB | static record: Day 0 DNS for hosts DCiaB installs *(built)* | exporter *(planned)* |
+| vCenter | LDAP identity source, or federation to the site IdP; opt-in (`vcenter` in `identity.consumers`) *(planned)* | CAPV and CSI credentials from OpenBao *(planned; from the config today)* | the site's (VMCA) | provides volumes through `vsphere-csi` *(built)* | n/a | the site's, outside DCiaB | site DNS | exporter, optional *(planned)* |
+
+"Platform issuer" is the cert-manager `ClusterIssuer` backed by OpenBao's PKI ([ADR 0005](adr/0005-secrets.md), decision 4); until OpenBao is up, it's a CA issuer from the platform CA. "CNPG archive" means WAL archiving and base backups to an object store bucket. UIs without OIDC (Longhorn, Hubble, Alertmanager, Prometheus, the SeaweedFS UI) aren't in the matrix: they go behind an OIDC-aware proxy on the Gateway, which needs its own decision.
+
 ## Decisions to make
 
 These need a decision (an ADR or a spike) before the proposed components join the plan.
