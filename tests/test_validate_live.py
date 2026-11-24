@@ -155,6 +155,9 @@ PVE_AUTH = {f"PVEAPIToken=dciab@pve!capmox={TOKEN}"}
 
 def proxmox_spec(port, pin):
     spec = copy.deepcopy(load_example("proxmox-bare")["spec"])
+    # The live Proxmox checks run against a three-node cluster (pve_routes); the example
+    # lists only pve01 because its hosts aren't clustered.
+    spec["platform"]["proxmox"]["nodes"] = ["pve01", "pve02", "pve03"]
     spec["platform"]["proxmox"]["url"] = f"https://127.0.0.1:{port}"
     spec["platform"]["proxmox"]["tlsFingerprint"] = pin
     return spec

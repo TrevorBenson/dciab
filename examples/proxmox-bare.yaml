@@ -5,8 +5,8 @@
 #
 # Limitation: the installed hosts are not clustered and only have local storage. CAPMOX
 # reaches them through pve01's API and can't clone the template from local storage to
-# another host. spec.failureDomains declares pve01 as the one domain, which keeps every VM
-# there (even though nodes lists all three). There is no hypervisor-level redundancy:
+# another host. platform.proxmox.nodes lists only pve01, and spec.failureDomains declares
+# it as the one domain, which keeps every VM there. There is no hypervisor-level redundancy:
 # losing pve01 loses the platform. Proxmox VE clustering and shared storage are on the
 # roadmap.
 apiVersion: dciab.io/v1alpha1
@@ -21,7 +21,7 @@ spec:
     proxmox:
       url: https://pve01.dc3.example.net:8006
       tlsFingerprint: "A5:A5:0B:7F:93:E9:EA:23:8D:79:7B:83:BB:72:AE:F7:AD:98:1B:66:D4:BC:FA:2A:FD:40:63:91:59:C2:8A:5A"
-      nodes: [pve01, pve02, pve03]       # PVE nodes CAPMOX may place VMs on (only pve01 until clustered: see above)
+      nodes: [pve01]                     # the one node CAPMOX uses: pve02 and pve03 aren't clustered (see above)
       templateNode: pve01                # the node holding the template; must be in nodes
       templateID: 9010
       storage: local-lvm                 # a fresh install's local storage
