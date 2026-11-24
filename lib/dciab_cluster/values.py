@@ -97,7 +97,8 @@ def data_disks(spec: dict, name: str, klass: str) -> bool:
     storage is Longhorn."""
     from dciab_storage import cluster_block
 
-    return klass == "vsphere" and cluster_block(spec, name)["provider"] == "longhorn"
+    block = cluster_block(spec, name)
+    return klass == "vsphere" and block is not None and block["provider"] == "longhorn"
 
 
 def _prefix(cidr: str) -> int:

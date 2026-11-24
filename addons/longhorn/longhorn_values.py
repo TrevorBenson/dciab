@@ -44,6 +44,9 @@ REQUIRED_KEYS = ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY")
 
 def longhorn(site: dict, cluster: str = "mgmt") -> dict:
     block = cluster_block(site["spec"], cluster)
+    if block is None:
+        raise ValueError(f"cluster {cluster} has no block storage from DCiaB "
+                         "(workload clusters get it only through spec.storage.block.overrides.workload)")
     if block["provider"] != "longhorn":
         raise ValueError(f"cluster {cluster} uses {block['provider']} for block storage, not longhorn")
     return block["settings"]

@@ -1,6 +1,7 @@
 """Block storage for one cluster of a site config.
 
-    python3 -m dciab_storage provider <config> <cluster>            the cluster's block provider
+    python3 -m dciab_storage provider <config> <cluster>            the cluster's block provider; none for a
+                                                                    workload cluster DCiaB gives none
     python3 -m dciab_storage existing <config> <cluster>            provider existing: the StorageClass it copies
     python3 -m dciab_storage classes <config> <cluster> [--source FILE]
                                                                     the four StorageClasses, as a YAML stream;
@@ -27,10 +28,11 @@ def main(argv=None) -> int:
             spec = yaml.safe_load(fh)["spec"]
         block = cluster_block(spec, args.cluster)
         if args.what == "provider":
-            print(block["provider"])
+            print(block["provider"] if block else "none")
         elif args.what == "existing":
-            if block["provider"] != "existing":
-                raise StorageError(f"cluster {args.cluster} uses {block['provider']}, not existing")
+            if not block or block["provider"] != "existing":
+                raise StorageError(f"cluster {args.cluster} uses {block['provider'] if block else 'no block storage'}, "
+                                   "not existing")
             print(block["settings"]["storageClass"])
         else:
             source = None

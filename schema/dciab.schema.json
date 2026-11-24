@@ -349,7 +349,7 @@
       "additionalProperties": false,
       "required": ["provider"],
       "properties": {
-        "provider": {"$ref": "#/$defs/blockProvider"},
+        "provider": {"$ref": "#/$defs/blockProvider", "description": "required, no default: the block storage provider. Usually vsphere-csi on vSphere, proxmox-csi on Proxmox, longhorn on bare metal (Metal3)"},
         "longhorn": {"$ref": "#/$defs/longhorn"},
         "vsphereCSI": {"$ref": "#/$defs/vsphereCSI"},
         "proxmoxCSI": {"$ref": "#/$defs/proxmoxCSI"},
@@ -363,9 +363,9 @@
           "properties": {
             "mgmt": {"$ref": "#/$defs/blockOverride"},
             "infra": {"$ref": "#/$defs/blockOverride"},
-            "workload": {"$ref": "#/$defs/blockOverride"}
+            "workload": {"$ref": "#/$defs/workloadBlock"}
           },
-          "description": "optional, per tier: mgmt, infra or workload (every workload cluster). Overrides for one cluster come after v1"
+          "description": "optional, per tier: mgmt or infra, merged over block; workload (every workload cluster), which stands alone. Overrides for one cluster come after v1"
         }
       },
       "allOf": [
@@ -376,7 +376,12 @@
         {"if": {"properties": {"provider": {"const": "vendor-csi"}}, "required": ["provider"]}, "then": {"description": "with provider vendor-csi, keep only its vendorCSI block and remove the others", "not": {"anyOf": [{"required": ["longhorn"]}, {"required": ["vsphereCSI"]}, {"required": ["proxmoxCSI"]}, {"required": ["cephCSI"]}, {"required": ["existing"]}]}, "required": ["vendorCSI"]}},
         {"if": {"properties": {"provider": {"const": "existing"}}, "required": ["provider"]}, "then": {"description": "with provider existing, keep only its existing block and remove the others", "not": {"anyOf": [{"required": ["longhorn"]}, {"required": ["vsphereCSI"]}, {"required": ["proxmoxCSI"]}, {"required": ["cephCSI"]}, {"required": ["vendorCSI"]}]}, "required": ["existing"]}}
       ],
-      "description": "block storage: the provider and its settings (ADR 0008, decision 4)"
+      "description": "block storage for MGMT and INFRA: the provider and its settings (ADR 0008, decisions 1 and 4). Workload clusters don't inherit it"
+    },
+    "workloadBlock": {
+      "allOf": [{"$ref": "#/$defs/blockStorage"}],
+      "not": {"required": ["overrides"]},
+      "description": "optional: block storage for every workload cluster, a provider and its settings, as under block but with no overrides. Nothing comes from block: without it, DCiaB imposes no block storage on workload clusters and tenants bring their own"
     },
     "blockOverride": {
       "type": "object",

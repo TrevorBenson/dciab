@@ -84,6 +84,13 @@ spec:
         replicaCount: 3
         backupTarget: s3://longhorn@minio.dc2.example.net/dc2
         backupCredentials: {file: ./secrets/longhorn-s3.env}
+      overrides:                         # [opt] workload clusters don't inherit block; without this, tenants bring their own
+        workload:                        # opt in: Longhorn on the bare-metal hosts' disks
+          provider: longhorn
+          longhorn:
+            replicaCount: 2
+            backupTarget: s3://longhorn@minio.dc2.example.net/dc2-tenants
+            backupCredentials: {file: ./secrets/longhorn-s3.env}
 
   pki:
     mode: generate-root

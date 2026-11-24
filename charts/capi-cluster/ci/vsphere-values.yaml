@@ -57,7 +57,6 @@ workerPools:
     cpu: 8
     memoryGiB: 32
     diskGiB: 150
-    dataDiskGiB: 200
   failureDomain: az1
 - name: general-az2
   replicas: 1
@@ -65,7 +64,6 @@ workerPools:
     cpu: 8
     memoryGiB: 32
     diskGiB: 150
-    dataDiskGiB: 200
   failureDomain: az2
 - name: general-az3
   replicas: 1
@@ -73,7 +71,6 @@ workerPools:
     cpu: 8
     memoryGiB: 32
     diskGiB: 150
-    dataDiskGiB: 200
   failureDomain: az3
 vsphere:
   server: vcsa.dc1.example.net

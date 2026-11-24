@@ -389,7 +389,7 @@ def dns_names(spec: dict) -> List[str]:
         names.append(urlsplit(plat["proxmox"]["url"]).hostname or "")
     for tier in ("mgmt", "infra", "workload"):
         block = tier_block(spec, tier)
-        if block["provider"] == "longhorn":
+        if block and block["provider"] == "longhorn":
             target = block["settings"]["backupTarget"]
             names.append(target.split("://", 1)[1].split("@", 1)[-1].split(":", 1)[0].split("/", 1)[0])
     names.extend(spec["time"].get("servers", []))

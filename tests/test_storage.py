@@ -70,6 +70,27 @@ def test_override_without_a_provider_merges_settings():
     assert spec["storage"]["block"]["longhorn"]["replicaCount"] == 3
 
 
+def test_workload_clusters_dont_inherit_block():
+    """MGMT and INFRA's block is theirs: without overrides.workload, DCiaB gives workload
+    clusters no block storage, and tenants bring their own."""
+    spec = load_example("vsphere")["spec"]
+    assert st.tier_block(spec, "workload") is None
+    assert st.cluster_block(spec, "apps01") is None
+    assert st.cluster_block(spec, "infra")["provider"] == "longhorn"
+    with pytest.raises(st.StorageError, match="overrides.workload"):
+        st.storage_classes(spec, "apps01")
+    assert not cluster_values(load_example("vsphere"), "apps01", CA)["workerPools"][0]["machine"].get("dataDiskGiB")
+
+
+def test_workload_override_stands_alone():
+    """The workload override is never merged over block: only its own settings count."""
+    spec = load_example("metal3-cluster")["spec"]
+    w = st.cluster_block(spec, "metal01")
+    assert w["provider"] == "longhorn" and w["settings"]["replicaCount"] == 2
+    assert w["settings"]["backupTarget"].endswith("/dc2-tenants")
+    assert st.tier_block(spec, "mgmt")["settings"]["replicaCount"] == 3
+
+
 def test_unknown_cluster_and_tier():
     spec = load_example("vsphere")["spec"]
     with pytest.raises(st.StorageError):
@@ -156,6 +177,9 @@ def test_cli_prints_provider_and_classes(tmp_path):
     env = {**os.environ, "PYTHONPATH": str(ROOT / "lib")}
     cfg = ROOT / "examples" / "vsphere.yaml"
     r = subprocess.run([sys.executable, "-m", "dciab_storage", "provider", str(cfg), "apps01"],
+                       capture_output=True, text=True, env=env)
+    assert r.returncode == 0 and r.stdout.strip() == "none"
+    r = subprocess.run([sys.executable, "-m", "dciab_storage", "provider", str(cfg), "mgmt"],
                        capture_output=True, text=True, env=env)
     assert r.returncode == 0 and r.stdout.strip() == "longhorn"
     r = subprocess.run([sys.executable, "-m", "dciab_storage", "classes", str(cfg), "mgmt"],
@@ -375,6 +399,44 @@ def test_override_to_a_provider_without_its_settings(site):
     doc["spec"]["storage"]["block"]["overrides"] = {"infra": {"provider": "existing"}}
     _, report = site.validate(doc)
     assert "add existing" in errors(report, "spec.storage.block.existing")[0]["fix"]
+
+
+@pytest.mark.parametrize("name,usual", [("vsphere", "vsphere-csi"), ("proxmox", "proxmox-csi")])
+def test_provider_is_required_and_the_error_names_the_usual_choice(site, name, usual):
+    doc = load_example(name)
+    del doc["spec"]["storage"]["block"]["provider"]
+    _, report = site.validate(doc)
+    e = errors(report, "spec.storage.block.provider")
+    assert e and e[0]["found"] == "missing" and f"the usual choice is {usual}" in e[0]["fix"]
+
+
+def test_workload_override_needs_its_own_provider(site):
+    doc = load_example("vsphere")
+    lh = doc["spec"]["storage"]["block"]["longhorn"]
+    doc["spec"]["storage"]["block"]["overrides"] = {"workload": {"longhorn": lh}}
+    _, report = site.validate(doc)
+    assert errors(report, "spec.storage.block.overrides.workload.provider")
+    doc["spec"]["storage"]["block"]["overrides"] = {"workload": {
+        "provider": "longhorn", "longhorn": lh, "overrides": {"mgmt": {"provider": "longhorn"}}}}
+    _, report = site.validate(doc)
+    assert any("takes no overrides" in e["fix"] for e in errors(report, "spec.storage.block.overrides.workload"))
+
+
+def test_workload_clusters_without_the_override_get_no_storage_checks(site):
+    doc = load_example("vsphere")
+    pool = doc["spec"]["workloadClusters"][0]["workerPools"][0]
+    _, report = site.validate(doc)
+    assert not [f for f in report["findings"] if "workloadClusters" in f["path"]]
+    pool["dataDiskGiB"] = 200
+    _, report = site.validate(doc)
+    w = warnings(report, "spec.workloadClusters[0].workerPools[0].dataDiskGiB")
+    assert w and "no block storage" in w[0]["found"] and "overrides.workload" in w[0]["fix"]
+    # Opting in with Longhorn brings its checks to the workload clusters.
+    lh = dict(doc["spec"]["storage"]["block"]["longhorn"])
+    doc["spec"]["storage"]["block"]["overrides"] = {"workload": {"provider": "longhorn", "longhorn": lh}}
+    del pool["dataDiskGiB"]
+    _, report = site.validate(doc)
+    assert errors(report, "spec.workloadClusters[0].workerPools[0].dataDiskGiB")
 
 
 def test_overrides_are_keyed_by_tier_only(site):

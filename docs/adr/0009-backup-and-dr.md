@@ -18,7 +18,7 @@ Two constraints shape the design:
 - **MGMT comes first.** MGMT needs a backup target from the moment it exists, long before INFRA's SeaweedFS does. If MGMT backed up to SeaweedFS, restoring INFRA would need MGMT, and restoring MGMT would need INFRA. A standing project decision already covers this: sites provide S3 or NFS for backups.
 - **A copy on the same hardware isn't disaster recovery.** SeaweedFS on INFRA protects against a deleted volume or a bad upgrade. It doesn't protect against losing INFRA, or the site.
 
-Storage, identity, DNS, IPAM and secrets each have a provider choice ([ADR 0008](0008-provider-pattern.md)): Longhorn, vSphere CSI, the Proxmox CSI driver (the default on Proxmox), ceph-csi and a pinned set of vendor SAN drivers for block storage, SeaweedFS or the site's own S3 for objects. Where replicas and backup copies are placed across hosts and racks is [ADR 0010](0010-failure-domains.md). This ADR says what gets backed up, where to, how often, and how restores are proven.
+Storage, identity, DNS, IPAM and secrets each have a provider choice ([ADR 0008](0008-provider-pattern.md)): Longhorn, vSphere CSI, the Proxmox CSI driver (the usual choice on Proxmox), ceph-csi and a pinned set of vendor SAN drivers for block storage, SeaweedFS or the site's own S3 for objects. Where replicas and backup copies are placed across hosts and racks is [ADR 0010](0010-failure-domains.md). This ADR says what gets backed up, where to, how often, and how restores are proven.
 
 ## Decisions
 

@@ -1,7 +1,10 @@
 """Block storage for each cluster of a site config (ADR 0008, decisions 4 and 5).
 
-spec.storage.block names a provider and its settings, and may override both per tier
-(mgmt, infra, workload). The old form, spec.storage.longhorn, reads as
+spec.storage.block names a provider and its settings for MGMT and INFRA, and may override
+both for either tier. The provider is required: there is no platform default. Workload
+(tenant) clusters don't inherit it: DCiaB gives them block storage only when
+overrides.workload names a provider, and its settings, of its own. Without it, tenants bring
+their own storage. The old form, spec.storage.longhorn, reads as
 block: {provider: longhorn, longhorn: <it>}.
 
 Every cluster gets the same four StorageClasses, whatever backs them, so platform charts
@@ -69,13 +72,22 @@ def merge(base: dict, over: dict) -> dict:
     return out
 
 
-def tier_block(spec: dict, tier: str) -> Dict[str, object]:
-    """The provider and its settings for a tier's clusters: block, with the tier's override
-    merged over it. {"provider": ..., "settings": {...}}; settings may be empty."""
+def tier_block(spec: dict, tier: str) -> Optional[Dict[str, object]]:
+    """The provider and its settings for a tier's clusters. {"provider": ..., "settings": {...}};
+    settings may be empty.
+
+    mgmt and infra: block, with the tier's override merged over it. workload: only
+    overrides.workload, never merged over block; None when it's absent, as DCiaB then
+    imposes no block storage on workload clusters."""
     if tier not in TIERS:
         raise StorageError(f"no tier {tier!r}; use one of {', '.join(TIERS)}")
     base = base_block(spec)
     over = (base.get("overrides") or {}).get(tier) or {}
+    if tier == "workload":
+        if not over:
+            return None
+        provider = over["provider"]
+        return {"provider": provider, "settings": copy.deepcopy(over.get(SETTINGS[provider]) or {})}
     provider = over.get("provider", base["provider"])
     key = SETTINGS[provider]
     settings = merge(base.get(key) or {}, over.get(key) or {})
@@ -93,7 +105,8 @@ def tier_of(spec: dict, cluster: str) -> Tuple[str, str]:
     raise StorageError(f"no cluster named {cluster!r}")
 
 
-def cluster_block(spec: dict, cluster: str) -> Dict[str, object]:
+def cluster_block(spec: dict, cluster: str) -> Optional[Dict[str, object]]:
+    """The cluster's tier block; None for a workload cluster DCiaB gives no block storage."""
     return tier_block(spec, tier_of(spec, cluster)[0])
 
 
@@ -170,6 +183,9 @@ def storage_classes(spec: dict, cluster: str, source: Optional[dict] = None) -> 
     """The four StorageClasses for a cluster. source: the existing StorageClass, read from
     the cluster, for provider existing."""
     b = cluster_block(spec, cluster)
+    if b is None:
+        raise StorageError(f"cluster {cluster}: DCiaB gives workload clusters no block storage unless "
+                           "spec.storage.block.overrides.workload names a provider")
     provider, settings = b["provider"], b["settings"]
     if provider == "longhorn":
         return longhorn_classes(settings)

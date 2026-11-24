@@ -555,8 +555,10 @@ class Checker:
     # -- block storage (ADR 0008, decisions 4 and 5) ----------------------------------
 
     def _tiers(self) -> List[str]:
+        """The tiers DCiaB gives block storage: MGMT and INFRA always, workload clusters only
+        through overrides.workload (tenants otherwise bring their own)."""
         over = (st.base_block(self.spec).get("overrides") or {})
-        return ["mgmt", "infra"] + (["workload"] if self.spec.get("workloadClusters") or "workload" in over else [])
+        return ["mgmt", "infra"] + (["workload"] if "workload" in over else [])
 
     def _tier_clusters(self, tier: str):
         """(path, cluster, class) of each cluster in a tier."""
@@ -571,6 +573,9 @@ class Checker:
         if st.legacy(self.spec):
             return ("spec", "storage", "longhorn") + ((field,) if field else ())
         base = ("spec", "storage", "block")
+        if tier == "workload":
+            # The workload override stands alone: nothing in it comes from block.
+            return base + ("overrides", "workload", key or "provider") + ((field,) if field else ())
         over = (self.spec["storage"]["block"].get("overrides") or {}).get(tier) or {}
         if key is None:
             return base + (("overrides", tier, "provider") if "provider" in over else ("provider",))
@@ -718,7 +723,8 @@ class Checker:
         if klass == "metal3":
             return
         tier = st.tier_of(self.spec, cpath[-1] if cpath[1] == "clusters" else c["name"])[0]
-        provider = st.tier_block(self.spec, tier)["provider"]
+        block = st.tier_block(self.spec, tier)
+        provider = block["provider"] if block else None
         groups = [(cpath + ("controlPlane",), c["controlPlane"])] + \
                  [(cpath + ("workerPools", j), p) for j, p in enumerate(c.get("workerPools", []))]
         for gpath, g in groups:
@@ -728,6 +734,10 @@ class Checker:
             if klass == "proxmox":
                 self.error(dpath, str(g["dataDiskGiB"]),
                            "remove it: CAPMOX can't give a machine a second disk yet; use provider proxmox-csi")
+            elif provider is None:
+                self.warn(dpath, f"{g['dataDiskGiB']}, on a workload cluster DCiaB gives no block storage",
+                          "remove it, or opt in with spec.storage.block.overrides.workload {provider: longhorn, ...}: "
+                          "the data disk is only for Longhorn, so these machines don't get it")
             elif provider != "longhorn":
                 self.warn(dpath, f"{g['dataDiskGiB']}, with block storage {provider}",
                           "remove it: the data disk is only for Longhorn, so these machines don't get it")

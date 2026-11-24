@@ -6,7 +6,7 @@ Longhorn is DCiaB's own block storage (CSI), the `longhorn` provider of `spec.st
 - **Version and chart source:** `bundle.lock` (`charts.longhorn`, `chartRepositories.longhorn`). The chart's sha256 is checked against `chartDigests.longhorn`; a mismatch stops the install.
 - **Chart, offline:** `--chart <tgz>`, else `$DCIAB_PAYLOAD/charts/longhorn-<version>.tgz` when `DCIAB_PAYLOAD` is set (the archive vendors the chart), else the pinned repository.
 - **DCiaB defaults:** `values.yaml`: replica data lives in `/var/lib/longhorn` (image-mode nodes have read-only `/usr` and `/opt`), the chart's own `longhorn` StorageClass isn't the default, and there is no ingress.
-- **Per-site values:** from the cluster's Longhorn settings (`spec.storage.block.longhorn`, with the tier's override; `longhorn_values.py`): `replicaCount` sets Longhorn's default replica count, and `backupTarget` the default backup target. The old `spec.storage.longhorn` still works for one minor release; `dciab validate` warns and prints the new form.
+- **Per-site values:** from the cluster's Longhorn settings (`spec.storage.block.longhorn`, with the tier's override; for workload clusters only `overrides.workload`, as they don't inherit `block`; `longhorn_values.py`): `replicaCount` sets Longhorn's default replica count, and `backupTarget` the default backup target. The old `spec.storage.longhorn` still works for one minor release; `dciab validate` warns and prints the new form.
 - **StorageClasses:** after the chart, [`lib/steps/storage-classes.sh`](../../lib/steps/storage-classes.sh) applies DCiaB's four classes, the same names on every cluster whatever backs them:
 
   | Class | Replicas | Data locality | Reclaim | For |
