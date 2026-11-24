@@ -44,7 +44,9 @@ spec:
 
   network:
     domain: dc3.example.com
-    upstreamResolvers: []                # isolated site: the recursor forwards nothing
+    upstreamResolvers: []                # the seed DNS forwards nothing: nodes resolve only network.domain
+    isolated: true                       # [opt] says [] is intended. A site with DNS lists it above instead;
+                                         # otherwise names outside the domain fail and kubeadm init can stall
     nodes:
       cidr: 10.30.110.0/24
       gateway: 10.30.110.1

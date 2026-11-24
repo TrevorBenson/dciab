@@ -451,3 +451,19 @@ def test_pinned_chrony_image_is_built_from_this_recipe():
     assert r.returncode == 0, r.stderr
     assert pinned.split("@", 1)[0].endswith("-" + r.stdout.strip()), \
         "images/day0-chrony changed: pin the image CI publishes on main as day0.images.chrony"
+
+
+def test_services_records_what_it_adds_to_the_host(tmp_path):
+    """dciab seed --remove undoes only what <state>/services/created lists."""
+    step = (ROOT / "lib" / "steps" / "services.sh").read_text()
+    record = step[step.index("record() {"):]
+    record = record[:record.index("\n}\n") + 3]
+    script = (f'set -euo pipefail\nCONF_DIR="{tmp_path}"\n{record}'
+              'record address eth0 10.0.0.53/24\nrecord port public 53/udp\nrecord address eth0 10.0.0.53/24\n')
+    r = subprocess.run(["bash", "-c", script], capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
+    created = tmp_path / "created"
+    assert created.read_text() == "address eth0 10.0.0.53/24\nport public 53/udp\n"
+    assert created.stat().st_mode & 0o777 == 0o600
+    for call in ('record address "$nic" "$ip/$PREFIX"', 'record port "$zone" "$p"', 'record pod "$POD"'):
+        assert call in step

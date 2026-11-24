@@ -28,6 +28,8 @@ Commands:
                                            Build MGMT from the bootstrap cluster and move CAPI to it
   seed <config> [--payload DIR] [--state DIR] [--age-identity FILE] [--force-new-ca] [--until STEP]
                                            Seed registry and bootstrap (kind) cluster from the payload
+  seed <config> --remove [--state DIR] [--force] [--purge-state]
+                                           Undo what seed did to this host (keeps the state unless --purge-state)
   infra | platform | finalize              Bootstrap steps (not implemented yet)
   verify-archive (--key PUB | --checksums-only) [ARCHIVE]
                                            Check the archive (this one by default) against its signed MANIFEST
