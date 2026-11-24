@@ -154,10 +154,15 @@ PVE_AUTH = {f"PVEAPIToken=dciab@pve!capmox={TOKEN}"}
 CSI_TOKEN = "not-a-real-csi-token"   # tests/conftest.py's DCIAB_PVE_CSI_TOKEN
 
 
-def add_csi_permissions(routes, csi, drop=None):
+def add_csi_permissions(routes, csi, drop=None, shared=0):
     """Add the Proxmox CSI token's grants to the permission answers (one server answers both
-    tokens, so the privileges of a shared path are merged)."""
+    tokens, so the privileges of a shared path are merged), and GET /storage/<id>. Proxmox
+    leaves shared out for node-local storage."""
     from urllib.parse import quote
+    conf = {"storage": csi["storage"], "type": "rbd" if shared else "lvmthin"}
+    if shared:
+        conf["shared"] = 1
+    routes[("GET", f"/api2/json/storage/{quote(csi['storage'])}")] = (200, {"data": conf})
 
     from dciab_validate.proxmox_privs import csi_grants
     for g in csi_grants(csi):
@@ -170,7 +175,7 @@ def add_csi_permissions(routes, csi, drop=None):
 def with_proxmox_csi(spec):
     """proxmox-bare with the Proxmox CSI plugin on local-lvm, under its own token."""
     spec["storage"]["block"] = {"provider": "proxmox-csi", "proxmoxCSI": {
-        "storage": "local-lvm",
+        "storage": "local-lvm", "shared": False,
         "credentials": {"tokenID": "csi@pve!dciab", "tokenSecret": {"env": "DCIAB_PVE_CSI_TOKEN"}}}}
     return spec
 
@@ -842,11 +847,11 @@ CSI_AUTH = {f"PVEAPIToken=csi@pve!dciab={CSI_TOKEN}"}
 CSI_BLOCK = ("spec", "storage", "block", "proxmoxCSI")
 
 
-def csi_routes(storage="local-lvm", drop=None, csi_storage="local-lvm"):
+def csi_routes(storage="local-lvm", drop=None, csi_storage="local-lvm", shared=0):
     routes = pve_routes(storage=storage)
     for key in [k for k in routes if "access/permissions" in k[1]]:
         del routes[key]
-    add_csi_permissions(routes, {"storage": csi_storage}, drop=drop)
+    add_csi_permissions(routes, {"storage": csi_storage}, drop=drop, shared=shared)
     routes[("GET", "/api2/json/access/permissions?path=%2F")] = (200, {"data": {"/": {}}})
     return routes
 
@@ -886,6 +891,22 @@ def test_proxmox_csi_token_rejected_and_storage_missing(cert, servers, monkeypat
     csi["storage"] = "ceph-vm"
     found = [f.found for f in live.check_proxmox_csi(spec, CSI_BLOCK, csi, tmp_path, 3).findings]
     assert any("ceph-vm: no such storage" in x for x in found)
+
+
+def test_proxmox_csi_shared_must_match_the_storage(cert, servers, monkeypatch, tmp_path):
+    monkeypatch.setenv("DCIAB_PVE_CSI_TOKEN", CSI_TOKEN)
+    srv = servers(cert, csi_routes(shared=1), CSI_AUTH)   # Proxmox has local-lvm as shared
+    spec, csi = csi_spec(srv.port, cert["sha256"])         # the config says shared: false
+    [f] = live.check_proxmox_csi(spec, CSI_BLOCK, csi, tmp_path, 3).findings
+    assert f.path == CSI_BLOCK + ("shared",) and f.severity == "error"
+    assert "set shared: true" in f.fix
+    csi["shared"] = True
+    assert live.check_proxmox_csi(spec, CSI_BLOCK, csi, tmp_path, 3).findings == []
+    srv = servers(cert, csi_routes(shared=0), CSI_AUTH)
+    spec, csi = csi_spec(srv.port, cert["sha256"])
+    csi["shared"] = True
+    [f] = live.check_proxmox_csi(spec, CSI_BLOCK, csi, tmp_path, 3).findings
+    assert "not shared (node-local)" in f.found and "set shared: false" in f.fix
 
 
 def test_live_tasks_check_each_proxmox_csi_token():

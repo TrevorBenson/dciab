@@ -34,7 +34,7 @@ def legacy_doc(name="proxmox"):
 def proxmox_csi(doc):
     doc["spec"]["storage"]["block"] = {
         "provider": "proxmox-csi",
-        "proxmoxCSI": {"storage": "ceph-vm",
+        "proxmoxCSI": {"storage": "ceph-vm", "shared": True,
                        "credentials": {"tokenID": "csi@pve!dciab", "tokenSecret": {"env": "DCIAB_PVE_TOKEN"}}},
     }
     return doc
@@ -393,7 +393,7 @@ def test_settings_of_another_provider_are_rejected(site):
     assert any("keep only" in e["fix"] for e in errors(report))
     doc = longhorn_example("vsphere")
     doc["spec"]["storage"]["block"]["overrides"] = {"mgmt": {"proxmoxCSI": {
-        "storage": "x", "credentials": {"tokenID": "a@pve!b", "tokenSecret": {"env": "DCIAB_PVE_TOKEN"}}}}}
+        "storage": "x", "shared": False, "credentials": {"tokenID": "a@pve!b", "tokenSecret": {"env": "DCIAB_PVE_TOKEN"}}}}}
     _, report = site.validate(doc)
     assert errors(report, "spec.storage.block.overrides.mgmt.proxmoxCSI")
 

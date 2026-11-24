@@ -196,8 +196,8 @@ def proxmox_csi_blocks(spec: dict) -> List[Tuple[Path, dict]]:
 
 
 def check_proxmox_csi(spec: dict, base: Path, csi: dict, config_dir: FsPath, timeout: float) -> Results:
-    """The Proxmox CSI plugin's own token: accepted, its storage on every node, and exactly the
-    privileges docs/PROXMOX.md lists for it."""
+    """The Proxmox CSI plugin's own token: accepted, its storage on every node and shared as the
+    config says, and exactly the privileges docs/PROXMOX.md lists for it."""
     from .proxmox_privs import csi_grants
     r = Results()
     px = spec["platform"]["proxmox"]
@@ -230,6 +230,19 @@ def check_proxmox_csi(spec: dict, base: Path, csi: dict, config_dir: FsPath, tim
         if missing_on:
             r.error(base + ("storage",), f"{csi['storage']}: no such storage on " + ", ".join(missing_on),
                     "use a storage the nodes that run Kubernetes VMs have")
+        # Whether the storage is shared decides the zone rule: the config says, Proxmox knows.
+        status, conf = get(f"/storage/{quote(csi['storage'])}") if not missing_on else (None, None)
+        if status is None:
+            pass   # no such storage: reported above
+        elif status == 200 and conf is not None:
+            shared = bool(int(conf.get("shared") or 0))
+            if shared != csi["shared"]:
+                r.error(base + ("shared",), f"{str(csi['shared']).lower()}, but Proxmox has {csi['storage']} as "
+                        + ("shared" if shared else "not shared (node-local)"),
+                        f"set shared: {str(shared).lower()}, or fix the storage's shared flag in Proxmox")
+        else:
+            r.warn(base + ("shared",), f"the token can't read storage {csi['storage']} (HTTP {status})",
+                   f"grant Datastore.Audit as {what} lists, so DCiaB can check shared")
         check_token_privileges(px, get, r, base, csi_grants(csi), creds["tokenID"], what)
     except ProbeError as exc:
         r.error(("spec", "platform", "proxmox", "url"), str(exc), "check the network path to the Proxmox API")

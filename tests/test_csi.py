@@ -211,7 +211,7 @@ def test_proxmox_csi_on_local_storage_needs_a_zone_on_the_nodes_that_hold_volume
     assert doc["spec"]["clusters"]["mgmt"]["workerPools"] == []
     _, report = site.validate(doc)   # ceph-vm is shared: the plugin needs no zone
     assert not errors(report, "spec.clusters.mgmt.workerPools")
-    doc["spec"]["storage"]["block"]["proxmoxCSI"]["storage"] = "local-lvm"
+    doc["spec"]["storage"]["block"]["proxmoxCSI"].update(storage="local-lvm", shared=False)
     _, report = site.validate(doc)
     assert "ADR 0010" in errors(report, "spec.clusters.mgmt.workerPools")[0]["fix"]
     doc["spec"]["clusters"]["mgmt"]["failureDomains"] = ["pve01"]
@@ -219,9 +219,23 @@ def test_proxmox_csi_on_local_storage_needs_a_zone_on_the_nodes_that_hold_volume
     assert not errors(report, "spec.clusters.mgmt.workerPools")
 
 
+def test_proxmox_csi_shared_is_explicit_not_guessed_from_the_name(site):
+    doc = load_example("proxmox")
+    csi = doc["spec"]["storage"]["block"]["proxmoxCSI"]
+    csi.update(storage="local-ceph", shared=True)   # a shared storage whose name starts with local
+    _, report = site.validate(doc)
+    assert not errors(report, "spec.clusters.mgmt.workerPools")
+    csi.update(storage="nvme0", shared=False)       # a node-local ZFS pool with any other name
+    _, report = site.validate(doc)
+    assert errors(report, "spec.clusters.mgmt.workerPools")
+    del csi["shared"]
+    _, report = site.validate(doc)
+    assert errors(report, "spec.storage.block.proxmoxCSI.shared")[0]["found"] == "missing"
+
+
 def test_proxmox_csi_on_local_storage_says_volumes_stay_on_their_node(site):
     doc = load_example("proxmox-bare")
     doc["spec"]["storage"]["block"] = {"provider": "proxmox-csi", "proxmoxCSI": {
-        "storage": "local-lvm", "credentials": {"tokenID": "csi@pve!dciab", "tokenSecret": {"env": "DCIAB_PVE_CSI_TOKEN"}}}}
+        "storage": "local-lvm", "shared": False, "credentials": {"tokenID": "csi@pve!dciab", "tokenSecret": {"env": "DCIAB_PVE_CSI_TOKEN"}}}}
     _, report = site.validate(doc)
     assert any("stay on the PVE node" in n for n in report["notes"])

@@ -429,9 +429,10 @@
     "proxmoxCSI": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["storage", "credentials"],
+      "required": ["storage", "shared", "credentials"],
       "properties": {
         "storage": {"type": "string", "minLength": 1, "description": "the Proxmox storage that holds the volumes (any storage that holds VM disks)"},
+        "shared": {"type": "boolean", "description": "required, no default: true when the storage is shared in Proxmox (every node reaches it: Ceph RBD, NFS, LVM on a shared LUN), false when it is node-local (local LVM, ZFS, a directory). Storage names don't say which; validate --live checks it against the storage's shared flag"},
         "credentials": {
           "type": "object",
           "additionalProperties": false,

@@ -53,7 +53,7 @@ $ ./dciab validate dciab.yaml --live
 
 ## The Proxmox CSI plugin's token
 
-The Proxmox CSI plugin creates each volume as a VM disk on one Proxmox storage (`spec.storage.block.proxmoxCSI.storage`) and attaches it to the node VM that uses it. It gets its own user and token, never CAPMOX's (`dciab validate` refuses the same token ID), so each token holds only what it uses. It needs no Ceph key, no SSH and no access to the storage network. `dciab validate --live` checks this token the same way: missing privileges are errors, the privileges listed above that could change permissions or the hosts are warnings, and the storage must exist on the nodes.
+The Proxmox CSI plugin creates each volume as a VM disk on one Proxmox storage (`spec.storage.block.proxmoxCSI.storage`) and attaches it to the node VM that uses it. It gets its own user and token, never CAPMOX's (`dciab validate` refuses the same token ID), so each token holds only what it uses. It needs no Ceph key, no SSH and no access to the storage network. `dciab validate --live` checks this token the same way: missing privileges are errors, the privileges listed above that could change permissions or the hosts are warnings, the storage must exist on the nodes, and its `shared` flag in Proxmox must match `proxmoxCSI.shared`.
 
 | Role | Path | Propagate | Privileges | Why |
 | --- | --- | --- | --- | --- |
@@ -66,7 +66,7 @@ Notes:
 - **Nothing else on VMs.** The token can't create, clone, start, stop or delete VMs, or run commands in them. `VM.Config.Disk` lets it add and remove disks of any VM under `/vms`.
 - **Deleting volumes.** `Datastore.Allocate` on the storage is what lets the plugin delete a volume; it also allows deleting other volumes on that storage. Give the plugin a storage of its own if that matters to the site.
 - **TLS.** The plugin trusts only the API certificate whose fingerprint is `spec.platform.proxmox.tlsFingerprint`: `addons/csi` reads the certificate, checks the fingerprint, and names it as the plugin's `ca_file`, its only trusted certificate. Its host name check still applies, so `spec.platform.proxmox.url` must use a name or address the certificate lists. When the node's certificate is renewed, update `tlsFingerprint` and run `addons/csi/install.sh` again.
-- **Zones.** The plugin finds node VMs by UUID. On shared storage that is enough. A volume on node-local storage is tied to its PVE node, matched against the nodes' `topology.kubernetes.io/zone` label, which DCiaB sets to the PVE node name (ADR 0010). In `r1` a Proxmox control plane gets a zone only on a one-domain site, so with node-local storage on a site with several domains, volumes go on worker nodes (`dciab validate` checks it).
+- **Zones.** The plugin finds node VMs by UUID. On shared storage that is enough. `proxmoxCSI.shared` says which kind the storage is (required: a storage's name doesn't tell). A volume on node-local storage (`shared: false`) is tied to its PVE node, matched against the nodes' `topology.kubernetes.io/zone` label, which DCiaB sets to the PVE node name (ADR 0010). In `r1` a Proxmox control plane gets a zone only on a one-domain site, so with node-local storage on a site with several domains, volumes go on worker nodes (`dciab validate` checks it).
 
 ```console
 pveum role add DCiaBCSIVMs --privs "VM.Audit,VM.Config.Disk"

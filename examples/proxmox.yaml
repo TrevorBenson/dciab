@@ -85,6 +85,7 @@ spec:
       provider: proxmox-csi              # volumes are VM disks on a Proxmox storage; Ceph replicates them
       proxmoxCSI:
         storage: ceph-vm
+        shared: true                     # Ceph RBD: every PVE node reaches it (validate --live checks)
         credentials:                     # its own token: the privileges in docs/PROXMOX.md
           tokenID: csi@pve!dciab
           tokenSecret: {env: DCIAB_PVE_CSI_TOKEN}
