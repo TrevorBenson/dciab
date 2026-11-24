@@ -11,14 +11,14 @@ FROM ${BASE_IMAGE}
 
 # podman, buildah, skopeo: rootful builds, kind's provider, the seed registry, image copies.
 # bootc-image-builder itself runs as a container (nodeImages.bootc.bootcImageBuilder).
-# qemu-img, xorriso: disk images and installer ISOs. cloud-utils-growpart, xfsprogs: growroot. python3-pyyaml/jsonschema: dciab.
+# qemu-img, qemu-kvm, xorriso: disk images and installer ISOs. cloud-utils-growpart, xfsprogs: growroot. python3-pyyaml/jsonschema: dciab.
 # cloud-init, qemu-guest-agent: the VM gets its address, key and runner config at clone time.
 # libicu, krb5-libs, openssl-libs, zlib: the Actions runner (.NET) needs them.
 RUN dnf -y install \
       podman buildah skopeo container-selinux \
       git jq curl tar gzip zstd openssl ca-certificates \
       python3 python3-pyyaml python3-jsonschema \
-      qemu-img xorriso exfatprogs cloud-utils-growpart xfsprogs \
+      qemu-img qemu-kvm xorriso exfatprogs cloud-utils-growpart xfsprogs \
       NetworkManager firewalld openssh-server sudo cloud-init qemu-guest-agent \
       iproute bind-utils procps-ng \
       libicu krb5-libs openssl-libs zlib \

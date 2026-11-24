@@ -1,0 +1,50 @@
+name: node image boots (KVM)
+
+# Builds the Rocky 10 bootc node image on the self-hosted lab runner and boots its qcow2 under
+# QEMU/KVM (the runner VM needs CPU type host for nested virtualization), then checks what a
+# Proxmox clone depends on. Hosted Ubuntu runners can't do it: the SIG recipe's compose and
+# bootc-image-builder's mount both fail there (#151), and the lab runner is Rocky 10 with
+# SELinux, as the bootstrap host is.
+#
+# The job-started hook refuses pull requests and other branches, so this runs after a merge to
+# main (or a dispatch of main). Pre-merge, run hack/e2e/boot-node-image.sh on a Rocky or Fedora
+# host by hand; an isolated runner for pull requests is planned in #139.
+on:
+  push:
+    branches: [main]
+    paths:
+      - images/node-bootc/**
+      - hack/e2e/boot-node-image.sh
+      - bundle.lock
+      - VERSION
+      - .github/workflows/node-image-boot.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# One lab, one set of fixed addresses, shared with hand runs: the lab concurrency group.
+concurrency:
+  group: dciab-lab
+  cancel-in-progress: false
+
+jobs:
+  boot:
+    name: node image boots under QEMU (Rocky 10 bootc)
+    runs-on: [self-hosted, dciab-lab]
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+      - name: Tools and KVM
+        run: |
+          [ -x /usr/libexec/qemu-kvm ] || command -v qemu-system-x86_64 >/dev/null \
+            || { echo "::error::no qemu on the runner: the image needs qemu-kvm (rebuild it and update the runner VM)"; exit 1; }
+          [ -w /dev/kvm ] \
+            || { echo "::error::no usable /dev/kvm on the runner VM: set its CPU type to host (nested virtualization is on for pve1)"; exit 1; }
+          df -h /var
+      - name: Build the node image and qcow2
+        run: sudo images/node-bootc/build.sh --type qcow2
+      - name: Boot it and check
+        run: |
+          sudo chown -R "$(id -u):$(id -g)" images/node-bootc/output
+          hack/e2e/boot-node-image.sh images/node-bootc/output/qcow2/disk.qcow2 25
