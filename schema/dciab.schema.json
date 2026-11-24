@@ -719,8 +719,8 @@
     "issuerName": {
       "type": "string",
       "pattern": "^[a-z0-9]([-a-z0-9]{0,60}[a-z0-9])?$",
-      "not": {"pattern": "^system"},
-      "description": "1-62 lowercase letters, digits and hyphens, not starting with system: the name is the prefix of the issuer's users and groups (<name>:), and system: is Kubernetes' own (system:masters bypasses RBAC)"
+      "not": {"pattern": "^system$"},
+      "description": "1-62 lowercase letters, digits and hyphens, not system: the name is the prefix of the issuer's users and groups (<name>:), and system: is Kubernetes' own (system:masters bypasses RBAC)"
     },
     "jwtClaims": {
       "type": "object",

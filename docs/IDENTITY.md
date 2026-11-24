@@ -69,7 +69,7 @@ So with `authentik` and no site issuer, MGMT and INFRA trust no issuer. With `ex
 
 Users and groups carry the issuer's name as their prefix: `site:alice`, `site:dc1-platform-admins`. Two issuers can never name the same user or group. A cluster takes at most four issuers.
 
-No issuer's name may start with `system`. Its prefix would put the IdP's users and groups among Kubernetes' own: an issuer named `system` would turn an IdP group `masters` into `system:masters`, which bypasses RBAC. `validate`, `cluster-values` and the ClusterClasses all refuse a prefix that starts with `system:` or is the start of it.
+No issuer may be named `system`. Its prefix, `system:`, would put the IdP's users and groups among Kubernetes' own: an issuer named `system` would turn an IdP group `masters` into `system:masters`, which bypasses RBAC. `validate`, `cluster-values` and the ClusterClasses all refuse a prefix that starts with `system:` or is the start of it.
 
 Changing a cluster's issuers changes its control plane's files, so Cluster API replaces the control plane nodes one at a time.
 
@@ -110,6 +110,6 @@ Nothing installs Authentik or the blueprints yet: Authentik runs on INFRA, which
 - `openvox` without `external.ldap` warns: hosts get only the break-glass user. `vcenter` needs `external.ldap` or `vcenterFederation: true`.
 - `proxmox` or `vcenter` in `consumers` on another platform warns.
 - `external.issuer` isn't DCiaB's own Authentik.
-- Issuer names and URLs are unique, at most four per tier, none starts with `system`, and DCiaB's Authentik never serves MGMT or INFRA.
+- Issuer names and URLs are unique, at most four per tier, none is named `system`, and DCiaB's Authentik never serves MGMT or INFRA.
 - `caBundle` files hold a PEM certificate.
 - `roles.operator` and `roles.viewer` differ from `adminGroup` and from each other.

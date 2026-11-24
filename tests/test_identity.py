@@ -360,7 +360,7 @@ def test_ca_bundle_must_hold_a_certificate(site):
 # --- system: stays Kubernetes' own ---------------------------------------------------------
 
 @pytest.mark.parametrize("where", ["external", "kubernetes"])
-@pytest.mark.parametrize("name", ["system", "systems"])
+@pytest.mark.parametrize("name", ["system"])
 def test_issuer_names_cant_reach_system(site, where, name):
     """An issuer named system would map the IdP's group masters to system:masters."""
     with_ca(site.dir)
@@ -398,6 +398,9 @@ def test_chart_schema_refuses_a_system_issuer_name():
     values["nodes"]["authentication"]["issuers"][1]["name"] = "system"
     with pytest.raises(jsonschema.ValidationError):
         jsonschema.validate(values, schema)
+    for name in ("systemd", "systems-team"):   # only system itself gives the prefix system:
+        values["nodes"]["authentication"]["issuers"][1]["name"] = name
+        jsonschema.validate(values, schema)
 
 
 @pytest.mark.parametrize("cls", ["vsphere", "proxmox", "metal3"])
@@ -414,3 +417,15 @@ def test_classes_refuse_prefixes_that_reach_system(cls):
     # Bounded cost: the prefixes and names they read have a maxLength.
     for k in ("name", "usernamePrefix", "groupsPrefix"):
         assert items["properties"][k]["maxLength"] <= 63
+
+
+@pytest.mark.parametrize("name", ["systemd", "systems-team"])
+def test_names_that_only_begin_with_system_are_fine(site, name):
+    """Their prefixes (systemd:, systems-team:) don't reach system:."""
+    with_ca(site.dir)
+    doc = oidc_site()
+    doc["spec"]["identity"]["external"]["name"] = name
+    code, report = site.validate(doc)
+    assert errors(report) == [] and code == 0
+    from dciab_cluster.values import check_issuers
+    assert check_issuers([{"name": name, "url": "https://a/", "clientID": "k"}])
