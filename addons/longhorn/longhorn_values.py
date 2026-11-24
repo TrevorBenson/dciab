@@ -6,7 +6,9 @@
     longhorn_values.py images <chart values> <values>  # every image the release runs, one per line
 
 The Longhorn settings are the cluster's tier block (spec.storage.block with its override, or
-the old spec.storage.longhorn; lib/dciab_storage). <cluster> defaults to mgmt.
+the old spec.storage.longhorn; lib/dciab_storage). <cluster> defaults to mgmt. The backup
+target is the cluster's from spec.backup (lib/dciab_backup): for MGMT, always the site
+target. A config without spec.backup still uses the Longhorn settings' backupTarget.
 
 The Secret goes to stdout so install.sh can pipe it into kubectl apply --server-side -f -:
 credentials never land on disk, in a process's arguments, or in a last-applied annotation. `secret` prints nothing for an NFS target.
@@ -15,7 +17,8 @@ backupTarget is DCiaB's form: s3://<bucket>@<endpoint>[/<path>] or nfs://<server
 Longhorn wants s3://<bucket>@<region>/<path> and the endpoint in the Secret's AWS_ENDPOINTS,
 so an S3 target is translated (the region is read from an AWS endpoint, s3.<region>.amazonaws.com,
 and is otherwise us-east-1, which S3-compatible stores ignore). backupCredentials ({file: ...} or {env: ...}) holds KEY=VALUE
-lines with at least AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY.
+lines with at least AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY. The target's caBundle, if
+any, becomes the Secret's AWS_CERT, which Longhorn trusts for the endpoint.
 """
 
 from __future__ import annotations
@@ -30,6 +33,7 @@ import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / "lib"))
 
+from dciab_backup import BackupError, longhorn_target  # noqa: E402
 from dciab_cluster.credentials import resolve  # noqa: E402
 from dciab_storage import StorageError, cluster_block  # noqa: E402
 
@@ -76,8 +80,9 @@ def has_workers(site: dict, cluster: str) -> bool:
 def site_values(site: dict, cluster: str = "mgmt") -> dict:
     lh = longhorn(site, cluster)
     count = lh["replicaCount"]
-    store = {"backupTarget": backup_target(lh["backupTarget"])}
-    if lh["backupTarget"].startswith("s3://"):
+    target = longhorn_target(site["spec"], cluster)["url"]
+    store = {"backupTarget": backup_target(target)}
+    if target.startswith("s3://"):
         store["backupTargetCredentialSecret"] = SECRET_NAME
     values = {
         "persistence": {"defaultClassReplicaCount": count},
@@ -111,19 +116,23 @@ def parse_env(text: str) -> Dict[str, str]:
 
 def secret(site: dict, namespace: str, config_dir: Path, cluster: str = "mgmt"):
     """The backup credentials Secret, or None for an NFS target."""
-    lh = longhorn(site, cluster)
-    m = S3_TARGET.match(lh["backupTarget"])
-    if not lh["backupTarget"].startswith("s3://"):
+    longhorn(site, cluster)
+    target = longhorn_target(site["spec"], cluster)
+    url = target["url"]
+    m = S3_TARGET.match(url)
+    if not url.startswith("s3://"):
         return None
     if not m:
-        raise ValueError(f"backupTarget {lh['backupTarget']!r}: use s3://<bucket>@<endpoint>[/<path>]")
-    if "backupCredentials" not in lh:
-        raise ValueError("an s3:// backupTarget needs backupCredentials")
-    data = parse_env(resolve(lh["backupCredentials"], config_dir))
+        raise ValueError(f"backup target {url!r}: use s3://<bucket>@<endpoint>[/<path>]")
+    if "credentials" not in target:
+        raise ValueError("an s3:// backup target needs credentials")
+    data = parse_env(resolve(target["credentials"], config_dir))
     missing = [k for k in REQUIRED_KEYS if not data.get(k)]
     if missing:
-        raise ValueError(f"backupCredentials has no {', '.join(missing)}")
+        raise ValueError(f"the backup credentials have no {', '.join(missing)}")
     data.setdefault("AWS_ENDPOINTS", f"https://{m['endpoint']}")
+    if "caBundle" in target:
+        data["AWS_CERT"] = resolve(target["caBundle"], config_dir)
     return {
         "apiVersion": "v1",
         "kind": "Secret",
@@ -181,7 +190,7 @@ def main(argv=None) -> int:
         else:
             print(__doc__.split("\n\n")[1], file=sys.stderr)
             return 2
-    except (KeyError, ValueError, OSError, StorageError) as exc:
+    except (KeyError, ValueError, OSError, StorageError, BackupError) as exc:
         print(f"longhorn: {exc}", file=sys.stderr)
         return 1
     return 0

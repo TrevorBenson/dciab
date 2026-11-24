@@ -85,6 +85,20 @@ spec:
       vsphereCSI:                        # [opt] storagePolicy or datastoreURL; neither: vCenter picks
         storagePolicy: vSAN Default Storage Policy
 
+  backup:                                # ADR 0009; docs/BACKUP.md
+    targets:
+      site:                              # the site's own S3 bucket or NFS export, outside DCiaB's clusters
+        url: s3://dciab-backup@minio.dc1.example.net/dc1
+        credentials: {file: ./secrets/backup-site.env}
+        # caBundle: {file: ./secrets/backup-site-ca.pem}   # [opt] the endpoint's private CA
+      offsite:                           # copy | site-replicated | removable | none (with a reason)
+        mode: copy
+        url: s3://dciab-dr@s3.dr.example.net/dc1
+        credentials: {file: ./secrets/backup-offsite.env}   # can write, can't delete
+        retentionDays: 90
+    # tiers: {infra: {target: objectStore}, workloads: {target: objectStore, volumeBackups: false}}
+    # schedules: {etcd: {mgmt: {cron: "0 * * * *", keep: {hourly: 24, daily: 14}}}}   # [opt] DCiaB's defaults
+
   pki:
     mode: generate-root                  # generate-root | import-intermediate
     commonName: DC1 Platform Root CA

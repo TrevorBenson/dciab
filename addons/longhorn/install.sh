@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
 # Install or upgrade Longhorn on one DCiaB cluster.
 #
-#   addons/longhorn/install.sh <config> <kubeconfig> [--chart TGZ]    install, then wait for the manager; apply the StorageClasses
+#   addons/longhorn/install.sh <config> <kubeconfig> [--chart TGZ]    install, then wait for the manager; apply the StorageClasses and recurring jobs
 #   addons/longhorn/install.sh <config> --template [--chart TGZ]      render the manifests; no cluster needed
 #   addons/longhorn/install.sh <config> --images [--chart TGZ]        every image the release runs, one per line
 #   addons/longhorn/install.sh <config> --print-values                print the per-site values
 #
-# <config> is the site config (MGMT's Longhorn settings from spec.storage.block; MGMT's worker
-# pools decide whether Longhorn tolerates the control plane taint). The chart comes from --chart, else from
+# <config> is the site config (MGMT's Longhorn settings from spec.storage.block, its backup
+# target and schedules from spec.backup; MGMT's worker pools decide whether Longhorn
+# tolerates the control plane taint). The chart comes from --chart, else from
 # $DCIAB_PAYLOAD/charts when DCIAB_PAYLOAD is set, else from the pinned repository; its sha256
 # is checked against bundle.lock chartDigests.longhorn. DCiaB's defaults: values.yaml here.
 set -euo pipefail
@@ -17,7 +18,7 @@ ROOT="$(cd "$HERE/../.." && pwd)"
 NS=longhorn-system
 
 usage() {
-  sed -n '3,13p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2
+  sed -n '3,14p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2
   exit 2
 }
 [[ $# -eq 2 || $# -eq 4 ]] || usage
@@ -113,5 +114,11 @@ case "$mode" in
     kubectl -n "$NS" rollout status daemonset/longhorn-manager --timeout=10m
     echo "== StorageClasses"
     "$ROOT/lib/steps/storage-classes.sh" "$config" mgmt "$kubeconfig"
+    # The snapshot and backup schedules (ADR 0009, decision 6): one RecurringJob per task,
+    # for the groups the StorageClasses put their volumes in. Server-side, like the Secret.
+    echo "== recurring snapshots and backups"
+    PYTHONPATH="$ROOT/lib${PYTHONPATH:+:$PYTHONPATH}" python3 -m dciab_backup longhorn-jobs "$config" mgmt \
+      | kubectl apply --server-side --field-manager=dciab --force-conflicts -f -
+    kubectl -n "$NS" get recurringjobs.longhorn.io
     ;;
 esac

@@ -64,7 +64,9 @@ def test_override_without_a_provider_merges_settings():
     spec = longhorn_example("vsphere")["spec"]
     spec["storage"]["block"]["overrides"] = {"mgmt": {"longhorn": {"replicaCount": 2}}}
     m = st.tier_block(spec, "mgmt")["settings"]
-    assert m["replicaCount"] == 2 and m["backupTarget"].startswith("s3://")
+    assert m["replicaCount"] == 2
+    spec["storage"]["block"]["longhorn"]["backupTarget"] = "s3://lh@s3.example.net"
+    assert st.tier_block(spec, "mgmt")["settings"]["backupTarget"].startswith("s3://")
     assert st.tier_block(spec, "infra")["settings"]["replicaCount"] == 3
     # The base is never changed by a merge.
     assert spec["storage"]["block"]["longhorn"]["replicaCount"] == 3
@@ -88,7 +90,8 @@ def test_workload_override_stands_alone():
     spec = load_example("metal3-cluster")["spec"]
     w = st.cluster_block(spec, "metal01")
     assert w["provider"] == "longhorn" and w["settings"]["replicaCount"] == 2
-    assert w["settings"]["backupTarget"].endswith("/dc2-tenants")
+    spec["storage"]["block"]["longhorn"]["backupTarget"] = "s3://lh@s3.example.net/dc2"
+    assert "backupTarget" not in st.cluster_block(spec, "metal01")["settings"]
     assert st.tier_block(spec, "mgmt")["settings"]["replicaCount"] == 3
 
 

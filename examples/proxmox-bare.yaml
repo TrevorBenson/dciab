@@ -96,7 +96,15 @@ spec:
                                          # Longhorn, not proxmox-csi, for its backups to the site's NAS
       longhorn:
         replicaCount: 2                  # local disks on one host: survives a node VM, not the host
-        backupTarget: nfs://nas01.dc3.example.net:/exports/longhorn
+
+  backup:                                # ADR 0009; docs/BACKUP.md
+    targets:
+      site:
+        url: nfs://nas01.dc3.example.net:/exports/dciab-backup
+      offsite:
+        mode: removable
+    tiers:
+      infra: {target: site}
 
   pki:
     mode: import-intermediate

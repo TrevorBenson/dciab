@@ -41,7 +41,8 @@
 #               refuses to run unless the moved Cluster is on MGMT
 #   storage     MGMT's block storage (spec.storage.block, with its mgmt override) and the
 #               four StorageClasses, replicated the default (lib/steps/storage-classes.sh).
-#               longhorn: addons/longhorn/install.sh, backed up to its target; vsphere-csi
+#               longhorn: addons/longhorn/install.sh, with recurring snapshots and backups
+#               to the site target (spec.backup, docs/BACKUP.md); vsphere-csi
 #               and proxmox-csi: addons/csi/install.sh, the site's array; existing: the
 #               classes copy the StorageClass the config names. After the move, so a storage
 #               problem never holds up the pivot, and the bootstrap cluster can go once it
@@ -263,6 +264,7 @@ case "$provider" in
   vsphere-csi|proxmox-csi)
     # The manifest comes from $DCIAB_PAYLOAD/providers when DCIAB_PAYLOAD is set.
     "$ROOT/addons/csi/install.sh" "$config" mgmt "$mgmt_kubeconfig"
+    echo "volume backups: none by DCiaB on $provider; the array's own snapshots and the services' own backups cover it (docs/BACKUP.md)"
     ;;
   existing)
     "$ROOT/lib/steps/storage-classes.sh" "$config" mgmt "$mgmt_kubeconfig"
