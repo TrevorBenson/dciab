@@ -67,7 +67,7 @@ spec:
       lbPool: 10.20.110.200-10.20.110.209
       podCIDR: 10.240.0.0/16
       serviceCIDR: 10.241.0.0/16
-      controlPlane: {replicas: 3, cpu: 4, memoryGiB: 16, diskGiB: 100}
+      controlPlane: {replicas: 3, cpu: 4, memoryGiB: 16, diskGiB: 100, dataDiskGiB: 200}   # Longhorn's disk: no workers here
       workerPools: []                    # explicit: control plane nodes run MGMT workloads
     infra:
       apiVIP: 10.20.110.11
@@ -77,13 +77,15 @@ spec:
       serviceCIDR: 10.243.0.0/16
       controlPlane: {replicas: 3, cpu: 4, memoryGiB: 16, diskGiB: 100}
       workerPools:
-        - {name: general, replicas: 4, cpu: 16, memoryGiB: 64, diskGiB: 150}   # Longhorn data shares the root disk
+        - {name: general, replicas: 4, cpu: 16, memoryGiB: 64, diskGiB: 150, dataDiskGiB: 500}   # Longhorn's own disk
 
   storage:
-    longhorn:
-      replicaCount: 3
-      backupTarget: s3://longhorn@minio.dc1.example.net/dc1   # site-provided s3:// or nfs://
-      backupCredentials: {file: ./secrets/longhorn-s3.env}      # required for s3; omitted for nfs
+    block:
+      provider: longhorn                 # longhorn | vsphere-csi | proxmox-csi | ceph-csi | vendor-csi | existing
+      longhorn:                          # Longhorn needs dataDiskGiB on the nodes it runs on
+        replicaCount: 3
+        backupTarget: s3://longhorn@minio.dc1.example.net/dc1   # site-provided s3:// or nfs://
+        backupCredentials: {file: ./secrets/longhorn-s3.env}      # required for s3; omitted for nfs
 
   pki:
     mode: generate-root                  # generate-root | import-intermediate
@@ -109,4 +111,4 @@ spec:
       serviceCIDR: 10.245.0.0/16
       controlPlane: {replicas: 3, cpu: 4, memoryGiB: 16, diskGiB: 100}
       workerPools:
-        - {name: general, replicas: 3, cpu: 8, memoryGiB: 32, diskGiB: 150}   # Longhorn data shares the root disk
+        - {name: general, replicas: 3, cpu: 8, memoryGiB: 32, diskGiB: 150}

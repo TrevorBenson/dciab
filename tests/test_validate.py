@@ -8,9 +8,15 @@ from conftest import ROOT, errors, load_example, warnings
 
 # Warnings an example is meant to show on every run (ADR 0010): a site that isn't highly
 # available says so, and so does a Proxmox control plane that r1 can't spread.
+# Longhorn on a vSAN datastore or on Ceph replicates twice, and Longhorn on Proxmox VMs
+# shares the root disk: the examples say so until they move to their platform's CSI driver.
 EXPECTED_WARNINGS = {
-    "proxmox": {"spec.failureDomains.domains"},
-    "proxmox-bare": {"spec.failureDomains.notHighlyAvailable", "spec.time.serveLocalClock"},
+    "vsphere": {"spec.storage.block.longhorn.replicaCount"},
+    "metal3-cluster": {"spec.storage.block.longhorn.replicaCount"},
+    "proxmox": {"spec.failureDomains.domains", "spec.storage.block.longhorn.replicaCount",
+                "spec.clusters.mgmt", "spec.clusters.infra"},
+    "proxmox-bare": {"spec.failureDomains.notHighlyAvailable", "spec.time.serveLocalClock",
+                     "spec.clusters.mgmt", "spec.clusters.infra"},
 }
 
 
@@ -213,16 +219,16 @@ def test_ironic_ip_must_be_in_mgmt_pool(site):
 
 def test_s3_target_needs_credentials(site):
     doc = load_example("vsphere")
-    del doc["spec"]["storage"]["longhorn"]["backupCredentials"]
+    del doc["spec"]["storage"]["block"]["longhorn"]["backupCredentials"]
     _, report = site.validate(doc)
-    assert errors(report, "spec.storage.longhorn.backupCredentials")
+    assert errors(report, "spec.storage.block.longhorn.backupCredentials")
 
 
 def test_nfs_target_rejects_credentials(site):
     doc = load_example("proxmox")
-    doc["spec"]["storage"]["longhorn"]["backupCredentials"] = {"file": "./secrets/longhorn-s3.env"}
+    doc["spec"]["storage"]["block"]["longhorn"]["backupCredentials"] = {"file": "./secrets/longhorn-s3.env"}
     _, report = site.validate(doc)
-    assert "remove it" in errors(report, "spec.storage.longhorn.backupCredentials")[0]["fix"]
+    assert "remove it" in errors(report, "spec.storage.block.longhorn.backupCredentials")[0]["fix"]
 
 
 def test_missing_secret_file(site):

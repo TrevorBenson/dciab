@@ -703,6 +703,11 @@
         "diskGiB": {
           "type": "integer",
           "minimum": 25
+        },
+        "dataDiskGiB": {
+          "type": "integer",
+          "minimum": 10,
+          "description": "vsphere: a second disk, mounted at /var/lib/longhorn"
         }
       }
     },

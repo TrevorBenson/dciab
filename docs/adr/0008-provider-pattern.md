@@ -1,6 +1,6 @@
 # ADR 0008: Providers — one pattern for identity, storage, DNS, IPAM and secrets
 
-- Status: Accepted (2026-11-23)
+- Status: Accepted (2026-11-23); amended 2026-11-24 (block storage has no default and workload clusters opt in: decisions 1, 2 and 4)
 - Date: 2026-11-22
 
 ## Context
@@ -26,7 +26,7 @@ Each core service is a block under `spec` with a `provider` key. Each provider h
 | Service | Built-in provider | Site-provided providers | Default |
 | --- | --- | --- | --- |
 | Identity (`spec.identity`) | `authentik` | `external` (OIDC, plus LDAP for hosts) | `authentik` |
-| Block storage (`spec.storage.block`) | `longhorn` | `vsphere-csi`, `proxmox-csi`, `ceph-csi`, `vendor-csi`, `existing` | by platform (decision 4) |
+| Block storage (`spec.storage.block`) | `longhorn` | `vsphere-csi`, `proxmox-csi`, `ceph-csi`, `vendor-csi`, `existing` | none: required for MGMT and INFRA; optional and not enforced for workload clusters (decision 4) |
 | Object storage (`spec.storage.object`) | `seaweedfs` | `rook-ceph`, `external` | `seaweedfs` |
 | DNS (`spec.dns`) | `powerdns` | `external` | `powerdns` |
 | IPAM (`spec.ipam`) | `in-cluster` | `netbox` (DCiaB's or the site's) | `in-cluster` |
@@ -35,13 +35,13 @@ Each core service is a block under `spec` with a `provider` key. Each provider h
 
 `spec.pki` keeps its `mode` key; renaming it buys nothing. Every new block uses `provider`.
 
-The built-in provider is always the default, so a config that names none gets today's behaviour. Block storage is the exception: its default follows the platform (decision 4).
+The built-in provider is always the default, so a config that names none gets today's behaviour. Block storage is the exception: it has no default. Its provider is required for MGMT and INFRA, and optional and not enforced for workload clusters (decision 4).
 
 **Providers can be pivoted.** A site that starts on a built-in provider can move to its own service once that service exists (identity, DNS, object storage, secrets). In config that is a change of `provider` and its sub-block. Each service's migration steps (moving records, buckets, clients or secrets) belong to that service's implementation, not this ADR.
 
 ### 2. Tiers can override, but only downwards
 
-A site runs three kinds of cluster: MGMT, INFRA and workload clusters. Each service block takes an `overrides` map keyed by tier (`mgmt`, `infra`, `workload`). An override is merged over the block for that tier's clusters. Overrides for one workload cluster at a time come after v1; in v1 every workload cluster gets the `workload` override.
+A site runs three kinds of cluster: MGMT, INFRA and workload clusters. Each service block takes an `overrides` map keyed by tier (`mgmt`, `infra`, `workload`). An override is merged over the block for that tier's clusters. Block storage's `workload` override is the exception: it stands alone, because workload clusters don't inherit MGMT and INFRA's block storage (decision 4). Overrides for one workload cluster at a time come after v1; in v1 every workload cluster gets the `workload` override.
 
 One rule limits overrides. The tiers are created in order: site → bootstrap → MGMT → INFRA → workload. **A tier may use providers that run on itself, on the site, or on an earlier tier. Its creation and its recovery may depend only on the site and earlier tiers.** A tier never depends on a later one. So:
 
@@ -111,22 +111,27 @@ Tenant groups are added on top of these, per tenant, through Git.
 
 The v1 block providers are Longhorn, the vSphere CSI driver, the Proxmox CSI driver, ceph-csi (when the site supplies a Ceph key) and a small set of pinned vendor SAN drivers. OpenEBS is not in v1 (Alternatives considered).
 
-The default provider follows from the platform:
+**`block.provider` is required for MGMT and INFRA.** There is no platform default. The usual choice follows from the platform, and `dciab validate` suggests it when the provider is missing:
 
-| Platform and datastore | Default `block.provider` |
+| Platform and datastore | Usual `block.provider` |
 | --- | --- |
 | vSphere (any datastore) | `vsphere-csi` |
 | Proxmox VE with shared storage (Ceph RBD, LVM on an iSCSI or FC LUN, NFS) | `proxmox-csi` |
 | Proxmox VE with local storage only (`local-lvm`, ZFS) | `longhorn`, on the worker data disk |
 | Metal3 (bare metal) | `longhorn`, on the node's data disks |
 
-The site can choose otherwise; the defaults just make the common case need no storage config.
+**For workload clusters it's optional and not enforced.** They don't inherit MGMT and INFRA's block. Without `overrides.workload`, DCiaB imposes no block storage on workload clusters: each tenant brings its own. With it, every workload cluster gets that provider and its settings, written in full; nothing is merged from `block`.
+
+> **Amended 2026-11-24.** As accepted on 2026-11-23, this decision gave block storage a default by platform, applied to every cluster. Now the provider is required for MGMT and INFRA, and optional and not enforced for workload clusters. Why:
+> - **No hidden site-specific defaults.** Every site-specific field in the config is required; a storage default that silently differs by platform breaks that rule.
+> - **Offline, DCiaB can't tell Proxmox shared storage from local storage.** The right provider differs (`proxmox-csi` or `longhorn`), and only `validate --live` could read the storage type.
+> - **Tenants own their clusters' storage.** A workload cluster belongs to its tenant, who may bring another driver or none; DCiaB offers a provider through `overrides.workload` but doesn't impose MGMT and INFRA's.
 
 **Providers:**
 
 - **`longhorn`.** Today's provider. Keeps `replicaCount`, `backupTarget` and `backupCredentials`, and moves under `storage.block.longhorn`. Its data goes on the worker data disk (`dataDiskGiB`), not the root disk, which is a fix the review asked for and the implementation of this ADR must include. Replication across hosts depends on failure domains (ADR 0010).
 - **`vsphere-csi`.** The vSphere CSI driver, which provisions volumes through vCenter's Cloud Native Storage. Node VMs need hardware version 15 or later, VMware Tools, and `disk.EnableUUID` set. The driver is pinned in `bundle.lock` with the vSphere cloud provider (CPI) that CAPV clusters need anyway; the current release line supports Kubernetes 1.34 to 1.36. Only `vsphere`-class clusters can use it.
-- **`proxmox-csi`.** The Proxmox CSI plugin (Apache 2.0) creates volumes as VM disks through the Proxmox API, on the storage the config names, and attaches them to the node VM. It needs only a Proxmox API token: a separate, privilege-separated token with the disk and storage privileges it uses, defined next to the CAPMOX token in `lib/dciab_validate/proxmox_privs.py` and checked by `validate --live`. It needs no Ceph key and no access to the storage network. It works with any Proxmox storage that can hold VM disks: Ceph RBD, LVM on a shared iSCSI or FC LUN, NFS, or local LVM and ZFS. On shared storage the volume follows the pod to another host; on local storage it stays on one host. The default for Proxmox with shared storage. Only `proxmox`-class clusters can use it.
+- **`proxmox-csi`.** The Proxmox CSI plugin (Apache 2.0) creates volumes as VM disks through the Proxmox API, on the storage the config names, and attaches them to the node VM. It needs only a Proxmox API token: a separate, privilege-separated token with the disk and storage privileges it uses, defined next to the CAPMOX token in `lib/dciab_validate/proxmox_privs.py` and checked by `validate --live`. It needs no Ceph key and no access to the storage network. It works with any Proxmox storage that can hold VM disks: Ceph RBD, LVM on a shared iSCSI or FC LUN, NFS, or local LVM and ZFS. On shared storage the volume follows the pod to another host; on local storage it stays on one host. The usual choice for Proxmox with shared storage. Only `proxmox`-class clusters can use it.
 - **`ceph-csi`.** RBD (block) and optionally CephFS (shared files) against a site Ceph cluster, Proxmox's included: monitors, cluster ID, pool and a Ceph client key. Offered when the site supplies that key, for sites that want Ceph features the Proxmox API doesn't expose (CephFS, RBD snapshots and clones), or for Metal3 clusters next to a Ceph cluster. DCiaB runs only the CSI driver; it doesn't run Ceph.
 - **`vendor-csi`.** A SAN or NAS array through its vendor's CSI driver (NetApp Trident, Dell CSM, Pure, HPE and so on). iSCSI has no standard API for creating LUNs, so a generic iSCSI driver can only attach LUNs someone already made on the array. Dynamic provisioning, snapshots and resizing need the array's API, which only the vendor's driver has. democratic-csi covers ZFS-based appliances (TrueNAS, generic ZFS over SSH) and Synology, over iSCSI, NFS and SMB, not arbitrary arrays; it fits a site whose "SAN" is one of those. DCiaB installs the driver's Helm chart from the archive with the site's values. In v1 that is a small set of vendor drivers, pinned in `bundle.lock` and tested before release; the set is chosen in the implementing PR. A signed overlay archive built by the site, carrying other drivers, comes later.
 - **`existing`.** The cluster already has a CSI driver that DCiaB didn't install. DCiaB uses the named StorageClass and installs nothing.
@@ -135,7 +140,7 @@ Each block provider produces a **`replicated`** StorageClass, the cluster defaul
 
 ### 5. A local class for services that replicate themselves
 
-CloudNativePG, OpenSearch, OpenBao (Raft) and SeaweedFS volume servers keep their own copies. On a replicated class they double-replicate inside the cluster too. So every cluster also has two **local** classes:
+CloudNativePG, OpenSearch, OpenBao (Raft) and SeaweedFS volume servers keep their own copies. On a replicated class they double-replicate inside the cluster too. So MGMT and INFRA, and workload clusters that opt in, also have two **local** classes:
 
 - **`local-retain`** (`reclaimPolicy: Retain`) for platform data that keeps its own copies: the services above.
 - **`local`** (`reclaimPolicy: Delete`) for scratch data.
@@ -233,7 +238,7 @@ spec:
       provider: vsphere-csi            # longhorn | vsphere-csi | proxmox-csi | ceph-csi | vendor-csi | existing
       vsphereCSI: {datastorePolicy: k8s-gold}
       # proxmoxCSI: {storage: ceph-vm}
-      overrides:                       # per tier: mgmt | infra | workload
+      overrides:                       # per tier: mgmt | infra (merged over block) | workload (complete; optional)
         workload: {provider: longhorn, longhorn: {replicaCount: 3, backupTarget: s3://lh@s3.example.net/dc1, backupCredentials: {file: ./secrets/lh-s3.env}}}
     object:
       provider: seaweedfs              # seaweedfs | rook-ceph | external
@@ -308,7 +313,7 @@ The schema does what JSON Schema can: one `provider` per block, the chosen provi
 1. **Tier order** (decision 2). Error when an override gives MGMT an INFRA-hosted provider (`storage.object: seaweedfs`, `ipam: netbox` with `mode: platform`, `identity` for the MGMT API), when MGMT's or OpenBao's backup target isn't the site target, or when INFRA backs up to its own object provider with no off-site or site copy of the critical set (ADR 0009).
 2. **No double replication.** Error when `longhorn` with more than one replica sits on replicated storage. Offline, `validate` warns when the Proxmox storage name or the vSphere datastore is set, since it can't know its type. With `--live`, it reads the type (Proxmox `rbd` or `cephfs`, vSphere `vsan`) and errors. Today's check only hints at this (`check_resilience`).
 3. **Platform fit.** `vsphere-csi` only for `vsphere`-class clusters, `proxmox-csi` only for `proxmox`-class clusters. Longhorn on VMs needs `dataDiskGiB` on the worker pools. With `--live`, the `proxmox-csi` token's privileges are checked like the CAPMOX token's.
-4. **Required provider fields.** `proxmox-csi`: a storage and its token. `ceph-csi`: monitors, cluster ID, pool, key. `vendor-csi`: a chart that is in `bundle.lock`. `existing`: a StorageClass name. Exactly one default StorageClass per cluster, and the four class names of decisions 4 and 5 present on every cluster.
+4. **Required provider fields.** `block.provider` for MGMT and INFRA; when it's missing, the error names the platform's usual choice (decision 4). `proxmox-csi`: a storage and its token. `ceph-csi`: monitors, cluster ID, pool, key. `vendor-csi`: a chart that is in `bundle.lock`. `existing`: a StorageClass name. Exactly one default StorageClass per cluster, and the four class names of decisions 4 and 5 present on every cluster DCiaB gives block storage.
 5. **COSI.** `cosi: true` only with `seaweedfs` or `rook-ceph`. With `external`, every enabled consumer needs a bucket entry.
 6. **Identity.** `external.issuer` is `https`. Every name in `consumers` has a client entry with `external`. A secret is required for every client except the public `kubernetes` one. `openvox` in `consumers` with no `external.ldap` is a warning (hosts get break-glass only). `vcenter` in `consumers` needs LDAP (Authentik outpost or `external.ldap`), or the note that the site federates vCenter itself. `roles.operator` and `roles.viewer`, when set, differ from `adminGroup` and from each other.
 7. **DNS.** With `external.mode: delegated`, `network.domain` is the delegated zone or inside it, and `validate --live` checks that the parent zone's NS records point at DCiaB's DNS addresses. With `records`, the zone is `network.domain` or a parent of it; `rfc2136` needs a TSIG key; `webhook` needs a provider pinned in `bundle.lock`.
@@ -335,7 +340,7 @@ The schema does what JSON Schema can: one `provider` per block, the chosen provi
 
 - The schema change is breaking in shape. The one-release `storage.longhorn` alias and a `validate` hint soften it. `cluster-values`, the Longhorn add-on and every example change in the implementing PR.
 - `bundle.lock` grows: ESO, CNPG, SeaweedFS, the COSI controller and drivers, vSphere CPI and CSI, the Proxmox CSI plugin, ceph-csi, external-dns, and the small set of vendor SAN drivers. Each is pinned and its images go in the archive like everything else.
-- Test cost grows with the matrix. CI renders and validates every provider; the lab tests the defaults per platform (vSphere CSI, Proxmox CSI on Ceph and on SAN-backed LVM, Longhorn on Proxmox local storage) and each pinned vendor driver before release. Site-provided providers other than those are documented as "supported by configuration, not lab-tested" until a site tests them.
+- Test cost grows with the matrix. CI renders and validates every provider; the lab tests the usual choice per platform (vSphere CSI, Proxmox CSI on Ceph and on SAN-backed LVM, Longhorn on Proxmox local storage) and each pinned vendor driver before release. Site-provided providers other than those are documented as "supported by configuration, not lab-tested" until a site tests them.
 - The `r1` ClusterClasses change before release: the `oidc` variable and the `--oidc-*` flags become an `AuthenticationConfiguration` file. `r1` is still a draft, so this needs no new revision.
 - The order of work is: the schema and `validate` with the alias; `identity.kubernetes` and the `AuthenticationConfiguration` replacing the hard-coded issuer; `vsphere-csi` and `proxmox-csi`; the Longhorn data disk and the four classes; COSI with SeaweedFS; `ceph-csi` and the vendor drivers; then `external` DNS and `netbox` IPAM.
 - Authentik blueprints need a spike: how client secrets from OpenBao reach the blueprint, and whether a rerun of the platform step changes nothing.
@@ -346,7 +351,7 @@ The schema does what JSON Schema can: one `provider` per block, the chosen provi
 ## Resolved questions
 
 1. **OpenEBS in v1?** No, neither Local PV LVM nor Mayastor: v1 has a `local` answer for every provider without it (decision 5), and Mayastor needs a node image and class change.
-2. **Default on Proxmox with Ceph?** The Proxmox CSI driver: it needs only an API token and works with any Proxmox storage, SAN-backed LVM included. ceph-csi is offered when the site supplies a Ceph key.
+2. **Default on Proxmox with Ceph?** The Proxmox CSI driver, as the usual choice; since the 2026-11-24 amendment there is no default, and the site names it (decision 4): it needs only an API token and works with any Proxmox storage, SAN-backed LVM included. ceph-csi is offered when the site supplies a Ceph key.
 3. **Vendor CSI drivers?** A small pinned, tested set in `bundle.lock` for v1; a signed site-built overlay archive later, because the overlay needs its own signing and verification.
 4. **External DNS for the platform names?** A delegated subzone (`dciab.<site domain>`) by default, so DCiaB automates its own records; the site zone is allowed when the DNS team won't delegate.
 5. **`secrets: external` scope?** Vault API only in v1, because ADR 0005 needs its auth methods and PKI; the hybrid mode (any ESO provider for secrets, OpenBao kept for PKI and SPIRE) comes next.
