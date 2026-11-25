@@ -51,7 +51,7 @@ Decided in [ADR 0002](adr/0002-bootstrap-appliance-on-ventoy.md).
 - [ ] Spike: unattended install of server zero from the stick with Secure Boot on, first boot from `dciab.yaml`, a short end-to-end check, installers from the same stick
 - [ ] Day 0 images preloaded in the appliance
 - [x] `dciab media`: copy the USB payload to the work disk, and run the bootstrap's heavy state from it ([MEDIA.md](MEDIA.md))
-- [ ] The bootstrap host survives a reboot: service addresses, firewall rules, the services pod and the seed registry come back
+- [ ] The bootstrap host survives a reboot: service addresses, firewall rules, the services pod and the seed registry come back (systemd and Quadlet units, proven in CI by a simulated reboot; built, real reboot on the appliance pending)
 
 ### Day 0 services and hypervisors
 
@@ -62,7 +62,7 @@ Decided in [ADR 0001](adr/0001-day0-hypervisors-and-services.md).
 - [x] Day 0 image digests pinned (CoreDNS, Caddy, chrony base)
 - [x] DCiaB's chrony image published by CI and pinned (`day0.images.chrony`), so the archive ships it
 - [x] `dciab services`: CoreDNS, chrony and Caddy as one pod on the DNS service IPs
-- [ ] `dciab services` lifecycle: config changes, teardown
+- [x] `dciab services` lifecycle: config changes, teardown (`--down`), forwarding only for the site's networks
 - [ ] Day 0 DHCP on the bootstrap host, for sites that need it and have none (for example PXE installs or BMC addressing); Redfish virtual media installs need none
 - [x] `dciab hypervisors` for Proxmox VE, first part: answer files inside per-host installer ISOs (served only to each host's BMC), root password from the config or generated and sealed with age, Redfish virtual media boot, wait for the install ([docs/HYPERVISORS.md](HYPERVISORS.md); ADR 0001 amendment 1)
 - [x] The CAPMOX API token's exact Proxmox VE privileges, one role per path, checked by `dciab validate --live` ([docs/PROXMOX.md](PROXMOX.md))
@@ -74,7 +74,7 @@ Decided in [ADR 0001](adr/0001-day0-hypervisors-and-services.md).
 
 ### Seed, bootstrap cluster and MGMT
 
-- [x] `dciab status`: read-only report of the Day 0 pod, the platform CA and registry certificate, the seed registry, the bootstrap cluster and where MGMT's Cluster lives
+- [x] `dciab status`: read-only report of the Day 0 pod (full, or DNS-only from seed, with its DNS answer checked), the platform CA and registry certificate, the seed registry, the bootstrap cluster and where MGMT's Cluster lives
 - [x] `dciab seed`: platform CA (generated with its key age-encrypted, or imported), read-only Zot loaded from the payload, kind pulling through it, providers and ClusterClasses from the payload, DNS for `registry.<domain>`; `--remove` undoes it on the host ([SEED.md](SEED.md))
 - [ ] Minimal INFRA for Day 0: settle which INFRA services, if any, Day 0 or the pivot need ahead of `r1beta`'s full `dciab infra`, and build them
 - [ ] `dciab mgmt`: builds MGMT, installs Cilium and the providers, and moves Cluster API into MGMT; picks up `dciab seed`'s kubeconfig and trust bundle and runs offline from the payload (CI runs seed then mgmt up to the Cluster; not yet proven on real infrastructure). On vSphere, the cloud provider (CPI) is installed before Cilium (`addons/vsphere-cpi`, the `cpi` step)

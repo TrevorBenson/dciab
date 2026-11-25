@@ -66,7 +66,7 @@ They exist only until the platform's services take over, so they're chosen for s
 | NTP | chrony, in a DCiaB image (`images/day0-chrony/`) on Rocky Linux 10 minimal | Runs with `-x`: it serves time without setting the host clock, so it needs no `SYS_TIME` capability. One chronyd per DNS service IP, because chrony binds to one IPv4 address only |
 | HTTP | Caddy (official image) | Static file server with correct ranged reads, which BMCs use for virtual media; its access log shows each BMC fetching its ISO |
 
-Images are pinned by digest in `bundle.lock` (`day0.images`) and shipped in the archive. `dciab services` renders their configuration from `dciab.yaml` and runs them as one pod with host networking, from a generated Kubernetes-style manifest (`podman kube play --replace`); teardown is `podman kube down`. They run rootful, because they bind ports 53 and 123 on the site network.
+Images are pinned by digest in `bundle.lock` (`day0.images`) and shipped in the archive. `dciab services` renders their configuration from `dciab.yaml` and runs them as one pod with host networking, from a generated Kubernetes-style manifest (`podman kube play --replace`); teardown is `dciab services --down`, which undoes what the step recorded adding (amended at implementation: first planned as `podman kube down`). They run rootful, because they bind ports 53 and 123 on the site network.
 
 ### 6. The pivot services answer on the production service addresses
 
@@ -83,7 +83,7 @@ HTTP listens on `bootstrap.address`: only installers and BMCs use it, and it goe
 
 - New optional config: `spec.hypervisors` and `spec.bootstrap.ntp`. `validate` checks them: the hypervisor type matches `platform.type`; host addresses sit in the node network without overlapping anything; MACs and BMCs are unique across hypervisor and Metal3 hosts; Proxmox hosts appear in `platform.proxmox.nodes`; the ESXi ISO matches its pin; NTP servers match the DNS service addresses when the bootstrap host serves NTP.
 - `bundle.lock` gains `hypervisors` and `day0` sections; the image digest check covers `day0.images`.
-- `dciab services` must handle a bootstrap host that already runs services: ports already in use (Rocky's own `chronyd` holds UDP 123, so the pod binds only to the service addresses), runtime-only firewalld rules opened for the step and closed at teardown, and a readiness check that queries DNS (both directions), NTP and ranged HTTP from the network.
+- `dciab services` must handle a bootstrap host that already runs services: ports already in use (Rocky's own `chronyd` holds UDP 123, so the pod binds only to the service addresses), firewalld rules opened for the step and closed at teardown (permanent since amendment 2), and a readiness check that queries DNS (both directions), NTP and ranged HTTP from the network.
 - Before a server is installed, the hypervisor step checks or sets over Redfish: UEFI boot mode, Secure Boot per `spec.hypervisors.bootMode`, virtualization extensions, and that a disk matches `rootDeviceHints`.
 
 ## Amendment 1 (2026-11-22): answer files inside per-host ISOs; root passwords sealed with age
@@ -97,6 +97,19 @@ HTTP listens on `bootstrap.address`: only installers and BMCs use it, and it goe
 - DCiaB and CAPMOX use the Proxmox VE API with a dedicated API token with exactly the privileges [PROXMOX.md](../PROXMOX.md) lists; nothing DCiaB runs needs SSH to a hypervisor.
 
 **Consequences.** One base-ISO-sized file per host on the work disk, rebuilt only when that host's answer file or the base ISO changes. A host's ISO (with its root password hash) is readable from its BMC's address over plain HTTP, as ISOs already were; a generated password is 256 bits, so its hash can't be cracked. Post-install (the API token, bridge, storage, cluster join) logs in with the root password: the site's, or the generated one opened with a recipient's age identity.
+
+## Amendment 2 (2026-11-25): the services survive a reboot
+
+**Context.** The four-role review (issue #81) found that nothing on the bootstrap host survived a reboot: the DNS service IPs, the firewalld ports, the services pod and the seed registry, while MGMT still depends on the host for DNS, NTP and images until the handoff (`r1beta`). The decision above opened the ports at runtime only, so that a reboot cleared them.
+
+**Decisions.**
+- `dciab services` runs the pod as a Quadlet unit (`dciab-services.kube`), after a systemd unit that adds the DNS service IPs at boot (`dciab-services-addresses.service`). `dciab seed` runs Zot as a Quadlet unit (`dciab-registry.container`).
+- Firewalld ports are opened at runtime and permanently; seed opens port 443 too.
+- Every unit file and port is recorded before it is created, and `dciab services --down` (or `dciab seed --remove`) stops and removes the units and closes the ports. Each port scope (runtime, permanent) is recorded only when DCiaB opened it, so an operator's own rule is never removed; with firewalld stopped, the permanent rules are removed with `firewall-offline-cmd`. Teardown no longer relies on a reboot.
+- The rendered files and both units change together, in the `pod` step: a run stopped earlier leaves the previous config whole, so a reboot or a crash restart brings back one consistent config.
+- A host without systemd and Quadlet still works, with a warning that nothing comes back after a reboot.
+
+**Consequences.** The bootstrap kind cluster still doesn't survive a reboot; it is needed only until `dciab mgmt` moves Cluster API to MGMT.
 
 ## Not decided here (roadmap)
 

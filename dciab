@@ -21,7 +21,8 @@ Commands:
                                            Copy the archive to spec.bootstrap.workDisk and put container
                                            storage there (as root); prints the next steps with --state
                                            and --isos on the work disk
-  services <config> [--state DIR] [--isos DIR] [--until STEP] [--print]
+  services <config> [--state DIR] [--isos DIR] [--payload DIR] [--until STEP] [--print]
+  services <config> --down [--state DIR]
                                            Day 0 DNS, NTP and HTTP on the bootstrap host (as root)
   hypervisors <config> [--state DIR] [--isos DIR] [--host NAME ...] [--until STEP] [--iso FILE]
               [--reinstall NAME ...] [--first-install NAME ...] [--age-identity FILE] [--print]
