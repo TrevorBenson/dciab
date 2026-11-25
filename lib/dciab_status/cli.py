@@ -59,15 +59,48 @@ def container_state(name: str, runner: Runner, kind: str = "container") -> Optio
     return r.stdout.strip().lower() if r.returncode == 0 else None
 
 
-def check_services(site: dict, runner: Runner = run) -> Optional[Dict[str, str]]:
-    if not site["spec"].get("hypervisors"):
-        return None   # this site starts at seed
+def dns_answers(site: dict, resolve: Callable[[str, str], Optional[List[str]]]) -> List[str]:
+    """The DNS service IPs that don't resolve registry.<domain> to the bootstrap address (the
+    name every node's registry mirror uses), as 'ip: what it answered'."""
+    spec = site["spec"]
+    name = f"registry.{spec['network']['domain'].rstrip('.')}"
+    want = [spec["bootstrap"]["address"]]
+    bad = []
+    for ip in spec["network"]["dnsServiceIPs"]:
+        got = resolve(ip, name)
+        if got != want:
+            bad.append(f"{ip}: {'no answer' if got is None else (', '.join(got) or 'no address')}")
+    return bad
+
+
+def _resolve(ip: str, name: str) -> Optional[List[str]]:
+    from dciab_services import probe
+    return probe.dns(ip, name, "A")
+
+
+def check_services(site: dict, runner: Runner = run,
+                   resolve: Callable[[str, str], Optional[List[str]]] = _resolve) -> Optional[Dict[str, str]]:
+    """The Day 0 services pod. Sites with spec.hypervisors run all of it (check 'services');
+    the others run it DNS-only from dciab seed (check 'dns'), answering registry.<domain>.
+    Either way the DNS answer is checked from the network's side, which needs no root."""
+    spec = site["spec"]
+    full = bool(spec.get("hypervisors"))
+    if not full and not spec.get("network", {}).get("dnsServiceIPs"):
+        return None
+    name = "services" if full else "dns"
+    made_by = "dciab services" if full else "dciab seed"
+    bad = dns_answers(site, resolve)
+    dns_detail = ("registry name resolves on every DNS service IP" if not bad
+                  else "registry name doesn't resolve on " + "; ".join(bad))
     if not is_root() or not shutil.which("podman"):
-        return result("services", "unknown", "needs root and podman")
+        return result(name, "ok" if not bad else "down",
+                      f"{dns_detail} (pod state needs root and podman)")
     state = container_state(SERVICES_POD, runner, kind="pod")
     if state is None:
-        return result("services", "missing", f"no pod {SERVICES_POD} (dciab services)")
-    return result("services", "ok" if state == "running" else "down", f"pod {SERVICES_POD} is {state}")
+        return result(name, "missing" if bad else "down",
+                      f"no pod {SERVICES_POD} ({made_by}); {dns_detail}")
+    ok = state == "running" and not bad
+    return result(name, "ok" if ok else "down", f"pod {SERVICES_POD} is {state}; {dns_detail}")
 
 
 def registry_answers(address: str, ca: Path, timeout: float = 5.0) -> Optional[str]:

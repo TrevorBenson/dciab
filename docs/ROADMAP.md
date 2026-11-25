@@ -74,7 +74,7 @@ Decided in [ADR 0001](adr/0001-day0-hypervisors-and-services.md).
 
 ### Seed, bootstrap cluster and MGMT
 
-- [x] `dciab status`: read-only report of the Day 0 pod, the platform CA and registry certificate, the seed registry, the bootstrap cluster and where MGMT's Cluster lives
+- [x] `dciab status`: read-only report of the Day 0 pod (full, or DNS-only from seed, with its DNS answer checked), the platform CA and registry certificate, the seed registry, the bootstrap cluster and where MGMT's Cluster lives
 - [x] `dciab seed`: platform CA (generated with its key age-encrypted, or imported), read-only Zot loaded from the payload, kind pulling through it, providers and ClusterClasses from the payload, DNS for `registry.<domain>`; `--remove` undoes it on the host ([SEED.md](SEED.md))
 - [ ] Minimal INFRA for Day 0: settle which INFRA services, if any, Day 0 or the pivot need ahead of `r1beta`'s full `dciab infra`, and build them
 - [ ] `dciab mgmt`: builds MGMT, installs Cilium and the providers, and moves Cluster API into MGMT; picks up `dciab seed`'s kubeconfig and trust bundle and runs offline from the payload (CI runs seed then mgmt up to the Cluster; not yet proven on real infrastructure). On vSphere, the cloud provider (CPI) is installed before Cilium (`addons/vsphere-cpi`, the `cpi` step)

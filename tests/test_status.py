@@ -29,13 +29,51 @@ def test_nothing_yet(tmp_path, monkeypatch):
     assert checks == {"pki": "missing", "registry": "unknown", "bootstrap": "missing", "mgmt": "missing"}
 
 
-def test_services_only_with_hypervisors(monkeypatch):
+NET = {"domain": "dc3.example.com", "dnsServiceIPs": ["10.0.0.53", "10.0.0.54"]}
+
+
+def answers(addr):
+    """A resolver that answers registry.dc3.example.com with addr on every IP (None: no answer)."""
+    return lambda ip, name: (None if addr is None else [addr]) if name == "registry.dc3.example.com" else []
+
+
+def test_services_with_hypervisors(monkeypatch):
     monkeypatch.setattr(cli, "is_root", lambda: True)
     monkeypatch.setattr(cli.shutil, "which", lambda t: "/usr/bin/" + t)
-    assert cli.check_services(SITE, fake([])) is None
-    site = {"spec": {"bootstrap": {"address": "x"}, "hypervisors": {"hosts": []}}}
-    assert cli.check_services(site, fake([("pod inspect", 0, "Running\n")]))["status"] == "ok"
-    assert cli.check_services(site, fake([]))["status"] == "missing"
+    assert cli.check_services(SITE, fake([])) is None   # no DNS service IPs in the config
+    site = {"spec": {"bootstrap": {"address": "10.0.0.5"}, "network": NET, "hypervisors": {"hosts": []}}}
+    running = fake([("pod inspect", 0, "Running\n")])
+    c = cli.check_services(site, running, resolve=answers("10.0.0.5"))
+    assert (c["check"], c["status"]) == ("services", "ok")
+    assert cli.check_services(site, fake([]), resolve=answers(None))["status"] == "missing"
+    # running, but DNS doesn't answer from the network: down, with the IP named
+    c = cli.check_services(site, running, resolve=answers(None))
+    assert c["status"] == "down" and "10.0.0.53: no answer" in c["detail"]
+
+
+def test_dns_only_pod_reported_as_dns(monkeypatch):
+    """Sites without spec.hypervisors: dciab seed runs the pod DNS-only; status reports it."""
+    monkeypatch.setattr(cli, "is_root", lambda: True)
+    monkeypatch.setattr(cli.shutil, "which", lambda t: "/usr/bin/" + t)
+    site = {"spec": {"bootstrap": {"address": "10.0.0.5"}, "network": NET}}
+    running = fake([("pod inspect", 0, "Running\n")])
+    c = cli.check_services(site, running, resolve=answers("10.0.0.5"))
+    assert (c["check"], c["status"]) == ("dns", "ok")
+    assert "dciab seed" in cli.check_services(site, fake([]), resolve=answers(None))["detail"]
+    c = cli.check_services(site, running, resolve=answers("10.9.9.9"))
+    assert c["status"] == "down" and "10.0.0.54: 10.9.9.9" in c["detail"]
+    # a pod that's gone while something else still answers: down, not missing
+    assert cli.check_services(site, fake([]), resolve=answers("10.0.0.5"))["status"] == "down"
+    assert cli.check_services(site, fake([("pod inspect", 0, "Exited\n")]),
+                              resolve=answers("10.0.0.5"))["status"] == "down"
+
+
+def test_dns_only_without_root_still_probes(monkeypatch):
+    monkeypatch.setattr(cli, "is_root", lambda: False)
+    site = {"spec": {"bootstrap": {"address": "10.0.0.5"}, "network": NET}}
+    c = cli.check_services(site, fake([]), resolve=answers("10.0.0.5"))
+    assert c["status"] == "ok" and "needs root" in c["detail"]
+    assert cli.check_services(site, fake([]), resolve=answers(None))["status"] == "down"
 
 
 def test_pki_expiry(tmp_path):
