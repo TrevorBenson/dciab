@@ -229,8 +229,9 @@ def apply_admins(admins: List[Dict[str, object]]) -> None:
 
 
 def _active_connection(device: str) -> Optional[str]:
-    """The connection active on device (nmcli's GENERAL.CONNECTION), or None."""
-    out = subprocess.run(["nmcli", "-g", "GENERAL.CONNECTION", "device", "show", device],
+    """The connection active on device (nmcli's GENERAL.CONNECTION), or None. `-e no`: terse
+    output escapes ':' and '\\' otherwise, and the escaped name matches no profile."""
+    out = subprocess.run(["nmcli", "-e", "no", "-g", "GENERAL.CONNECTION", "device", "show", device],
                          check=False, capture_output=True, text=True)
     name = (getattr(out, "stdout", "") or "").strip() if out.returncode == 0 else ""
     return name if name and name != "--" else None

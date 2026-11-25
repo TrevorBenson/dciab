@@ -481,3 +481,73 @@ def test_an_iso_replaced_with_the_same_size_and_mtime_is_hashed_again(tmp_path):
     os.utime(iso, ns=(st.st_atime_ns, st.st_mtime_ns))                  # the old mtime put back
     with pytest.raises(cli.MediaError, match="doesn't match"):
         cli.place_isos(archive, isos, stick, pins)
+
+
+# --- bot review fixes on 1c82627 ---------------------------------------------------------------
+
+def test_the_hash_cache_doesnt_follow_a_planted_symlink(tmp_path):
+    archive, isos = tmp_path / "a", tmp_path / "isos"
+    archive.mkdir()
+    stick = _stick_iso(tmp_path)
+    pins = {"proxmox-ve_9.2-1.iso": verify_mod.hashlib.sha256(ISO).hexdigest()}
+    victim = tmp_path / "victim"
+    victim.write_text("keep")
+    (tmp_path / ".cache").mkdir()
+    (tmp_path / ".cache" / (cli.HASHES + cli.TMP_SUFFIX)).symlink_to(victim)
+    cli.place_isos(archive, isos, stick, pins)
+    assert victim.read_text() == "keep"
+    assert (tmp_path / ".cache" / cli.HASHES).is_file() and not (tmp_path / ".cache" / cli.HASHES).is_symlink()
+
+
+def test_a_symlinked_cache_folder_is_refused(tmp_path):
+    archive, isos = tmp_path / "a", tmp_path / "isos"
+    archive.mkdir()
+    stick = _stick_iso(tmp_path)
+    pins = {"proxmox-ve_9.2-1.iso": verify_mod.hashlib.sha256(ISO).hexdigest()}
+    (tmp_path / "elsewhere").mkdir()
+    (tmp_path / ".cache").symlink_to(tmp_path / "elsewhere")
+    with pytest.raises(cli.MediaError, match="is a symlink"):
+        cli.place_isos(archive, isos, stick, pins)
+
+
+def test_a_pinned_iso_that_is_a_symlink_is_refused(tmp_path):
+    archive, isos = tmp_path / "a", tmp_path / "isos"
+    archive.mkdir()
+    isos.mkdir()
+    wrong = tmp_path / "wrong.iso"
+    wrong.write_bytes(b"not it")
+    (isos / "proxmox-ve_9.2-1.iso").symlink_to(wrong)
+    pins = {"proxmox-ve_9.2-1.iso": verify_mod.hashlib.sha256(ISO).hexdigest()}
+    with pytest.raises(cli.MediaError, match="is a symlink"):
+        cli.place_isos(archive, isos, None, pins)
+
+
+def test_the_link_is_left_even_when_the_old_copy_cant_be_removed(site, monkeypatch, capsys):
+    import errno
+    src, work, cfg = site
+    old = _old_state(cfg)
+    real_rename, real_rmtree = cli.os.rename, cli.shutil.rmtree
+
+    def rename(a, b):
+        if str(a) == str(old) and str(b) == str(work / "state"):
+            raise OSError(errno.EXDEV, "Invalid cross-device link")
+        return real_rename(a, b)
+
+    def rmtree(path, *a, **k):
+        if ".moved-" in str(path):
+            raise PermissionError(13, "Permission denied")
+        return real_rmtree(path, *a, **k)
+    monkeypatch.setattr(cli.os, "rename", rename)
+    monkeypatch.setattr(cli.shutil, "rmtree", rmtree)
+    assert cli.main(args(src, cfg)) == 1
+    assert "couldn't remove the old copy" in capsys.readouterr().err
+    assert old.is_symlink() and old.resolve() == (work / "state").resolve()   # the link is there
+    assert (work / "state" / "pki" / "ca.crt").read_text() == "CA"
+
+
+def test_the_state_locks_are_made_so_a_starting_step_is_refused(tmp_path):
+    state = tmp_path / "state"
+    state.mkdir()
+    with cli.step_locks(state, host_locks=()):
+        for name in cli.STATE_STEP_LOCKS:
+            assert (state / name).is_file()                              # made, and held

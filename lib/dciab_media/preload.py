@@ -224,9 +224,13 @@ def load(directory: Path, refs: Dict[str, str], runner: Optional[Runner] = None)
             raise PreloadError(f"{ref}: podman pull from the layout printed no image ID")
         repo, tag, want = split_ref(ref)
         # Check what was pulled before it gets the pinned name: a copy that doesn't match is
-        # removed, never left tagged where podman would use it.
+        # removed, never left tagged where podman would use it. The pinned blob is hashed first,
+        # so the platform manifests it lists can be trusted as part of the pinned image.
         got = runner(["podman", "image", "inspect", "--format", "{{.Digest}}", image_id]).stdout.strip()
-        if got not in platform_digests(directory, want):
+        blob = _blob(directory, want)
+        pinned_ok = blob.is_file() and _sha256(blob) == want
+        allowed = platform_digests(directory, want) if pinned_ok else [want]
+        if got not in allowed:
             removed = _remove_if_ours(image_id, e["name"], runner)
             raise PreloadError(f"{ref}: the payload's copy ({e['name']}) is {got or 'unknown'}, not the "
                                "pinned digest or one of its platform manifests; "

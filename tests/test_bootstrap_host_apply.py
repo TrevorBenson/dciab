@@ -20,8 +20,11 @@ class Host:
     def run(self, cmd, check=False, **kw):
         cmd = list(cmd)
         self.calls.append(cmd)
-        if cmd[:3] == ["nmcli", "-g", "GENERAL.CONNECTION"]:
+        if cmd[:5] == ["nmcli", "-e", "no", "-g", "GENERAL.CONNECTION"]:
             return SimpleNamespace(returncode=0, stdout=self.active.get(cmd[-1], "") + "\n")
+        if cmd[:3] == ["nmcli", "-g", "GENERAL.CONNECTION"]:          # escaped, as nmcli's default
+            name = self.active.get(cmd[-1], "").replace("\\", "\\\\").replace(":", "\\:")
+            return SimpleNamespace(returncode=0, stdout=name + "\n")
         if tuple(cmd) in self.fail:
             if check:
                 raise subprocess.CalledProcessError(1, cmd)
@@ -30,7 +33,7 @@ class Host:
 
     def nmcli(self):
         """The nmcli commands that change something (the GENERAL.CONNECTION reads left out)."""
-        return [c[1:] for c in self.calls if c and c[0] == "nmcli" and c[1] != "-g"]
+        return [c[1:] for c in self.calls if c and c[0] == "nmcli" and c[1] not in ("-g", "-e")]
 
 
 @pytest.fixture
@@ -104,6 +107,16 @@ def test_first_boot_rollback_brings_back_the_installers_profile(monkeypatch):
     with pytest.raises(subprocess.CalledProcessError):
         setup.apply_network(_plan(interface="enp3s0f1", managementVLAN="untagged"))
     assert h.nmcli()[-2:] == [["connection", "delete", staged], ["connection", "up", "Wired connection 1"]]
+
+
+def test_rollback_uses_the_profile_name_unescaped(monkeypatch):
+    """nmcli -g escapes ':' by default; the rollback must bring back the real profile name."""
+    staged = setup.CONNECTION + "-new"
+    h = Host(fail={("nmcli", "connection", "up", staged)}, active={"enp3s0f1": "uplink:management"})
+    monkeypatch.setattr(setup.subprocess, "run", h.run)
+    with pytest.raises(subprocess.CalledProcessError):
+        setup.apply_network(_plan(interface="enp3s0f1", managementVLAN="untagged"))
+    assert h.nmcli()[-1] == ["connection", "up", "uplink:management"]
 
 
 def test_tagged_rollback_prefers_the_vlan_devices_connection(monkeypatch):

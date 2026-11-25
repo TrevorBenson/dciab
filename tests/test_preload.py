@@ -201,7 +201,8 @@ def test_the_appliance_carries_no_images():
     from dciab_media import cli
     containerfile = (SHIPPED / "Containerfile").read_text()
     assert "day0-images" not in containerfile and "semanage fcontext" not in containerfile
-    assert "oras" not in (SHIPPED / "build.sh").read_text()
+    build = (SHIPPED / "build.sh").read_text()
+    assert "oras" not in build and "--image-only) image_only=true" in build   # lab-appliance.yml uses it
     assert not (SHIPPED / "rootfs/usr/lib/systemd/system/dciab-day0-images.service").exists()
     assert not (SHIPPED / "rootfs" / str(cli.STORAGE_DROPIN).lstrip("/")).exists()
 
@@ -250,6 +251,21 @@ def test_a_platform_manifest_of_the_pinned_index_is_accepted(tmp_path):
 
     loaded, _ = preload.load(d, {"caddy": ref}, P(digests={"id-caddy-2": child}))
     assert loaded == [ref]
+
+
+def test_a_tampered_pinned_index_doesnt_vouch_for_another_image(tmp_path):
+    """The pinned blob replaced with an index listing another manifest: its children aren't
+    trusted, so the pulled image is refused before it gets the pinned name."""
+    d, ref, child = _index_layout(tmp_path)
+    other = "sha256:" + "e" * 64
+    pinned = ref.split("@")[1]
+    blob = d / "images" / "blobs" / "sha256" / pinned[7:]
+    blob.write_text(json.dumps({"schemaVersion": 2, "manifests": [
+        {"mediaType": "application/vnd.oci.image.manifest.v1+json", "digest": other, "size": 1}]}))
+    p = Podman(digests={"id-caddy-2": other})
+    with pytest.raises(preload.PreloadError, match="not the pinned digest"):
+        preload.load(d, {"caddy": ref}, p)
+    assert not any(c[:2] == ["podman", "tag"] for c in p.calls)
 
 
 def test_full_check_hashes_every_blob(tmp_path):

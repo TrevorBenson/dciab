@@ -403,8 +403,11 @@ def _cache_file(isos: Path) -> Path:
 
 
 def _recorded(isos: Path) -> Dict[str, dict]:
+    cache = _cache_file(isos)
+    if cache.is_symlink() or cache.parent.is_symlink():
+        return {}
     try:
-        data = json.loads(_cache_file(isos).read_text())
+        data = json.loads(cache.read_text())
         return data if isinstance(data, dict) else {}
     except (OSError, ValueError):
         return {}
@@ -423,9 +426,16 @@ def _record(isos: Path, name: str, path: Path, sha: str) -> None:
     data = _recorded(isos)
     data[name] = dict(_identity(path.stat()), sha256=sha)
     cache = _cache_file(isos)
-    cache.parent.mkdir(parents=True, exist_ok=True)
+    if cache.parent.is_symlink():
+        raise MediaError(f"{cache.parent} is a symlink; remove it and run again")
+    cache.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     tmp = cache.with_name(cache.name + TMP_SUFFIX)
-    tmp.write_text(json.dumps(data, indent=1, sort_keys=True))
+    if tmp.is_symlink() or tmp.exists():
+        tmp.unlink()
+    # O_EXCL | O_NOFOLLOW, as copy_one writes: a planted symlink can't make root write elsewhere.
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, "w") as f:
+        f.write(json.dumps(data, indent=1, sort_keys=True))
     os.replace(tmp, cache)
     old = isos / OLD_HASHES
     if old.is_file() and not old.is_symlink():
@@ -481,7 +491,10 @@ def place_isos(archive: Path, isos: Path, isos_from: Optional[Path] = None,
         pins = read_pins(archive)
     for name, sha in sorted(pins.items()):
         dst = isos / name
-        if dst.is_file() and not dst.is_symlink():
+        if dst.is_symlink():
+            raise MediaError(f"{dst} is a symlink; dciab media checks only real files against bundle.lock: "
+                             "replace it with the file and run again")
+        if dst.is_file():
             if _sha_of(isos, name, dst) == sha:
                 continue
             raise MediaError(f"{dst} doesn't match the sha256 bundle.lock pins for it ({sha}); rename or "
@@ -703,13 +716,13 @@ def _fsync_tree(path: Path) -> None:
             os.close(fd)
 
 
-def _move_tree(source: Path, new: Path) -> None:
+def _move_tree(source: Path, new: Path) -> Optional[Path]:
     """Move source to new. On the same filesystem a rename (atomic); across filesystems a copy
     to new.partial, synced, renamed into place, and only then the source removed, so an
     interruption leaves the source complete and at most a .partial the next run names."""
     try:
         os.rename(source, new)
-        return
+        return None
     except OSError as exc:
         import errno
         if exc.errno != errno.EXDEV:
@@ -723,16 +736,13 @@ def _move_tree(source: Path, new: Path) -> None:
         os.fsync(fd)
     finally:
         os.close(fd)
-    # Rename the source aside first, so an interrupted or failed removal leaves a folder whose
-    # name says it was moved, not a half-deleted state folder under its old name.
+    # Rename the source aside, so an interrupted or failed removal leaves a folder whose name
+    # says it was moved, not a half-deleted state folder under its old name. The caller removes
+    # it after the link is in place.
     import time
     aside = source.with_name(f"{source.name}.moved-{time.strftime('%Y%m%dT%H%M%S')}")
     os.rename(source, aside)
-    try:
-        shutil.rmtree(aside)
-    except OSError as exc:
-        raise MediaError(f"moved the state to {new}, but couldn't remove the old copy {aside} "
-                         f"({exc.strerror or exc}); remove it by hand") from None
+    return aside
 
 
 def _link(old: Path, new: Path) -> Optional[str]:
@@ -762,10 +772,10 @@ class step_locks:
 
     def __init__(self, state: Path, host_locks: Optional[Sequence[Path]] = None):
         host_locks = HOST_STEP_LOCKS if host_locks is None else host_locks
-        # (path, create): a host lock is made if missing, so a step starting now waits on it; a
-        # state lock no step has made yet can't be held, so it's skipped.
+        # Every lock is made if missing, so a step starting now (dciab mgmt's first run, say) is
+        # refused instead of writing into the folder being moved.
         self.paths = [(p, True) for p in host_locks if p.parent.is_dir()] + \
-                     [(state / n, False) for n in STATE_STEP_LOCKS]
+                     [(state / n, True) for n in STATE_STEP_LOCKS]
         self.fds: List[int] = []
 
     def __enter__(self):
@@ -820,9 +830,15 @@ def move_state(config: Path, work: Path, runner: Optional[Runner] = None) -> Opt
             new.rmdir()                           # empty, checked by state_plan
         elif os.path.lexists(new):
             raise MediaError(f"{new} exists and isn't a folder; remove it and run again")
-        _move_tree(plan.source, new)
+        aside = _move_tree(plan.source, new)
         new.chmod(0o700)
         note = _link(old, new)
+        if aside is not None:
+            try:
+                shutil.rmtree(aside)
+            except OSError as exc:
+                raise MediaError(f"moved the state to {new}, but couldn't remove the old copy {aside} "
+                                 f"({exc.strerror or exc}); remove it by hand") from None
     moved = f"moved {plan.source} to {new}"
     return f"{moved}; {note}" if note else f"{moved} (left a link at {old})"
 
