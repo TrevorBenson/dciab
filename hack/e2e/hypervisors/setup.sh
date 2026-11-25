@@ -65,6 +65,13 @@ ip link set dciabsw0 up
 # it races systemd-udevd: MACAddressPolicy=persistent (99-default.link on Ubuntu) can still replace
 # a veth's random MAC after our change, and dciab services then finds no NIC with BOOT_MAC (#232).
 ip link add dciab-boot address "$BOOT_MAC" type veth peer name dciab-boot-sw
+# The guarantee itself: udev leaves an address of type 3 (NET_ADDR_SET) alone. Fails every run, not
+# only an unlucky one, if that premise is ever wrong.
+if [ "$(cat /sys/class/net/dciab-boot/addr_assign_type)" != 3 ]; then
+  echo "setup.sh: dciab-boot's MAC isn't marked as set (addr_assign_type" \
+       "$(cat /sys/class/net/dciab-boot/addr_assign_type)); udev may replace it" >&2
+  exit 1
+fi
 if command -v nmcli >/dev/null 2>&1; then
   nmcli device set dciab-boot managed no 2>/dev/null || true
   nmcli device set dciab-boot-sw managed no 2>/dev/null || true
@@ -77,13 +84,15 @@ ip addr add 10.30.110.5/24 dev dciab-boot
 ip addr add 10.30.110.1/24 dev dciab-boot          # the node gateway the hosts are given
 
 # Wait until udev is done with the new links and the bootstrap veth shows BOOT_MAC and is up.
-udevadm settle --timeout=30 2>/dev/null || true
+udevadm settle --timeout=30 2>/dev/null || echo "setup.sh: udevadm settle timed out; checking the link anyway" >&2
 boot_ready() {
   python3 - "$BOOT_MAC" <<'PY'
 import json, subprocess, sys
 want = sys.argv[1].lower()
-links = json.loads(subprocess.run(["ip", "-j", "link", "show", "dev", "dciab-boot"],
-                                  capture_output=True, text=True, check=True).stdout)
+res = subprocess.run(["ip", "-j", "link", "show", "dev", "dciab-boot"], capture_output=True, text=True)
+if res.returncode != 0:
+    sys.exit(1)
+links = json.loads(res.stdout or "[]")
 ok = bool(links) and links[0].get("address", "").lower() == want and "UP" in links[0].get("flags", [])
 sys.exit(0 if ok else 1)
 PY
