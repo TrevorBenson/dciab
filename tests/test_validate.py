@@ -1,3 +1,4 @@
+import pytest
 import os
 import subprocess
 
@@ -335,33 +336,48 @@ def test_hypervisor_type_must_match_platform(site):
     assert "use type: proxmox" in errors(report, "spec.hypervisors.type")[0]["fix"]
 
 
-def test_tagged_hypervisor_management_vlan_is_accepted(site):
+def tagged_example():
     doc = load_example("proxmox-bare")
     doc["spec"]["hypervisors"]["managementVLAN"] = "tagged"
+    doc["spec"]["platform"]["proxmox"]["vlanTag"] = doc["spec"]["network"]["nodes"]["vlan"]
+    return doc
+
+
+def test_tagged_hypervisor_management_vlan_is_accepted(site):
+    doc = tagged_example()
     _, report = site.validate(doc)
     assert not errors(report, "spec.hypervisors.managementVLAN")
     assert not errors(report, "spec.network.nodes.vlan") and not errors(report, "spec.platform.proxmox.bridge")
+    assert not errors(report, "spec.platform.proxmox.vlanTag")
+
+
+@pytest.mark.parametrize("tag", [None, 999])
+def test_tagged_hypervisor_management_vlan_needs_node_vms_tagged_on_the_node_vlan(site, tag):
+    doc = tagged_example()
+    if tag is None:
+        del doc["spec"]["platform"]["proxmox"]["vlanTag"]
+    else:
+        doc["spec"]["platform"]["proxmox"]["vlanTag"] = tag
+    _, report = site.validate(doc)
+    assert "set vlanTag: 110" in errors(report, "spec.platform.proxmox.vlanTag")[0]["fix"]
 
 
 def test_tagged_hypervisor_management_vlan_refuses_vlan_1(site):
-    doc = load_example("proxmox-bare")
-    doc["spec"]["hypervisors"]["managementVLAN"] = "tagged"
+    doc = tagged_example()
     doc["spec"]["network"]["nodes"]["vlan"] = 1
     _, report = site.validate(doc)
     assert "use managementVLAN: untagged for VLAN 1" in errors(report, "spec.network.nodes.vlan")[0]["fix"]
 
 
 def test_tagged_hypervisor_management_vlan_needs_vmbr0(site):
-    doc = load_example("proxmox-bare")
-    doc["spec"]["hypervisors"]["managementVLAN"] = "tagged"
+    doc = tagged_example()
     doc["spec"]["platform"]["proxmox"]["bridge"] = "vmbr1"
     _, report = site.validate(doc)
     assert "use vmbr0" in errors(report, "spec.platform.proxmox.bridge")[0]["fix"]
 
 
 def test_tagged_hypervisor_management_vlan_without_a_vlan_is_refused(site):
-    doc = load_example("proxmox-bare")
-    doc["spec"]["hypervisors"]["managementVLAN"] = "tagged"
+    doc = tagged_example()
     del doc["spec"]["network"]["nodes"]["vlan"]
     code, _ = site.validate(doc)
     assert code == 1                    # the schema requires network.nodes.vlan (1-4094)

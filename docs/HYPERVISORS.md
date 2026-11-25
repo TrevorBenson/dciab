@@ -51,7 +51,7 @@ With `managementVLAN: tagged` the answer file also has `[first-boot]` with `sour
 
 The Proxmox VE answer file can't set a VLAN, but the install itself needs no network (the answer file is on the ISO). So for `tagged`, each host's ISO also carries a small first-boot script, run once by the installed system before any network device is set up (Proxmox VE's first-boot hook, `ordering = "before-network"`). It rewrites only the `vmbr0` stanza of `/etc/network/interfaces`, keeping the NIC the installer chose and every other line, and keeps the installer's file as `/etc/network/interfaces.dciab-installer`. Its log is in the journal (`journalctl -t dciab-first-boot`). The host's first network traffic is already tagged. `--print` shows the script.
 
-Rules `dciab validate` checks for `tagged`: `network.nodes.vlan` isn't 1 (a Linux bridge's default untagged VLAN, so a host can't tag it on `vmbr0`: use `untagged`), and `spec.platform.proxmox.bridge` is `vmbr0`. VMs use other VLANs through the VLAN-aware bridge in either mode (`platform.proxmox.vlanTag`).
+Rules `dciab validate` checks for `tagged`: `network.nodes.vlan` isn't 1 (a Linux bridge's default untagged VLAN, so a host can't tag it on `vmbr0`: use `untagged`); `spec.platform.proxmox.bridge` is `vmbr0`; and `platform.proxmox.vlanTag` equals `network.nodes.vlan`, because `vmbr0` is then a trunk and node VMs' NICs must tag the node VLAN to reach the node network. With `untagged`, `vlanTag` stays optional.
 
 ## Access
 

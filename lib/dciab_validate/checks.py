@@ -489,7 +489,14 @@ class Checker:
             self.error(("spec", "network", "nodes", "vlan"), "1 (with spec.hypervisors.managementVLAN: tagged)",
                        "use managementVLAN: untagged for VLAN 1: VLAN 1 is a Linux bridge's default untagged "
                        "VLAN, so a host can't tag it on vmbr0 (docs/HYPERVISORS.md)")
-        bridge = (self.spec["platform"].get("proxmox") or {}).get("bridge")
+        px = self.spec["platform"].get("proxmox") or {}
+        node_vlan = self.spec["network"]["nodes"].get("vlan")
+        if hv.get("managementVLAN") == "tagged" and hv["type"] == "proxmox" and px.get("vlanTag") != node_vlan:
+            self.error(("spec", "platform", "proxmox", "vlanTag"),
+                       f"{px.get('vlanTag', 'unset')} (with spec.hypervisors.managementVLAN: tagged)",
+                       f"set vlanTag: {node_vlan} (network.nodes.vlan): with a tagged management VLAN, vmbr0 is a "
+                       "trunk, so node VMs' NICs must tag the node VLAN to reach the node network")
+        bridge = px.get("bridge")
         if hv.get("managementVLAN") == "tagged" and hv["type"] == "proxmox" and bridge not in (None, "vmbr0"):
             self.error(("spec", "platform", "proxmox", "bridge"), f"{bridge} (with spec.hypervisors.managementVLAN: tagged)",
                        "use vmbr0: with a tagged management VLAN, the installed hosts' first-boot hook makes vmbr0 "

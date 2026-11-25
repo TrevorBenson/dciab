@@ -1732,6 +1732,7 @@ def test_existing_token_without_its_sealed_secret_fails_clearly(fake_pve, cert, 
 def tagged_doc():
     doc = bare()
     doc["spec"]["hypervisors"]["managementVLAN"] = "tagged"
+    doc["spec"]["platform"]["proxmox"]["vlanTag"] = doc["spec"]["network"]["nodes"]["vlan"]
     return doc
 
 
@@ -1875,6 +1876,19 @@ def test_hook_keeps_the_nic_the_installer_chose(tmp_path):
     assert proc.returncode == 0, proc.stderr
     text = (net / "interfaces").read_text()
     assert "\tbridge-ports nic0\n" in text and "iface nic0 inet manual" in text and "eno1" not in text
+
+
+def test_hook_retry_rewrites_the_current_file(tmp_path):
+    doc = tagged_doc()
+    script = firstboot.render(doc, host(doc))
+    edited = INSTALLER_INTERFACES.replace("iface eno2 inet manual", "iface eno2 inet manual\n\tmtu 9000")
+    root = tmp_path / "root" / "etc" / "network"
+    root.mkdir(parents=True)
+    (root / "interfaces.dciab-installer").write_text(INSTALLER_INTERFACES)   # a first run stopped after the backup
+    proc, net = run_hook(tmp_path, script, edited)
+    assert proc.returncode == 0, proc.stderr
+    assert "\tmtu 9000" in (net / "interfaces").read_text()                  # the edit since isn't lost
+    assert (net / "interfaces.dciab-installer").read_text() == INSTALLER_INTERFACES
 
 
 def test_hook_without_a_bridge_port_changes_nothing(tmp_path):

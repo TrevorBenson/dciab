@@ -23,8 +23,8 @@ The script rewrites only the vmbr0 stanza:
         gateway <network.nodes.gateway>
 
 Every other line (lo, the NIC's own stanza, other NICs, `source ...`) is kept as the installer
-wrote it, and the installer's file is kept as interfaces.dciab-installer. Running it again
-changes nothing. It logs through logger (the journal) when present, else to stderr, and takes
+wrote it (the current file is rewritten, so nothing changed since is lost), and the installer's
+file is kept once as interfaces.dciab-installer. Running it again changes nothing. It logs through logger (the journal) when present, else to stderr, and takes
 its root from DCIAB_ROOT (empty on the host) so tests can run it on a copy.
 
 With managementVLAN: untagged there is no hook: the answer file and ISO are what they were.
@@ -121,7 +121,7 @@ awk -v ports="$PORTS" -v vlan="$VLAN" -v cidr="$CIDR" -v gw="$GATEWAY" '
     skip {{ next }}
     {{ print }}
     END {{ if (!done) {{ print ""; block() }} }}
-' "$BACKUP" > "$TMP"
+' "$FILE" > "$TMP"
 chmod 644 "$TMP"
 mv "$TMP" "$FILE"
 log "management address $CIDR moved to vmbr0.$VLAN (tagged); vmbr0 is VLAN-aware on $PORTS"
