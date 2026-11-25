@@ -29,7 +29,7 @@ def test_sushy_tools_is_pinned_with_its_checksum():
     assert re.fullmatch(r"\d+\.\d+\.\d+", s["version"])
     assert re.fullmatch(r"[0-9a-f]{64}", s["sha256"])
     setup = (HERE / "setup.sh").read_text()
-    assert "hypervisorEmulator.sushyTools.version" in setup and "sha256sum -c" in setup
+    assert "hypervisorEmulator/sushyTools/version" in setup and "sha256sum -c" in setup
 
 
 def test_scripts_are_executable_and_shellchecked_by_ci():

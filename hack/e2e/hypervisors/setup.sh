@@ -40,7 +40,7 @@ OVMF_VARS=/usr/share/OVMF/OVMF_VARS_4M.fd
 OVMF_VARS_MS=/usr/share/OVMF/OVMF_VARS_4M.ms.fd
 
 lock() { python3 -c 'import sys, yaml; d = yaml.safe_load(open(sys.argv[1]))
-for k in sys.argv[2].split("."): d = d[k]
+for k in sys.argv[2].split("/"): d = d[k]
 print(d)' "$ROOT/bundle.lock" "$1"; }
 
 mkdir -p "$WORK/bin"
@@ -48,8 +48,8 @@ mkdir -p "$WORK/bin"
 for f in "$OVMF_CODE" "$OVMF_VARS" "$OVMF_VARS_MS"; do [ -f "$f" ] || { echo "setup.sh: missing $f (ovmf)" >&2; exit 1; }; done
 
 # age (bundle.lock tools.age, checked against binarySHA256), for the sealed root passwords and tokens.
-age_v="$(lock tools.age)"
-age_sum="$(lock 'binarySHA256.age-linux-amd64.tar.gz')"
+age_v="$(lock tools/age)"
+age_sum="$(lock binarySHA256/age-linux-amd64.tar.gz)"
 curl -fsSL --retry 3 -o "$WORK/age.tgz" "https://github.com/FiloSottile/age/releases/download/$age_v/age-$age_v-linux-amd64.tar.gz"
 echo "$age_sum  $WORK/age.tgz" | sha256sum -c - >/dev/null
 tar -xzf "$WORK/age.tgz" -C "$WORK" && install -m 755 "$WORK/age/age" "$WORK/age/age-keygen" "$WORK/bin/"
@@ -142,8 +142,8 @@ XML
 virsh -q -c qemu:///system define "$WORK/$VM.xml"
 
 # sushy-tools, the pinned wheel, patched to keep Secure Boot across boot mode changes.
-sushy_v="$(lock hypervisorEmulator.sushyTools.version)"
-sushy_sum="$(lock hypervisorEmulator.sushyTools.sha256)"
+sushy_v="$(lock hypervisorEmulator/sushyTools/version)"
+sushy_sum="$(lock hypervisorEmulator/sushyTools/sha256)"
 python3 -m pip download -q --no-deps --only-binary :all: -d "$WORK/wheels" "sushy-tools==$sushy_v"
 whl="$WORK/wheels/sushy_tools-$sushy_v-py3-none-any.whl"
 echo "$sushy_sum  $whl" | sha256sum -c - >/dev/null
