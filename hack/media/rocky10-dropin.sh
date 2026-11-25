@@ -9,14 +9,9 @@ work="$(mktemp -d /var/tmp/dciab-media-XXXXXX)"
 dropin=/etc/containers/storage.conf.d/50-dciab-media.conf
 trap 'rm -f "$dropin"; rm -rf "$work"' EXIT
 
-# A container can't stack overlay on overlay: give podman the vfs driver in the base file,
-# the way a host's /etc/containers/storage.conf sets its own; the drop-in only moves graphroot.
-mkdir -p /etc/containers
-if [[ -f /etc/containers/storage.conf ]]; then
-  sed -i 's/^driver *=.*/driver = "vfs"/' /etc/containers/storage.conf
-else
-  printf '[storage]\ndriver = "vfs"\n' > /etc/containers/storage.conf
-fi
+# A container can't stack overlay on overlay: run podman with the vfs driver, as a host's own
+# storage.conf would set its driver; the drop-in under test only moves graphroot.
+export STORAGE_DRIVER=vfs
 
 before="$(podman info --format '{{.Store.GraphRoot}}')"
 echo "graphroot before: $before"
