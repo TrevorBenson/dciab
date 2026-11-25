@@ -55,12 +55,14 @@ coredns = next(e for e in listed if "coredns" in e["image"])
 caddy = next(e for e in listed if "caddy" in e["image"])
 yaml.safe_dump({"images": [{"image": coredns["image"], "name": caddy["name"]}]}, open(path, "w"))
 PY
-podman rmi -f "${refs[0]}" >/dev/null
+podman rmi -f "${refs[0]%@*}" >/dev/null   # by its tag: podman rmi refuses tag@digest
 if PYTHONPATH="$ROOT/lib" python3 -m dciab_media.preload --dir "$work/wrong" 2>"$work/wrong.log"; then
   echo "a mismatching copy was accepted" >&2; cat "$work/wrong.log" >&2; exit 1
 fi
 cat "$work/wrong.log"
 grep -q "not the pinned digest" "$work/wrong.log"
-if podman image exists "${refs[0]}"; then echo "${refs[0]} was tagged onto the wrong image" >&2; exit 1; fi
+if podman image exists "${refs[0]}" || podman image exists "${refs[0]%@*}"; then
+  echo "${refs[0]} was tagged onto the wrong image" >&2; exit 1
+fi
 podman image exists "${refs[1]}" || { echo "${refs[1]} was removed by the refused load" >&2; exit 1; }
 echo "ok: the preloaded Day 0 images answer at their bundle.lock references; a wrong copy is refused"
