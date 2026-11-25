@@ -1,0 +1,28 @@
+{
+   "blockdevices": [
+      {"name": "sda", "path": "/dev/sda", "type": "disk", "size": 480103981056, "rota": false,
+       "serial": "S6XXNX0T500001", "model": "Dell BOSS-N1  ", "vendor": "DELL    ", "wwn": "0x5000c500a1b2c3d4",
+       "hctl": "0:0:0:0", "label": null},
+      {"name": "sdb", "path": "/dev/sdb", "type": "disk", "size": 3840755982336, "rota": false,
+       "serial": "PHYF1234", "model": "SAMSUNG MZ7L33T8", "vendor": "ATA     ", "wwn": "0x5002538e00000001",
+       "hctl": "1:0:0:0", "label": null,
+       "children": [{"name": "sdb1", "path": "/dev/sdb1", "type": "part", "size": 3840755000000, "rota": false,
+                     "serial": null, "model": null, "vendor": null, "wwn": "0x5002538e00000001", "hctl": null,
+                     "label": "old-data"}]},
+      {"name": "sdc", "path": "/dev/sdc", "type": "disk", "size": 3840755982336, "rota": true,
+       "serial": "PHYF5678", "model": "SAMSUNG MZ7L33T8", "vendor": "ATA     ", "wwn": null,
+       "hctl": "2:0:0:0", "label": null},
+      {"name": "sdd", "path": "/dev/sdd", "type": "disk", "size": 256060514304, "rota": true,
+       "serial": "USB0001", "model": "Extreme Pro", "vendor": "SanDisk ", "wwn": null, "hctl": "6:0:0:0",
+       "label": null,
+       "children": [{"name": "sdd1", "path": "/dev/sdd1", "type": "part", "size": 33554432, "rota": true,
+                     "label": "Ventoy"},
+                    {"name": "sdd2", "path": "/dev/sdd2", "type": "part", "size": 255000000000, "rota": true,
+                     "label": "DCIAB"}]},
+      {"name": "sr0", "path": "/dev/sr0", "type": "rom", "size": 1073741312, "rota": true,
+       "serial": "QM00001", "model": "QEMU DVD-ROM", "vendor": "QEMU", "wwn": null, "hctl": "3:0:0:0",
+       "label": "Rocky-10"},
+      {"name": "loop0", "path": "/dev/loop0", "type": "loop", "size": 912261120, "rota": false,
+       "label": null}
+   ]
+}

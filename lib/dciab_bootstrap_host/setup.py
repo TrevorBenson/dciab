@@ -36,6 +36,7 @@ MAC_RE = re.compile(r"^[0-9a-fA-F]{2}(:[0-9a-fA-F]{2}){5}$")
 CONNECTION = "dciab-node"
 SUDOERS = "/etc/sudoers.d/dciab-admins"
 ROSTER = "/var/lib/dciab/bootstrap-admins"
+SYS_NET = "/sys/class/net"
 NETWORK_PATHS = ("spec.bootstrap", "spec.network", "spec.time", "spec.identity")
 
 
@@ -164,10 +165,14 @@ def _run(*cmd: str) -> None:
 
 
 def _nic_by_mac(mac: str) -> str:
-    for name in sorted(os.listdir("/sys/class/net")):
+    try:
+        names = sorted(os.listdir(SYS_NET))
+    except OSError:
+        names = []
+    for name in names:
         try:
-            with open(f"/sys/class/net/{name}/address") as fh:
-                if fh.read().strip().lower() == mac:
+            with open(os.path.join(SYS_NET, name, "address")) as fh:
+                if fh.read().strip().lower() == mac.lower():
                     return name
         except OSError:
             continue

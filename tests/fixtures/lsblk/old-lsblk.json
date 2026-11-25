@@ -1,0 +1,7 @@
+{
+   "blockdevices": [
+      {"name": "vda", "path": "/dev/vda", "type": "disk", "size": "34359738368", "rota": "1"},
+      {"name": "vdb", "path": "/dev/vdb", "type": "disk", "size": "107374182400", "rota": "0",
+       "serial": "VIRT-0002", "label": "DCIAB"}
+   ]
+}
