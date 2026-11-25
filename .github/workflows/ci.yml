@@ -890,10 +890,13 @@ jobs:
           set -euo pipefail
           zone="$(sudo firewall-cmd --get-default-zone)"
           sudo systemctl stop firewalld
-          out="$(sudo DCIAB_PVE_TOKEN=placeholder DCIAB_PVE_CSI_TOKEN=placeholder DCIAB_CHRONY_IMAGE="$DCIAB_CHRONY_IMAGE" ./dciab services /tmp/site/dciab.yaml)"
+          out="$(sudo DCIAB_PVE_TOKEN=placeholder DCIAB_PVE_CSI_TOKEN=placeholder DCIAB_CHRONY_IMAGE="$DCIAB_CHRONY_IMAGE" ./dciab services /tmp/site/dciab.yaml 2>&1)"
           echo "$out"
           grep -q "firewall ports weren't checked" <<<"$out"
           if grep -E "closed |no longer wanted: port" <<<"$out"; then echo "a port was closed with firewalld stopped"; exit 1; fi
+          # An unchanged config is a no-op even with firewalld stopped: the note isn't a change.
+          grep -q "already runs this config" <<<"$out"
+          if grep -q "started pod" <<<"$out"; then echo "the pod was restarted for an unchanged config"; exit 1; fi
           sudo grep -qx "port $zone 53/udp permanent" /tmp/site/.dciab/state/services/created
           sudo systemctl start firewalld
           for p in 53/udp 53/tcp 80/tcp 123/udp; do
