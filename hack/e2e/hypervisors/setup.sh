@@ -104,6 +104,12 @@ for _ in $(seq 30); do virsh -c qemu:///system version >/dev/null 2>&1 && break;
 
 install -d "$IMAGES" "$IMAGES/sushy"
 qemu-img create -q -f qcow2 "$IMAGES/$VM.qcow2" 32G
+# sushy-tools uploads each inserted ISO into the libvirt pool "default".
+if ! virsh -q -c qemu:///system pool-info default >/dev/null 2>&1; then
+    virsh -q -c qemu:///system pool-define-as default dir --target "$IMAGES"
+    virsh -q -c qemu:///system pool-start default
+fi
+virsh -q -c qemu:///system pool-refresh default
 cat > "$WORK/$VM.xml" <<XML
 <domain type='kvm'>
   <name>$VM</name>
