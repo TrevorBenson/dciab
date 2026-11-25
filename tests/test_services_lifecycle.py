@@ -25,6 +25,7 @@ class FakeHost:
         self.services = set()
         self.calls = []
         self.fail = set()   # commands (joined) that fail
+        self.takes_along = {}   # cidr -> other cidrs the kernel drops with it (secondaries)
 
     def __call__(self, cmd, check=False, **kw):
         cmd = [str(c) for c in cmd]
@@ -41,6 +42,10 @@ class FakeHost:
             out = " ".join(f"2: {cmd[-1]} inet {a} scope global" for a in sorted(self.addrs.get(cmd[-1], ())))
         elif cmd[:3] == ["ip", "addr", "del"]:
             self.addrs[cmd[-1]].discard(cmd[3])
+            for other in self.takes_along.get(cmd[3], ()):
+                self.addrs[cmd[-1]].discard(other)
+        elif cmd[:3] == ["ip", "addr", "replace"]:
+            self.addrs.setdefault(cmd[-1], set()).add(cmd[3])
         elif cmd[0] == "firewall-cmd":
             if not self.firewalld:
                 rc = 252
@@ -92,8 +97,9 @@ def conf_with(tmp_path, lines, applied=True):
     return conf
 
 
-FULL = ["address eth0 10.30.110.53/24", "address eth0 10.30.110.54/24", "port public 53/udp",
-        "port public 53/tcp", "port public 80/tcp", "pod dciab-services"]
+FULL = ["address eth0 10.30.110.53/24", "address eth0 10.30.110.54/24",
+        "port public 53/udp runtime", "port public 53/udp permanent", "port public 53/tcp runtime",
+        "port public 80/tcp runtime", "port public 80/tcp permanent", "pod dciab-services"]
 
 
 def test_down_undoes_exactly_what_is_listed(tmp_path, host):
@@ -160,11 +166,12 @@ def test_down_without_firewalld_or_offline_tool_keeps_the_port_lines(tmp_path, h
 
 def test_only_the_scope_dciab_opened_is_closed(tmp_path, host):
     """The operator's permanent rule for 53/udp (DCiaB only opened it at runtime) survives
-    --down; a legacy line without a scope still closes both (#230 5)."""
+    --down (#230 5). A line without a scope comes from older records, which only recorded ports
+    opened at runtime: it closes the runtime rule only, never a permanent one (#230 N2)."""
     conf = conf_with(tmp_path, ["port public 53/udp runtime", "port public 80/tcp"])
     assert lifecycle.down(conf, lambda m: None) == []
     assert ("public", "53/udp") not in host.ports and ("public", "53/udp") in host.permanent
-    assert ("public", "80/tcp") not in host.ports and ("public", "80/tcp") not in host.permanent
+    assert ("public", "80/tcp") not in host.ports and ("public", "80/tcp") in host.permanent
 
 
 def test_an_unknown_scope_is_not_understood(tmp_path, host):
@@ -190,7 +197,17 @@ def test_down_and_prune_take_the_services_lock(tmp_path, host, monkeypatch):
         with pytest.raises(lifecycle.Busy):
             lifecycle.prune(conf, set(), say=lambda m: None)
         assert host.calls == [] and (conf / "created").exists()
-        monkeypatch.setenv("DCIAB_SERVICES_LOCKED", "1")      # the caller holds it (services.sh)
+        # The variable alone isn't trusted: fd 9 (here: LOCK_FD) must be the lock, held by us.
+        monkeypatch.setenv("DCIAB_SERVICES_LOCKED", "1")
+        monkeypatch.setattr(lifecycle, "LOCK_FD", fd + 1000)  # not open: not trusted
+        with pytest.raises(lifecycle.Busy):
+            lifecycle.down(conf, lambda m: None)
+        other = os.open(tmp_path / "not-the-lock", os.O_WRONLY | os.O_CREAT)
+        monkeypatch.setattr(lifecycle, "LOCK_FD", other)      # another file: not trusted
+        with pytest.raises(lifecycle.Busy):
+            lifecycle.down(conf, lambda m: None)
+        os.close(other)
+        monkeypatch.setattr(lifecycle, "LOCK_FD", fd)         # the caller's own lock (services.sh)
         assert lifecycle.down(conf, lambda m: None) == []
     finally:
         os.close(fd)
@@ -250,7 +267,8 @@ def test_prune_after_a_config_change(tmp_path, host):
     assert ("public", "80/tcp") not in host.ports and ("public", "80/tcp") not in host.permanent
     assert ("public", "53/udp") in host.ports and host.pods == {"dciab-services"}   # pods aren't pruned
     assert (conf / "created").read_text().splitlines() == [
-        "address eth0 10.30.110.53/24", "port public 53/udp", "port public 53/tcp", "pod dciab-services"]
+        "address eth0 10.30.110.53/24", "port public 53/udp runtime", "port public 53/udp permanent",
+        "port public 53/tcp runtime", "pod dciab-services"]
 
 
 def test_prune_moves_ports_when_the_zone_changes(tmp_path, host):
@@ -260,19 +278,48 @@ def test_prune_moves_ports_when_the_zone_changes(tmp_path, host):
     assert ("public", "53/udp") not in host.ports and ("public", "53/tcp") not in host.ports
 
 
-def test_prune_without_firewalld(tmp_path, host):
-    """firewalld stopped: a runtime line has nothing left to close and goes; a permanent one is
-    closed offline; with no offline tool it stays listed."""
+def test_prune_without_firewalld_leaves_the_ports_alone(tmp_path, host):
+    """firewalld stopped and the config unchanged: the zone can't be told, so every port would
+    look unwanted. prune leaves the port lines and the rules alone (runtime and permanent) and
+    says so; addresses are still pruned (#230 N1)."""
     host.firewalld = False
-    conf = conf_with(tmp_path, ["port public 80/tcp runtime", "port public 80/tcp permanent",
-                                "address eth0 10.30.110.54/24"])
-    assert lifecycle.prune(conf, cli.wanted(load_example("proxmox"), "eth0", ""), say=lambda m: None) == []
-    assert ("public", "80/tcp") not in host.permanent
-    host.offline = False
-    host.permanent.add(("public", "80/tcp"))
-    conf2 = conf_with(tmp_path / "b" if (tmp_path / "b").mkdir() is None else tmp_path, ["port public 80/tcp permanent"])
-    assert lifecycle.prune(conf2, set(), say=lambda m: None) == ["port public 80/tcp permanent"]
-    assert (conf2 / "created").read_text() == "port public 80/tcp permanent\n"
+    doc = bare()                                     # wants 53/udp, 53/tcp, 80/tcp, 123/udp
+    lines = ["address eth0 10.30.110.53/24", "address eth0 10.30.110.54/24",
+             "port public 53/udp runtime", "port public 53/udp permanent",
+             "port public 80/tcp runtime", "port public 80/tcp permanent", "port public 53/tcp"]
+    conf = conf_with(tmp_path, lines)
+    msgs = []
+    assert lifecycle.prune(conf, cli.wanted(doc, "eth0", ""), say=msgs.append) == []
+    assert (conf / "created").read_text().splitlines() == lines        # nothing dropped
+    assert host.permanent == {("public", "53/udp"), ("public", "80/tcp")}
+    assert not [c for c in host.calls if "--remove-port" in " ".join(c)]
+    assert any("firewall ports weren't checked" in m for m in msgs)
+    # the address kind is still pruned
+    doc["spec"]["network"]["dnsServiceIPs"] = ["10.30.110.53", "10.30.110.55"]
+    assert lifecycle.prune(conf, cli.wanted(doc, "eth0", ""), say=lambda m: None) == []
+    assert "10.30.110.54/24" not in host.addrs["eth0"]
+    assert sum(1 for line in (conf / "created").read_text().splitlines() if line.startswith("port")) == 5
+
+
+def test_prune_puts_back_a_wanted_address_its_removal_took_along(tmp_path, host):
+    """Removing an address can take others in its subnet along (secondaries go with their
+    primary unless promote_secondaries is set): prune re-adds the recorded ones the config
+    still wants (#230 N6)."""
+    host.takes_along = {"10.30.110.53/24": ["10.30.110.54/24"]}
+    conf = conf_with(tmp_path, ["address eth0 10.30.110.53/24", "address eth0 10.30.110.54/24"])
+    doc = copy.deepcopy(load_example("proxmox"))
+    doc["spec"]["network"]["dnsServiceIPs"] = ["10.30.110.54", "10.30.110.55"]
+    msgs = []
+    assert lifecycle.prune(conf, cli.wanted(doc, "eth0", "public"), say=msgs.append) == []
+    assert "10.30.110.53/24" not in host.addrs["eth0"] and "10.30.110.54/24" in host.addrs["eth0"]
+    assert ["ip", "addr", "replace", "10.30.110.54/24", "dev", "eth0"] in host.calls
+    assert any("re-added 10.30.110.54/24" in m for m in msgs)
+    host.calls.clear()                                # nothing taken along: no re-add
+    conf2 = conf_with(tmp_path / "b" if (tmp_path / "b").mkdir() is None else tmp_path,
+                      ["address eth0 10.30.110.54/24"])
+    host.addrs["eth0"].add("10.30.110.54/24")
+    lifecycle.prune(conf2, cli.wanted(doc, "eth0", "public"), say=lambda m: None)
+    assert not [c for c in host.calls if c[:3] == ["ip", "addr", "replace"]]
 
 
 def test_wanted_keeps_scoped_and_legacy_port_lines(tmp_path, host):
@@ -354,7 +401,15 @@ def test_units_render(tmp_path):
     with_mounts = units.render(conf, "eth0", 24, ["10.30.110.53"], systemd_dir=tmp_path / "s",
                                quadlet_dir=tmp_path / "q", mounts=[Path("/isos"), Path("/graph"), conf])
     assert f"RequiresMountsFor={conf} /isos /graph\n" in with_mounts[tmp_path / "q" / "dciab-services.kube"]
-    assert "Requires=dciab-services-addresses.service" in kube and "WantedBy=multi-user.target" in kube
+    # The pod's unit adds the addresses itself, so it only Wants= the addresses unit; both retry
+    # every 5 s with no start limit, so an interface that appears late is picked up (#230 N4).
+    assert "Wants=dciab-services-addresses.service" in kube and "Requires=" not in kube.replace("RequiresMountsFor", "")
+    assert "WantedBy=multi-user.target" in kube
+    for unit in (addr, kube):
+        assert "RestartSec=5" in unit and "StartLimitIntervalSec=0" in unit and "Restart=on-failure" in unit
+    both = units.render(conf, "eth0", 24, ["10.30.110.53"], systemd_dir=tmp_path / "s",
+                        quadlet_dir=tmp_path / "q", extra=["10.30.110.54/24", "10.30.110.53/24"])
+    assert both[tmp_path / "s" / "dciab-services-addresses.service"].count("ExecStart=ip addr replace") == 2
 
 
 def test_units_written_once_and_recorded_first(tmp_path):
@@ -441,6 +496,51 @@ def test_a_run_stopped_before_the_pod_step_leaves_the_old_config_whole(tmp_path,
     assert "10.30.110.55" in live and "10.30.110.54" not in live
     assert "10.30.110.55" in units_now and "10.30.110.54" not in units_now
     assert not (conf / ".staged").exists()
+
+
+def test_a_crash_while_the_pod_moves_leaves_units_for_every_live_address(tmp_path, monkeypatch, capsys):
+    """The DNS service IP changes and the run dies between writing the units and moving the
+    files (or while moving them): the units bring up the old and the new addresses, so
+    whichever pod.yaml is live after a reboot finds its addresses. The next run drops the old
+    one from the units (#230 N3)."""
+    import yaml
+    from conftest import ROOT
+    monkeypatch.setattr(units, "SYSTEMD_DIR", tmp_path / "systemd")
+    monkeypatch.setattr(units, "QUADLET_DIR", tmp_path / "quadlet")
+    monkeypatch.setenv("DCIAB_PVE_TOKEN", "placeholder")
+    monkeypatch.setenv("DCIAB_PVE_CSI_TOKEN", "placeholder")
+    from test_services import CHRONY_LOCAL, bare_site
+    monkeypatch.setenv("DCIAB_CHRONY_IMAGE", CHRONY_LOCAL)
+    monkeypatch.setattr(lifecycle, "prune", lambda *a, **k: [])
+    cfg = bare_site(tmp_path)
+    conf = tmp_path / "st" / "services"
+    run = ["--root", str(ROOT), "--state", str(tmp_path / "st")]
+    assert cli.main(run + [str(cfg), "write"]) == 0
+    assert _apply(cfg, tmp_path, "--units") == 0
+    for ip in ("10.30.110.53", "10.30.110.54"):        # what the address step recorded
+        lifecycle.record(conf, ["address", "eth0", f"{ip}/24"])
+    doc = yaml.safe_load(cfg.read_text())
+    doc["spec"]["network"]["dnsServiceIPs"][1] = "10.30.110.55"
+    cfg.write_text(yaml.safe_dump(doc, sort_keys=False))
+    assert cli.main(run + [str(cfg), "write"]) == 0
+    capsys.readouterr()
+
+    def crash(*a, **k):
+        raise KeyboardInterrupt("power loss")
+    real = cli.apply_files
+    monkeypatch.setattr(cli, "apply_files", crash)
+    with pytest.raises(KeyboardInterrupt):
+        _apply(cfg, tmp_path, "--units")
+    addr_unit = (tmp_path / "systemd" / "dciab-services-addresses.service").read_text()
+    kube = (tmp_path / "quadlet" / "dciab-services.kube").read_text()
+    assert "10.30.110.54" in (conf / "coredns" / "Corefile").read_text()   # the live config: still old
+    for unit in (addr_unit, kube):
+        assert "10.30.110.54/24" in unit and "10.30.110.55/24" in unit   # both addresses
+    assert "keeps the old addresses until the pod moves" in capsys.readouterr().out
+    monkeypatch.setattr(cli, "apply_files", real)
+    assert _apply(cfg, tmp_path, "--units") == 0
+    addr_unit = (tmp_path / "systemd" / "dciab-services-addresses.service").read_text()
+    assert "10.30.110.55/24" in addr_unit and "10.30.110.54/24" not in addr_unit
 
 
 def test_persistent_needs_systemd_and_quadlet(monkeypatch, tmp_path):

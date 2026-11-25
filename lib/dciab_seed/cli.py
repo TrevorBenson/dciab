@@ -293,12 +293,13 @@ def nic_name(want: str) -> Optional[str]:
 
 def registry_ports(created: dict) -> List[List[str]]:
     """The firewalld port scopes seed opened for the registry, as lifecycle lines
-    ["port", zone, port, scope]. An older record ("registry-port": {"zone", "port"}) means both
-    scopes in that zone."""
+    ["port", zone, port, scope]. An older record ("registry-port": {"zone", "port"}) was written
+    when seed opened the port at runtime and permanently: it reads as both scopes, explicitly
+    (a lifecycle line without a scope means runtime only)."""
     out = [list(e) for e in created.get("registry-ports") or [] if isinstance(e, list) and len(e) == 4]
     old = created.get("registry-port")
     if isinstance(old, dict) and old.get("zone") and old.get("port"):
-        out.append(["port", old["zone"], old["port"]])
+        out += [["port", old["zone"], old["port"], sc] for sc in ("runtime", "permanent")]
     return out
 
 

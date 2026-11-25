@@ -6,19 +6,27 @@
     port <zone> <port> <scope>    a firewalld port DCiaB opened, scope runtime or permanent; each
                                   scope is listed only when DCiaB opened it, so an operator's own
                                   rule (say, a permanent one not loaded at runtime) is never
-                                  removed. A line without a scope (older records) means both.
+                                  removed. A line without a scope (older records, written
+                                  only for ports opened at runtime) means runtime only.
     pod <name>                    the services pod
     unit <path>                   a systemd or Quadlet unit file that brings the above back after
                                   a reboot (#81)
 
 prune() undoes the address and port lines the current config no longer wants; down() undoes
 every line, units first, so nothing restarts what is being removed. Only listed changes are
-undone: an address or port that was there before dciab services is never touched. Both take
-/run/dciab-services.lock (dciab services and dciab seed --remove share the record), unless the
-caller holds it already (DCIAB_SERVICES_LOCKED=1, set by lib/steps/services.sh).
+undone: an address or port that was there before dciab services is never touched. While
+firewalld isn't running, prune() leaves every port line alone: it can't tell which zone the
+interface is in, so a port the config still wants would look unwanted. Removing an address can
+take others in its subnet along (the kernel drops secondaries with their primary unless
+promote_secondaries is set), so prune() puts back any recorded address the config still wants.
 
-A permanent firewalld port is removed with firewall-offline-cmd when firewalld isn't running. A
-line that can't be undone stays listed and is reported, so a later --down can finish the job.
+Both take /run/dciab-services.lock (dciab services and dciab seed --remove share the record).
+lib/steps/services.sh holds it on file descriptor 9 and sets DCIAB_SERVICES_LOCKED=1; locked()
+then checks that descriptor really is the lock and holds it, instead of trusting the variable.
+
+down() removes a permanent firewalld port with firewall-offline-cmd when firewalld isn't
+running. A line that can't be undone stays listed and is reported, so a later --down can finish
+the job.
 
     python3 -m dciab_services.lifecycle down <state>/services
 """
@@ -41,6 +49,7 @@ ORDER = {"unit": 0, "pod": 1, "address": 2, "port": 3}
 
 SCOPES = ("runtime", "permanent")
 LOCK = "/run/dciab-services.lock"
+LOCK_FD = 9   # lib/steps/services.sh: exec 9>>/run/dciab-services.lock; flock -n 9
 # The Quadlet unit dciab services installs (dciab_services.units.KUBE in QUADLET_DIR).
 KUBE_UNIT = "dciab-services.kube"
 
@@ -58,12 +67,15 @@ class Kept(Exception):
 @contextlib.contextmanager
 def locked() -> Iterator[None]:
     """/run/dciab-services.lock (DCIAB_SERVICES_LOCK overrides it), held while the record and the
-    host change. A caller that holds it already sets DCIAB_SERVICES_LOCKED=1. Without root the
-    lock can't be taken, and nothing on the host can be changed either: carry on."""
-    if os.environ.get("DCIAB_SERVICES_LOCKED") == "1":
+    host change. A caller that holds it already passes it on file descriptor 9 and sets
+    DCIAB_SERVICES_LOCKED=1: the descriptor must be that file, and flock on it must succeed (it
+    does for the open file that holds the lock; it fails if another process holds it). Without
+    that, the lock is taken here as usual. Without root the lock can't be taken, and nothing on
+    the host can be changed either: carry on."""
+    path = os.environ.get("DCIAB_SERVICES_LOCK", LOCK)
+    if os.environ.get("DCIAB_SERVICES_LOCKED") == "1" and _holds(LOCK_FD, path):
         yield
         return
-    path = os.environ.get("DCIAB_SERVICES_LOCK", LOCK)
     try:
         fd = os.open(path, os.O_WRONLY | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600)
     except OSError as exc:
@@ -80,6 +92,21 @@ def locked() -> Iterator[None]:
         yield
     finally:
         os.close(fd)
+
+
+def _holds(fd: int, path: str) -> bool:
+    """Whether fd is the lock file at path and this process (through fd) holds its lock."""
+    try:
+        st, want = os.fstat(fd), os.stat(path)
+    except OSError:
+        return False
+    if (st.st_dev, st.st_ino) != (want.st_dev, want.st_ino):
+        return False
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        return False
+    return True
 
 
 def _say(msg: str) -> None:
@@ -152,7 +179,7 @@ def undo(entry: List[str], say: Say = _say, firewalld: Optional[bool] = None) ->
             say(f"removed {cidr} from {nic}")
     elif kind == "port" and len(args) in (2, 3):
         zone, port = args[0], args[1]
-        scopes = [args[2]] if len(args) == 3 else list(SCOPES)
+        scopes = [args[2]] if len(args) == 3 else ["runtime"]   # older lines: runtime opens only
         if any(sc not in SCOPES for sc in scopes):
             raise ValueError(" ".join(entry))
         if firewalld is None:
@@ -214,26 +241,52 @@ def _undo_unit(path: Path, say: Say) -> None:
 def prune(conf: Path, wanted: Set[str], kinds: Iterable[str] = ("address", "port"),
           say: Say = _say) -> List[str]:
     """Undo recorded lines of the given kinds that aren't in wanted (the lines this config
-    would record). Returns the lines it couldn't undo; they stay in the record."""
+    would record). Port lines are left alone while firewalld isn't running. Returns the lines
+    it couldn't undo; they stay in the record."""
     kinds = set(kinds)
     with locked():
-        keep, left = [], []
-        firewalld = None
-        for entry in read(conf):
+        entries = read(conf)
+        if "port" in kinds and any(e and e[0] == "port" and " ".join(e) not in wanted
+                                   for e in entries) and not firewalld_running():
+            kinds.discard("port")
+            say("firewalld isn't running: the firewall ports weren't checked (they stay as they "
+                "are; run dciab services again with firewalld running to update them)")
+        keep, left, removed = [], [], False
+        for entry in entries:
             line = " ".join(entry)
             if not entry or entry[0] not in kinds or line in wanted:
                 keep.append(entry)
                 continue
-            if entry[0] == "port" and firewalld is None:
-                firewalld = firewalld_running()
             try:
-                undo(entry, say, firewalld)
+                undo(entry, say, True if entry[0] == "port" else None)
                 say(f"no longer wanted: {line}")
+                removed = removed or entry[0] == "address"
             except (subprocess.CalledProcessError, ValueError, Kept) as exc:
                 say(f"couldn't undo '{line}': {_why(exc)}")
                 keep.append(entry)
                 left.append(line)
+        if removed:
+            left += _restore_addresses(keep, wanted, say)
         write(conf, keep)
+    return left
+
+
+def _restore_addresses(keep: List[List[str]], wanted: Set[str], say: Say) -> List[str]:
+    """Put back recorded addresses the config still wants that a removal took along (a
+    secondary goes with its primary unless promote_secondaries is set). Returns failures."""
+    left = []
+    for entry in keep:
+        if len(entry) != 3 or entry[0] != "address" or " ".join(entry) not in wanted:
+            continue
+        nic, cidr = entry[1], entry[2]
+        if cidr in query(["ip", "-o", "-4", "addr", "show", "dev", nic]).stdout.split():
+            continue
+        try:
+            run(["ip", "addr", "replace", cidr, "dev", nic])
+            say(f"re-added {cidr} on {nic} (removing an address in its subnet took it along)")
+        except subprocess.CalledProcessError as exc:
+            say(f"couldn't re-add {cidr} on {nic}: {_why(exc)}")
+            left.append(" ".join(entry))
     return left
 
 

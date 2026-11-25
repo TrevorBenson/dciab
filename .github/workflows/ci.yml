@@ -885,6 +885,21 @@ jobs:
           echo "$out"
           grep -q "already runs this config" <<<"$out"
           if grep -E "^(wrote|added|opened) " <<<"$out"; then echo "the rerun after the reboot changed something"; exit 1; fi
+      - name: A rerun while firewalld is stopped leaves the firewall ports alone
+        run: |
+          set -euo pipefail
+          zone="$(sudo firewall-cmd --get-default-zone)"
+          sudo systemctl stop firewalld
+          out="$(sudo DCIAB_PVE_TOKEN=placeholder DCIAB_PVE_CSI_TOKEN=placeholder DCIAB_CHRONY_IMAGE="$DCIAB_CHRONY_IMAGE" ./dciab services /tmp/site/dciab.yaml)"
+          echo "$out"
+          grep -q "firewall ports weren't checked" <<<"$out"
+          if grep -E "closed |no longer wanted: port" <<<"$out"; then echo "a port was closed with firewalld stopped"; exit 1; fi
+          sudo grep -qx "port $zone 53/udp permanent" /tmp/site/.dciab/state/services/created
+          sudo systemctl start firewalld
+          for p in 53/udp 53/tcp 80/tcp 123/udp; do
+            sudo firewall-cmd --zone="$zone" --query-port="$p" >/dev/null || { echo "$p closed at runtime"; exit 1; }
+            sudo firewall-cmd --permanent --zone="$zone" --query-port="$p" >/dev/null || { echo "$p no longer permanent"; exit 1; }
+          done
       - name: A changed config stopped before the pod step leaves the old config whole, across a reboot
         run: |
           set -euo pipefail

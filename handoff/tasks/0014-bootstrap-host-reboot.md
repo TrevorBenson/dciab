@@ -48,8 +48,8 @@ Two parts on the same VM: **A**, the DNS-only services and the seed registry (a 
 3. **Reboot.** After the stop point below, reboot the VM. Passing: SSH comes back.
 4. **Compare.** Repeat step 2's commands without running anything else. Passing: the same results. Record `systemd-analyze blame | grep dciab` and `journalctl -b -u dciab-services.service -u dciab-registry.service | tail -40`.
 5. **A rerun changes nothing.** Run step 1's command again. Passing: `dns: pod dciab-services already runs this config` and `registry: already serving`; no `wrote`, `added` or `opened` lines.
-6. **Teardown.** `sudo /var/lib/dciab/work/dciab-src/dciab seed /var/lib/dciab/site/dciab.yaml --remove`. Passing: the units are gone (`ls /etc/containers/systemd /etc/systemd/system | grep dciab` prints nothing), the DNS service IPs are off the interface, and none of 53/udp, 53/tcp or 443/tcp is in either port list (unless it was there before step 1).
-7. **Addresses dropped by NetworkManager come back with a pod restart** (before step 6's teardown, or after a fresh step 1). `sudo nmcli device reapply <bootstrap NIC>`, then `ip -br addr show`: record whether the DNS service IPs are gone. Then `sudo systemctl restart dciab-services.service` and repeat the digs. Passing: both digs answer again.
+6. **Addresses dropped by NetworkManager come back with a pod restart.** `sudo nmcli device reapply <bootstrap NIC>`, then `ip -br addr show`: record whether the DNS service IPs are gone. Then `sudo systemctl restart dciab-services.service` and repeat the digs. Passing: both digs answer again.
+7. **Teardown.** `sudo /var/lib/dciab/work/dciab-src/dciab seed /var/lib/dciab/site/dciab.yaml --remove`. Passing: the units are gone (`ls /etc/containers/systemd /etc/systemd/system | grep dciab` prints nothing), the DNS service IPs are off the interface, and none of 53/udp, 53/tcp or 443/tcp is in either port list (unless it was there before step 1).
 
 ## Steps (part B: the full services pod)
 
@@ -77,4 +77,4 @@ Two parts on the same VM: **A**, the DNS-only services and the seed registry (a 
 
 ## Report
 
-The commit, the appliance image's build date, each step's result and duration, step 4's `systemd-analyze` and journal excerpts (trimmed), step 7's before/after addresses, and step 10's SELinux check.
+The commit, the appliance image's build date, each step's result and duration, step 4's `systemd-analyze` and journal excerpts (trimmed), step 6's before/after addresses, and step 10's SELinux check.

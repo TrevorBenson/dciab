@@ -236,6 +236,11 @@ def check(doc: dict, timeout: float = 60.0) -> List[str]:
             return failed
 
 
+def recorded_addresses(conf: Path, nic: str) -> set:
+    """The service IPs (ip/prefix) the record says dciab services added to nic."""
+    return {e[2] for e in lifecycle.read(conf) if len(e) == 3 and e[0] == "address" and e[1] == nic}
+
+
 def wanted(doc: dict, nic: str, zone: str) -> set:
     """The record lines (lifecycle) this config would leave: its service IPs on the NIC and
     its ports in the zone."""
@@ -320,16 +325,31 @@ def main(argv: Optional[List[str]] = None) -> int:
             print(f"dciab services: {args.action} needs --nic", file=sys.stderr)
             return 2
         if args.action == "apply":
-            for rel in apply_files(files, paths.conf):
-                print(f"wrote {paths.conf / rel}")
+            rendered = {}
             if args.units:
                 net = render.network(doc)
+                mounts = unit_mounts(doc, paths, args.graphroot)
                 rendered = units.render(paths.conf, args.nic, net["prefix"], net["serviceIPs"],
-                                        mounts=unit_mounts(doc, paths, args.graphroot))
-                for path in units.write(paths.conf, rendered):
-                    print(f"wrote {path}")
+                                        mounts=mounts)
+                # Before the files move: units that bring up the new addresses and the recorded
+                # (old) ones, so a crash or reboot at any point here finds every address the live
+                # pod.yaml, old or new, binds. After the move the units drop the old ones.
+                new = {f"{ip}/{net['prefix']}" for ip in net["serviceIPs"]}
+                old = sorted(recorded_addresses(paths.conf, args.nic) - new)
+                both = units.render(paths.conf, args.nic, net["prefix"], net["serviceIPs"],
+                                    mounts=mounts, extra=old)
+                for path in units.write(paths.conf, both):
+                    print(f"wrote {path}" + (" (keeps the old addresses until the pod moves)" if old else ""))
+            for rel in apply_files(files, paths.conf):
+                print(f"wrote {paths.conf / rel}")
+            for path in units.write(paths.conf, rendered):
+                print(f"wrote {path}")
+        kinds = ("address", "port") if args.zone else ("address",)
+        if not args.zone and any(e and e[0] == "port" for e in lifecycle.read(paths.conf)):
+            print("firewalld isn't running: the firewall ports weren't checked (they stay as they "
+                  "are; run dciab services again with firewalld running to update them)")
         try:
-            left = lifecycle.prune(paths.conf, wanted(doc, args.nic, args.zone))
+            left = lifecycle.prune(paths.conf, wanted(doc, args.nic, args.zone), kinds)
         except lifecycle.Busy as exc:
             print(f"dciab services: {exc}", file=sys.stderr)
             return 1

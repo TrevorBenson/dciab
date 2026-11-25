@@ -81,7 +81,9 @@ if (( down )); then
   exec 9>>/run/dciab-services.lock
   flock -n 9 || die "another dciab services is running on this host"
   echo "== services: down"
-  DCIAB_SERVICES_LOCKED=1 python3 -m dciab_services.lifecycle down "$state/services" 9>&-
+  # The helper checks that fd 9 is the lock and holds it (lifecycle.locked); its own children
+  # (podman, systemctl) don't inherit it: Python closes fds for subprocesses.
+  DCIAB_SERVICES_LOCKED=1 python3 -m dciab_services.lifecycle down "$state/services"
   exit $?
 fi
 if [[ -z "$payload" && -f "$ROOT/payload/images.yaml" ]]; then
@@ -180,7 +182,7 @@ mkdir -p "$state" && chmod 700 "$state"
 # One run at a time per host, whatever the state folder: there is one pod.
 exec 9>>/run/dciab-services.lock
 flock -n 9 || die "another dciab services is running on this host"
-export DCIAB_SERVICES_LOCKED=1   # the helper's record changes run under this lock
+export DCIAB_SERVICES_LOCKED=1   # the helper's record changes run under this lock (fd 9; it checks)
 # Commands that leave processes behind (podman's conmon) must not inherit the lock: "9>&-".
 finish_if preflight
 
