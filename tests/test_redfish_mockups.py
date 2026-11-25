@@ -27,6 +27,7 @@ import socket
 import ssl
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -100,10 +101,12 @@ class Mockup:
         self.port = s.getsockname()[1]
         s.close()
         server = Path(CACHE) / "mockup-server"
+        # The server logs every request to stderr: a file, never an undrained pipe that fills and blocks it.
+        self.log = tempfile.TemporaryFile()
         self.proc = subprocess.Popen(
             [sys.executable, "redfishMockupServer.py", "-S", "-D", str(tree), "-H", "127.0.0.1", "-p", str(self.port),
              "-s", "--cert", str(tls["crt"]), "--key", str(tls["key"])],
-            cwd=server, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+            cwd=server, stdout=subprocess.DEVNULL, stderr=self.log)
         self.system = system
         self.bmc = Bmc(f"redfish-virtualmedia+https://127.0.0.1:{self.port}/redfish/v1/Systems/{system}",
                        "dciab", "not-checked-by-the-mockup", Trust(fingerprint=tls["pin"]), timeout=10)
@@ -114,7 +117,8 @@ class Mockup:
                 return
             except RedfishError:
                 if self.proc.poll() is not None or time.time() > deadline:
-                    err = self.proc.stderr.read().decode(errors="replace") if self.proc.poll() is not None else ""
+                    self.log.seek(0)
+                    err = self.log.read().decode(errors="replace")
                     self.stop()
                     raise RuntimeError(f"the Mockup Server didn't come up on {self.port}: {err[-2000:]}")
                 time.sleep(0.3)
@@ -126,6 +130,7 @@ class Mockup:
                 self.proc.wait(10)
             except subprocess.TimeoutExpired:
                 self.proc.kill()
+        self.log.close()
 
 
 @pytest.fixture
@@ -152,12 +157,12 @@ def test_published_mockups_list_no_boot_options_so_a_new_host_needs_first_instal
 
 
 def test_a_raid_controller_entry_with_no_device_path_holds_the_host(mockup):
-    assert mockup(RACK, "legacy-raid").bmc.os_boot_entries() == [
+    assert mockup(RACK, "legacy-controller-entry").bmc.os_boot_entries() == [
         "Integrated RAID Controller 1: PERC H730P Mini(bus 18 dev 00)"]
 
 
 def test_an_os_entry_on_the_second_page_holds_the_host(mockup):
-    assert mockup(RACK, "uefi-os-on-page-2").bmc.os_boot_entries() == ["Red Hat Enterprise Linux"]
+    assert mockup(RACK, "paging-path-style").bmc.os_boot_entries() == ["Red Hat Enterprise Linux"]
 
 
 def test_network_entries_alone_hold_nothing(mockup):
@@ -194,8 +199,8 @@ def test_secure_boot_is_staged_on_for_uefisecureboot_and_lands_on_the_bmc(mockup
     assert m.bmc.secure_boot()[1]["SecureBootEnable"] is True
 
 
-@pytest.mark.parametrize("overlay,value", [("legacy-raid", "Bios"), ("supermicro-dual", "DUAL"),
-                                           ("lenovo-legacy", "LegacyMode")])
+@pytest.mark.parametrize("overlay,value", [("legacy-controller-entry", "Bios"), ("bootmodeselect-dual", "DUAL"),
+                                           ("bootmodes-legacymode", "LegacyMode")])
 def test_a_legacy_or_mixed_boot_mode_holds_a_host_with_no_record_before_any_write(mockup, overlay, value):
     m = mockup(RACK, overlay)
     before = m.bmc.get(f"/redfish/v1/Systems/{m.system}/Bios/Settings")
@@ -207,7 +212,7 @@ def test_a_legacy_or_mixed_boot_mode_holds_a_host_with_no_record_before_any_writ
 
 
 def test_reinstall_stages_uefi_where_bootmode_is_writable(mockup):
-    m = mockup(RACK, "legacy-raid")
+    m = mockup(RACK, "legacy-controller-entry")
     prep = prepare.run(m.bmc, "UEFISecureBoot", {"deviceName": "/dev/sda"}, hold_legacy=False)
     assert prep.hold is None and prep.refuse is None
     assert prep.bios == {"BootMode": "Uefi"}
@@ -218,7 +223,7 @@ def test_reinstall_stages_uefi_where_bootmode_is_writable(mockup):
 
 
 def test_reinstall_leaves_vendor_boot_mode_names_to_the_operator_and_stages_virtualization(mockup):
-    m = mockup(RACK, "supermicro-dual")
+    m = mockup(RACK, "bootmodeselect-dual")
     prep = prepare.run(m.bmc, "UEFI", {"deviceName": "/dev/sda"}, hold_legacy=False)
     assert prep.bios == {"IntelVirtualizationTechnology": "Enabled"}
     assert any("DCiaB doesn't set BootModeSelect" in n for n in prep.notes)
@@ -227,7 +232,7 @@ def test_reinstall_leaves_vendor_boot_mode_names_to_the_operator_and_stages_virt
 
 
 def test_virtualization_turned_off_is_staged_on(mockup):
-    m = mockup(RACK, "uefi-virt-off")
+    m = mockup(RACK, "procvirtualization-off")
     prep = prepare.run(m.bmc, "UEFI", {"deviceName": "/dev/sda"})
     assert prep.bios == {"ProcVirtualization": "Enabled"}
     assert prep.staged == ["BIOS ProcVirtualization -> Enabled"]
@@ -275,18 +280,38 @@ def test_media_attaches_by_patch_where_the_slot_has_no_actions(mockup):
     assert m.bmc.reset() == "ForceRestart"     # the mockup's system is On
 
 
-def test_media_attaches_by_action_under_the_manager(mockup):
+def test_media_attaches_by_action_under_the_manager_and_fails_when_the_slot_never_shows_it(mockup):
     """The client uses InsertMedia when the slot offers it, never a PATCH of the slot. The Mockup
-    Server acknowledges actions without changing anything, so the slot still holds its published
-    media afterwards; a PATCH would have replaced it. A real insert through the action is proven
-    by the emulated bare server workflow (sushy-tools)."""
+    Server acknowledges actions without changing anything, which is exactly a BMC that accepts
+    the insert and then fails to mount it: dciab must notice the slot never shows the ISO,
+    disarm, and fail before any boot override or reset. A real insert through the action is
+    proven by the emulated bare server workflow (sushy-tools)."""
     m = mockup(TOWER, "vmedia-actions")    # CD1 under the Manager, with InsertMedia/EjectMedia actions
+    m.bmc.poll, m.bmc.attach_timeout = 0.05, 0.5
     path, slot = m.bmc.cd_slot()
     assert path == "/redfish/v1/Managers/BMC/VirtualMedia/CD1"
     assert "#VirtualMedia.InsertMedia" in slot["Actions"]
     image = "http://10.30.110.5/host-isos/pve01.iso"
-    done = m.bmc.prepare(image)
-    assert f"attached {image}" in done
+    before = m.bmc.state()["BootSourceOverrideTarget"]
+    with pytest.raises(RedfishError, match="doesn't show it .* nothing was reset"):
+        m.bmc.prepare(image)
     after = m.bmc.get(path)
     assert after.get("Image") == slot.get("Image") and after.get("Image") != image   # the action, not a PATCH
+    assert m.bmc.state()["BootSourceOverrideTarget"] in (before, "None")             # never set to Cd
+
+
+def test_release_and_disarm_clear_the_override_on_a_published_tree(mockup):
+    m = mockup(RACK)
+    image = "http://10.30.110.5/host-isos/pve01.iso"
+    m.bmc.prepare(image)
     assert m.bmc.state()["BootSourceOverrideTarget"] == "Cd"
+    done, failed, other = m.bmc.release(image, clear_override=True)
+    assert failed == [] and other is None and done == [f"ejected {image}", "cleared the boot override from Cd"]
+    st = m.bmc.state()
+    assert (st["BootSourceOverrideTarget"], st["BootSourceOverrideEnabled"]) == ("None", "Disabled")
+    m.bmc.prepare(image)
+    lines = m.bmc.disarm()
+    assert lines == ["ejected the installer ISO", "cleared the one-time boot override"]
+    st = m.bmc.state()
+    assert (st["BootSourceOverrideTarget"], st["BootSourceOverrideEnabled"]) == ("None", "Disabled")
+    assert m.bmc.attached(image)["attached"] is False

@@ -25,6 +25,17 @@ def test_pins_are_exact():
     assert all(re.fullmatch(r"\d+(\.\d+)+", v) for v in t["mockupServer"]["pip"].values())
 
 
+def test_mockup_server_requirements_are_hashed_and_match_the_pins():
+    m = LOCK["redfishTesting"]["mockupServer"]
+    text = (ROOT / m["requirements"]).read_text()
+    pins = dict(re.findall(r"^([A-Za-z0-9_.-]+)==(\S+)", text, re.M))
+    norm = {k.lower().replace("_", "-").replace(".", "-"): v for k, v in pins.items()}
+    for name, version in m["pip"].items():
+        assert norm.get(name.lower()) == version, f"{name} isn't pinned to {version} in {m['requirements']}"
+    entries = re.split(r"\n(?=[A-Za-z0-9])", "\n".join(l for l in text.splitlines() if not l.lstrip().startswith("#")).strip())
+    assert entries and all("--hash=sha256:" in e for e in entries)
+
+
 def test_never_part_of_the_archive():
     sys.path.insert(0, str(ROOT / "build"))
     try:
@@ -54,7 +65,7 @@ def fake_repos(tmp_path):
     pins them."""
     repos = {}
     for name, files in (("server", {"redfishMockupServer.py": "#"}),
-                        ("pubs", {"LICENSE.md": "BSD", "mockups/public-x/index.json": "{}"})):
+                        ("pubs", {"LICENSE.md": "BSD", "mockups/public-x/index.json": "{}", "mockups/public-y/index.json": "{}"})):
         d = tmp_path / name
         d.mkdir()
         git(d, "init", "-q", "-b", "main")
@@ -69,10 +80,10 @@ def fake_repos(tmp_path):
     (root / "hack" / "redfish").mkdir(parents=True)
     (root / "hack" / "redfish" / "fetch.py").write_text(FETCH.read_text())
 
-    def write_lock(server_commit=None):
+    def write_lock(server_commit=None, names=("public-x",)):
         lock = {"redfishTesting": {
             "mockupServer": {"repo": repos["server"][0], "version": "1.0", "commit": server_commit or repos["server"][1]},
-            "mockups": {"repo": repos["pubs"][0], "version": "1.0", "commit": repos["pubs"][1], "names": ["public-x"]}}}
+            "mockups": {"repo": repos["pubs"][0], "version": "1.0", "commit": repos["pubs"][1], "names": list(names)}}}
         (root / "bundle.lock").write_text(yaml.safe_dump(lock))
     return root, write_lock
 
@@ -92,6 +103,17 @@ def test_fetch_checks_out_the_pinned_commits_and_reruns_cleanly(fake_repos, tmp_
     assert (out / "mockup-server" / "redfishMockupServer.py").is_file()
     assert (out / "mockups" / "public-x" / "index.json").is_file()
     assert run_fetch(root, out).returncode == 0
+
+
+def test_a_rerun_with_more_mockup_names_checks_them_out(fake_repos, tmp_path):
+    root, write_lock = fake_repos
+    write_lock()
+    out = tmp_path / "out"
+    assert run_fetch(root, out).returncode == 0
+    write_lock(names=("public-x", "public-y"))
+    r = run_fetch(root, out)
+    assert r.returncode == 0, r.stderr
+    assert (out / "mockups" / "public-y" / "index.json").is_file()
 
 
 def test_fetch_with_a_relative_directory_makes_links_that_resolve(fake_repos, tmp_path):

@@ -796,7 +796,7 @@ jobs:
         run: |
           set -euo pipefail
           pip install -r requirements-dev.txt
-          pip install $(python3 -c 'import yaml; p = yaml.safe_load(open("bundle.lock"))["redfishTesting"]["mockupServer"]["pip"]; print(" ".join(f"{k}=={v}" for k, v in p.items()))')
+          pip install --require-hashes -r "$(python3 -c 'import yaml; print(yaml.safe_load(open("bundle.lock"))["redfishTesting"]["mockupServer"]["requirements"])')"
           echo "DCIAB_REDFISH_MOCKUPS=$(python3 hack/redfish/fetch.py "$RUNNER_TEMP/redfish")" >> "$GITHUB_ENV"
       - name: Tests (none may be skipped)
         run: |

@@ -311,8 +311,10 @@ redfishTesting:
     repo: https://github.com/DMTF/Redfish-Mockup-Server
     version: "1.3.0"
     commit: "23d21f9a3610f6b6fbb71ffc941296b159a524d2"
-    # Its requirements.txt, pinned.
+    # Its requirements.txt, pinned; requirements is the full dependency set with hashes,
+    # compiled from these (pip install --require-hashes).
     pip: {requests: "2.34.2", grequests: "0.7.0", gevent: "26.9.0", multipart: "2.0.1"}
+    requirements: hack/redfish/requirements.txt
   # DMTF's public mockups (DSP2043, in the Redfish-Publications repository; BSD-3-Clause).
   mockups:
     repo: https://github.com/DMTF/Redfish-Publications

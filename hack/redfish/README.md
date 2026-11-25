@@ -15,20 +15,24 @@ commits are pinned in `bundle.lock` `redfishTesting`.
 
 DMTF's public mockups list no boot options, and vendors don't publish their own recorded
 mockups under a license that allows redistribution. So `tests/fixtures/redfish/overlays/` adds
-small resources on top of a public mockup, each written after a vendor's documented behaviour:
+small, hand-written resources on top of a public mockup. **None is captured from a vendor BMC,
+and none cites a vendor source**, so each is named after the behaviour it models, not after a
+vendor. Where an overlay uses a vendor's BIOS attribute name, it is the name
+`lib/dciab_hypervisors/prepare.py` looks for, and the "Name seen on" column says whose firmware
+uses it; captured mockups (Redfish-Mockup-Creator, sanitized) from real BMCs would replace these.
 
-| Overlay | What it adds |
-| --- | --- |
-| `legacy-raid` | Dell-style legacy server: a RAID controller boot entry with no device path, a NIC entry, `BootMode: Bios` |
-| `uefi-os-on-page-2` | HPE-style UEFI server: boot options on two pages (`Members@odata.nextLink`), the OS entry on the second |
-| `network-only` | PXE and HTTP boot entries only |
-| `empty-boot-options` | `Members: []` |
-| `boot-options-no-members` | A collection page with no `Members` |
-| `supermicro-dual` | `BootModeSelect: DUAL`, `IntelVirtualizationTechnology: Disabled` |
-| `lenovo-legacy` | `BootModes_SystemBootMode: LegacyMode` |
-| `uefi-virt-off` | `ProcVirtualization: Disabled` |
-| `drives-no-volumes` | `public-localstorage` without its RAID volumes |
-| `vmedia-actions` | `InsertMedia`/`EjectMedia` actions on `public-tower`'s Manager CD slot |
+| Overlay | What it models | Name seen on |
+| --- | --- | --- |
+| `legacy-controller-entry` | Legacy boot: a RAID controller boot entry with no device path, a NIC entry, `BootMode: Bios` | Dell (`BootMode`) |
+| `paging-path-style` | Boot options on two pages, the second linked by a path-style `Members@odata.nextLink` (`.../Page2`), the OS entry on page 2. Query-style paging (`?page=`) is covered in `tests/test_hypervisors.py` | — |
+| `network-only` | PXE and HTTP boot entries only | — |
+| `empty-boot-options` | `Members: []` | — |
+| `boot-options-no-members` | A collection page with no `Members` | — |
+| `bootmodeselect-dual` | `BootModeSelect: DUAL`, `IntelVirtualizationTechnology: Disabled` | Supermicro |
+| `bootmodes-legacymode` | `BootModes_SystemBootMode: LegacyMode` | Lenovo |
+| `procvirtualization-off` | `ProcVirtualization: Disabled` | Dell |
+| `drives-no-volumes` | `public-localstorage` without its RAID volumes | — |
+| `vmedia-actions` | `InsertMedia`/`EjectMedia` actions on `public-tower`'s Manager CD slot. The Mockup Server acknowledges actions without changing the slot, which models a BMC that accepts an insert and then fails to mount it | — |
 
 An overlay mirrors the mockup tree: `index.json` adds or replaces a resource, and
 `index.patch.json` is a JSON merge patch (RFC 7386, `null` deletes a key) on the published one.
@@ -37,7 +41,7 @@ Run it locally:
 
 ```sh
 python3 hack/redfish/fetch.py /tmp/rf          # the pinned server and mockups
-pip install requests grequests multipart       # versions: bundle.lock redfishTesting.mockupServer.pip
+pip install --require-hashes -r hack/redfish/requirements.txt   # bundle.lock redfishTesting.mockupServer.requirements
 DCIAB_REDFISH_MOCKUPS=/tmp/rf python3 -m pytest -q tests/test_redfish_mockups.py
 ```
 

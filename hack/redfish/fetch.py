@@ -32,6 +32,8 @@ def checkout(repo: str, version: str, commit: str, dest: Path, paths: list[str] 
     if (dest / ".git").is_dir():
         try:
             if git("rev-parse", "HEAD", cwd=dest) == commit:
+                if paths:     # always: the list of paths may have grown since the cached checkout
+                    git("sparse-checkout", "set", "--no-cone", *paths, cwd=dest)
                 return
         except subprocess.CalledProcessError:
             pass

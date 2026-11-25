@@ -293,7 +293,9 @@ class FakeBMC:
 
     def __init__(self, cert, media="manager", actions=True, power="On", inserted=None, boot_options=None,
                  reset_status=204, overrides=None, bios=None, secure_boot=None, drives=None, apply_times=True,
-                 volumes=None, patch_fail=()):
+                 volumes=None, patch_fail=(), insert_lag=0):
+        # insert_lag: GETs of the slot that still show the old media after an insert (-1: never shows it)
+        self.insert_lag, self.inserted_pending = insert_lag, None
         boot_options = DEFAULT_OPTS if boot_options is None else boot_options
         # Preparation (prepare.py): BIOS attributes, Secure Boot, drives; None means the BMC offers none.
         self.bios, self.pending, self.secure_boot = bios, {}, secure_boot
@@ -331,6 +333,11 @@ class FakeBMC:
             return {"VirtualMedia": {"@odata.id": coll}} if media == "manager" else {}
 
         def slot():
+            if fake.inserted_pending is not None:
+                if fake.insert_lag == 0:
+                    fake.slot, fake.inserted_pending = fake.inserted_pending, None
+                elif fake.insert_lag > 0:
+                    fake.insert_lag -= 1
             body = dict(fake.slot, MediaTypes=["CD", "DVD"])
             if actions:
                 body["Actions"] = {"#VirtualMedia.InsertMedia": {"target": slot_path + "/Actions/VirtualMedia.InsertMedia"},
@@ -392,7 +399,10 @@ class FakeBMC:
                 if actions and self.path == slot_path + "/Actions/VirtualMedia.InsertMedia":
                     if fake.slot["Inserted"]:
                         return self._send(409)   # like real BMCs: eject first
-                    fake.slot = {"Inserted": True, "Image": body["Image"]}
+                    if fake.insert_lag:
+                        fake.inserted_pending = {"Inserted": True, "Image": body["Image"]}
+                    else:
+                        fake.slot = {"Inserted": True, "Image": body["Image"]}
                 elif actions and self.path == slot_path + "/Actions/VirtualMedia.EjectMedia":
                     fake.slot = {"Inserted": False, "Image": None}
                 elif self.path == SYS + "/Actions/ComputerSystem.Reset":
@@ -469,6 +479,39 @@ def test_install_from_ejects_inserts_boots_and_restarts(fake_bmc, media, actions
     assert f.calls[-1] == ("POST", SYS + "/Actions/ComputerSystem.Reset", {"ResetType": "ForceRestart"})
     assert ("PATCH", SYS, {"Boot": {"BootSourceOverrideTarget": "Cd", "BootSourceOverrideEnabled": "Once",
                                     "BootSourceOverrideMode": "UEFI"}}) in f.calls
+
+
+def test_an_insert_the_slot_shows_late_is_waited_for(fake_bmc):
+    f = fake_bmc(insert_lag=3)
+    f.bmc.poll, f.bmc.attach_timeout = 0.01, 5
+    done = f.bmc.prepare(ISO)
+    assert f"attached {ISO}" in done and f.slot == {"Inserted": True, "Image": ISO}
+    assert f.bmc.state()["BootSourceOverrideTarget"] == "Cd"
+
+
+def test_an_insert_the_slot_never_shows_disarms_and_fails_before_any_boot_override(fake_bmc):
+    f = fake_bmc(insert_lag=-1, inserted="http://old/other.iso")
+    f.bmc.poll, f.bmc.attach_timeout = 0.01, 0.2
+    with pytest.raises(redfish.RedfishError, match="doesn't show it .* nothing was reset"):
+        f.bmc.install_from(ISO)
+    assert not any(c[1].endswith("ComputerSystem.Reset") for c in f.calls)
+    assert not any(c[0] == "PATCH" and c[1] == SYS and c[2]["Boot"].get("BootSourceOverrideTarget") == "Cd"
+                   for c in f.calls)
+    assert f.boot == {"BootSourceOverrideTarget": "None", "BootSourceOverrideEnabled": "Disabled"}
+
+
+def test_disarm_and_release_clear_the_override_with_target_none(fake_bmc):
+    f = fake_bmc(inserted=ISO)
+    f.bmc.boot_once_from_cd()
+    f.bmc.disarm()
+    assert ("PATCH", SYS, {"Boot": {"BootSourceOverrideEnabled": "Disabled", "BootSourceOverrideTarget": "None"}}) in f.calls
+    assert f.boot["BootSourceOverrideTarget"] == "None" and f.slot["Inserted"] is False
+    g = fake_bmc(inserted=ISO)
+    g.bmc.boot_once_from_cd()
+    done, failed, other = g.bmc.release(ISO, clear_override=True)
+    assert failed == [] and other is None and "cleared the boot override from Cd" in done
+    assert g.boot == {"BootSourceOverrideTarget": "None", "BootSourceOverrideEnabled": "Disabled",
+                      "BootSourceOverrideMode": "UEFI"}
 
 
 def test_powered_off_server_is_turned_on_and_same_iso_not_reinserted(fake_bmc):
@@ -777,6 +820,15 @@ def test_failed_reset_disarms_and_holds(fake_bmc, tmp_path):
     assert cli.read_install(tmp_path / "installs", "pve01")["outcome"] == "reset-failed"
     f2 = fake_bmc(power="Off")
     assert guard(f2, tmp_path)[:3] == ([], ["pve01"], [])     # the rerun holds it
+
+
+def test_media_that_never_mounts_fails_the_host_without_a_reset_or_record(fake_bmc, tmp_path):
+    f = fake_bmc(power="Off", insert_lag=-1)
+    f.bmc.poll, f.bmc.attach_timeout = 0.01, 0.2
+    failed, held, _, out = guard(f, tmp_path, first_install=["pve01"])
+    assert failed == ["pve01"] and "can the BMC reach that URL?" in out
+    assert not any(c[1].endswith("ComputerSystem.Reset") for c in f.calls) and f.power == "Off"
+    assert cli.read_install(tmp_path / "installs", "pve01") is None
 
 
 def test_powered_off_install_in_progress_is_held_not_waited_for(fake_bmc, tmp_path):

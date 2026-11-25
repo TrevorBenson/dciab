@@ -78,6 +78,10 @@ def is_os_entry(name: str, device_path: str) -> bool:
 
 MAX_PAGES = 64
 
+# Clearing a boot override: Target None with Enabled Disabled. Some BMCs (sushy-tools among them)
+# refuse a PATCH that sets Enabled alone.
+CLEAR_OVERRIDE = {"BootSourceOverrideEnabled": "Disabled", "BootSourceOverrideTarget": "None"}
+
 
 def _required_members(page: object) -> object:
     """A collection page's Members value; a page without one is unreadable, not empty."""
@@ -95,8 +99,9 @@ def _members(value: object) -> list:
 
 class Bmc:
     def __init__(self, address: str, username: str, password: str, trust: Trust, timeout: float = 30.0,
-                 task_timeout: float = 300.0, poll: float = 2.0):
+                 task_timeout: float = 300.0, poll: float = 2.0, attach_timeout: float = 60.0):
         self.task_timeout = task_timeout
+        self.attach_timeout = attach_timeout
         self.poll = poll
         url = address.split("+", 1)[1] if "+" in address else address
         parts = urlsplit(url)
@@ -286,7 +291,7 @@ class Bmc:
         except RedfishError as exc:
             done.append(f"couldn't eject the installer ISO ({exc}); it will boot at the next power-on")
         try:
-            self._call("PATCH", self.system_path, {"Boot": {"BootSourceOverrideEnabled": "Disabled"}})
+            self._call("PATCH", self.system_path, {"Boot": CLEAR_OVERRIDE})
             done.append("cleared the one-time boot override")
         except RedfishError as exc:
             done.append(f"couldn't clear the boot override ({exc})")
@@ -314,7 +319,7 @@ class Bmc:
                 boot = self.system().get("Boot") or {}
                 if boot.get("BootSourceOverrideTarget") == "Cd" and \
                         boot.get("BootSourceOverrideEnabled") not in (None, "Disabled"):
-                    self._call("PATCH", self.system_path, {"Boot": {"BootSourceOverrideEnabled": "Disabled"}})
+                    self._call("PATCH", self.system_path, {"Boot": CLEAR_OVERRIDE})
                     done.append("cleared the boot override from Cd")
             except RedfishError as exc:
                 failed.append(f"couldn't clear the boot override from Cd ({exc})")
@@ -331,10 +336,27 @@ class Bmc:
                 self.eject(path, slot)
                 done.append("ejected the attached media")
             self.insert(path, slot, image)
+            self._wait_attached(image)
             done.append(f"attached {image}")
         self.boot_once_from_cd()
         done.append("one-time boot from Cd (UEFI)")
         return done
+
+    def _wait_attached(self, image: str) -> None:
+        """After an insert the BMC answered: wait (attach_timeout) until its CD slot shows image.
+        A BMC can accept InsertMedia and then fail to mount it (an URL it can't reach). When the
+        slot never shows it: disarm and raise, so nothing is reset onto a missing installer."""
+        deadline = time.monotonic() + self.attach_timeout
+        while True:
+            _, slot = self.cd_slot()
+            if slot.get("Inserted") and slot.get("Image") == image:
+                return
+            if time.monotonic() > deadline:
+                undone = "; ".join(self.disarm())
+                raise RedfishError(f"{self.client.where}: the BMC accepted {image}, but its CD slot doesn't show it "
+                                   f"after {self.attach_timeout:.0f}s (can the BMC reach that URL?); nothing was reset"
+                                   + (f" ({undone})" if undone else ""))
+            time.sleep(self.poll)
 
     def install_from(self, image: str) -> List[str]:
         """prepare(image), then reset. Returns what was done. Callers decide whether a reset is safe."""
