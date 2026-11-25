@@ -298,6 +298,9 @@ def test_media_attaches_by_action_under_the_manager_and_fails_when_the_slot_neve
     after = m.bmc.get(path)
     assert after.get("Image") == slot.get("Image") and after.get("Image") != image   # the action, not a PATCH
     assert m.bmc.state()["BootSourceOverrideTarget"] in (before, "None")             # never set to Cd
+    # The eject went out anyway (a late mount may land after the last read), and the boot override,
+    # which this run never set, was left alone.
+    assert not m.bmc.override_set
 
 
 def test_release_and_disarm_clear_the_override_on_a_published_tree(mockup):
@@ -306,12 +309,14 @@ def test_release_and_disarm_clear_the_override_on_a_published_tree(mockup):
     m.bmc.prepare(image)
     assert m.bmc.state()["BootSourceOverrideTarget"] == "Cd"
     done, failed, other = m.bmc.release(image, clear_override=True)
-    assert failed == [] and other is None and done == [f"ejected {image}", "cleared the boot override from Cd"]
+    assert failed == [] and other is None and done == [f"ejected {image}",
+                                                         "cleared the boot override from Cd (Enabled Disabled, Target None)"]
     st = m.bmc.state()
     assert (st["BootSourceOverrideTarget"], st["BootSourceOverrideEnabled"]) == ("None", "Disabled")
     m.bmc.prepare(image)
     lines = m.bmc.disarm()
-    assert lines == ["ejected the installer ISO", "cleared the one-time boot override"]
+    assert lines == ["ejected the installer ISO",
+                     "cleared the one-time boot override (Enabled Disabled, Target None)"]
     st = m.bmc.state()
     assert (st["BootSourceOverrideTarget"], st["BootSourceOverrideEnabled"]) == ("None", "Disabled")
     assert m.bmc.attached(image)["attached"] is False

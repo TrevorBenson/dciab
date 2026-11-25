@@ -1,7 +1,7 @@
 """dciab hypervisors: install Proxmox VE on spec.hypervisors.hosts over Redfish virtual media.
 
     dciab hypervisors <config> [--state DIR] [--isos DIR] [--host NAME ...] [--until STEP]
-                      [--iso FILE] [--timeout SECONDS] [--reinstall NAME ...]
+                      [--iso FILE] [--timeout SECONDS] [--attach-timeout SECONDS] [--reinstall NAME ...]
                       [--first-install NAME ...] [--age-identity FILE] [--print]
 
 Steps, per host, in order; each is safe to re-run:
@@ -12,8 +12,9 @@ Steps, per host, in order; each is safe to re-run:
   media    for a host it will install, first prepare it over Redfish (prepare.py: UEFI boot
            mode, Secure Boot per spec.hypervisors.bootMode, virtualization extensions, a disk
            matching rootDeviceHints; refused on a clear disk mismatch). Then
-           attach http://<bootstrap.address>/host-isos/<host>.iso through the BMC, set a
-           one-time UEFI boot from Cd, and reset the server. Each install is recorded in
+           attach http://<bootstrap.address>/host-isos/<host>.iso through the BMC, wait until
+           its CD slot shows it (--attach-timeout, default 60 s; otherwise eject it and fail the
+           host, nothing reset), set a one-time UEFI boot from Cd, and reset the server. Each install is recorded in
            <state>/installs/<host>.json (when it started, the ISO, the outcome). A host whose
            Proxmox VE API answers on 8006 or that has a recorded install (any file there, even an
            unreadable one) is never reset, powered off or not, unless --reinstall NAME names it;
@@ -471,13 +472,13 @@ def assistant_image(root: Path, lock: dict, run=None) -> str:
     return ref
 
 
-def _bmc(host: dict, config_dir: Path):
+def _bmc(host: dict, config_dir: Path, attach_timeout: float = 60.0):
     from dciab_validate.live import _redfish_trust, read_secret
 
     from .redfish import Bmc
     creds = host["bmc"]["credentials"]
     return Bmc(host["bmc"]["address"], creds["username"], read_secret(creds["password"], config_dir),
-               _redfish_trust(host["bmc"], config_dir))
+               _redfish_trust(host["bmc"], config_dir), attach_timeout=attach_timeout)
 
 
 def main(argv: Optional[List[str]] = None) -> int:
@@ -489,6 +490,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument("--iso", help="installer ISO file name in the ISOs folder (default: the bundle.lock file name)")
     ap.add_argument("--isos", help="the ISOs folder (default: as for dciab services)")
     ap.add_argument("--timeout", type=float, default=3600.0, help="seconds to wait for each host's install")
+    ap.add_argument("--attach-timeout", type=float, default=60.0, metavar="SECONDS",
+                    help="seconds to wait for a BMC's CD slot to show the installer ISO after attaching it "
+                         "(default 60); when it never does, the ISO is ejected and nothing is reset")
     ap.add_argument("--reinstall", action="append", default=[], metavar="NAME",
                     help="wipe and reinstall this host even if its Proxmox VE API answers, it has a "
                          "recorded install or its firmware lists an OS boot entry (repeatable); without "
@@ -667,8 +671,12 @@ def main(argv: Optional[List[str]] = None) -> int:
         note = network_drift(read_install(installs, h["name"]), doc)
         if note:
             print(f"  {h['name']}: note: {note}")
-    failed, held, live = media(hosts, doc, installs, args.reinstall, lambda h: _bmc(h, config_dir),
-                                 first_install=tuple(args.first_install))
+
+    def bmc_for(h: dict):
+        return _bmc(h, config_dir, args.attach_timeout)
+
+    failed, held, live = media(hosts, doc, installs, args.reinstall, bmc_for,
+                               first_install=tuple(args.first_install))
     if failed:
         return 1
     if args.until == "media":
@@ -693,7 +701,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             failed.append(h["name"])
         else:
             write_install(installs, h["name"], outcome="installed")
-            detach(h, installs, lambda x: _bmc(x, config_dir))
+            detach(h, installs, bmc_for)
     if args.until == "wait":
         print("dciab hypervisors: stopped after 'wait' (--until)")
     else:
