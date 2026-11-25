@@ -276,10 +276,17 @@ def test_media_attaches_by_patch_where_the_slot_has_no_actions(mockup):
 
 
 def test_media_attaches_by_action_under_the_manager(mockup):
+    """The client uses InsertMedia when the slot offers it, never a PATCH of the slot. The Mockup
+    Server acknowledges actions without changing anything, so the slot still holds its published
+    media afterwards; a PATCH would have replaced it. A real insert through the action is proven
+    by the emulated bare server workflow (sushy-tools)."""
     m = mockup(TOWER, "vmedia-actions")    # CD1 under the Manager, with InsertMedia/EjectMedia actions
     path, slot = m.bmc.cd_slot()
     assert path == "/redfish/v1/Managers/BMC/VirtualMedia/CD1"
     assert "#VirtualMedia.InsertMedia" in slot["Actions"]
-    done = m.bmc.prepare("http://10.30.110.5/host-isos/pve01.iso")
-    assert "attached http://10.30.110.5/host-isos/pve01.iso" in done
+    image = "http://10.30.110.5/host-isos/pve01.iso"
+    done = m.bmc.prepare(image)
+    assert f"attached {image}" in done
+    after = m.bmc.get(path)
+    assert after.get("Image") == slot.get("Image") and after.get("Image") != image   # the action, not a PATCH
     assert m.bmc.state()["BootSourceOverrideTarget"] == "Cd"

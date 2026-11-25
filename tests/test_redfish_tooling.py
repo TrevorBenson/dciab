@@ -77,9 +77,9 @@ def fake_repos(tmp_path):
     return root, write_lock
 
 
-def run_fetch(root, out):
+def run_fetch(root, out, cwd=None):
     return subprocess.run([sys.executable, str(root / "hack" / "redfish" / "fetch.py"), str(out)],
-                          capture_output=True, text=True)
+                          capture_output=True, text=True, cwd=cwd)
 
 
 def test_fetch_checks_out_the_pinned_commits_and_reruns_cleanly(fake_repos, tmp_path):
@@ -92,6 +92,15 @@ def test_fetch_checks_out_the_pinned_commits_and_reruns_cleanly(fake_repos, tmp_
     assert (out / "mockup-server" / "redfishMockupServer.py").is_file()
     assert (out / "mockups" / "public-x" / "index.json").is_file()
     assert run_fetch(root, out).returncode == 0
+
+
+def test_fetch_with_a_relative_directory_makes_links_that_resolve(fake_repos, tmp_path):
+    root, write_lock = fake_repos
+    write_lock()
+    r = run_fetch(root, "rf", cwd=tmp_path)
+    assert r.returncode == 0, r.stderr
+    assert r.stdout.strip() == str(tmp_path / "rf")
+    assert (tmp_path / "rf" / "mockups" / "public-x" / "index.json").is_file()
 
 
 def test_fetch_refuses_a_tag_that_isnt_the_pinned_commit(fake_repos, tmp_path):

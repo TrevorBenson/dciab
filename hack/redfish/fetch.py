@@ -51,7 +51,7 @@ def checkout(repo: str, version: str, commit: str, dest: Path, paths: list[str] 
 
 def main(argv: list[str]) -> int:
     pins = yaml.safe_load((ROOT / "bundle.lock").read_text())["redfishTesting"]
-    out = Path(argv[0] if argv else os.environ.get("DCIAB_REDFISH_MOCKUPS") or Path.home() / ".cache/dciab/redfish")
+    out = Path(argv[0] if argv else os.environ.get("DCIAB_REDFISH_MOCKUPS") or Path.home() / ".cache/dciab/redfish").resolve()
     server, mockups = pins["mockupServer"], pins["mockups"]
     checkout(server["repo"], server["version"], server["commit"], out / "mockup-server")
     checkout(mockups["repo"], mockups["version"], mockups["commit"], out / "publications",
