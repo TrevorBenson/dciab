@@ -345,10 +345,16 @@ class Bmc:
     def _wait_attached(self, image: str) -> None:
         """After an insert the BMC answered: wait (attach_timeout) until its CD slot shows image.
         A BMC can accept InsertMedia and then fail to mount it (an URL it can't reach). When the
-        slot never shows it: disarm and raise, so nothing is reset onto a missing installer."""
+        slot never shows it, or can't be read: disarm and raise, so nothing is reset onto a missing
+        installer."""
         deadline = time.monotonic() + self.attach_timeout
         while True:
-            _, slot = self.cd_slot()
+            try:
+                _, slot = self.cd_slot()
+            except RedfishError as exc:
+                undone = "; ".join(self.disarm())
+                raise RedfishError(f"{exc} (reading the CD slot after attaching {image}); nothing was reset"
+                                   + (f" ({undone})" if undone else "")) from None
             if slot.get("Inserted") and slot.get("Image") == image:
                 return
             if time.monotonic() > deadline:

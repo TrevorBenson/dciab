@@ -293,9 +293,10 @@ class FakeBMC:
 
     def __init__(self, cert, media="manager", actions=True, power="On", inserted=None, boot_options=None,
                  reset_status=204, overrides=None, bios=None, secure_boot=None, drives=None, apply_times=True,
-                 volumes=None, patch_fail=(), insert_lag=0):
+                 volumes=None, patch_fail=(), insert_lag=0, slot_fails_after_insert=False):
         # insert_lag: GETs of the slot that still show the old media after an insert (-1: never shows it)
         self.insert_lag, self.inserted_pending = insert_lag, None
+        self.slot_fails_after_insert, self.inserted_once = slot_fails_after_insert, False
         boot_options = DEFAULT_OPTS if boot_options is None else boot_options
         # Preparation (prepare.py): BIOS attributes, Secure Boot, drives; None means the BMC offers none.
         self.bios, self.pending, self.secure_boot = bios, {}, secure_boot
@@ -387,6 +388,8 @@ class FakeBMC:
                     return self._send(401)
                 if isinstance(overrides.get(self.path), int):
                     return self._send(overrides[self.path])
+                if fake.slot_fails_after_insert and fake.inserted_once and self.path == slot_path:
+                    return self._send(500)
                 if self.path in overrides:
                     return self._send(200, overrides[self.path])
                 if self.path in gets:
@@ -399,6 +402,7 @@ class FakeBMC:
                 if actions and self.path == slot_path + "/Actions/VirtualMedia.InsertMedia":
                     if fake.slot["Inserted"]:
                         return self._send(409)   # like real BMCs: eject first
+                    fake.inserted_once = True
                     if fake.insert_lag:
                         fake.inserted_pending = {"Inserted": True, "Image": body["Image"]}
                     else:
@@ -498,6 +502,16 @@ def test_an_insert_the_slot_never_shows_disarms_and_fails_before_any_boot_overri
     assert not any(c[0] == "PATCH" and c[1] == SYS and c[2]["Boot"].get("BootSourceOverrideTarget") == "Cd"
                    for c in f.calls)
     assert f.boot == {"BootSourceOverrideTarget": "None", "BootSourceOverrideEnabled": "Disabled"}
+
+
+def test_a_slot_that_cant_be_read_after_the_insert_disarms_and_fails(fake_bmc):
+    f = fake_bmc(slot_fails_after_insert=True)
+    f.boot = {"BootSourceOverrideTarget": "Cd", "BootSourceOverrideEnabled": "Once"}   # left from an earlier try
+    f.bmc.poll, f.bmc.attach_timeout = 0.01, 5
+    with pytest.raises(redfish.RedfishError, match="HTTP 500 .*reading the CD slot.*nothing was reset"):
+        f.bmc.install_from(ISO)
+    assert not any(c[1].endswith("ComputerSystem.Reset") for c in f.calls)
+    assert f.boot["BootSourceOverrideTarget"] == "None" and f.boot["BootSourceOverrideEnabled"] == "Disabled"
 
 
 def test_disarm_and_release_clear_the_override_with_target_none(fake_bmc):
