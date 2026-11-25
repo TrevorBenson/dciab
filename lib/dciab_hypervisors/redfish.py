@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import base64
 import json
+import re
 import time
 from typing import Dict, List, Optional, Tuple
 from urllib.parse import urlsplit
@@ -18,6 +19,78 @@ from dciab_validate.probes import HttpsClient, ProbeError, Trust
 
 class RedfishError(Exception):
     """Something the BMC refused or doesn't offer. The message is safe to print."""
+
+
+# Boot option names that load an installed OS. Vendors name entries freely, so this only adds
+# to the device-path test below; "uefi os" is the generic entry firmware creates for a disk's
+# \EFI\BOOT\BOOTX64.EFI (after an NVRAM reset or a board swap, for example).
+OS_HINTS = ("proxmox", "uefi os", "windows boot manager", "rocky", "red hat", "redhat", "centos", "almalinux",
+            "fedora", "debian", "ubuntu", "suse", "sles", "vmware", "esxi", "grub", "shim", "linux")
+# Names of network boot entries. A network entry never loads an installed OS from a local disk,
+# so it never holds a host, whatever else its name says.
+NETWORK_HINTS = ("pxe", "http boot", "httpv", "network", "ipv4", "ipv6")
+# Device path nodes of a network boot.
+NETWORK_PATH = ("mac(", "ipv4(", "ipv6(", "uri(")
+# Device path nodes of a local disk: a partition (HD), a legacy BIOS disk entry (BBS(HD...)), or a
+# whole disk on a storage bus with no partition node (some firmware lists only the disk).
+DISK_PATH = ("hd(", "bbs(hd", "sata(", "ata(", "scsi(", "sas(", "nvme(")
+# Names of legacy (BIOS) disk entries, which often have no device path at all.
+DISK_NAMES = ("hard drive", "hard disk")
+# Words in the name of a boot option with no device path that point at a local disk or its
+# controller, such as "Integrated RAID Controller 1: PERC H730" or "Embedded SATA Port Disk A".
+# Legacy firmware often lists only these. Matched as whole words.
+PATHLESS_DISK_WORDS = ("disk", "drive", "raid", "sata", "sas", "nvme", "ssd", "hdd")
+# Removable optical or floppy entries: a path-less name with one of these doesn't count.
+REMOVABLE_WORDS = ("cd", "dvd", "optical", "floppy", "cdrom")
+
+
+def is_os_entry(name: str, device_path: str) -> bool:
+    """Whether a boot option may load an installed OS, so the host must be held.
+
+    Explicit OS evidence wins over any other word in the name: Proxmox VE, a name in OS_HINTS
+    (so "UEFI OS (Virtual Disk)" counts), a legacy disk entry ("Hard drive C:", BBS(HD,...)), or
+    a device path into a local disk: a partition (HD(...)), or a whole disk on a SATA, SCSI, SAS
+    or NVMe bus with no partition node (a path ending in a CDROM(...) node is an optical drive,
+    not a disk, and doesn't count unless it also has a partition node). So a USB-named entry on a partition, such as a bootable
+    stick, counts too and holds the host. An entry with no device path whose name names a disk
+    or a disk controller (a whole word from PATHLESS_DISK_WORDS, such as "Integrated RAID
+    Controller 1: PERC H730" or "Embedded SATA Port Disk A") counts too, unless it names an
+    optical or floppy drive. Only unambiguous network entries are left out: a network name or
+    network path nodes, with no disk node in the path. Anything else (CD/DVD, shell, setup, an
+    unnamed entry with no disk path) doesn't count."""
+    lname, lpath = name.lower(), device_path.lower()
+    text = f"{lname} {lpath}"
+    if "proxmox" in text:
+        return True
+    network = any(n in lpath for n in NETWORK_PATH)
+    optical = "cdrom(" in lpath       # a CD/DVD drive on a SATA, SCSI or SAS bus isn't a disk
+    on_disk = "hd(" in lpath or "bbs(hd" in lpath or (
+        not network and not optical and any(n in lpath for n in DISK_PATH))
+    if not on_disk and (network or any(h in lname for h in NETWORK_HINTS)):
+        return False
+    if on_disk or any(h in text for h in OS_HINTS + DISK_NAMES):
+        return True
+    if not lpath.strip():
+        words = set(re.findall(r"[a-z0-9]+", lname))      # "NVMe-1" -> {"nvme", "1"}
+        return bool(words & set(PATHLESS_DISK_WORDS)) and not words & set(REMOVABLE_WORDS)
+    return False
+
+
+MAX_PAGES = 64
+
+
+def _required_members(page: object) -> object:
+    """A collection page's Members value; a page without one is unreadable, not empty."""
+    if not isinstance(page, dict) or "Members" not in page:
+        raise TypeError("a page of the list has no Members")
+    return page["Members"]
+
+
+def _members(value: object) -> list:
+    """A collection's Members, which must be a JSON array; anything else is unreadable."""
+    if not isinstance(value, list):
+        raise TypeError(f"Members is {type(value).__name__}, not a list")
+    return value
 
 
 class Bmc:
@@ -155,20 +228,47 @@ class Bmc:
         _, slot = self.cd_slot()
         return dict(self.state(), attached=bool(slot.get("Inserted")) and slot.get("Image") == image)
 
+    def members(self, path: str) -> list:
+        """Every member of a collection, across all its pages (Members@odata.nextLink). Raises
+        RedfishError when a page can't be read, a page has no Members (first page or later, even
+        one with only a nextLink), Members isn't an array, or the pages don't end. Only an explicit
+        Members: [] is an empty collection: a missing Members can't be told from a page the BMC
+        left out, so callers must treat it as unreadable."""
+        try:
+            page = self.get(path)
+            members = list(_members(_required_members(page)))
+            seen = {path}
+            while page.get("Members@odata.nextLink"):
+                link = page["Members@odata.nextLink"]
+                if link in seen or len(seen) > MAX_PAGES:
+                    raise RedfishError(f"{self.client.where}: the list at {path} doesn't end ({link})")
+                seen.add(link)
+                page = self.get(link)
+                members += _members(_required_members(page))
+            return members
+        except (TypeError, AttributeError) as exc:
+            raise RedfishError(f"{self.client.where}: the list at {path} makes no sense ({exc})") from None
+
     def os_boot_entries(self) -> Optional[List[str]]:
-        """Names of UEFI boot options that load an installed Proxmox VE (its loader lives in
-        \\EFI\\proxmox); [] when none does. None when the BMC offers no BootOptions. Reads only.
-        Raises RedfishError when the list can't be read in full or a member makes no sense:
-        the caller must then assume an OS may be there."""
+        """Names of UEFI boot options that may load an installed OS (is_os_entry); [] when the
+        BMC lists options and none does. None when the BMC lists no boot options at all: no
+        BootOptions collection, or one with no members, so nothing can be told either way and
+        the caller needs --first-install. Reads only.
+
+        Every page is read (Members@odata.nextLink). Raises RedfishError when the list can't be
+        read in full, its Members isn't an array, or a member makes no sense: the caller must then
+        assume an OS may be there."""
         coll = (self.system().get("Boot") or {}).get("BootOptions")
         if not coll:
             return None
         try:
+            members = self.members(coll["@odata.id"])
+            if not members:
+                return None
             found = []
-            for member in self.get(coll["@odata.id"]).get("Members", []):
+            for member in members:
                 opt = self.get(member["@odata.id"])
-                text = " ".join(str(opt.get(k) or "") for k in ("DisplayName", "UefiDevicePath")).lower()
-                if "proxmox" in text:
+                if is_os_entry(str(opt.get("DisplayName") or ""), str(opt.get("UefiDevicePath") or "")):
                     found.append(str(opt.get("DisplayName") or opt.get("Id") or member["@odata.id"]))
             return found
         except (KeyError, TypeError, AttributeError) as exc:

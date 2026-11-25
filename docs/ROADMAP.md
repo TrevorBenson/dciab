@@ -66,6 +66,7 @@ Decided in [ADR 0001](adr/0001-day0-hypervisors-and-services.md).
 - [ ] Day 0 DHCP on the bootstrap host, for sites that need it and have none (for example PXE installs or BMC addressing); Redfish virtual media installs need none
 - [x] `dciab hypervisors` for Proxmox VE, first part: answer files inside per-host installer ISOs (served only to each host's BMC), root password from the config or generated and sealed with age, Redfish virtual media boot, wait for the install ([docs/HYPERVISORS.md](HYPERVISORS.md); ADR 0001 amendment 1)
 - [x] The CAPMOX API token's exact Proxmox VE privileges, one role per path, checked by `dciab validate --live` ([docs/PROXMOX.md](PROXMOX.md))
+- [x] `dciab hypervisors` reinstall guard: the Proxmox VE API's answer, not an open port; OS boot entries and `--first-install` for hosts without an install record ([docs/HYPERVISORS.md](HYPERVISORS.md#the-reinstall-guard))
 - [ ] `dciab hypervisors` for Proxmox VE, next: tagged management VLAN, Redfish preparation (boot mode, Secure Boot, disk check), post-install API token, bridge and storage
 - [x] Live checks: BMC routes, Redfish and credentials (`dciab validate --live`)
 
