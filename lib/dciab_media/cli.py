@@ -567,9 +567,9 @@ def _holds_files(path: Path) -> bool:
     return path.is_dir() and not path.is_symlink() and any(path.iterdir())
 
 
-# Entries dciab's steps write at the top of a state folder. A folder a .dciab/state link
-# points at is moved only if it holds at least one of them, so a link to unrelated data is
-# never moved (or, across filesystems, deleted).
+# Entries dciab's steps write at the top of a state folder, compared to tell which of two
+# folders looks partial. Whether a linked folder is dciab state at all is _looks_like_state's
+# stricter test.
 STATE_MARKERS = frozenset({
     "pki", "services", "registry", "kind", "isos", "host-isos", "installs", "answers", "backup",
     "capi-backup", "bootstrap.kubeconfig", "mgmt.kubeconfig", "mgmt-values.yaml", "hypervisors.lock",
@@ -585,7 +585,19 @@ def _markers(path: Path) -> frozenset:
 
 
 def _looks_like_state(path: Path) -> bool:
-    return bool(_markers(path))
+    """Whether path holds something only dciab writes: the seed's CA (pki/ca.crt), a dciab
+    kubeconfig, or a hypervisor install record (installs/<host>.json). Generic names such as
+    backup/ or registry/ are not enough on their own: a link to unrelated data must never be
+    moved (or, across filesystems, deleted)."""
+    try:
+        if (path / "pki" / "ca.crt").is_file():
+            return True
+        if any((path / n).is_file() for n in ("bootstrap.kubeconfig", "mgmt.kubeconfig")):
+            return True
+        installs = path / "installs"
+        return installs.is_dir() and any(p.suffix == ".json" and p.is_file() for p in installs.iterdir())
+    except OSError:
+        return False
 
 
 def _moved_aside(source: Path) -> List[Path]:
@@ -772,10 +784,11 @@ class step_locks:
 
     def __init__(self, state: Path, host_locks: Optional[Sequence[Path]] = None):
         host_locks = HOST_STEP_LOCKS if host_locks is None else host_locks
-        # Every lock is made if missing, so a step starting now (dciab mgmt's first run, say) is
-        # refused instead of writing into the folder being moved.
+        # Host locks are made if missing, so a step starting now is refused. Locks inside the state
+        # folder are only opened if they already exist: creating them would add files to the folder
+        # being moved (or, on a refusal, to a folder that may not be dciab's).
         self.paths = [(p, True) for p in host_locks if p.parent.is_dir()] + \
-                     [(state / n, True) for n in STATE_STEP_LOCKS]
+                     [(state / n, False) for n in STATE_STEP_LOCKS]
         self.fds: List[int] = []
 
     def __enter__(self):

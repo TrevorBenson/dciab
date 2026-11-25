@@ -257,6 +257,7 @@ def test_a_link_to_state_elsewhere_with_state_on_the_work_disk_is_refused(site, 
     src, work, cfg = site
     elsewhere = tmp_path / "my-state"
     (elsewhere / "pki").mkdir(parents=True)
+    (elsewhere / "pki" / "ca.crt").write_text("CA")
     (elsewhere / "services").mkdir()
     (work / "state" / "pki").mkdir(parents=True)
     legacy = cfg.parent / ".dciab" / "state"
@@ -545,9 +546,48 @@ def test_the_link_is_left_even_when_the_old_copy_cant_be_removed(site, monkeypat
     assert (work / "state" / "pki" / "ca.crt").read_text() == "CA"
 
 
-def test_the_state_locks_are_made_so_a_starting_step_is_refused(tmp_path):
+def test_state_locks_are_opened_only_if_they_exist(tmp_path):
+    """No lock file is created inside the folder being moved (M1); an existing one is held."""
     state = tmp_path / "state"
     state.mkdir()
     with cli.step_locks(state, host_locks=()):
         for name in cli.STATE_STEP_LOCKS:
-            assert (state / name).is_file()                              # made, and held
+            assert not (state / name).exists()
+    (state / ".lock").write_text("")
+    import fcntl
+    with cli.step_locks(state, host_locks=()):
+        fd = os.open(state / ".lock", os.O_RDWR)
+        try:
+            with pytest.raises(BlockingIOError):
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        finally:
+            os.close(fd)
+
+
+def test_a_link_to_a_folder_with_only_generic_names_is_refused(site, tmp_path, capsys):
+    """backup/ and photos/ aren't dciab state: the folder is neither moved nor touched (M1)."""
+    src, work, cfg = site
+    elsewhere = tmp_path / "notes"
+    (elsewhere / "backup").mkdir(parents=True)
+    (elsewhere / "backup" / "db.dump").write_text("mine")
+    (elsewhere / "photos").mkdir()
+    before = sorted(str(p.relative_to(elsewhere)) for p in elsewhere.rglob("*"))
+    legacy = cfg.parent / ".dciab" / "state"
+    legacy.parent.mkdir(parents=True)
+    legacy.symlink_to(elsewhere)
+    assert cli.main(args(src, cfg)) == 1
+    assert sorted(str(p.relative_to(elsewhere)) for p in elsewhere.rglob("*")) == before
+    assert not (work / "state").exists()
+    assert str(elsewhere) in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("marker", ["pki/ca.crt", "mgmt.kubeconfig", "installs/pve01.json"])
+def test_looks_like_state_needs_a_dciab_specific_marker(tmp_path, marker):
+    d = tmp_path / "s"
+    for generic in ("backup", "registry", "kind", "isos", "services", "proxmox", "answers"):
+        (d / generic).mkdir(parents=True, exist_ok=True)
+    (d / ".lock").write_text("")
+    assert not cli._looks_like_state(d)
+    (d / marker).parent.mkdir(parents=True, exist_ok=True)
+    (d / marker).write_text("x")
+    assert cli._looks_like_state(d)
