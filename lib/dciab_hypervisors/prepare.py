@@ -35,8 +35,20 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
 # BIOS attributes, by the names the major vendors use (Dell, HPE, Supermicro, Lenovo).
-BOOT_MODE_KEYS = ("BootMode",)
-LEGACY_BOOT_VALUES = ("Bios", "LegacyBios", "Legacy")
+# BootMode (Dell, HPE) is read and set. BootModeSelect (Supermicro) and BootModes_SystemBootMode
+# (Lenovo) are only read: a legacy or mixed value holds a host with no install record, and a
+# --reinstall run gets a note to set UEFI in the firmware setup, since their write values aren't
+# tested.
+BOOT_MODE_KEYS = ("BootMode", "BootModeSelect", "BootModes_SystemBootMode")
+WRITABLE_BOOT_MODE_KEYS = ("BootMode",)
+# Words in a boot mode value that mean legacy BIOS boot is on: legacy only, or mixed (DUAL,
+# "UEFI and Legacy"), which can boot a legacy OS too.
+LEGACY_BOOT_WORDS = ("legacy", "bios", "dual")
+
+
+def is_legacy(value: object) -> bool:
+    """Whether a boot mode attribute value allows legacy BIOS boot (legacy only, or mixed)."""
+    return isinstance(value, str) and any(w in value.lower() for w in LEGACY_BOOT_WORDS)
 VIRT_KEYS = ("ProcVirtualization", "IntelVirtualizationTechnology", "VirtualizationTechnology",
              "IntelVTX", "VMX", "SVMMode", "SvmMode", "AmdVirtualization", "ProcAmdVirtualization")
 ON_FOR = {"Disabled": "Enabled", "Disable": "Enable"}
@@ -186,7 +198,7 @@ def run(bmc, boot_mode: str, hints: Dict[str, object], hold_legacy: bool = True)
         prep.notes.append(f"BIOS attributes couldn't be read ({exc})")
     attrs = (bios or {}).get("Attributes") or {}
     mode_key = next((k for k in BOOT_MODE_KEYS if k in attrs), None)
-    legacy = mode_key is not None and attrs[mode_key] in LEGACY_BOOT_VALUES
+    legacy = mode_key is not None and is_legacy(attrs[mode_key])
     if mode_key is None:
         prep.notes.append("the boot mode can't be read over Redfish; the install boots the ISO in UEFI mode, "
                           "which fails on a server set to legacy BIOS boot")
@@ -195,7 +207,12 @@ def run(bmc, boot_mode: str, hints: Dict[str, object], hold_legacy: bool = True)
             prep.hold = (f"the BIOS boot mode reads {attrs[mode_key]} (legacy), and a legacy-mode server may hold an "
                          "installed OS that its boot entries don't show")
             return prep      # nothing written
-        prep.bios[mode_key] = "Uefi"
+        if mode_key in WRITABLE_BOOT_MODE_KEYS:
+            prep.bios[mode_key] = "Uefi"
+        else:
+            prep.notes.append(f"the BIOS boot mode reads {mode_key} {attrs[mode_key]} (legacy); DCiaB doesn't set "
+                              f"{mode_key}: set it to UEFI in the firmware setup or through the BMC, or the "
+                              "installer won't boot")
     else:
         prep.done.append(f"boot mode {attrs[mode_key]}")
     virt = [k for k in VIRT_KEYS if k in attrs]
@@ -232,7 +249,7 @@ def run(bmc, boot_mode: str, hints: Dict[str, object], hold_legacy: bool = True)
             # applies at the reset.
             prep.notes.append(f"Secure Boot isn't changed while the boot mode reads legacy; once the boot mode is "
                               f"UEFI, set Secure Boot {'on' if want else 'off'} to match bootMode {boot_mode} "
-                              "(firmware setup, or a later --reinstall run)")
+                              "in the firmware setup or through the BMC")
         else:
             sb_change = path
 

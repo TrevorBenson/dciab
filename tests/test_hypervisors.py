@@ -1290,6 +1290,44 @@ def test_reinstall_of_a_legacy_host_stages_uefi_but_not_secure_boot(fake_bmc, tm
     assert "Secure Boot isn't changed while the boot mode reads legacy" in out
 
 
+@pytest.mark.parametrize("key,value", [
+    ("BootModeSelect", "LEGACY"),                    # Supermicro
+    ("BootModeSelect", "DUAL"),                      # Supermicro, mixed: can boot a legacy OS
+    ("BootModes_SystemBootMode", "LegacyMode"),      # Lenovo
+    ("BootModes_SystemBootMode", "UEFIandLegacy"),
+    ("BootMode", "LegacyBios"),
+])
+def test_legacy_or_mixed_boot_mode_under_any_vendor_name_holds_a_host_without_a_record(fake_bmc, tmp_path, key, value):
+    f = fake_bmc(power="Off", bios={key: value, "ProcVirtualization": "Disabled"}, secure_boot=False, drives=[BOSS])
+    failed, held, _, out = guard(f, tmp_path, first_install=["pve01"])
+    assert (failed, held) == ([], ["pve01"]) and "legacy" in out
+    assert not [c for c in f.calls if c[0] in CHANGES] and f.pending == {}
+
+
+@pytest.mark.parametrize("key,value", [("BootModeSelect", "UEFI"), ("BootModes_SystemBootMode", "UEFIMode")])
+def test_uefi_boot_mode_under_other_vendor_names_doesnt_hold(fake_bmc, tmp_path, key, value):
+    f = fake_bmc(power="Off", bios={key: value, "ProcVirtualization": "Enabled"}, secure_boot=False, drives=[BOSS])
+    failed, held, _, out = guard(f, tmp_path, first_install=["pve01"])
+    assert (failed, held) == ([], []) and f"boot mode {value}" in out
+
+
+def test_reinstall_never_writes_a_read_only_vendor_boot_mode_key(fake_bmc, tmp_path):
+    f = fake_bmc(power="Off", bios={"BootModeSelect": "LEGACY", "ProcVirtualization": "Disabled"}, secure_boot=False,
+                 drives=[BOSS])
+    failed, held, _, out = guard(f, tmp_path, reinstall=["pve01"], boot_mode="UEFISecureBoot")
+    assert (failed, held) == ([], [])
+    assert f.pending == {"ProcVirtualization": "Enabled"}
+    assert "DCiaB doesn't set BootModeSelect" in out
+
+
+def test_secure_boot_note_in_legacy_mode_doesnt_suggest_a_reinstall(fake_bmc, tmp_path):
+    f = fake_bmc(power="Off", bios={"BootMode": "Bios", "ProcVirtualization": "Enabled"}, secure_boot=False,
+                 drives=[BOSS])
+    _, _, _, out = guard(f, tmp_path, reinstall=["pve01"], boot_mode="UEFISecureBoot")
+    note = next(l for l in out.splitlines() if "Secure Boot isn't changed" in l)
+    assert "--reinstall" not in note and "firmware setup or through the BMC" in note
+
+
 def test_a_failed_secure_boot_write_names_the_staged_bios_change(fake_bmc, tmp_path):
     f = fake_bmc(power="Off", bios={"BootMode": "Uefi", "ProcVirtualization": "Disabled"}, secure_boot=False,
                  drives=[BOSS], patch_fail=(SYS + "/SecureBoot",))
