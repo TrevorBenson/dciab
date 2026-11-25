@@ -335,11 +335,36 @@ def test_hypervisor_type_must_match_platform(site):
     assert "use type: proxmox" in errors(report, "spec.hypervisors.type")[0]["fix"]
 
 
-def test_tagged_hypervisor_management_vlan_is_refused(site):
+def test_tagged_hypervisor_management_vlan_is_accepted(site):
     doc = load_example("proxmox-bare")
     doc["spec"]["hypervisors"]["managementVLAN"] = "tagged"
     _, report = site.validate(doc)
-    assert "use untagged" in errors(report, "spec.hypervisors.managementVLAN")[0]["fix"]
+    assert not errors(report, "spec.hypervisors.managementVLAN")
+    assert not errors(report, "spec.network.nodes.vlan") and not errors(report, "spec.platform.proxmox.bridge")
+
+
+def test_tagged_hypervisor_management_vlan_refuses_vlan_1(site):
+    doc = load_example("proxmox-bare")
+    doc["spec"]["hypervisors"]["managementVLAN"] = "tagged"
+    doc["spec"]["network"]["nodes"]["vlan"] = 1
+    _, report = site.validate(doc)
+    assert "use managementVLAN: untagged for VLAN 1" in errors(report, "spec.network.nodes.vlan")[0]["fix"]
+
+
+def test_tagged_hypervisor_management_vlan_needs_vmbr0(site):
+    doc = load_example("proxmox-bare")
+    doc["spec"]["hypervisors"]["managementVLAN"] = "tagged"
+    doc["spec"]["platform"]["proxmox"]["bridge"] = "vmbr1"
+    _, report = site.validate(doc)
+    assert "use vmbr0" in errors(report, "spec.platform.proxmox.bridge")[0]["fix"]
+
+
+def test_tagged_hypervisor_management_vlan_without_a_vlan_is_refused(site):
+    doc = load_example("proxmox-bare")
+    doc["spec"]["hypervisors"]["managementVLAN"] = "tagged"
+    del doc["spec"]["network"]["nodes"]["vlan"]
+    code, _ = site.validate(doc)
+    assert code == 1                    # the schema requires network.nodes.vlan (1-4094)
 
 
 def test_esxi_needs_installer_file(site):

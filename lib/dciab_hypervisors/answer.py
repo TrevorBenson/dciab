@@ -193,4 +193,7 @@ def render(doc: dict, host: dict, root_password_hash: str) -> str:
         "[disk-setup]",
     ]
     lines += disk_setup(host["rootDeviceHints"])
+    # managementVLAN: tagged: the first-boot hook on the ISO moves the address onto the VLAN.
+    from .firstboot import answer_lines
+    lines += answer_lines(doc)
     return "\n".join(lines) + "\n"

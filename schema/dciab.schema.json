@@ -1089,7 +1089,7 @@
         "method": {"enum": ["virtualmedia"], "description": "virtualmedia: the installer ISO is attached through each host's BMC (Redfish)"},
         "installerFile": {"type": "string", "minLength": 1, "description": "esxi only: path to the ESXi installer ISO, which DCiaB doesn't ship; its sha256 must match bundle.lock"},
         "rootPassword": {"$ref": "#/$defs/secretRef", "description": "optional: the root password for every host DCiaB installs. Unset: DCiaB generates one per host and stores it encrypted to spec.bootstrap.recipients. Either way people log in with the identity.initialAdmins SSH keys"},
-        "managementVLAN": {"enum": ["tagged", "untagged"], "description": "tagged: the management NIC tags network.nodes.vlan; untagged: it sits on an access port. Only untagged works today: the Proxmox VE installer can't set a VLAN (docs/HYPERVISORS.md)"},
+        "managementVLAN": {"enum": ["tagged", "untagged"], "description": "tagged: the management NIC tags network.nodes.vlan on a trunk port (a first-boot hook on the installer ISO sets it); untagged: an access port for network.nodes.vlan, or a trunk with it as the native VLAN (docs/HYPERVISORS.md)"},
         "installer": {
           "type": "object",
           "additionalProperties": false,

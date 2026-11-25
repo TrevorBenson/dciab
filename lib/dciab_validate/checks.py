@@ -485,11 +485,15 @@ class Checker:
             self.error(base + ("type",), hv["type"],
                        f"use type: {'esxi' if ptype == 'vsphere' else 'proxmox'} to match spec.platform.type ({ptype})")
 
-        if hv.get("managementVLAN") == "tagged":
-            self.error(base + ("managementVLAN",), "tagged",
-                       "use untagged (an access port for network.nodes.vlan, or a trunk with it as the native "
-                       "VLAN): the Proxmox VE installer can't set a VLAN, so a tagged-only port leaves the "
-                       "installed host unreachable (docs/HYPERVISORS.md)")
+        if hv.get("managementVLAN") == "tagged" and self.spec["network"]["nodes"].get("vlan") == 1:
+            self.error(("spec", "network", "nodes", "vlan"), "1 (with spec.hypervisors.managementVLAN: tagged)",
+                       "use managementVLAN: untagged for VLAN 1: VLAN 1 is a Linux bridge's default untagged "
+                       "VLAN, so a host can't tag it on vmbr0 (docs/HYPERVISORS.md)")
+        bridge = (self.spec["platform"].get("proxmox") or {}).get("bridge")
+        if hv.get("managementVLAN") == "tagged" and hv["type"] == "proxmox" and bridge not in (None, "vmbr0"):
+            self.error(("spec", "platform", "proxmox", "bridge"), f"{bridge} (with spec.hypervisors.managementVLAN: tagged)",
+                       "use vmbr0: with a tagged management VLAN, the installed hosts' first-boot hook makes vmbr0 "
+                       "VLAN-aware and puts the management address on vmbr0.<network.nodes.vlan>")
         self._unique(hv["hosts"], "name", base + ("hosts",))
         macs: Dict[str, Path] = {}
         bmcs: Dict[str, Path] = {}

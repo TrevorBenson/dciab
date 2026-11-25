@@ -493,12 +493,6 @@ def main(argv: Optional[List[str]] = None) -> int:
         print(f"dciab hypervisors: {hv['type']} isn't supported yet; only proxmox (see docs/ROADMAP.md)",
               file=sys.stderr)
         return 2
-    if hv.get("managementVLAN") == "tagged":
-        # Refused before anything is written or any BMC is called: the installer's network is
-        # untagged, so a host on a tagged-only port would be wiped and then unreachable.
-        from .post import TAGGED
-        print(f"dciab hypervisors: {TAGGED}", file=sys.stderr)
-        return 2
     hosts = hv["hosts"]
     unknown = sorted(set(args.host) - {h["name"] for h in hosts})
     if unknown:
@@ -560,6 +554,12 @@ def main(argv: Optional[List[str]] = None) -> int:
         for name, text in rendered.items():
             print(f"--- {answers / (name + '.toml')}")
             print(mask(text), end="")
+        from . import firstboot
+        for h in hosts:
+            script = firstboot.render(doc, h)
+            if script is not None:
+                print(f"--- first-boot script on {h['name']}'s ISO (managementVLAN: tagged)")
+                print(script, end="")
         return 0
 
     state.mkdir(parents=True, exist_ok=True)
@@ -610,8 +610,10 @@ def main(argv: Optional[List[str]] = None) -> int:
         image = assistant_image(root, lock_doc)
         for name in iso.remove_stale(host_isos, [h["name"] for h in hv["hosts"]]):
             print(f"  removed {host_isos / name} (no such host in the config)")
+        from . import firstboot
+        scripts = {h["name"]: firstboot.render(doc, h) for h in hosts}
         for name, text in rendered.items():
-            built = iso.build(name, text, base_iso, base_sha, host_isos, image)
+            built = iso.build(name, text, base_iso, base_sha, host_isos, image, first_boot=scripts[name])
             print(f"  {'built' if built else 'unchanged'} {host_isos / (name + '.iso')}")
     except (iso.IsoError, OSError) as exc:
         print(f"dciab hypervisors: {exc}", file=sys.stderr)

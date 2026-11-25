@@ -352,7 +352,7 @@ See also: [dciab hypervisors](HYPERVISORS.md), [ADR 0001: Day 0 hypervisors](adr
 | `spec.hypervisors.method` | string | required |  | `virtualmedia` | virtualmedia: the installer ISO is attached through each host's BMC (Redfish) |
 | `spec.hypervisors.installerFile` | string | required when `type: esxi` |  |  | esxi only: path to the ESXi installer ISO, which DCiaB doesn't ship; its sha256 must match bundle.lock |
 | `spec.hypervisors.rootPassword` | [secretRef](#types) | optional |  |  | optional: the root password for every host DCiaB installs. Unset: DCiaB generates one per host and stores it encrypted to spec.bootstrap.recipients. Either way people log in with the identity.initialAdmins SSH keys |
-| `spec.hypervisors.managementVLAN` | string | required |  | `tagged`, `untagged` | tagged: the management NIC tags network.nodes.vlan; untagged: it sits on an access port. Only untagged works today: the Proxmox VE installer can't set a VLAN (docs/HYPERVISORS.md) |
+| `spec.hypervisors.managementVLAN` | string | required |  | `tagged`, `untagged` | tagged: the management NIC tags network.nodes.vlan on a trunk port (a first-boot hook on the installer ISO sets it); untagged: an access port for network.nodes.vlan, or a trunk with it as the native VLAN (docs/HYPERVISORS.md) |
 | `spec.hypervisors.installer` | object | required when `type: proxmox` |  |  | proxmox: locale settings the Proxmox VE installer requires |
 | `spec.hypervisors.installer.keyboard` | string | required |  | `^[a-z]{2}(-[a-z]{2,})?$` | the installed system's keyboard layout, as the Proxmox VE installer names it (e.g. en-us, de, fr-ch) |
 | `spec.hypervisors.installer.country` | string | required |  | `^[a-z]{2}$` | two-letter country code (e.g. us, de) |
