@@ -10,20 +10,29 @@ on:
     paths:
       - lib/dciab_hypervisors/**
       - lib/dciab_services/**
+      - lib/dciab_validate/**
       - lib/steps/services.sh
       - hack/e2e/hypervisors/**
       - images/pve-assistant/**
       - images/day0-chrony/**
+      - examples/proxmox-bare.yaml
+      - schema/**
+      - dciab
+      - bundle.lock
       - .github/workflows/hypervisors-emulated.yml
   push:
     branches: [main]
     paths:
       - lib/dciab_hypervisors/**
       - lib/dciab_services/**
+      - lib/dciab_validate/**
       - lib/steps/services.sh
       - hack/e2e/hypervisors/**
       - images/pve-assistant/**
       - images/day0-chrony/**
+      - examples/proxmox-bare.yaml
+      - schema/**
+      - dciab
       - bundle.lock
       - .github/workflows/hypervisors-emulated.yml
   workflow_dispatch:
@@ -33,7 +42,8 @@ permissions:
 
 concurrency:
   group: hypervisors-emulated-${{ github.ref }}
-  cancel-in-progress: true
+  # A newer push to a PR replaces its run; runs on main (the post-merge proof) always finish.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   emulated:
@@ -68,7 +78,8 @@ jobs:
           echo "name=$(basename "$url")" >> "$GITHUB_OUTPUT"
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
           echo "url=$url" >> "$GITHUB_OUTPUT"
-      - uses: actions/cache@v4
+      # The ISO (about 1.7 GB) is cached from main only: PRs restore it, never save a copy of their own.
+      - uses: actions/cache/restore@v4
         with:
           path: ${{ runner.temp }}/isos
           key: proxmox-iso-${{ steps.iso.outputs.sha }}
@@ -83,6 +94,12 @@ jobs:
           [ -f "$RUNNER_TEMP/isos/$NAME" ] || curl -fsSL --retry 3 -o "$RUNNER_TEMP/isos/$NAME" "$URL"
           echo "$SHA  $RUNNER_TEMP/isos/$NAME" | sha256sum -c -
           cp "$RUNNER_TEMP/isos/$NAME" "$WORK/isos/$NAME"
+      - uses: actions/cache/save@v4
+        if: github.event_name != 'pull_request' && matrix.mode == 'untagged'
+        continue-on-error: true    # already saved (the key exists): nothing to do
+        with:
+          path: ${{ runner.temp }}/isos
+          key: proxmox-iso-${{ steps.iso.outputs.sha }}
       - name: This branch's chrony and proxmox-auto-install-assistant images (root's podman)
         run: |
           set -euo pipefail

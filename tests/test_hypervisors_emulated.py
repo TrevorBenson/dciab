@@ -29,7 +29,28 @@ def test_sushy_tools_is_pinned_with_its_checksum():
     assert re.fullmatch(r"\d+\.\d+\.\d+", s["version"])
     assert re.fullmatch(r"[0-9a-f]{64}", s["sha256"])
     setup = (HERE / "setup.sh").read_text()
-    assert "hypervisorEmulator/sushyTools/version" in setup and "sha256sum -c" in setup
+    assert "hypervisorEmulator/sushyTools/version" in setup and "--require-hashes" in setup
+
+
+def test_sushy_tools_and_its_dependencies_are_hashed():
+    e = LOCK["hypervisorEmulator"]
+    text = (ROOT / e["requirements"]).read_text()
+    block = re.search(r"^sushy-tools==(\S+) \\\n((?:\s+--hash=sha256:[0-9a-f]{64}(?: \\)?\n)+)", text, re.M)
+    assert block and block.group(1) == e["sushyTools"]["version"]
+    assert f"sha256:{e['sushyTools']['sha256']}" in block.group(2)
+    entries = re.split(r"\n(?=[A-Za-z0-9])", "\n".join(l for l in text.splitlines() if not l.lstrip().startswith("#")).strip())
+    assert len(entries) > 5 and all("--hash=sha256:" in x for x in entries)
+    assert not re.search(r"^libvirt", text, re.M)     # python3-libvirt comes from the distro
+
+
+def test_path_filters_cover_what_the_emulator_runs():
+    wf = yaml.safe_load(WF.read_text())
+    on = wf.get("on") or wf.get(True)
+    need = {"bundle.lock", "lib/dciab_hypervisors/**", "lib/dciab_validate/**", "lib/dciab_services/**",
+            "lib/steps/services.sh", "examples/proxmox-bare.yaml", "schema/**", "dciab", "hack/e2e/hypervisors/**"}
+    for event in ("pull_request", "push"):
+        assert need <= set(on[event]["paths"]), (event, need - set(on[event]["paths"]))
+    assert "cancel-in-progress: ${{ github.event_name == 'pull_request' }}" in WF.read_text()
 
 
 def test_scripts_are_executable_and_shellchecked_by_ci():
@@ -92,7 +113,8 @@ def test_run_writes_a_valid_site(tmp_path):
     for mode in ("untagged", "tagged"):
         (tmp_path / "env").write_text(
             f"MODE={mode}\nVM=pve01\nVM_UUID=7f3e9a5c-1d2b-4c6e-9f80-dc1ab0000001\nVM_MAC=52:54:00:dc:1a:01\n"
-            "TAP=hv-pve01\nVLAN=110\nBOOT_MAC=b8:ca:3a:00:00:05\nBMC_URL=https://10.30.0.21:8000\nDISK_SERIAL=1234570\n")
+            "TAP=hv-pve01\nVLAN=110\nBOOT_MAC=b8:ca:3a:00:00:05\nBMC_URL=https://10.30.0.21:8000\nDISK_SERIAL=1234570\n"
+            "OVMF_VARS_MS=/usr/share/OVMF/OVMF_VARS_4M.ms.fd\n")
         lab = run.Lab(tmp_path)
         config = lab.write_site(tmp_path / f"site-{mode}", "1234570")
         doc = yaml.safe_load(config.read_text())

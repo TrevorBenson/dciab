@@ -147,16 +147,19 @@ cat > "$WORK/$VM.xml" <<XML
 XML
 virsh -q -c qemu:///system define "$WORK/$VM.xml"
 
-# sushy-tools, the pinned wheel, patched to keep Secure Boot across boot mode changes.
+# sushy-tools and its dependencies, every one pinned with a hash (bundle.lock hypervisorEmulator),
+# patched to keep Secure Boot across boot mode changes.
 sushy_v="$(lock hypervisorEmulator/sushyTools/version)"
 sushy_sum="$(lock hypervisorEmulator/sushyTools/sha256)"
+reqs="$ROOT/$(lock hypervisorEmulator/requirements)"
+if ! grep -q "^sushy-tools==$sushy_v " "$reqs" || ! grep -q "sha256:$sushy_sum" "$reqs"; then
+    echo "setup.sh: $reqs doesn't pin sushy-tools $sushy_v with the wheel sha256 in bundle.lock" >&2
+    exit 1
+fi
 # A venv that sees the distro's python3-libvirt; sushy-tools' own dependencies go into the venv.
 python3 -m venv --system-site-packages "$WORK/sushy-venv"
 py="$WORK/sushy-venv/bin/python3"
-"$py" -m pip download -q --no-deps --only-binary :all: -d "$WORK/wheels" "sushy-tools==$sushy_v"
-whl="$WORK/wheels/sushy_tools-$sushy_v-py3-none-any.whl"
-echo "$sushy_sum  $whl" | sha256sum -c - >/dev/null
-"$py" -m pip install -q "$whl"
+"$py" -m pip install -q --require-hashes --only-binary :all: -r "$reqs"
 "$py" "$HERE/patch_sushy.py" "$("$py" -c 'import sushy_tools, os; print(os.path.dirname(sushy_tools.__file__))')/emulator/resources/systems/libvirtdriver.py"
 "$py" -c 'import libvirt' || { echo "setup.sh: the venv doesn't see python3-libvirt" >&2; exit 1; }
 
@@ -200,5 +203,6 @@ VLAN=$VLAN
 BOOT_MAC=$BOOT_MAC
 BMC_URL=https://$BMC_IP:$BMC_PORT
 DISK_SERIAL=$DISK_SERIAL
+OVMF_VARS_MS=$OVMF_VARS_MS
 ENV
 echo "setup.sh: $MODE emulator ready: $VM on dciabsw0 ($( [ "$MODE" = untagged ] && echo "access port, VLAN $VLAN" || echo "VLAN $VLAN tagged only")), BMC https://$BMC_IP:$BMC_PORT"

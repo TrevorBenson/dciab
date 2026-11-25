@@ -26,6 +26,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import shutil
 import ssl
 import subprocess
@@ -39,7 +40,7 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[3]
 HOST_ADDR = "10.30.110.6"
-TIMEOUT = 2700
+TIMEOUT = 1200      # dciab hypervisors --timeout; an install here takes about 3.5 minutes
 
 
 class Failed(Exception):
@@ -259,9 +260,23 @@ def first_install(lab: Lab) -> dict:
         expect("Secure Boot set on" in r.out, "Secure Boot wasn't staged")
         sb = lab.redfish("GET", f"{lab.system_path()}/SecureBoot")
         expect(sb.get("SecureBootEnable") is True, "the BMC doesn't report Secure Boot on")
+        out["secureBoot"] = check_secure_boot_domain(lab)
         out["vmbr0"] = check_tagged_network(lab)
     lab.first_fingerprint = rec["api_fingerprint"]  # type: ignore[attr-defined]
     return out
+
+
+def check_secure_boot_domain(lab: Lab) -> dict:
+    """What the VM really boots with, read from libvirt (not from sushy-tools' Redfish answer): a
+    Secure Boot loader, and NVRAM from the template with Microsoft's keys."""
+    xml = sh("virsh", "-c", "qemu:///system", "dumpxml", lab.vm).stdout
+    loader = re.search(r"<loader\b[^>]*>", xml)
+    nvram = re.search(r"<nvram\b([^>]*)>([^<]*)</nvram>", xml)
+    expect(bool(loader) and "secure='yes'" in loader.group(0), f"the VM's loader isn't secure: {loader and loader.group(0)}")
+    expect(bool(nvram) and f"template='{lab.env['OVMF_VARS_MS']}'" in nvram.group(1),
+           f"the VM's NVRAM doesn't come from the Microsoft-keys template: {nvram and nvram.group(0)}")
+    expect(nvram.group(2).endswith(".secboot.fd"), f"the VM's NVRAM file isn't the Secure Boot one: {nvram.group(2)}")
+    return {"loader": loader.group(0), "nvram": nvram.group(2)}
 
 
 def check_tagged_network(lab: Lab) -> dict:
@@ -297,6 +312,50 @@ def lost_state(lab: Lab) -> dict:
     finally:
         shutil.move(str(aside), rec)
     return {"reset": False}
+
+
+def power_off(lab: Lab) -> None:
+    lab.watching.clear()
+    sh("virsh", "-c", "qemu:///system", "destroy", lab.vm, check=False)
+    expect(lab.domstate() == "shut off", "the VM didn't power off")
+
+
+def power_on_installed(lab: Lab) -> None:
+    lab.redfish("POST", f"{lab.system_path()}/Actions/ComputerSystem.Reset", {"ResetType": "On"})
+    lab.watching.set()
+    lab.wait_api()
+
+
+def lost_state_host_off(lab: Lab) -> dict:
+    """The risky case: no install record and the host off, so no API can answer. sushy-tools
+    lists no boot options, so the host must be held until --first-install, nothing written."""
+    power_off(lab)
+    rec = lab.state / "installs" / f"{lab.vm}.json"
+    aside = lab.work / "install-record.json"
+    shutil.move(str(rec), aside)
+    try:
+        r = lab.hv("--until", "media")
+        expect(r.returncode == 1, f"exit {r.returncode}, want 1")
+        expect(f"pass --first-install {lab.vm}" in r.out, "no --first-install hold in the output")
+        expect(lab.domstate() == "shut off", "the VM was powered on")
+        expect(not lab.cd_inserted(), "an ISO was attached")
+    finally:
+        shutil.move(str(aside), rec)
+    return {"held": True}
+
+
+def recorded_host_off(lab: Lab) -> dict:
+    """An install recorded and the host off: held (the API doesn't answer), never reinstalled."""
+    power_off(lab)
+    try:
+        r = lab.hv("--until", "media")
+        expect(r.returncode == 1, f"exit {r.returncode}, want 1")
+        expect("install recorded (installed" in r.out and "doesn't answer" in r.out, "no recorded-install hold in the output")
+        expect(lab.domstate() == "shut off", "the VM was powered on")
+        expect(not lab.cd_inserted(), "an ISO was attached")
+    finally:
+        power_on_installed(lab)
+    return {"held": True}
 
 
 def reinstall(lab: Lab) -> dict:
@@ -342,13 +401,16 @@ def reboot(lab: Lab) -> dict:
     expect(lab.qemu_pid() not in ("", pid), "the VM didn't come back after the reboot")
     lab.wait_api()
     net = check_tagged_network(lab)
+    pid = lab.qemu_pid()
     r = lab.hv()
     expect(r.returncode == 0 and "already answers" in r.out, "the rerun after the reboot didn't see the host")
+    expect(lab.qemu_pid() == pid, "the rerun after the reboot reset the VM")
     return {"vmbr0": net}
 
 
 SCENARIOS = {
-    "untagged": [disk_refused, held_without_flag, first_install, rerun, lost_state, reinstall],
+    "untagged": [disk_refused, held_without_flag, first_install, rerun, lost_state, lost_state_host_off,
+                 recorded_host_off, reinstall],
     "tagged": [port_is_tagged_only, held_without_flag, first_install, reboot],
 }
 

@@ -7,7 +7,7 @@ none of this goes into the archive.
 | Piece | What stands in for it |
 | --- | --- |
 | Bare server | libvirt VM `pve01`: q35, UEFI with Secure Boot capable OVMF, a SATA disk with serial `1234570`, a virtio NIC |
-| BMC | [sushy-tools](https://docs.openstack.org/sushy-tools/latest/) (Redfish in front of libvirt), pinned in `bundle.lock` `hypervisorEmulator`, over HTTPS at `10.30.0.21:8000` in its own network namespace, routed from the bootstrap host as a BMC network is. It fetches each host ISO from `bootstrap.address` from its own address, so Caddy's per-BMC rule applies |
+| BMC | [sushy-tools](https://docs.openstack.org/sushy-tools/latest/) (Redfish in front of libvirt), pinned in `bundle.lock` `hypervisorEmulator` with every dependency hashed (`requirements.txt`), over HTTPS at `10.30.0.21:8000` in its own network namespace, routed from the bootstrap host as a BMC network is. It fetches each host ISO from `bootstrap.address` from its own address, so Caddy's per-BMC rule applies |
 | Switch port | Linux bridge `dciabsw0` with VLAN filtering and no default VLAN. The VM's port is an access port on `network.nodes.vlan` (`untagged`), or carries it tagged with no untagged VLAN (`tagged`). The bootstrap host's port is an access port |
 | Bootstrap host | the runner: `dciab services` with `bootstrap.interface` selected by MAC |
 
@@ -24,11 +24,13 @@ VM's serial console and a screenshot.
 | both | held-without-flag | No install record and no boot options: held until `--first-install`, nothing written |
 | both | first-install | `--first-install`: a real Proxmox VE install from the per-host ISO, `wait`, then `post` (CAPMOX roles, user, token sealed with age, ACLs, first-contact certificate pin); the token works against the API |
 | untagged | rerun | The API answers: nothing is reset (the VM's QEMU process is unchanged) |
-| untagged | lost-state | Install record removed: the 8006 check still holds the host |
+| untagged | lost-state | Install record removed, host running: the 8006 check still holds the host |
+| untagged | lost-state-host-off | Install record removed and the host off (nothing answers, no boot options listed): held until `--first-install`, nothing written, the server stays off |
+| untagged | recorded-host-off | Install recorded and the host off: held ("the Proxmox VE API doesn't answer"), never reinstalled |
 | untagged | reinstall | `--reinstall`: a new install, `post` again with the new certificate, the old token moved aside |
 | tagged | port-is-tagged-only | Read from the switch: the VM's port carries the node VLAN tagged, nothing untagged |
-| tagged | first-install | Also: Secure Boot staged on through Redfish (the install then boots with Secure Boot and Microsoft's keys); the first-boot hook put the address on `vmbr0.<vlan>` with `vmbr0` VLAN-aware |
-| tagged | reboot | After a reboot the host is back on `vmbr0.<vlan>`, and a rerun resets nothing |
+| tagged | first-install | Also: Secure Boot staged on through Redfish, checked in libvirt's domain (a `secure='yes'` loader, NVRAM from the Microsoft-keys template); the first-boot hook put the address on `vmbr0.<vlan>` with `vmbr0` VLAN-aware |
+| tagged | reboot | After a reboot the host is back on `vmbr0.<vlan>`, and a rerun resets nothing (same QEMU process) |
 
 ## What an emulator can't prove
 
@@ -41,8 +43,14 @@ VM's serial console and a screenshot.
   of each boot (`on_reboot=destroy`), and `run.py`'s watcher powers it on again, from its disk
   once it has booted from Cd: what a BMC's one-time boot does.
 
-Two more emulator differences: `dciab hypervisors` clearing the boot override after `wait` gets
-an HTTP 400 (sushy-tools wants a target; the run logs it and goes on), and sushy-tools 2.2.0 drops
-Secure Boot when the boot mode is set, which `patch_sushy.py` fixes in the emulator.
+Two more emulator differences:
+
+- **Clearing the boot override.** The watcher points the next boot at `Hdd` before `wait` ends, so
+  `wait` finds no override on `Cd` and has nothing to clear: the run shows only "ejected …". dciab
+  clears an override with `BootSourceOverrideTarget: None` together with `Enabled: Disabled`
+  (sushy-tools refuses a Boot PATCH that sets `Enabled` alone); that path is proven against the
+  Mockup Server (`tests/test_redfish_mockups.py`).
+- **Secure Boot and boot mode.** sushy-tools 2.2.0 drops Secure Boot when the boot mode is set,
+  which `patch_sushy.py` fixes in the emulator (a real BMC keeps the two apart).
 
 What's left for real hardware is handoff task 0010's smoke test.

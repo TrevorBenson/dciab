@@ -297,6 +297,8 @@ hypervisorEmulator:
   sushyTools:
     version: "2.2.0"
     sha256: "a9efb547beee24b3a81a8db0af1c99ffa3818b82013a6165188734abffe95f65"   # of sushy_tools-<version>-py3-none-any.whl
+  # sushy-tools and its full dependency set with hashes (pip install --require-hashes).
+  requirements: hack/e2e/hypervisors/requirements.txt
 
 # sha256 of release binaries DCiaB runs, checked after download. clusterctl's version is
 # clusterAPI.core.version. Empty: the download warns and prints the sum to pin.
