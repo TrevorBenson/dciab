@@ -542,6 +542,45 @@ jobs:
             -indev /t/host-isos/pve01.iso -extract /answer.toml /t/got.toml
           diff "$RUNNER_TEMP/expected.toml" "$RUNNER_TEMP/got.toml"
           ls -l "$RUNNER_TEMP/host-isos"
+      - name: Build a tagged pve01 ISO and check its answer file and first-boot script
+        # managementVLAN: tagged puts [first-boot] in the answer file and the script on the ISO
+        # (prepare-iso --on-first-boot). Checked here with the real pinned assistant.
+        env:
+          TAG: ${{ steps.build.outputs.tag }}
+        run: |
+          set -euo pipefail
+          PYTHONPATH=lib python3 - "$TAG" "$RUNNER_TEMP" <<'PY'
+          import sys, yaml
+          from pathlib import Path
+          from dciab_hypervisors import answer, firstboot, iso
+          tag, tmp = sys.argv[1], Path(sys.argv[2])
+          lock = yaml.safe_load(open("bundle.lock"))["hypervisors"]["proxmox"]
+          doc = yaml.safe_load(open("examples/proxmox-bare.yaml"))
+          doc["spec"]["hypervisors"]["managementVLAN"] = "tagged"
+          doc["spec"]["platform"]["proxmox"]["vlanTag"] = doc["spec"]["network"]["nodes"]["vlan"]
+          host = doc["spec"]["hypervisors"]["hosts"][0]
+          text = answer.render(doc, host, answer.root_hash(tmp / "answers-tagged", host["name"], "ci-not-a-secret", []))
+          for line in ("[first-boot]", 'source = "from-iso"', 'ordering = "before-network"'):
+              assert line in text.splitlines(), line
+          script = firstboot.render(doc, host)
+          base = tmp / "isos" / Path(lock["isoURL"]).name
+          out = tmp / "host-isos-tagged"
+          assert iso.build(host["name"], text, base, lock["isoSHA256"], out, tag, first_boot=script)
+          assert not iso.build(host["name"], text, base, lock["isoSHA256"], out, tag, first_boot=script)
+          (tmp / "tagged-expected.toml").write_text(text)
+          (tmp / "tagged-expected.sh").write_text(script)
+          PY
+          podman run --rm --network none -v "$RUNNER_TEMP:/t:Z" "$TAG" validate-answer /t/tagged-expected.toml
+          listing="$(podman run --rm --network none --entrypoint xorriso -v "$RUNNER_TEMP:/t:Z" "$TAG" \
+            -indev /t/host-isos-tagged/pve01.iso -lsl / 2>/dev/null)"
+          echo "$listing"
+          hook="$(printf '%s\n' "$listing" | awk '{print $NF}' | tr -d "'" | grep -i 'first-boot' | head -n1)"
+          test -n "$hook" || { echo "no first-boot executable at the ISO's root"; exit 1; }
+          echo "first-boot executable on the ISO: /$hook"
+          podman run --rm --network none --entrypoint osirrox -v "$RUNNER_TEMP:/t:Z" "$TAG" \
+            -indev /t/host-isos-tagged/pve01.iso -extract /answer.toml /t/tagged-got.toml -extract "/$hook" /t/tagged-got.sh
+          diff "$RUNNER_TEMP/tagged-expected.toml" "$RUNNER_TEMP/tagged-got.toml"
+          diff "$RUNNER_TEMP/tagged-expected.sh" "$RUNNER_TEMP/tagged-got.sh"
       - name: Publish (main only)
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         env:

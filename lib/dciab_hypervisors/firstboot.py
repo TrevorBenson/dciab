@@ -4,28 +4,35 @@ The Proxmox VE answer file can set an address, gateway and DNS, but no VLAN: the
 writes /etc/network/interfaces with the address on vmbr0, which bridges the management NIC
 untagged. With spec.hypervisors.managementVLAN: tagged, each host's installer ISO also carries
 this script (`[first-boot]` in the answer file, `prepare-iso --on-first-boot`). The installed
-system runs it once, before any network device is set up (ordering = "before-network"), so the
+system runs it before any network device is set up (ordering = "before-network"), so the
 host's first network traffic is already tagged: no switch change and no cut-over.
 
-The script rewrites only the vmbr0 stanza:
+Upstream runs the hook from the oneshot unit proxmox-first-boot-network-pre.service
+(Before=network-pre.target, ConditionPathExists=/var/lib/proxmox-first-boot/
+pending-first-boot-setup, the flag removed by ExecStartPost): it runs on every boot until it
+succeeds once, and never again after that.
+
+The script edits the vmbr0 stanza in place:
 
     auto vmbr0
-    iface vmbr0 inet manual
+    iface vmbr0 inet manual              <- was "inet static"
         bridge-ports <the NIC the installer chose>
-        bridge-stp off
-        bridge-fd 0
-        bridge-vlan-aware yes
-        bridge-vids 2-4094
+        ...every other key the stanza had (bridge-stp, bridge-fd, mtu, hwaddress, comments)
+        bridge-vlan-aware yes            <- added (an existing one is replaced)
+        bridge-vids <spec.hypervisors.bridgeVids, default 2-4094>
 
     auto vmbr0.<network.nodes.vlan>
     iface vmbr0.<network.nodes.vlan> inet static
-        address <host address>/<prefix>
-        gateway <network.nodes.gateway>
+        address <the stanza's address lines, moved; the config's when it had none>
+        gateway <the stanza's gateway, moved; network.nodes.gateway when it had none>
 
-Every other line (lo, the NIC's own stanza, other NICs, `source ...`) is kept as the installer
-wrote it (the current file is rewritten, so nothing changed since is lost), and the installer's
-file is kept once as interfaces.dciab-installer. Running it again changes nothing. It logs through logger (the journal) when present, else to stderr, and takes
-its root from DCIAB_ROOT (empty on the host) so tests can run it on a copy.
+Only the stanza's address, netmask and gateway lines move, and only bridge-vlan-aware and
+bridge-vids are replaced (either spelling, `-` or `_`). Every other line in the file, and every
+other key in the stanza, is kept as it was (the current file is edited, so nothing changed
+since is lost), and the installer's file is kept once as interfaces.dciab-installer. Running it
+again changes nothing. It logs through logger (the journal, tag dciab-first-boot) when present,
+else to stderr, and takes its root from DCIAB_ROOT (empty on the host) so tests can run it on a
+copy.
 
 With managementVLAN: untagged there is no hook: the answer file and ISO are what they were.
 """
@@ -35,7 +42,17 @@ from __future__ import annotations
 import ipaddress
 from typing import Optional
 
+from dciab_validate.netutil import format_vlan_list, parse_vlan_list
+
 TAG = "dciab-first-boot"
+DEFAULT_BRIDGE_VIDS = "2-4094"
+
+
+def bridge_vids(doc: dict) -> str:
+    """The VLANs a VLAN-aware vmbr0 carries: spec.hypervisors.bridgeVids, canonical, or
+    2-4094 (Proxmox VE's own default). Raises ValueError for a malformed list."""
+    text = (doc["spec"].get("hypervisors") or {}).get("bridgeVids") or DEFAULT_BRIDGE_VIDS
+    return format_vlan_list(parse_vlan_list(text))
 
 
 def tagged(doc: dict) -> bool:
@@ -58,16 +75,19 @@ def render(doc: dict, host: dict) -> Optional[str]:
     prefix = ipaddress.ip_network(nodes["cidr"], strict=False).prefixlen
     cidr = f"{ipaddress.ip_address(host['address'])}/{prefix}"
     gateway = str(ipaddress.ip_address(nodes["gateway"]))
-    # Every value below is checked here (an int, IP addresses), so nothing from the config can
-    # break out of the shell variables.
+    vids = bridge_vids(doc)
+    # Every value below is checked here (an int, IP addresses, a re-formatted VLAN list of digits,
+    # dashes and spaces), so nothing from the config can break out of the shell variables.
     return f"""#!/bin/sh
-# Rendered by dciab hypervisors for {host['name']} (managementVLAN: tagged). Runs once on first
-# boot, before networking: moves the management address onto VLAN {vlan}, tagged on vmbr0.
+# Rendered by dciab hypervisors for {host['name']} (managementVLAN: tagged). Runs on first boot,
+# before networking, until it succeeds once: moves the management address onto VLAN {vlan},
+# tagged on vmbr0, editing the vmbr0 stanza in place.
 set -eu
 
 VLAN={vlan}
 CIDR={cidr}
 GATEWAY={gateway}
+VIDS="{vids}"
 ROOT="${{DCIAB_ROOT:-}}"
 FILE="$ROOT/etc/network/interfaces"
 BACKUP="$FILE.dciab-installer"
@@ -75,22 +95,23 @@ BACKUP="$FILE.dciab-installer"
 log() {{
     if command -v logger >/dev/null 2>&1; then
         logger -t {TAG} -- "$*"
+    else
+        echo "{TAG}: $*" >&2
     fi
-    echo "{TAG}: $*" >&2
 }}
 
 if [ ! -f "$FILE" ]; then
     log "$FILE not found; nothing changed"
     exit 1
 fi
-if grep -q "^iface vmbr0\\.$VLAN " "$FILE"; then
+if grep -Eq "^iface[[:space:]]+vmbr0\\.$VLAN([[:space:]]|$)" "$FILE"; then
     log "vmbr0.$VLAN already configured; nothing changed"
     exit 0
 fi
 PORTS=$(awk '
-    /^iface vmbr0 / {{ in_br = 1; next }}
+    /^iface[ \t]+vmbr0[ \t]/ {{ in_br = 1; next }}
     /^(auto|allow-|iface|source|mapping)/ {{ in_br = 0 }}
-    in_br && $1 == "bridge-ports" {{ $1 = ""; sub(/^ +/, ""); print; exit }}
+    in_br && ($1 == "bridge-ports" || $1 == "bridge_ports") {{ $1 = ""; sub(/^ +/, ""); print; exit }}
 ' "$FILE")
 if [ -z "$PORTS" ] || [ "$PORTS" = "none" ]; then
     log "no bridge-ports on vmbr0 in $FILE; nothing changed"
@@ -99,30 +120,44 @@ fi
 
 [ -f "$BACKUP" ] || cp -p "$FILE" "$BACKUP"
 TMP="$FILE.dciab-tmp"
-awk -v ports="$PORTS" -v vlan="$VLAN" -v cidr="$CIDR" -v gw="$GATEWAY" '
-    function block() {{
-        print "auto vmbr0"
-        print "iface vmbr0 inet manual"
-        print "\\tbridge-ports " ports
-        print "\\tbridge-stp off"
-        print "\\tbridge-fd 0"
-        print "\\tbridge-vlan-aware yes"
-        print "\\tbridge-vids 2-4094"
+awk -v vlan="$VLAN" -v cidr="$CIDR" -v gw="$GATEWAY" -v vids="$VIDS" '
+    function key(line,    k) {{
+        k = line; sub(/^[ \t]+/, "", k); sub(/[ \t].*$/, "", k); gsub(/_/, "-", k); return k
+    }}
+    function body(line) {{ sub(/^[ \t]+/, "", line); return line }}
+    function finish(at_end,    i, last, has_gw) {{
+        last = 0
+        for (i = 1; i <= n; i++) if (buf[i] !~ /^[ \t]*$/ && buf[i] !~ /^[ \t]*#/) last = i
+        for (i = 1; i <= last; i++) print buf[i]
+        print "\tbridge-vlan-aware yes"
+        print "\tbridge-vids " vids
         print ""
         print "auto vmbr0." vlan
         print "iface vmbr0." vlan " inet static"
-        print "\\taddress " cidr
-        print "\\tgateway " gw
-        done = 1
+        has_gw = 0
+        if (m == 0) print "\taddress " cidr
+        for (i = 1; i <= m; i++) {{ print "\t" mv[i]; if (key(mv[i]) == "gateway") has_gw = 1 }}
+        if (!has_gw) print "\tgateway " gw
+        if (last == n && !at_end) print ""
+        for (i = last + 1; i <= n; i++) print buf[i]
+        n = 0; m = 0; in_br = 0
     }}
-    /^auto vmbr0$/ {{ next }}
-    /^iface vmbr0 / {{ skip = 1; block(); next }}
-    skip && /^(auto|allow-|iface|source|mapping)/ {{ skip = 0; print "" }}
-    skip {{ next }}
+    in_br && /^(auto|allow-|iface|source|mapping)/ {{ finish(0) }}
+    /^iface[ \t]+vmbr0[ \t]/ {{
+        in_br = 1; n = 0; m = 0
+        line = $0; sub(/inet[ \t]+[A-Za-z0-9]+/, "inet manual", line)
+        buf[++n] = line; next
+    }}
+    in_br {{
+        k = key($0)
+        if (k == "address" || k == "netmask" || k == "gateway") {{ mv[++m] = body($0); next }}
+        if (k == "bridge-vlan-aware" || k == "bridge-vids") next
+        buf[++n] = $0; next
+    }}
     {{ print }}
-    END {{ if (!done) {{ print ""; block() }} }}
+    END {{ if (in_br) finish(1) }}
 ' "$FILE" > "$TMP"
 chmod 644 "$TMP"
 mv "$TMP" "$FILE"
-log "management address $CIDR moved to vmbr0.$VLAN (tagged); vmbr0 is VLAN-aware on $PORTS"
+log "management address $CIDR moved to vmbr0.$VLAN (tagged); vmbr0 is VLAN-aware ($VIDS) on $PORTS"
 """

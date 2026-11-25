@@ -366,7 +366,8 @@ def test_tagged_hypervisor_management_vlan_refuses_vlan_1(site):
     doc = tagged_example()
     doc["spec"]["network"]["nodes"]["vlan"] = 1
     _, report = site.validate(doc)
-    assert "use managementVLAN: untagged for VLAN 1" in errors(report, "spec.network.nodes.vlan")[0]["fix"]
+    fix = errors(report, "spec.network.nodes.vlan")[0]["fix"]
+    assert "not supported: VLAN 1 is the bridge's default PVID; use managementVLAN: untagged" in fix
 
 
 def test_tagged_hypervisor_management_vlan_needs_vmbr0(site):
@@ -381,6 +382,42 @@ def test_tagged_hypervisor_management_vlan_without_a_vlan_is_refused(site):
     del doc["spec"]["network"]["nodes"]["vlan"]
     code, _ = site.validate(doc)
     assert code == 1                    # the schema requires network.nodes.vlan (1-4094)
+
+
+@pytest.mark.parametrize("vids", ["2-4094", "110", "100-120 300", " 110  200-210 "])
+def test_bridge_vids_accepted(site, vids):
+    doc = tagged_example()
+    doc["spec"]["hypervisors"]["bridgeVids"] = vids
+    _, report = site.validate(doc)
+    assert not errors(report, "spec.hypervisors.bridgeVids")
+
+
+@pytest.mark.parametrize("vids", ["1-4094", "2-4095", "120-110", "0", "110,120", ""])
+def test_bridge_vids_malformed_or_out_of_range_is_refused(site, vids):
+    doc = tagged_example()
+    doc["spec"]["hypervisors"]["bridgeVids"] = vids
+    code, report = site.validate(doc)
+    assert code == 1
+    assert errors(report, "spec.hypervisors.bridgeVids") or errors(report, "spec.hypervisors")
+
+
+def test_tagged_bridge_vids_must_carry_the_node_vlan(site):
+    doc = tagged_example()
+    doc["spec"]["hypervisors"]["bridgeVids"] = "200-210"
+    _, report = site.validate(doc)
+    found = errors(report, "spec.hypervisors.bridgeVids")
+    assert any("add 110" in f["fix"] for f in found)
+
+
+def test_untagged_bridge_vids_must_carry_the_vm_vlan_tag(site):
+    doc = load_example("proxmox-bare")
+    doc["spec"]["platform"]["proxmox"]["vlanTag"] = 150
+    doc["spec"]["hypervisors"]["bridgeVids"] = "200-210"
+    _, report = site.validate(doc)
+    assert any("add 150" in f["fix"] for f in errors(report, "spec.hypervisors.bridgeVids"))
+    doc["spec"]["hypervisors"]["bridgeVids"] = "150 200-210"
+    _, report = site.validate(doc)
+    assert not errors(report, "spec.hypervisors.bridgeVids")
 
 
 def test_esxi_needs_installer_file(site):

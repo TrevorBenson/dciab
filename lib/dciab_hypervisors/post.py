@@ -185,7 +185,8 @@ def network(api: PveApi, node: str, doc: dict, log: Callable[[str], None], tries
     if str(bridge.get("bridge_vlan_aware") or "0") == "1":
         log(f"bridge {px['bridge']} is VLAN-aware")
         return
-    form = {"type": "bridge", "bridge_vlan_aware": 1, "bridge_vids": "2-4094"}
+    from .firstboot import bridge_vids
+    form = {"type": "bridge", "bridge_vlan_aware": 1, "bridge_vids": bridge_vids(doc)}
     for key in ("cidr", "gateway", "bridge_ports", "autostart", "comments", "mtu", "cidr6", "gateway6"):
         if bridge.get(key) not in (None, ""):
             form[key] = bridge[key]

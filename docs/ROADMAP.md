@@ -69,7 +69,7 @@ Decided in [ADR 0001](adr/0001-day0-hypervisors-and-services.md).
 - [x] `dciab hypervisors` reinstall guard: the Proxmox VE API's answer, not an open port; OS boot entries and `--first-install` for hosts without an install record ([docs/HYPERVISORS.md](HYPERVISORS.md#the-reinstall-guard))
 - [x] `dciab hypervisors` Redfish preparation before an install: UEFI boot mode, Secure Boot per `bootMode`, virtualization extensions, a disk matching `rootDeviceHints` ([docs/HYPERVISORS.md](HYPERVISORS.md#redfish-preparation))
 - [x] `dciab hypervisors` post-install through the Proxmox VE API: the CAPMOX roles, user, token and ACLs (secret sealed with age), the VLAN-aware bridge, the storage ([docs/HYPERVISORS.md](HYPERVISORS.md#post-install))
-- [x] `dciab hypervisors`: tagged and untagged management VLANs (a first-boot hook on each host's ISO for tagged; [docs/HYPERVISORS.md](HYPERVISORS.md#the-management-vlan)); a tagged install on real hardware is handoff task 0013
+- [ ] `dciab hypervisors`: tagged and untagged management VLANs (a first-boot hook on each host's ISO for tagged; [docs/HYPERVISORS.md](HYPERVISORS.md#the-management-vlan)): built; hardware proof pending (handoff task 0013)
 - [x] Live checks: BMC routes, Redfish and credentials (`dciab validate --live`)
 
 ### Seed, bootstrap cluster and MGMT

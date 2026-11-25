@@ -224,6 +224,39 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
+def network_mode(doc: dict) -> dict:
+    """The management network a host is installed for, kept in its install record."""
+    hv = doc["spec"].get("hypervisors") or {}
+    return {"management_vlan": hv.get("managementVLAN", "untagged"),
+            "node_vlan": doc["spec"]["network"]["nodes"].get("vlan")}
+
+
+def network_drift(record: Optional[dict], doc: dict) -> Optional[str]:
+    """A note when an installed host was installed for another managementVLAN or node VLAN than
+    the config now names. Changing them rebuilds the host's ISO but doesn't touch the host."""
+    if not record or record.get("outcome") != "installed" or "management_vlan" not in record:
+        return None
+    want = network_mode(doc)
+    was = {k: record.get(k) for k in want}
+    if was == want:
+        return None
+    return (f"installed for managementVLAN {was['management_vlan']} (node VLAN {was['node_vlan']}), but the "
+            f"config now says {want['management_vlan']} (node VLAN {want['node_vlan']}). The new ISO doesn't "
+            "change an installed host: reinstall it (--reinstall), or change its network by hand through its "
+            "console, before moving its switch port")
+
+
+def wait_hint(doc: dict) -> str:
+    """What to check when an installed host never answers."""
+    hint = "watch the server's console through its BMC"
+    if (doc["spec"].get("hypervisors") or {}).get("managementVLAN") == "tagged":
+        vlan = doc["spec"]["network"]["nodes"].get("vlan")
+        hint += (f". With managementVLAN: tagged, check on that console `journalctl -t dciab-first-boot` and "
+                 f"`systemctl status proxmox-first-boot-network-pre` (a failed hook runs again at every boot "
+                 f"until it succeeds), and that the switch port carries VLAN {vlan} tagged")
+    return hint
+
+
 def media(hosts: List[dict], doc: dict, installs: Path, reinstall: List[str], bmc_for: Callable,
           probe: Callable[[str, int], bool] = installed_probe, log=print,
           err=None, first_install: Tuple[str, ...] = (),
@@ -332,7 +365,8 @@ def media(hosts: List[dict], doc: dict, installs: Path, reinstall: List[str], bm
                 # Recorded before the reset: from here on a rerun never resets this host by accident.
                 write_install(installs, name, started=_now(), iso=url, outcome="in-progress",
                               media="attached", media_log=[], media_other=None, boot_override="Cd",
-                              post=None, post_at=None, post_log=None, api_fingerprint=None)
+                              post=None, post_at=None, post_log=None, api_fingerprint=None,
+                              **network_mode(doc))
                 retire_token(installs, name, log)
                 log(f"  {name}: reset ({bmc.reset()})")
             except (RedfishError, OSError):
@@ -628,6 +662,10 @@ def main(argv: Optional[List[str]] = None) -> int:
         return 0
 
     print("\n== hypervisors: media")
+    for h in hosts:
+        note = network_drift(read_install(installs, h["name"]), doc)
+        if note:
+            print(f"  {h['name']}: note: {note}")
     failed, held, live = media(hosts, doc, installs, args.reinstall, lambda h: _bmc(h, config_dir),
                                  first_install=tuple(args.first_install))
     if failed:
@@ -650,7 +688,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         if port is not None:
             what = "the Proxmox VE API on " if port == 8006 else ""
             print(f"dciab hypervisors: {h['name']}: {what}{h['address']}:{port} didn't answer within "
-                  f"{args.timeout:g}s; watch the server's console through its BMC", file=sys.stderr)
+                  f"{args.timeout:g}s; {wait_hint(doc)}", file=sys.stderr)
             failed.append(h["name"])
         else:
             write_install(installs, h["name"], outcome="installed")

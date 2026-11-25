@@ -182,7 +182,7 @@
         "templateID": {"type": "integer", "minimum": 100, "description": "the node VM template's ID, 100 or more"},
         "storage": {"type": "string", "minLength": 1, "description": "the Proxmox storage that CAPMOX clones node VM disks onto. On local storage (local-lvm, ZFS) a clone stays on the template's node"},
         "bridge": {"type": "string", "minLength": 1, "description": "the bridge node VMs' NIC attaches to (the node network), such as vmbr0"},
-        "vlanTag": {"type": "integer", "minimum": 1, "maximum": 4094, "description": "optional: the VLAN tag on node VMs' NIC, 1-4094, for a VLAN-aware bridge. Unset: the NIC is untagged"},
+        "vlanTag": {"type": "integer", "minimum": 1, "maximum": 4094, "description": "the VLAN tag on node VMs' NIC, 1-4094, for a VLAN-aware bridge. Unset: the NIC is untagged. Optional, except with spec.hypervisors.managementVLAN: tagged, where it must equal network.nodes.vlan"},
         "credentials": {
           "description": "CAPMOX's API token. docs/PROXMOX.md lists the privileges it needs; validate --live checks them",
           "type": "object",
@@ -1089,7 +1089,7 @@
         "method": {"enum": ["virtualmedia"], "description": "virtualmedia: the installer ISO is attached through each host's BMC (Redfish)"},
         "installerFile": {"type": "string", "minLength": 1, "description": "esxi only: path to the ESXi installer ISO, which DCiaB doesn't ship; its sha256 must match bundle.lock"},
         "rootPassword": {"$ref": "#/$defs/secretRef", "description": "optional: the root password for every host DCiaB installs. Unset: DCiaB generates one per host and stores it encrypted to spec.bootstrap.recipients. Either way people log in with the identity.initialAdmins SSH keys"},
-        "managementVLAN": {"enum": ["tagged", "untagged"], "description": "tagged: the management NIC tags network.nodes.vlan on a trunk port (a first-boot hook on the installer ISO sets it); untagged: an access port for network.nodes.vlan, or a trunk with it as the native VLAN (docs/HYPERVISORS.md)"},
+        "managementVLAN": {"enum": ["tagged", "untagged"], "description": "tagged: the management NIC tags network.nodes.vlan on a trunk port (a first-boot hook on the installer ISO sets it); network.nodes.vlan must not be 1 (a bridge's default PVID), platform.proxmox.bridge must be vmbr0 and platform.proxmox.vlanTag must equal network.nodes.vlan; bridgeVids may narrow the VLANs vmbr0 carries. untagged: an access port for network.nodes.vlan, or a trunk with it as the native VLAN (docs/HYPERVISORS.md)"}, "bridgeVids": {"type": "string", "pattern": "^ *[0-9]{1,4}(-[0-9]{1,4})?( +[0-9]{1,4}(-[0-9]{1,4})?)* *$", "description": "optional: the VLANs a VLAN-aware vmbr0 carries on the hosts DCiaB installs, as Proxmox VE writes bridge-vids: IDs and ranges separated by spaces, such as 2-4094 (the default) or \"110 200-210\", each within 2-4094. Narrow it for NICs whose VLAN filter table is smaller than 4093 entries. With managementVLAN: tagged it must include network.nodes.vlan and platform.proxmox.vlanTag"},
         "installer": {
           "type": "object",
           "additionalProperties": false,

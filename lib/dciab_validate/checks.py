@@ -487,8 +487,8 @@ class Checker:
 
         if hv.get("managementVLAN") == "tagged" and self.spec["network"]["nodes"].get("vlan") == 1:
             self.error(("spec", "network", "nodes", "vlan"), "1 (with spec.hypervisors.managementVLAN: tagged)",
-                       "use managementVLAN: untagged for VLAN 1: VLAN 1 is a Linux bridge's default untagged "
-                       "VLAN, so a host can't tag it on vmbr0 (docs/HYPERVISORS.md)")
+                       "not supported: VLAN 1 is the bridge's default PVID; use managementVLAN: untagged "
+                       "(docs/HYPERVISORS.md)")
         px = self.spec["platform"].get("proxmox") or {}
         node_vlan = self.spec["network"]["nodes"].get("vlan")
         if hv.get("managementVLAN") == "tagged" and hv["type"] == "proxmox" and px.get("vlanTag") != node_vlan:
@@ -501,6 +501,23 @@ class Checker:
             self.error(("spec", "platform", "proxmox", "bridge"), f"{bridge} (with spec.hypervisors.managementVLAN: tagged)",
                        "use vmbr0: with a tagged management VLAN, the installed hosts' first-boot hook makes vmbr0 "
                        "VLAN-aware and puts the management address on vmbr0.<network.nodes.vlan>")
+        if "bridgeVids" in hv:
+            try:
+                vids = nu.parse_vlan_list(hv["bridgeVids"])
+            except ValueError as exc:
+                self.error(base + ("bridgeVids",), str(hv["bridgeVids"]),
+                           f"use VLAN IDs and ranges within 2-4094 separated by spaces, such as 2-4094 or "
+                           f"\"110 200-210\" ({exc})")
+            else:
+                want = {}
+                if hv.get("managementVLAN") == "tagged" and node_vlan:
+                    want["network.nodes.vlan"] = node_vlan
+                if px.get("vlanTag"):
+                    want["platform.proxmox.vlanTag"] = px["vlanTag"]
+                for what, vlan in want.items():
+                    if not nu.vlan_in(vids, int(vlan)):
+                        self.error(base + ("bridgeVids",), f"{hv['bridgeVids']} (without {what}, {vlan})",
+                                   f"add {vlan}: vmbr0 must carry {what} or that traffic is dropped")
         self._unique(hv["hosts"], "name", base + ("hosts",))
         macs: Dict[str, Path] = {}
         bmcs: Dict[str, Path] = {}
