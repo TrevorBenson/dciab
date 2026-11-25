@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import base64
 import json
+import re
 import time
 from typing import Dict, List, Optional, Tuple
 from urllib.parse import urlsplit
@@ -35,6 +36,12 @@ NETWORK_PATH = ("mac(", "ipv4(", "ipv6(", "uri(")
 DISK_PATH = ("hd(", "bbs(hd", "sata(", "ata(", "scsi(", "sas(", "nvme(")
 # Names of legacy (BIOS) disk entries, which often have no device path at all.
 DISK_NAMES = ("hard drive", "hard disk")
+# Words in the name of a boot option with no device path that point at a local disk or its
+# controller, such as "Integrated RAID Controller 1: PERC H730" or "Embedded SATA Port Disk A".
+# Legacy firmware often lists only these. Matched as whole words.
+PATHLESS_DISK_WORDS = ("disk", "drive", "raid", "sata", "sas", "nvme", "ssd", "hdd")
+# Removable optical or floppy entries: a path-less name with one of these doesn't count.
+REMOVABLE_WORDS = ("cd", "dvd", "optical", "floppy", "cdrom", "cd-rom")
 
 
 def is_os_entry(name: str, device_path: str) -> bool:
@@ -44,9 +51,12 @@ def is_os_entry(name: str, device_path: str) -> bool:
     (so "UEFI OS (Virtual Disk)" counts), a legacy disk entry ("Hard drive C:", BBS(HD,...)), or
     a device path into a local disk: a partition (HD(...)), or a whole disk on a SATA, SCSI, SAS
     or NVMe bus with no partition node. So a USB-named entry on a partition, such as a bootable
-    stick, counts too and holds the host. Only unambiguous network entries are left out: a
-    network name or network path nodes, with no disk node in the path. Anything else (CD/DVD,
-    shell, setup, an unnamed entry with no disk path) doesn't count."""
+    stick, counts too and holds the host. An entry with no device path whose name names a disk
+    or a disk controller (a whole word from PATHLESS_DISK_WORDS, such as "Integrated RAID
+    Controller 1: PERC H730" or "Embedded SATA Port Disk A") counts too, unless it names an
+    optical or floppy drive. Only unambiguous network entries are left out: a network name or
+    network path nodes, with no disk node in the path. Anything else (CD/DVD, shell, setup, an
+    unnamed entry with no disk path) doesn't count."""
     lname, lpath = name.lower(), device_path.lower()
     text = f"{lname} {lpath}"
     if "proxmox" in text:
@@ -55,7 +65,12 @@ def is_os_entry(name: str, device_path: str) -> bool:
     on_disk = "hd(" in lpath or "bbs(hd" in lpath or (not network and any(n in lpath for n in DISK_PATH))
     if not on_disk and (network or any(h in lname for h in NETWORK_HINTS)):
         return False
-    return on_disk or any(h in text for h in OS_HINTS + DISK_NAMES)
+    if on_disk or any(h in text for h in OS_HINTS + DISK_NAMES):
+        return True
+    if not lpath.strip():
+        words = set(re.findall(r"[a-z0-9-]+", lname))
+        return bool(words & set(PATHLESS_DISK_WORDS)) and not words & set(REMOVABLE_WORDS)
+    return False
 
 
 MAX_PAGES = 64

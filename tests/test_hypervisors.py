@@ -1121,6 +1121,39 @@ def test_network_entries_on_a_storage_bus_name_still_dont_count():
     assert not redfish.is_os_entry("Embedded UEFI Shell", "")
 
 
+@pytest.mark.parametrize("name", [
+    "Integrated RAID Controller 1: PERC H730 Mini",
+    "Embedded SATA Port Disk A",
+    "NVMe M.2 Drive 1",
+    "SAS Controller: Boot Volume",
+    "Slot 3 SSD",
+    "Internal HDD 0",
+])
+def test_pathless_disk_and_controller_names_are_os_evidence(name):
+    assert redfish.is_os_entry(name, "")
+    assert redfish.is_os_entry(name, "   ")
+
+
+@pytest.mark.parametrize("name", [
+    "Embedded SATA Port Optical Drive J",           # optical, not a disk
+    "Virtual Floppy Drive",
+    "Virtual CD/DVD Drive",
+    "PXE Device 1: Integrated NIC 1 Port 1",         # network
+    "Integrated NIC 1: Network boot over SATA? no",  # a network word wins
+    "USB Stick",                                     # removable, no disk word
+    "Discovery Mode",                                # "disk" only as a whole word
+])
+def test_pathless_names_that_arent_a_local_disk_dont_count(name):
+    assert not redfish.is_os_entry(name, "")
+
+
+def test_pathless_controller_entry_holds_a_host_without_a_record_even_with_first_install(fake_bmc, tmp_path):
+    f = fake_bmc(power="Off", boot_options=[PXE_OPT, {"Id": "0002", "DisplayName": "Integrated RAID Controller 1: PERC H730"}])
+    failed, held, _, out = guard(f, tmp_path, first_install=["pve01"])
+    assert (failed, held) == ([], ["pve01"]) and "--reinstall pve01" in out
+    assert not [c for c in f.calls if c[0] in CHANGES]
+
+
 def test_legacy_disk_entry_holds_a_host_without_a_record(fake_bmc, tmp_path):
     f = fake_bmc(power="Off", boot_options=[{"Id": "0001", "DisplayName": "Hard drive C:"}])
     failed, held, live, logs = guard(f, tmp_path)
