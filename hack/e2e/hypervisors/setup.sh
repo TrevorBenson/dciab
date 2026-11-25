@@ -144,11 +144,15 @@ virsh -q -c qemu:///system define "$WORK/$VM.xml"
 # sushy-tools, the pinned wheel, patched to keep Secure Boot across boot mode changes.
 sushy_v="$(lock hypervisorEmulator/sushyTools/version)"
 sushy_sum="$(lock hypervisorEmulator/sushyTools/sha256)"
-python3 -m pip download -q --no-deps --only-binary :all: -d "$WORK/wheels" "sushy-tools==$sushy_v"
+# A venv that sees the distro's python3-libvirt; sushy-tools' own dependencies go into the venv.
+python3 -m venv --system-site-packages "$WORK/sushy-venv"
+py="$WORK/sushy-venv/bin/python3"
+"$py" -m pip download -q --no-deps --only-binary :all: -d "$WORK/wheels" "sushy-tools==$sushy_v"
 whl="$WORK/wheels/sushy_tools-$sushy_v-py3-none-any.whl"
 echo "$sushy_sum  $whl" | sha256sum -c - >/dev/null
-python3 -m pip install -q --break-system-packages "$whl"
-python3 "$HERE/patch_sushy.py" "$(python3 -c 'import sushy_tools, os; print(os.path.dirname(sushy_tools.__file__))')/emulator/resources/systems/libvirtdriver.py"
+"$py" -m pip install -q "$whl"
+"$py" "$HERE/patch_sushy.py" "$("$py" -c 'import sushy_tools, os; print(os.path.dirname(sushy_tools.__file__))')/emulator/resources/systems/libvirtdriver.py"
+"$py" -c 'import libvirt' || { echo "setup.sh: the venv doesn't see python3-libvirt" >&2; exit 1; }
 
 openssl req -x509 -newkey rsa:2048 -nodes -days 2 -subj "/CN=$BMC_IP" -addext "subjectAltName=IP:$BMC_IP" \
     -keyout /etc/dciab-emulator/bmc.key -out /etc/dciab-emulator/bmc.crt 2>/dev/null
@@ -170,7 +174,7 @@ SUSHY_EMULATOR_DRIVES = {('$VM_UUID', '1'): [{'Id': '1', 'Name': 'Boot disk', 'C
                                                'Protocol': 'SATA'}]}
 CONF
 ip netns exec dciab-bmc env -u http_proxy -u https_proxy -u HTTP_PROXY -u HTTPS_PROXY \
-    nohup sushy-emulator --config /etc/dciab-emulator/sushy.conf > "$WORK/sushy.log" 2>&1 &
+    nohup "$WORK/sushy-venv/bin/sushy-emulator" --config /etc/dciab-emulator/sushy.conf > "$WORK/sushy.log" 2>&1 &
 echo $! > "$WORK/sushy.pid"
 for _ in $(seq 60); do
     curl -fsk --noproxy '*' "https://$BMC_IP:$BMC_PORT/redfish/v1/Systems/$VM_UUID" >/dev/null 2>&1 && break
