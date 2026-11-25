@@ -52,7 +52,7 @@ Read first:
 4. **`--reinstall` is what it takes.**
    - `sudo ./dciab hypervisors dciab.yaml --state ~/.dciab/0010/state --host <host> --reinstall <host> --print`. Pass: the host's lines include `--reinstall: reinstalled whatever its state`. This changes nothing.
    - Optional, only if Trevor says yes (Stop and ask first): the same command without `--print` and with `--until media`. Pass: `media` prints `--reinstall: installing whatever its state`, the power state and boot override, then attaches the ISO and resets. Trevor may decline and stop the task here; record which.
-5. **Clean up.** Ask Trevor whether to power the host back on. If step 4 reset it, let the install finish (`sudo ./dciab hypervisors ... --host <host>` without `--reinstall`: it must print either `install in progress since ...; not resetting, waiting for it` or `the Proxmox VE API already answers on <address>:8006; not reinstalling`, depending on timing, and end with `installed: <host>`).
+5. **Clean up.** Ask Trevor whether to power the host back on. If step 4 reset it, let the install finish (`sudo ./dciab hypervisors ... --host <host> --until wait` without `--reinstall`: it must print either `install in progress since ...; not resetting, waiting for it` or `the Proxmox VE API already answers on <address>:8006; not reinstalling`, depending on timing, and end with `installed: <host>`). `--until wait` matters: without it the run goes on to `post`, which logs in as root and creates roles, a user, a token and ACLs on the host. Post-install is out of scope for this task.
 
 ## Stop and ask
 

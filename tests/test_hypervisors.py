@@ -278,7 +278,8 @@ def cert(tmp_path_factory):
                    check=True, capture_output=True)
     der = ssl.PEM_cert_to_DER_cert(crt.read_text())
     h = hashlib.sha256(der).hexdigest().upper()
-    return {"key": key, "crt": crt, "pin": ":".join(h[i:i + 2] for i in range(0, len(h), 2))}
+    return {"key": key, "crt": crt, "der": der, "pin": ":".join(h[i:i + 2] for i in range(0, len(h), 2)),
+            "sha1": ":".join(hashlib.sha1(der).hexdigest().upper()[i:i + 2] for i in range(0, 40, 2))}
 
 
 SYS = "/redfish/v1/Systems/1"
@@ -1498,6 +1499,7 @@ class FakePVE:
                        {"iface": "vmbr0", "type": "bridge", "bridge_ports": "eno1", "cidr": "10.30.110.6/24",
                         "gateway": "10.30.110.1", "autostart": 1}]
         self.reloaded = False
+        self.down_after_reload = False
         self.storage = {"local": {"storage": "local", "content": local_content, "enabled": 1, "active": 1},
                         "local-lvm": {"storage": "local-lvm", "content": "images,rootdir", "enabled": 1, "active": 1}}
         self.roles = dict(roles or {})
@@ -1531,6 +1533,10 @@ class FakePVE:
                 p = self.path.replace("/api2/json", "", 1)
                 if not self._authed(False):
                     return self._send(401)
+                if p == "/version":
+                    if fake.down_after_reload and fake.reloaded:
+                        return self._send(503)
+                    return self._send(200, {"version": "9.1.1", "repoid": "abc"})
                 if p == "/nodes/pve01/network":
                     return self._send(200, fake.ifaces)
                 if p == "/nodes/pve01/storage":
@@ -1632,7 +1638,7 @@ def run_post(f, cert, tmp_path, monkeypatch, doc=None, record=None, site_passwor
     logs = []
     failed = cli.post_install([host(doc)], doc, state, installs, tmp_path / "answers", site_password, identity,
                               api_for=lambda h, pin: post.PveApi("127.0.0.1", pin, timeout=5, port=f.port),
-                              seen=lambda a: cert["pin"], log=logs.append, err=logs.append)
+                              seen=lambda a: cert["der"], log=logs.append, err=logs.append)
     return failed, "\n".join(logs), sealed, cli.read_install(installs, "pve01")
 
 
@@ -1669,6 +1675,33 @@ def test_post_install_runs_once_per_install(fake_pve, cert, tmp_path, monkeypatc
     assert failed == [] and "post-install done" in out and f.writes == [] and f.logins == logins
 
 
+def test_a_reinstall_resets_post_install_and_retires_the_old_token(fake_pve, fake_bmc, cert, tmp_path, monkeypatch):
+    f = fake_pve()
+    assert run_post(f, cert, tmp_path, monkeypatch)[0] == []
+    installs = tmp_path / "installs"
+    sealed = post.token_file(tmp_path, "pve01")         # media's state folder is installs' parent
+    sealed.parent.mkdir(parents=True, exist_ok=True)
+    sealed.write_text("old token\n")
+    cli.write_install(installs, "pve01", api_fingerprint=":".join(["AB"] * 32))   # a stale pin from the old install
+    assert cli.read_install(installs, "pve01")["post"] == "done"
+    # --reinstall: media starts a new install.
+    b = fake_bmc(power="On")
+    failed, held, _, out = guard(b, tmp_path, reinstall=["pve01"])
+    assert (failed, held) == ([], [])
+    record = cli.read_install(installs, "pve01")
+    assert record["outcome"] == "in-progress"
+    assert record["post"] is None and record["post_log"] is None and record["api_fingerprint"] is None
+    assert not sealed.exists() and "old CAPMOX token no longer exists" in out
+    aside = list(sealed.parent.glob("pve01.token.age.replaced-*"))
+    assert len(aside) == 1 and aside[0].stat().st_mode & 0o777 == 0o600
+    # Once installed again, post runs again and pins the new certificate on first contact.
+    cli.write_install(installs, "pve01", outcome="installed")
+    f2 = fake_pve()
+    failed, out, _, record = run_post(f2, cert, tmp_path, monkeypatch, record={"outcome": "installed", "iso": HOST_ISO})
+    assert failed == [] and f2.logins == 1 and "pinned the API certificate seen on first contact" in out
+    assert record["post"] == "done" and record["api_fingerprint"] == cert["pin"]
+
+
 def test_vlan_tag_makes_the_bridge_vlan_aware_keeping_its_address(fake_pve, cert, tmp_path, monkeypatch):
     doc = bare()
     doc["spec"]["platform"]["proxmox"]["vlanTag"] = 110
@@ -1702,6 +1735,51 @@ def test_tagged_management_vlan_is_refused_before_any_write(fake_pve, cert, tmp_
     f = fake_pve()
     failed, out, _, _ = run_post(f, cert, tmp_path, monkeypatch, doc=doc)
     assert failed == ["pve01"] and "managementVLAN: tagged isn't built" in out and f.writes == []
+    assert f.logins == 0                                  # the root password is never sent
+
+
+def test_tagged_management_vlan_stops_the_run_before_anything(tmp_path, monkeypatch, capsys):
+    Site(tmp_path, monkeypatch, capsys)
+    doc = bare()
+    doc["spec"]["hypervisors"]["managementVLAN"] = "tagged"
+    cfg = tmp_path / "dciab.yaml"
+    cfg.write_text(yaml.safe_dump(doc, sort_keys=False))
+    monkeypatch.setattr(cli.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(cli, "media", lambda *a, **k: pytest.fail("media ran"))
+    monkeypatch.setattr(cli, "_bmc", lambda *a, **k: pytest.fail("a BMC was called"))
+    try:
+        rc = cli.main(["--root", str(ROOT), "--state", str(tmp_path / "state"), str(cfg)])
+    except SystemExit as exc:          # the config check (dciab validate's rules) stops it first
+        rc = exc.code
+    captured = capsys.readouterr()
+    assert rc != 0 and "is not valid" in captured.out + captured.err
+    assert not (tmp_path / "state" / "answers").exists()
+    # The step's own refusal, for a config that skips validate's rule (a backstop).
+    import dciab_services.cli as services_cli
+    monkeypatch.setattr(services_cli, "_load", lambda config, root: doc)
+    assert cli.main(["--root", str(ROOT), "--state", str(tmp_path / "state"), str(cfg)]) == 2
+    assert "managementVLAN: tagged isn't built" in capsys.readouterr().err
+    assert not (tmp_path / "state").exists()
+
+
+def test_a_network_reload_that_drops_the_api_fails_clearly(fake_pve, cert, tmp_path, monkeypatch):
+    doc = bare()
+    doc["spec"]["platform"]["proxmox"]["vlanTag"] = 110
+    f = fake_pve()
+    f.down_after_reload = True
+    monkeypatch.setattr(post.time, "sleep", lambda s: None)
+    failed, out, _, record = run_post(f, cert, tmp_path, monkeypatch, doc=doc)
+    assert failed == ["pve01"] and "network reload left the API unreachable" in out
+    assert record["post"] == "failed" and "network reload left the API unreachable" in record["post_log"][0]
+    assert not [w for w in f.writes if w[1].startswith("/access")]
+
+
+def test_a_sha1_platform_fingerprint_is_accepted(cert):
+    doc = bare()
+    px = doc["spec"]["platform"]["proxmox"]
+    px["url"] = "https://pve01.dc3.example.com:8006"
+    px["tlsFingerprint"] = cert["sha1"]
+    assert post.trust_for(host(doc), doc, {}, seen=lambda a: cert["der"]) == (cert["sha1"], None)
 
 
 def test_missing_storage_is_refused(fake_pve, cert, tmp_path, monkeypatch):
@@ -1759,10 +1837,12 @@ def test_trust_pins_the_platform_fingerprint_when_the_url_names_the_host():
     px = doc["spec"]["platform"]["proxmox"]
     px["url"] = "https://pve01.dc3.example.com:8006"
     h = host(doc)
-    pin = px["tlsFingerprint"]
-    assert post.trust_for(h, doc, {}, seen=lambda a: pin) == (pin, None)
-    with pytest.raises(post.PostError, match="set tlsFingerprint to AB:CD"):
-        post.trust_for(h, doc, {}, seen=lambda a: "AB:CD")
+    der = b"a certificate"
+    pin = ":".join(hashlib.sha256(der).hexdigest().upper()[i:i + 2] for i in range(0, 64, 2))
+    px["tlsFingerprint"] = pin
+    assert post.trust_for(h, doc, {}, seen=lambda a: der) == (pin, None)
+    with pytest.raises(post.PostError, match="set tlsFingerprint to"):
+        post.trust_for(h, doc, {}, seen=lambda a: b"another certificate")
     px["url"] = "https://10.30.110.99:8006"
     assert post.trust_for(h, doc, {"api_fingerprint": "11:22"}, seen=lambda a: pytest.fail("re-read")) == ("11:22", None)
 

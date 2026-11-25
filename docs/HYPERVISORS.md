@@ -67,10 +67,12 @@ BIOS changes go to the settings object the Bios resource names (`Bios/Settings`)
 
 | What | How |
 | --- | --- |
-| Trust | The API's certificate is pinned: `spec.platform.proxmox.tlsFingerprint` when `platform.proxmox.url` names this host (a fresh install has a new certificate, so the run stops with the fingerprint to set when they differ), else the fingerprint seen on first contact, recorded in the install record (`api_fingerprint`) and checked on every later run |
-| Bridge | `spec.platform.proxmox.bridge` must exist (the installer makes `vmbr0` on the management NIC). With `platform.proxmox.vlanTag` it is made VLAN-aware (`bridge_vids 2-4094`), keeping its address and gateway, and the network is reloaded |
+| Trust | The API's certificate is pinned: `spec.platform.proxmox.tlsFingerprint` when `platform.proxmox.url` names this host (a fresh install has a new certificate, so the run stops with the fingerprint to set when they differ), else the fingerprint seen on first contact, recorded in the install record (`api_fingerprint`) and checked on every later run. `tlsFingerprint` may be SHA-256 or SHA-1 |
+| Bridge | `spec.platform.proxmox.bridge` must exist (the installer makes `vmbr0` on the management NIC). With `platform.proxmox.vlanTag` it is made VLAN-aware (`bridge_vids 2-4094`), keeping its address and gateway, and the network is reloaded. The API must answer again within about 30 seconds; otherwise the run stops, saying the reload left the API unreachable, and the host's console (through its BMC) is the way back |
 | Storage | `spec.platform.proxmox.storage` must exist on the node, enabled and active, and hold VM disks; `local` must take ISOs (CAPMOX uploads each machine's bootstrap data there) and gains `iso` content when it doesn't. DCiaB doesn't create other storage |
 | CAPMOX token | The roles, user, privilege-separated token and ACLs in [PROXMOX.md](PROXMOX.md), from `lib/dciab_validate/proxmox_privs.py`. Roles whose privileges differ are corrected. The token's secret, shown once, is encrypted at once to `spec.bootstrap.recipients` in `<state>/proxmox/<host>.token.age` and never written in plain text. Open it with `age -d -i <identity> <state>/proxmox/<host>.token.age` into the file `platform.proxmox.credentials.tokenSecret` points to (mode 600), or the environment variable it names. A token that already exists is kept only when its sealed secret is in the state folder; otherwise the run says how to replace it |
+
+A new install (`media`, `--reinstall` too) clears the record's post-install result and pinned certificate, so `post` runs again on the reinstalled host and pins its new certificate. Its old token no longer exists, so its sealed secret is moved aside to `<state>/proxmox/<host>.token.age.replaced-<time>` (mode 600, never deleted) and `post` creates a new one. A failed `post` records why in the install record (`post_log`).
 
 The user must be in the Proxmox VE realm (`<user>@pve!<token>`). On hosts that aren't clustered, each host in `platform.proxmox.nodes` gets its own token (clustering, which makes this once per cluster, is a later step).
 
@@ -95,6 +97,6 @@ The installer ISO and the answer files travel over plain HTTP from the bootstrap
 
 ## Not done yet
 
-- **A tagged management VLAN** (`managementVLAN: tagged`): the answer file can't set a VLAN, so the installer needs the node VLAN untagged on the host's port. Moving the host's address onto a tagged VLAN afterwards needs its switch port changed at the same moment, which DCiaB can't do; `post` refuses `tagged`. Use an access port, or a trunk whose native VLAN is `network.nodes.vlan` (VMs can still use other VLANs through the VLAN-aware bridge).
+- **A tagged management VLAN** (`managementVLAN: tagged`): the answer file can't set a VLAN, so the installer needs the node VLAN untagged on the host's port. Moving the host's address onto a tagged VLAN afterwards needs its switch port changed at the same moment, which DCiaB can't do; `dciab validate` and `dciab hypervisors` refuse `tagged` before anything is written or any BMC is called; `post` checks again before it sends the root password. Use an access port, or a trunk whose native VLAN is `network.nodes.vlan` (VMs can still use other VLANs through the VLAN-aware bridge).
 - **Joining a Proxmox VE cluster** and shared storage across hosts.
 - **ESXi.**

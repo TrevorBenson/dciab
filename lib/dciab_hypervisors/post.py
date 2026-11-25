@@ -29,19 +29,31 @@ import json
 import os
 import socket
 import ssl
+import time
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple
 from urllib.parse import quote, urlencode, urlsplit
 
-from dciab_validate.probes import HttpsClient, ProbeError, Trust, format_fingerprint
+from dciab_validate.probes import HttpsClient, ProbeError, Trust, fingerprint_matches, format_fingerprint
 
 
 class PostError(Exception):
     """A post-install step that can't go on. The message is safe to print."""
 
 
-def seen_fingerprint(address: str, port: int = 8006, timeout: float = 10.0) -> str:
-    """The SHA-256 fingerprint of the certificate address:port presents. Sends nothing."""
+TAGGED = ("managementVLAN: tagged isn't built yet: the installer's network is untagged, and moving the host's "
+          "address onto the VLAN needs its switch port changed at the same moment (docs/HYPERVISORS.md). Use an "
+          "access port, or a trunk with network.nodes.vlan as the native VLAN, and managementVLAN: untagged")
+
+
+def refuse_tagged(doc: dict) -> None:
+    """managementVLAN: tagged isn't built: refused before anything is written or sent."""
+    if (doc["spec"].get("hypervisors") or {}).get("managementVLAN") == "tagged":
+        raise PostError(TAGGED)
+
+
+def seen_certificate(address: str, port: int = 8006, timeout: float = 10.0) -> bytes:
+    """The DER certificate address:port presents. Sends nothing."""
     ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
     ctx.check_hostname = False
     ctx.verify_mode = ssl.CERT_NONE
@@ -51,27 +63,30 @@ def seen_fingerprint(address: str, port: int = 8006, timeout: float = 10.0) -> s
                 der = tls.getpeercert(binary_form=True) or b""
     except (OSError, ssl.SSLError) as exc:
         raise PostError(f"{address}:{port}: can't read the API certificate ({exc})") from None
-    return format_fingerprint(der)
+    if not der:
+        raise PostError(f"{address}:{port}: the API presented no certificate")
+    return der
 
 
-def trust_for(host: dict, doc: dict, record: dict, seen: Callable[[str], str] = seen_fingerprint) -> Tuple[str, Optional[str]]:
+def trust_for(host: dict, doc: dict, record: dict, seen: Callable[[str], bytes] = seen_certificate) -> Tuple[str, Optional[str]]:
     """(fingerprint to pin, a note or None). Never trusts the system CAs: a fresh install's
-    certificate is self-signed."""
+    certificate is self-signed. tlsFingerprint may be SHA-256 or SHA-1, as the schema allows."""
     px = doc["spec"]["platform"]["proxmox"]
     fqdn = f"{host['name']}.{doc['spec']['network']['domain']}"
     url_host = urlsplit(px["url"]).hostname
     observed = record.get("api_fingerprint")
     if url_host in (host["address"], fqdn, host["name"]):
         pin = px["tlsFingerprint"]
-        current = seen(host["address"])
-        if current.upper() != pin.upper():
+        der = seen(host["address"])
+        if not fingerprint_matches(der, pin):
+            current = format_fingerprint(der)
             raise PostError(f"the API certificate's fingerprint is {current}, not spec.platform.proxmox.tlsFingerprint "
                             f"({pin}). A host DCiaB just installed has a new certificate: set tlsFingerprint to "
                             f"{current} if that is this host's, and run again")
         return pin, None
     if observed:
         return observed, None
-    current = seen(host["address"])
+    current = format_fingerprint(seen(host["address"]))
     return current, (f"pinned the API certificate seen on first contact, {current} (recorded in the install record); "
                      "every later run checks it")
 
@@ -137,13 +152,10 @@ class PveApi:
 
 # -- the steps ------------------------------------------------------------------------------
 
-def network(api: PveApi, node: str, doc: dict, log: Callable[[str], None]) -> None:
+def network(api: PveApi, node: str, doc: dict, log: Callable[[str], None], tries: int = 6, delay: float = 5.0,
+            sleep: Callable[[float], None] = time.sleep) -> None:
     px = doc["spec"]["platform"]["proxmox"]
-    hv = doc["spec"]["hypervisors"]
-    if hv.get("managementVLAN") == "tagged":
-        raise PostError("managementVLAN: tagged isn't built yet: the installer's network is untagged, and moving the "
-                        "host's address onto the VLAN needs its switch port changed at the same moment "
-                        "(docs/HYPERVISORS.md). Use an access port (untagged) for network.nodes.vlan")
+    refuse_tagged(doc)
     ifaces = api.get(f"/nodes/{quote(node)}/network") or []
     bridge = next((i for i in ifaces if isinstance(i, dict) and i.get("iface") == px["bridge"]), None)
     if bridge is None or bridge.get("type") != "bridge":
@@ -161,6 +173,16 @@ def network(api: PveApi, node: str, doc: dict, log: Callable[[str], None]) -> No
             form[key] = bridge[key]
     api.put(f"/nodes/{quote(node)}/network/{quote(px['bridge'])}", form)
     api.put(f"/nodes/{quote(node)}/network")        # apply (ifupdown2 reload)
+    # The reload can drop the host off the network; make sure the API still answers.
+    for attempt in range(tries):
+        try:
+            api.get("/version")
+            break
+        except PostError:
+            if attempt == tries - 1:
+                raise PostError(f"bridge {px['bridge']} was made VLAN-aware, but the network reload left the API "
+                                "unreachable; check the host's console through its BMC") from None
+            sleep(delay)
     log(f"bridge {px['bridge']} made VLAN-aware for vlanTag {px['vlanTag']}, address kept; network reloaded")
 
 
@@ -270,6 +292,7 @@ def run(api: PveApi, host: dict, doc: dict, state: Path, password: str, sealer,
         done.append(line)
         log(line)
 
+    refuse_tagged(doc)       # before the root password is sent
     api.login(password)
     del password
     node = host["name"]

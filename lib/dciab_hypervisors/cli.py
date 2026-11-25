@@ -331,7 +331,9 @@ def media(hosts: List[dict], doc: dict, installs: Path, reinstall: List[str], bm
             try:
                 # Recorded before the reset: from here on a rerun never resets this host by accident.
                 write_install(installs, name, started=_now(), iso=url, outcome="in-progress",
-                              media="attached", media_log=[], media_other=None, boot_override="Cd")
+                              media="attached", media_log=[], media_other=None, boot_override="Cd",
+                              post=None, post_at=None, post_log=None, api_fingerprint=None)
+                retire_token(installs, name, log)
                 log(f"  {name}: reset ({bmc.reset()})")
             except (RedfishError, OSError):
                 # Disarm, so the next power-on doesn't start the installer unasked; then hold the host.
@@ -350,6 +352,19 @@ def media(hosts: List[dict], doc: dict, installs: Path, reinstall: List[str], bm
             if name in live:
                 live.remove(name)
     return failed, held, live
+
+
+def retire_token(installs: Path, name: str, log=print) -> None:
+    """A new install wipes the host, and its CAPMOX token with it: move the old sealed secret aside
+    (mode 600, never deleted), so post creates a new token instead of trusting a dead one."""
+    from .post import token_file
+    sealed = token_file(installs.parent, name)
+    if not sealed.is_file():
+        return
+    aside = sealed.with_name(f"{sealed.name}.replaced-{time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())}")
+    os.replace(sealed, aside)
+    os.chmod(aside, 0o600)
+    log(f"  {name}: the old CAPMOX token no longer exists after this install; its sealed secret moved to {aside}")
 
 
 def detach(h: dict, installs: Path, bmc_for: Callable, log=print, err=None) -> Optional[str]:
@@ -477,6 +492,12 @@ def main(argv: Optional[List[str]] = None) -> int:
     if hv["type"] != "proxmox":
         print(f"dciab hypervisors: {hv['type']} isn't supported yet; only proxmox (see docs/ROADMAP.md)",
               file=sys.stderr)
+        return 2
+    if hv.get("managementVLAN") == "tagged":
+        # Refused before anything is written or any BMC is called: the installer's network is
+        # untagged, so a host on a tagged-only port would be wiped and then unreachable.
+        from .post import TAGGED
+        print(f"dciab hypervisors: {TAGGED}", file=sys.stderr)
         return 2
     hosts = hv["hosts"]
     unknown = sorted(set(args.host) - {h["name"] for h in hosts})
@@ -685,7 +706,7 @@ def post_install(hosts: List[dict], doc: dict, state: Path, installs: Path, answ
             err(f"dciab hypervisors: {name}: post-install: {exc}")
             failed.append(name)
             try:
-                write_install(installs, name, post="failed", post_at=_now())
+                write_install(installs, name, post="failed", post_at=_now(), post_log=[f"failed: {exc}"])
             except OSError:
                 pass
     return failed
