@@ -172,6 +172,7 @@ SUSHY_EMULATOR_STORAGE = {'$VM_UUID': [{'Id': '1', 'Name': 'SATA controller', 'S
     {'MemberId': '0', 'Name': 'AHCI', 'SpeedGbps': 6}], 'Drives': ['1']}]}
 SUSHY_EMULATOR_DRIVES = {('$VM_UUID', '1'): [{'Id': '1', 'Name': 'Boot disk', 'CapacityBytes': 34359738368,
                                                'Protocol': 'SATA'}]}
+SUSHY_EMULATOR_VOLUMES = {('$VM_UUID', '1'): []}
 CONF
 ip netns exec dciab-bmc env -u http_proxy -u https_proxy -u HTTP_PROXY -u HTTPS_PROXY \
     nohup "$WORK/sushy-venv/bin/sushy-emulator" --config /etc/dciab-emulator/sushy.conf > "$WORK/sushy.log" 2>&1 &

@@ -127,6 +127,10 @@ jobs:
           for c in coredns chrony-1 chrony-2 caddy; do sudo podman logs "dciab-services-$c" > "$d/$c.log" 2>&1; done
           sudo find "$WORK/site/.dciab/state" -name '*.json' -path '*installs*' -exec cp {} "$d/" \; 2>/dev/null
           sudo chown -R "$(id -u):$(id -g)" "$d"
+          # Artifacts aren't always reachable: the tails go into the job log too.
+          echo "::group::sushy-emulator log (tail)"; tail -n 150 "$d/sushy.log"; echo "::endgroup::"
+          echo "::group::pve01 serial console (tail)"; tail -n 80 "$d/pve01-serial.log"; echo "::endgroup::"
+          echo "::group::caddy log (tail)"; tail -n 40 "$d/caddy.log"; echo "::endgroup::"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
