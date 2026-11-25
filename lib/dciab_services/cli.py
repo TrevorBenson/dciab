@@ -346,8 +346,10 @@ def main(argv: Optional[List[str]] = None) -> int:
                 print(f"wrote {path}")
         kinds = ("address", "port") if args.zone else ("address",)
         if not args.zone and any(e and e[0] == "port" for e in lifecycle.read(paths.conf)):
+            # A note, not a change: stderr, so the caller doesn't restart the pod for it.
             print("firewalld isn't running: the firewall ports weren't checked (they stay as they "
-                  "are; run dciab services again with firewalld running to update them)")
+                  "are; run dciab services again with firewalld running to update them)",
+                  file=sys.stderr)
         try:
             left = lifecycle.prune(paths.conf, wanted(doc, args.nic, args.zone), kinds)
         except lifecycle.Busy as exc:

@@ -133,6 +133,32 @@ nic_name() {   # spec.bootstrap.interface is a NIC name or its MAC
   [[ -e "/sys/class/net/$want" ]] && echo "$want"
 }
 has_addr() { ip -o -4 addr show dev "$1" | awk '{print $4}' | cut -d/ -f1 | grep -qxF "$2"; }
+# The ip/prefix entries on a NIC that carry this IP (any prefix), one per line.
+cidrs_of() { ip -o -4 addr show dev "$1" | awk '{print $4}' | grep -E "^${2//./\\.}/" || true; }
+recorded() { grep -qxF "$*" "$CONF_DIR/created" 2>/dev/null; }
+# Adds the DNS service IPs to the NIC ($1). An IP counts as there only with the wanted prefix:
+# the record and prune compare ip/prefix.
+add_service_ips() {
+  local nic="$1" ip want have others c
+  for ip in $SERVICE_IPS; do
+    want="$ip/$PREFIX"
+    have="$(cidrs_of "$nic" "$ip")"
+    if grep -qxF "$want" <<<"$have"; then
+      echo "$want already on $nic"
+      continue
+    fi
+    others=""
+    for c in $have; do recorded address "$nic" "$c" || others+=" $c"; done
+    if [[ -n "$others" ]]; then
+      # Someone else's address with another prefix: never touched; the pod still binds the IP.
+      echo "dciab services: $ip is on $nic as${others}, which dciab services didn't add; leaving it (the config wants $want)" >&2
+      continue
+    fi
+    record address "$nic" "$want"   # before the change: a crash can't leave it unlisted
+    ip addr add "$want" dev "$nic"
+    echo "added $want to $nic${have:+ (the old prefix, ${have//$'\n'/ }, goes in the pod step)}"
+  done
+}
 pod_running() {   # every container of the pod is running
   local states
   states="$(podman pod inspect "$POD" --format '{{range .Containers}}{{.State}} {{end}}' 2>/dev/null)" || return 1
@@ -208,15 +234,7 @@ zone="$(firewalld_zone "$nic")"
 
 step address
 # What the old config added and this one doesn't want goes in the pod step, with the old files.
-for ip in $SERVICE_IPS; do
-  if has_addr "$nic" "$ip"; then
-    echo "$ip already on $nic"
-  else
-    record address "$nic" "$ip/$PREFIX"   # before the change: a crash can't leave it unlisted
-    ip addr add "$ip/$PREFIX" dev "$nic"
-    echo "added $ip/$PREFIX to $nic"
-  fi
-done
+add_service_ips "$nic"
 finish_if address
 
 step firewall
@@ -274,8 +292,10 @@ if persistent; then
   apply+=(--units ${graphroot:+--graphroot "$graphroot"})
 fi
 # The staged files, the units and the pruning of what the old config added, together.
-changed="$(helper apply "${apply[@]}")" || { [[ -n "$changed" ]] && echo "$changed"; exit 1; }
-[[ -n "$changed" ]] && echo "$changed"
+out="$(helper apply "${apply[@]}")" || { [[ -n "$out" ]] && echo "$out"; exit 1; }
+[[ -n "$out" ]] && echo "$out"
+# Only these lines are changes (notes go to stderr); anything else must not restart the pod.
+changed="$(grep -E '^(wrote|removed|stopped|no longer wanted|re-added|closed) ' <<<"$out" || true)"
 if persistent; then
   # systemd brings the addresses and the pod back after a reboot (Quadlet: dciab-services.kube).
   grep -q '^wrote /' <<<"$changed" && systemctl daemon-reload

@@ -113,6 +113,11 @@ def _say(msg: str) -> None:
     print(msg, flush=True)
 
 
+def _note(msg: str) -> None:
+    """A note, not a change: stderr, so callers that treat output as changes ignore it."""
+    print(msg, file=sys.stderr, flush=True)
+
+
 def query(cmd: List[str]) -> subprocess.CompletedProcess:
     """A command whose exit code is the answer; a missing tool answers no."""
     try:
@@ -239,7 +244,7 @@ def _undo_unit(path: Path, say: Say) -> None:
 
 
 def prune(conf: Path, wanted: Set[str], kinds: Iterable[str] = ("address", "port"),
-          say: Say = _say) -> List[str]:
+          say: Say = _say, note: Say = _note) -> List[str]:
     """Undo recorded lines of the given kinds that aren't in wanted (the lines this config
     would record). Port lines are left alone while firewalld isn't running. Returns the lines
     it couldn't undo; they stay in the record."""
@@ -249,8 +254,8 @@ def prune(conf: Path, wanted: Set[str], kinds: Iterable[str] = ("address", "port
         if "port" in kinds and any(e and e[0] == "port" and " ".join(e) not in wanted
                                    for e in entries) and not firewalld_running():
             kinds.discard("port")
-            say("firewalld isn't running: the firewall ports weren't checked (they stay as they "
-                "are; run dciab services again with firewalld running to update them)")
+            note("firewalld isn't running: the firewall ports weren't checked (they stay as they "
+                 "are; run dciab services again with firewalld running to update them)")
         keep, left, removed = [], [], False
         for entry in entries:
             line = " ".join(entry)

@@ -288,12 +288,14 @@ def test_prune_without_firewalld_leaves_the_ports_alone(tmp_path, host):
              "port public 53/udp runtime", "port public 53/udp permanent",
              "port public 80/tcp runtime", "port public 80/tcp permanent", "port public 53/tcp"]
     conf = conf_with(tmp_path, lines)
-    msgs = []
-    assert lifecycle.prune(conf, cli.wanted(doc, "eth0", ""), say=msgs.append) == []
+    msgs, notes = [], []
+    assert lifecycle.prune(conf, cli.wanted(doc, "eth0", ""), say=msgs.append, note=notes.append) == []
     assert (conf / "created").read_text().splitlines() == lines        # nothing dropped
     assert host.permanent == {("public", "53/udp"), ("public", "80/tcp")}
     assert not [c for c in host.calls if "--remove-port" in " ".join(c)]
-    assert any("firewall ports weren't checked" in m for m in msgs)
+    # A note, not a change: services.sh would restart the pod for any change line (#230 N8).
+    assert any("firewall ports weren't checked" in m for m in notes)
+    assert msgs == []
     # the address kind is still pruned
     doc["spec"]["network"]["dnsServiceIPs"] = ["10.30.110.53", "10.30.110.55"]
     assert lifecycle.prune(conf, cli.wanted(doc, "eth0", ""), say=lambda m: None) == []
@@ -456,6 +458,12 @@ def test_apply_writes_files_and_units_together(tmp_path, monkeypatch, capsys):
     assert "ExecStartPre=ip addr replace 10.30.110.53/24 dev eth0" in text  # finding 7
     assert _apply(cfg, tmp_path, "--units", "--graphroot", "/var/lib/containers/storage") == 0
     assert capsys.readouterr().out == ""                                    # unchanged: silent
+    # firewalld stopped (no --zone) with ports recorded: the note goes to stderr, so stdout,
+    # which services.sh reads as changes, stays empty and the pod isn't restarted (#230 N8)
+    lifecycle.record(tmp_path / "st" / "services", ["port", "public", "53/udp", "permanent"])
+    assert _apply(cfg, tmp_path, "--units", "--graphroot", "/var/lib/containers/storage") == 0
+    got = capsys.readouterr()
+    assert got.out == "" and "firewall ports weren't checked" in got.err
 
 
 def test_a_run_stopped_before_the_pod_step_leaves_the_old_config_whole(tmp_path, monkeypatch, capsys):
@@ -555,3 +563,83 @@ def test_persistent_needs_systemd_and_quadlet(monkeypatch, tmp_path):
     import shutil
     monkeypatch.setattr(shutil, "which", lambda t: "/usr/bin/systemctl")
     assert units.persistent()
+
+
+def _address_step(tmp_path, addrs, record_lines, ips="10.30.110.53 10.30.110.54", prefix="24"):
+    """Runs services.sh's add_service_ips against a fake ip (state in a file)."""
+    import subprocess
+    from conftest import ROOT
+    step = (ROOT / "lib" / "steps" / "services.sh").read_text()
+    funcs = []
+    for name in ("cidrs_of", "recorded", "record", "add_service_ips"):
+        lines = step.splitlines()
+        i = next(n for n, line in enumerate(lines) if line.startswith(f"{name}() "))
+        if lines[i].rstrip().endswith("}"):
+            funcs.append(lines[i])
+        else:
+            j = next(n for n in range(i, len(lines)) if lines[n] == "}")
+            funcs.append("\n".join(lines[i:j + 1]))
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    state = tmp_path / "addrs"
+    state.write_text("".join(f"{a}\n" for a in addrs))
+    conf = tmp_path / "conf"
+    conf.mkdir()
+    (conf / "created").write_text("".join(f"{line}\n" for line in record_lines))
+    fake = tmp_path / "bin"
+    fake.mkdir()
+    (fake / "ip").write_text(f"""#!/bin/sh
+case "$*" in
+  "-o -4 addr show dev eth0") while read -r a; do echo "2: eth0    inet $a brd x scope global eth0"; done < {state} ;;
+  "addr add "*) echo "$3" >> {state} ;;
+  *) echo "unexpected: $*" >&2; exit 9 ;;
+esac
+""")
+    (fake / "ip").chmod(0o755)
+    script = "\n".join(funcs) + f'\nCONF_DIR={conf}\nSERVICE_IPS="{ips}"\nPREFIX={prefix}\nadd_service_ips eth0\n'
+    r = subprocess.run(["bash", "-c", script], capture_output=True, text=True,
+                       env={"PATH": f"{fake}:/usr/bin:/bin"})
+    assert r.returncode == 0, r.stderr
+    return r, state.read_text().split(), (conf / "created").read_text().splitlines()
+
+
+def test_address_step_compares_ip_and_prefix(tmp_path):
+    """has the IP with the wanted prefix: nothing; with another prefix that dciab added (recorded):
+    the wanted one is added and recorded, the old one goes in the pod step's prune; with another
+    prefix someone else added: reported and never touched (#230 N9)."""
+    r, addrs, rec = _address_step(tmp_path, ["10.30.110.53/24"], [])
+    assert "10.30.110.53/24 already on eth0" in r.stdout
+    assert addrs == ["10.30.110.53/24", "10.30.110.54/24"] and rec == ["address eth0 10.30.110.54/24"]
+
+    r, addrs, rec = _address_step(tmp_path / "b", ["10.30.110.53/16", "10.30.110.54/24"],
+                                  ["address eth0 10.30.110.53/16", "address eth0 10.30.110.54/24"])
+    assert "added 10.30.110.53/24 to eth0 (the old prefix, 10.30.110.53/16, goes in the pod step)" in r.stdout
+    assert "10.30.110.53/24" in addrs and "address eth0 10.30.110.53/24" in rec
+
+    r, addrs, rec = _address_step(tmp_path / "c", ["10.30.110.53/16"], [])
+    assert "10.30.110.53 is on eth0 as 10.30.110.53/16, which dciab services didn't add" in r.stderr
+    assert "10.30.110.53/24" not in addrs and "address eth0 10.30.110.53/24" not in rec
+    # a lookalike IP (10.30.110.531) is a different address
+    r, addrs, rec = _address_step(tmp_path / "d", ["10.30.110.531/24"], [], ips="10.30.110.53")
+    assert "added 10.30.110.53/24 to eth0" in r.stdout and "old prefix" not in r.stdout
+
+
+def test_units_slow_their_retries_where_systemd_can(tmp_path, monkeypatch):
+    """A lasting failure (missing image, renamed NIC) retries every 5 s; with systemd 254 or
+    later the retries slow to every 5 minutes, so the journal doesn't fill (#230 N10)."""
+    conf = tmp_path / "services"
+    kw = dict(systemd_dir=tmp_path / "s", quadlet_dir=tmp_path / "q")
+    slow = units.render(conf, "eth0", 24, ["10.0.0.53"], backoff=True, **kw)
+    plain = units.render(conf, "eth0", 24, ["10.0.0.53"], backoff=False, **kw)
+    for text in slow.values():
+        assert "RestartSteps=10\nRestartMaxDelaySec=5min" in text and "RestartSec=5" in text
+    for text in plain.values():
+        assert "RestartSteps" not in text and "RestartMaxDelaySec" not in text and "RestartSec=5" in text
+
+    import subprocess as sp
+    for out, version, has in (("systemd 257 (257.4-1.el10)\n+PAM ...", 257, True),
+                              ("systemd 252 (252-46.el9)\n", 252, False), ("", 0, False)):
+        monkeypatch.setattr(sp, "run",
+                            lambda *a, _o=out, **k: sp.CompletedProcess(a, 0, _o, ""))
+        assert units.systemd_version() == version
+        auto = units.render(conf, "eth0", 24, ["10.0.0.53"], **kw)
+        assert all(("RestartSteps" in t) == has for t in auto.values())
