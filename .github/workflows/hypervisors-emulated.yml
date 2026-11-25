@@ -47,15 +47,21 @@ concurrency:
 
 jobs:
   emulated:
-    name: emulated bare server (${{ matrix.mode }})
+    name: emulated bare server (${{ matrix.leg }})
     runs-on: ubuntu-24.04
-    timeout-minutes: 120
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
-        mode: [untagged, tagged]
+        # Each leg is its own runner with its own installs (run.py SCENARIOS); the untagged mode
+        # is split in two so its two installs no longer run one after the other.
+        include:
+          - {leg: untagged-install, mode: untagged}
+          - {leg: untagged-reinstall, mode: untagged}
+          - {leg: tagged, mode: tagged}
     env:
       WORK: ${{ github.workspace }}/../emulator
+      DCIAB_LEG: ${{ matrix.leg }}
     steps:
       - uses: actions/checkout@v4
       - name: KVM, libvirt, OVMF
@@ -95,7 +101,7 @@ jobs:
           echo "$SHA  $RUNNER_TEMP/isos/$NAME" | sha256sum -c -
           cp "$RUNNER_TEMP/isos/$NAME" "$WORK/isos/$NAME"
       - uses: actions/cache/save@v4
-        if: github.event_name != 'pull_request' && matrix.mode == 'untagged'
+        if: github.event_name != 'pull_request' && matrix.leg == 'untagged-install'
         continue-on-error: true    # already saved (the key exists): nothing to do
         with:
           path: ${{ runner.temp }}/isos
@@ -110,24 +116,31 @@ jobs:
       - name: Scenarios
         run: |
           sudo env "DCIAB_CHRONY_IMAGE=$DCIAB_CHRONY_IMAGE" "DCIAB_PVE_ASSISTANT_IMAGE=$DCIAB_PVE_ASSISTANT_IMAGE" \
-            python3 hack/e2e/hypervisors/run.py "$WORK"
+            "DCIAB_LEG=$DCIAB_LEG" python3 hack/e2e/hypervisors/run.py "$WORK"
       - name: Report
         if: always()
         run: |
           set +e
-          sudo python3 - "$WORK/report.json" <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          sudo python3 - "$WORK/report.json" 2> "$RUNNER_TEMP/annotations" <<'PY' >> "$GITHUB_STEP_SUMMARY"
           import json, sys
           try:
               r = json.load(open(sys.argv[1]))
           except OSError:
               print("no report.json"); sys.exit(0)
-          print(f"### {r['mode']}: {'passed' if r['passed'] else 'FAILED'}\n")
-          print("| Scenario | Result | Seconds | Details |\n| --- | --- | --- | --- |")
+          cell = lambda v: str(v).replace("|", "\\|").replace("\n", " ")
+          print(f"### {r.get('leg', r['mode'])}: {'passed' if r['passed'] else 'FAILED'}\n")
+          print("| Scenario | Result | Seconds | Failing assertion or details |\n| --- | --- | --- | --- |")
           for s in r["scenarios"]:
-              print(f"| {s['name']} | {s['result']} | {s.get('seconds', '')} | {s.get('error') or json.dumps(s.get('details', {}))} |")
+              mark = "pass" if s["result"] == "pass" else "**FAIL**"
+              print(f"| {s['name']} | {mark} | {s.get('seconds', '')} | {cell(s.get('error') or json.dumps(s.get('details', {})))} |")
+              if s["result"] != "pass":   # an annotation on the run page, no log reading needed
+                  print(f"::error title=emulated {r.get('leg', r['mode'])}: {s['name']}::{cell(s.get('error', ''))}", file=sys.stderr)
           if r.get("error"):
-              print(f"\n{r['error']}")
+              print(f"\n{cell(r['error'])}")
+              print(f"::error title=emulated {r.get('leg', r['mode'])}: setup::{cell(r['error'])}", file=sys.stderr)
           PY
+          # Workflow commands are read from the step's output: the annotations go there, the table to the summary.
+          grep '^::error' "$RUNNER_TEMP/annotations" || true
       - name: Diagnostics
         if: always()
         run: |
