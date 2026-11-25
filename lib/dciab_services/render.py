@@ -135,10 +135,11 @@ def corefile(doc: dict) -> str:
             raise ServicesError(f"network.upstreamResolvers: '{u}' is not an IPv4 address") from None
     if upstream:
         # Forwarding only for the site's own networks: anything else is refused, so the DNS
-        # service IPs are never an open resolver.
+        # service IPs are never an open resolver. No cache here: CoreDNS runs its cache before
+        # acl, so a name an allowed client looked up would be answered to anyone.
         allow = " ".join(client_networks(doc))
         blocks.append(f". {{\n    bind {bind}\n    acl {{\n        allow net {allow}\n        block\n    }}\n"
-                      f"    forward . {' '.join(upstream)}\n    cache {TTL}\n"
+                      f"    forward . {' '.join(upstream)}\n"
                       f"    errors\n    log\n}}\n")
     head = "# Rendered by dciab services from dciab.yaml. Changes are overwritten.\n"
     if not upstream:

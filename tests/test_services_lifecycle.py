@@ -212,6 +212,8 @@ def test_forwarding_only_for_the_site_networks():
         if isinstance(c, dict) and c.get("podCIDR"):
             assert c["podCIDR"] in nets
     assert f"acl {{\n        allow net {' '.join(nets)}\n        block\n    }}\n    forward ." in core
+    # no cache: CoreDNS answers from its cache before acl runs, to anyone
+    assert "cache" not in core
     # an isolated site forwards nothing, so there is no forwarding block to guard
     assert "acl" not in render.corefile(bare())
 

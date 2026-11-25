@@ -24,7 +24,7 @@ When `network.upstreamResolvers` lists servers, CoreDNS forwards names outside t
 - each cluster's `podCIDR`
 - `127.0.0.0/8`
 
-Queries for other names from anywhere else are refused (CoreDNS `acl`). The site's own zones answer anyone who can reach the addresses.
+Queries for other names from anywhere else are refused (CoreDNS `acl`). Forwarded answers aren't cached, because CoreDNS consults its cache before `acl` and would hand a cached answer to anyone. The site's own zones answer anyone who can reach the addresses.
 
 ## What it adds to the host, and taking it away
 

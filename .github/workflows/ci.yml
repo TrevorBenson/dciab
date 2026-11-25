@@ -746,10 +746,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: sudo apt-get update -q && sudo apt-get install -y -q python3-yaml python3-jsonschema dnsutils firewalld
-      - name: firewalld runs, as on the bootstrap host
-        run: sudo systemctl start firewalld && sudo firewall-cmd --state
       - name: This branch's chrony image (job day0-chrony publishes it on main)
         run: echo "DCIAB_CHRONY_IMAGE=$(sudo images/day0-chrony/build.sh)" >> "$GITHUB_ENV"
+      - name: firewalld runs, as on the bootstrap host (after the image build, whose network it would block)
+        run: sudo systemctl start firewalld && sudo firewall-cmd --state
       - name: Site and dummy interface
         run: |
           set -euo pipefail
