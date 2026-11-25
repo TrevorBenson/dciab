@@ -292,7 +292,7 @@ class FakeBMC:
 
     def __init__(self, cert, media="manager", actions=True, power="On", inserted=None, boot_options=None,
                  reset_status=204, overrides=None, bios=None, secure_boot=None, drives=None, apply_times=True,
-                 volumes=None):
+                 volumes=None, patch_fail=()):
         boot_options = DEFAULT_OPTS if boot_options is None else boot_options
         # Preparation (prepare.py): BIOS attributes, Secure Boot, drives; None means the BMC offers none.
         self.bios, self.pending, self.secure_boot = bios, {}, secure_boot
@@ -405,6 +405,8 @@ class FakeBMC:
             def do_PATCH(self):
                 body = self._body()
                 fake.calls.append(("PATCH", self.path, body))
+                if self.path in patch_fail:
+                    return self._send(500)
                 if self.path == SYS:
                     fake.boot = dict(fake.boot, **body["Boot"])
                 elif self.path == SYS + "/Bios/Settings" and fake.bios is not None:
@@ -1255,19 +1257,53 @@ DATA = {"Id": "1", "Manufacturer": "SEAGATE", "Model": "ST4000NM0035", "SerialNu
         "CapacityBytes": 4000787030016, "Identifiers": [{"DurableNameFormat": "NAA", "DurableName": "5000C500A1B2C3D4"}]}
 
 
-def test_preparation_stages_uefi_virtualization_and_secure_boot_before_the_reset(fake_bmc, tmp_path):
-    f = fake_bmc(power="Off", bios={"BootMode": "Bios", "ProcVirtualization": "Disabled"}, secure_boot=False,
+def test_preparation_stages_bios_then_secure_boot_before_the_reset(fake_bmc, tmp_path):
+    f = fake_bmc(power="Off", bios={"BootMode": "Uefi", "ProcVirtualization": "Disabled"}, secure_boot=False,
                  drives=[DATA, BOSS])
     failed, held, _, out = guard(f, tmp_path, boot_mode="UEFISecureBoot")
     assert (failed, held) == ([], [])
-    assert f.pending == {"BootMode": "Uefi", "ProcVirtualization": "Enabled"} and f.secure_boot is True
+    assert f.pending == {"ProcVirtualization": "Enabled"} and f.secure_boot is True
     patch = next(c for c in f.calls if c[1] == SYS + "/Bios/Settings")
     assert patch[2]["@Redfish.SettingsApplyTime"] == {"ApplyTime": "OnReset"}
     assert "disk matching model=Dell BOSS-N1: DELL Dell BOSS-N1" in out and "Secure Boot set on" in out
-    # Every preparation write comes before the reset that applies it.
+    # BIOS before Secure Boot, and every preparation write before the reset that applies it.
     order = [c[1] for c in f.calls]
-    assert order.index(SYS + "/Bios/Settings") < order.index(SYS + "/Actions/ComputerSystem.Reset")
+    assert order.index(SYS + "/Bios/Settings") < order.index(SYS + "/SecureBoot")
     assert order.index(SYS + "/SecureBoot") < order.index(SYS + "/Actions/ComputerSystem.Reset")
+
+
+def test_legacy_boot_mode_holds_a_host_without_a_record(fake_bmc, tmp_path):
+    f = fake_bmc(power="Off", bios={"BootMode": "Bios", "ProcVirtualization": "Disabled"}, secure_boot=False,
+                 drives=[BOSS])
+    failed, held, _, out = guard(f, tmp_path, first_install=["pve01"], boot_mode="UEFISecureBoot")
+    assert (failed, held) == ([], ["pve01"]) and "legacy" in out
+    assert not [c for c in f.calls if c[0] in CHANGES] and f.pending == {} and f.secure_boot is False
+
+
+def test_reinstall_of_a_legacy_host_stages_uefi_but_not_secure_boot(fake_bmc, tmp_path):
+    f = fake_bmc(power="Off", bios={"BootMode": "Bios", "ProcVirtualization": "Disabled"}, secure_boot=False,
+                 drives=[BOSS])
+    failed, held, _, out = guard(f, tmp_path, reinstall=["pve01"], boot_mode="UEFISecureBoot")
+    assert (failed, held) == ([], [])
+    assert f.pending == {"BootMode": "Uefi", "ProcVirtualization": "Enabled"}
+    assert f.secure_boot is False and not [c for c in f.calls if c[1] == SYS + "/SecureBoot"]
+    assert "Secure Boot isn't changed while the boot mode reads legacy" in out
+
+
+def test_a_failed_secure_boot_write_names_the_staged_bios_change(fake_bmc, tmp_path):
+    f = fake_bmc(power="Off", bios={"BootMode": "Uefi", "ProcVirtualization": "Disabled"}, secure_boot=False,
+                 drives=[BOSS], patch_fail=(SYS + "/SecureBoot",))
+    failed, held, _, out = guard(f, tmp_path, boot_mode="UEFISecureBoot")
+    assert failed == ["pve01"] and "pending until the next reset: BIOS ProcVirtualization -> Enabled" in out
+    assert cli.read_install(tmp_path / "installs", "pve01") is None and f.power == "Off"
+
+
+def test_a_failed_media_attach_after_preparation_names_the_staged_changes(fake_bmc, tmp_path):
+    f = fake_bmc(power="Off", bios={"BootMode": "Uefi", "ProcVirtualization": "Disabled"}, secure_boot=False,
+                 drives=[BOSS], patch_fail=(SYS,))          # the boot override PATCH fails
+    failed, held, _, out = guard(f, tmp_path, boot_mode="UEFISecureBoot")
+    assert failed == ["pve01"]
+    assert "pending until the next reset: BIOS ProcVirtualization -> Enabled; Secure Boot on" in out
 
 
 def test_preparation_changes_nothing_that_already_matches(fake_bmc, tmp_path):
@@ -1289,7 +1325,7 @@ def test_secure_boot_follows_boot_mode_off(fake_bmc, tmp_path):
                                    {"serialNumber": "CN0WW56VFCP0008900AB", "wwn": "0x5000c500a1b2c3d4"}],
                          ids=["serial", "wwn", "serial-and-wwn-on-different-disks"])
 def test_a_clear_disk_mismatch_refuses_the_install_and_writes_nothing(fake_bmc, tmp_path, hints):
-    f = fake_bmc(power="Off", bios={"BootMode": "Bios", "ProcVirtualization": "Disabled"}, secure_boot=False,
+    f = fake_bmc(power="Off", bios={"BootMode": "Uefi", "ProcVirtualization": "Disabled"}, secure_boot=False,
                  drives=[DATA, BOSS])
     failed, held, _, out = guard(f, tmp_path, hints=hints)
     assert failed == ["pve01"] and "no drive the BMC lists matches rootDeviceHints" in out and "ST4000NM0035" in out
@@ -1356,3 +1392,50 @@ def test_raid_volumes_or_no_drives_make_a_serial_mismatch_a_note(fake_bmc, tmp_p
     assert failed == [] and "lists no drives" in out
     f3 = fake_bmc(power="Off", drives=[BOSS], volumes=[vol])
     assert guard(f3, tmp_path / "c", hints={"wwn": "0x6d0946606f3e2a00"})[:2] == ([], [])   # matches the volume
+
+
+# --- review on #217: disk identity, WWN matching, paged storage, boolean attributes ------------
+
+def test_serial_match_with_a_different_model_installs_with_a_note(fake_bmc, tmp_path):
+    f = fake_bmc(power="Off", drives=[DATA, BOSS])
+    failed, held, _, out = guard(f, tmp_path, hints={"serialNumber": "CN0WW56VFCP0008900AB", "model": "Samsung SSD 870"})
+    assert (failed, held) == ([], []) and f.power == "On"
+    assert "differs in model 'Samsung SSD 870'" in out and "serial number and WWN decide" in out
+
+
+@pytest.mark.parametrize("want,have,expected", [
+    ("500a0751e5c1d2e3", "500a0751e5c1d2e3", True),
+    ("6500a0751e5c1d2e3", "500a0751e5c1d2e3", True),       # 16 hex digits in common
+    ("51e5c1d2e3", "500a0751e5c1d2e3", False),             # a short suffix isn't enough
+    ("", "500a0751e5c1d2e3", False),
+])
+def test_wwn_matching(want, have, expected):
+    assert prepare.wwn_matches(want, have) is expected
+
+
+@pytest.mark.parametrize("wwn", ["0x", "naa.", "  "])
+def test_a_wwn_hint_with_no_digits_is_refused(fake_bmc, tmp_path, wwn):
+    f = fake_bmc(power="Off", drives=[BOSS])
+    failed, _, _, out = guard(f, tmp_path, hints={"wwn": wwn})
+    assert failed == ["pve01"] and "has no digits" in out and not [c for c in f.calls if c[0] in CHANGES]
+
+
+def test_drives_on_a_later_storage_page_are_read(fake_bmc, tmp_path):
+    over = {SYS + "/Storage": {"Members": [], "Members@odata.nextLink": SYS + "/Storage?page=2"},
+            SYS + "/Storage?page=2": {"Members": [{"@odata.id": SYS + "/Storage/RAID"}]}}
+    f = fake_bmc(power="Off", drives=[BOSS], overrides=over)
+    failed, _, _, out = guard(f, tmp_path, hints={"serialNumber": "CN0WW56VFCP0008900AB"})
+    assert failed == [] and "disk matching serialNumber=CN0WW56VFCP0008900AB" in out
+
+
+def test_a_storage_list_that_never_ends_is_unreadable_not_a_refusal(fake_bmc, tmp_path):
+    over = {SYS + "/Storage": {"Members": [], "Members@odata.nextLink": SYS + "/Storage"}}
+    f = fake_bmc(power="Off", drives=[BOSS], overrides=over)
+    failed, _, _, out = guard(f, tmp_path, hints={"serialNumber": "CN0WW56VFCP0008900AB"})
+    assert failed == [] and "storage couldn't be read" in out
+
+
+@pytest.mark.parametrize("value,expected", [(False, True), (True, None), (0, None), (1, None),
+                                            ("Disabled", "Enabled"), ("Disable", "Enable"), ("Enabled", None)])
+def test_only_real_booleans_and_known_strings_are_turned_on(value, expected):
+    assert prepare.turned_on(value) == expected

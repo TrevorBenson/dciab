@@ -307,15 +307,22 @@ def media(hosts: List[dict], doc: dict, installs: Path, reinstall: List[str], bm
                 f"{st['BootSourceOverrideEnabled']}")
             if st["PowerState"] not in ("On", "Off"):
                 raise RedfishError(f"the server is {st['PowerState']}; run again once it is On or Off")
-            prep = prepare.run(bmc, doc["spec"]["hypervisors"]["bootMode"], h.get("rootDeviceHints") or {})
+            prep = prepare.run(bmc, doc["spec"]["hypervisors"]["bootMode"], h.get("rootDeviceHints") or {},
+                               hold_legacy=name not in reinstall)
+            if prep.hold:
+                hold(name, f"no install recorded, but {prep.hold}")
+                continue
             for line in prep.done:
                 log(f"  {name}: {line}")
             for line in prep.notes:
                 log(f"  {name}: note: {line}")
             if prep.refuse:
                 raise RedfishError(f"not installing: {prep.refuse}")
-            for line in bmc.prepare(url):
-                log(f"  {name}: {line}")
+            try:
+                for line in bmc.prepare(url):
+                    log(f"  {name}: {line}")
+            except RedfishError as exc:
+                raise RedfishError(f"{exc}{prepare.pending_note(prep.staged)}") from None
             try:
                 # Recorded before the reset: from here on a rerun never resets this host by accident.
                 write_install(installs, name, started=_now(), iso=url, outcome="in-progress",
@@ -325,7 +332,8 @@ def media(hosts: List[dict], doc: dict, installs: Path, reinstall: List[str], bm
                 # Disarm, so the next power-on doesn't start the installer unasked; then hold the host.
                 for line in bmc.disarm():
                     log(f"  {name}: {line}")
-                log(f"  {name}: the reset may have happened anyway; check the server's console through its BMC")
+                log(f"  {name}: the reset may have happened anyway; check the server's console through its BMC"
+                    + prepare.pending_note(prep.staged))
                 try:
                     write_install(installs, name, outcome="reset-failed")
                 except OSError as exc:

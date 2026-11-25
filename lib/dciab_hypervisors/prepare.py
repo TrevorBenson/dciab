@@ -7,18 +7,25 @@ names and values the major vendors share. BIOS and Secure Boot changes are stage
 the next reset, which is the reset that boots the installer.
 
 What it does with each:
-  boot mode       UEFI required. A BIOS BootMode attribute set to legacy is staged to Uefi;
-                  no readable boot mode is a note, not a failure
+  boot mode       UEFI required. A BIOS BootMode attribute set to legacy holds a host with no
+                  install record (a legacy-mode server with a disk may hold an installed OS);
+                  with --reinstall it is staged to Uefi. No readable boot mode is a note
   Secure Boot     set to spec.hypervisors.bootMode (on for UEFISecureBoot, off for UEFI) when
-                  the BMC offers ComputerSystem.SecureBoot; a note when it doesn't
+                  the BMC offers ComputerSystem.SecureBoot; a note when it doesn't. Never
+                  changed while the boot mode still reads legacy (firmware refuses Secure Boot
+                  in legacy mode): a note says to set it once the boot mode is UEFI
   virtualization  a known BIOS attribute set to Disabled is staged to Enabled; unreadable is a
                   note, never a failure
-  disk            rootDeviceHints against the drives the BMC lists. No drive with the hinted
-                  serial number or WWN is a refusal (the installer would pick nothing, or the
-                  wrong disk), unless the storage has RAID volumes (the installer may see a
-                  virtual disk under other identifiers); model and vendor only, no drives
-                  listed, or nothing to compare, is a note: Redfish and udev name models and
-                  vendors differently
+  disk            rootDeviceHints against the drives the BMC lists. Serial number and WWN alone
+                  decide: no drive with the hinted serial number or WWN is a refusal (the
+                  installer would pick nothing, or the wrong disk), unless the storage has RAID
+                  volumes (the installer may see a virtual disk under other identifiers). A
+                  model or vendor that differs on the drive matching the serial or WWN is a
+                  note. Model and vendor only, no drives listed, or nothing to compare, is a
+                  note: Redfish and udev name models and vendors differently. A WWN hint with no
+                  digits is refused
+Writes happen only when nothing holds or refuses the host: BIOS attributes first, then Secure
+Boot. If a write fails, the error says which changes are already staged in the firmware.
 """
 
 from __future__ import annotations
@@ -32,7 +39,17 @@ BOOT_MODE_KEYS = ("BootMode",)
 LEGACY_BOOT_VALUES = ("Bios", "LegacyBios", "Legacy")
 VIRT_KEYS = ("ProcVirtualization", "IntelVirtualizationTechnology", "VirtualizationTechnology",
              "IntelVTX", "VMX", "SVMMode", "SvmMode", "AmdVirtualization", "ProcAmdVirtualization")
-ON_FOR = {"Disabled": "Enabled", "Disable": "Enable", False: True}
+ON_FOR = {"Disabled": "Enabled", "Disable": "Enable"}
+
+
+def turned_on(value: object) -> Optional[object]:
+    """The "on" value for an attribute that reads off, or None. Only a real boolean False maps to
+    True: an integer 0 equals False in Python, but it isn't a boolean attribute."""
+    if type(value) is bool:
+        return True if value is False else None
+    if isinstance(value, str):
+        return ON_FOR.get(value)
+    return None
 
 
 @dataclass
@@ -40,7 +57,9 @@ class Prep:
     done: List[str] = field(default_factory=list)      # what was checked or changed
     notes: List[str] = field(default_factory=list)     # what couldn't be checked; never blocks
     refuse: Optional[str] = None                        # why the install must not go ahead
-    bios: Dict[str, object] = field(default_factory=dict)   # BIOS attributes staged
+    hold: Optional[str] = None                          # why the host may hold an install
+    bios: Dict[str, object] = field(default_factory=dict)   # BIOS attributes to stage
+    staged: List[str] = field(default_factory=list)     # changes written, pending until a reset
 
 
 def plan_lines(boot_mode: str, hints: Dict[str, object]) -> List[str]:
@@ -77,14 +96,30 @@ def describe(drive: dict) -> str:
     return " ".join(bits) or str(drive.get("Id") or drive.get("Name") or "?")
 
 
-def match_drive(hints: Dict[str, object], drive: dict) -> bool:
-    """Every hint Redfish can show matches this drive. deviceName can't be compared."""
+def wwn_matches(want: str, have: str) -> bool:
+    """Equal, or one a suffix of the other with at least 16 hex digits in common (vendors report
+    a NAA WWN with or without its leading digits). Never matches an empty WWN."""
+    if not want or not have:
+        return False
+    if want == have:
+        return True
+    short = min(len(want), len(have))
+    return short >= 16 and (want.endswith(have) or have.endswith(want))
+
+
+def match_identity(hints: Dict[str, object], drive: dict) -> bool:
+    """The hinted serial number and WWN (those given) match this drive."""
     if "serialNumber" in hints and _norm(drive.get("SerialNumber") or "") != _norm(hints["serialNumber"]):
         return False
-    if "wwn" in hints:
-        want = _wwn(hints["wwn"])
-        if not any(w.endswith(want) or want.endswith(w) for w in _drive_wwns(drive)):
-            return False
+    if "wwn" in hints and not any(wwn_matches(_wwn(hints["wwn"]), w) for w in _drive_wwns(drive)):
+        return False
+    return True
+
+
+def match_drive(hints: Dict[str, object], drive: dict) -> bool:
+    """Every hint Redfish can show matches this drive. deviceName can't be compared."""
+    if not match_identity(hints, drive):
+        return False
     if "model" in hints and _norm(hints["model"]) not in _norm(drive.get("Model") or ""):
         return False
     if "vendor" in hints and _norm(hints["vendor"]) not in _norm(
@@ -93,31 +128,53 @@ def match_drive(hints: Dict[str, object], drive: dict) -> bool:
     return True
 
 
-def disk_check(hints: Dict[str, object], drives: Optional[List[dict]]) -> Tuple[Optional[bool], str]:
-    """(True, what matched) | (False, why to refuse) | (None, why it's unknown)."""
+def _descriptive_mismatch(hints: Dict[str, object], drive: dict) -> List[str]:
+    out = []
+    if "model" in hints and _norm(hints["model"]) not in _norm(drive.get("Model") or ""):
+        out.append(f"model {hints['model']!r} (the BMC reports {drive.get('Model') or 'none'!r})")
+    if "vendor" in hints and _norm(hints["vendor"]) not in _norm(
+            f"{drive.get('Manufacturer') or ''} {drive.get('Model') or ''}"):
+        out.append(f"vendor {hints['vendor']!r} (the BMC reports {drive.get('Manufacturer') or 'none'!r})")
+    return out
+
+
+def disk_check(hints: Dict[str, object], drives: Optional[List[dict]]) -> Tuple[Optional[bool], str, List[str]]:
+    """(True, what matched, notes) | (False, why to refuse, []) | (None, why it's unknown, []).
+    Serial number and WWN alone decide a refusal; model and vendor only add notes."""
     comparable = {k: v for k, v in hints.items() if k in ("serialNumber", "wwn", "model", "vendor")}
+    if "wwn" in comparable and not _wwn(comparable["wwn"]):
+        return False, f"rootDeviceHints.wwn {comparable['wwn']!r} has no digits; give the disk's full WWN", []
     if not comparable:
-        return None, "the disk can't be checked over Redfish (deviceName names the installer's view, not the BMC's)"
+        return None, "the disk can't be checked over Redfish (deviceName names the installer's view, not the BMC's)", []
     if not drives:
-        return None, "the BMC lists no drives, so the disk matching rootDeviceHints can't be checked before the install"
-    matches = [d for d in drives if match_drive(comparable, d)]
+        return None, "the BMC lists no drives, so the disk matching rootDeviceHints can't be checked before the install", []
     hinted = ", ".join(f"{k}={v}" for k, v in sorted(comparable.items()))
-    if matches:
-        return True, f"disk matching {hinted}: {describe(matches[0])}"
     listed = "; ".join(describe(d) for d in drives) or "none"
-    if any(d.get("_volume") for d in drives):
-        return None, (f"no drive or volume the BMC lists matches {hinted} (it lists: {listed}); behind a RAID "
-                      "controller the installer may see the disk under other identifiers, so the installer decides")
-    if "serialNumber" in comparable or "wwn" in comparable:
+    identity = {k: v for k, v in comparable.items() if k in ("serialNumber", "wwn")}
+    if identity:
+        matches = [d for d in drives if match_identity(identity, d)]
+        if matches:
+            notes = [f"the drive matching {', '.join(f'{k}={v}' for k, v in sorted(identity.items()))} differs in "
+                     + " and ".join(_descriptive_mismatch(comparable, matches[0]))
+                     + "; serial number and WWN decide, so the install goes ahead"] \
+                if _descriptive_mismatch(comparable, matches[0]) else []
+            return True, f"disk matching {hinted}: {describe(matches[0])}", notes
+        if any(d.get("_volume") for d in drives):
+            return None, (f"no drive or volume the BMC lists matches {hinted} (it lists: {listed}); behind a RAID "
+                          "controller the installer may see the disk under other identifiers, so the installer decides"), []
         return False, (f"no drive the BMC lists matches rootDeviceHints ({hinted}); it lists: {listed}. "
-                       "Fix the hints, or check the disk is in the server and visible to the BMC")
+                       "Fix the hints, or check the disk is in the server and visible to the BMC"), []
+    matches = [d for d in drives if match_drive(comparable, d)]
+    if matches:
+        return True, f"disk matching {hinted}: {describe(matches[0])}", []
     return None, (f"no drive the BMC lists matches {hinted} (it lists: {listed}); model and vendor names can differ "
-                  "between the BMC and the installer, so the installer decides")
+                  "between the BMC and the installer, so the installer decides"), []
 
 
-def run(bmc, boot_mode: str, hints: Dict[str, object]) -> Prep:
-    """Check and stage what an install needs. Never resets; raises RedfishError only for a
-    write the BMC refused."""
+def run(bmc, boot_mode: str, hints: Dict[str, object], hold_legacy: bool = True) -> Prep:
+    """Check and stage what an install needs. Never resets. hold_legacy (a host with no
+    --reinstall) holds the host when its boot mode reads legacy, before any write. Raises
+    RedfishError only for a write the BMC refused; its message lists what is already staged."""
     from .redfish import RedfishError
     prep = Prep()
 
@@ -129,10 +186,15 @@ def run(bmc, boot_mode: str, hints: Dict[str, object]) -> Prep:
         prep.notes.append(f"BIOS attributes couldn't be read ({exc})")
     attrs = (bios or {}).get("Attributes") or {}
     mode_key = next((k for k in BOOT_MODE_KEYS if k in attrs), None)
+    legacy = mode_key is not None and attrs[mode_key] in LEGACY_BOOT_VALUES
     if mode_key is None:
         prep.notes.append("the boot mode can't be read over Redfish; the install boots the ISO in UEFI mode, "
                           "which fails on a server set to legacy BIOS boot")
-    elif attrs[mode_key] in LEGACY_BOOT_VALUES:
+    elif legacy:
+        if hold_legacy:
+            prep.hold = (f"the BIOS boot mode reads {attrs[mode_key]} (legacy), and a legacy-mode server may hold an "
+                         "installed OS that its boot entries don't show")
+            return prep      # nothing written
         prep.bios[mode_key] = "Uefi"
     else:
         prep.done.append(f"boot mode {attrs[mode_key]}")
@@ -141,8 +203,9 @@ def run(bmc, boot_mode: str, hints: Dict[str, object]) -> Prep:
         prep.notes.append("virtualization extensions can't be read over Redfish; check them in the firmware setup, "
                           "or VMs won't start on this host")
     for k in virt:
-        if attrs[k] in ON_FOR:
-            prep.bios[k] = ON_FOR[attrs[k]]
+        on = turned_on(attrs[k])
+        if on is not None:
+            prep.bios[k] = on
         else:
             prep.done.append(f"{k} {attrs[k]}")
 
@@ -164,6 +227,12 @@ def run(bmc, boot_mode: str, hints: Dict[str, object]) -> Prep:
         path, res = sb
         if res.get("SecureBootEnable") is want:
             prep.done.append(f"Secure Boot {'on' if want else 'off'} ({boot_mode})")
+        elif legacy:
+            # Firmware refuses Secure Boot while the boot mode is legacy; the boot mode change only
+            # applies at the reset.
+            prep.notes.append(f"Secure Boot isn't changed while the boot mode reads legacy; once the boot mode is "
+                              f"UEFI, set Secure Boot {'on' if want else 'off'} to match bootMode {boot_mode} "
+                              "(firmware setup, or a later --reinstall run)")
         else:
             sb_change = path
 
@@ -173,17 +242,32 @@ def run(bmc, boot_mode: str, hints: Dict[str, object]) -> Prep:
     except RedfishError as exc:
         drives = None
         prep.notes.append(f"the BMC's storage couldn't be read ({exc})")
-    ok, msg = disk_check(hints, drives)
+    ok, msg, disk_notes = disk_check(hints, drives)
     if ok is False:
         prep.refuse = msg
         return prep          # nothing written: a refused host keeps its settings
     (prep.done if ok else prep.notes).append(msg)
+    prep.notes.extend(disk_notes)
 
-    # Writes, only once nothing refuses the install.
-    if sb_change:
-        bmc.set_secure_boot(sb_change, want)
-        prep.done.append(f"Secure Boot set {'on' if want else 'off'} for bootMode {boot_mode}; it applies at the reset")
-    if prep.bios:
-        bmc.set_bios(bios, prep.bios)
-        prep.done.append("BIOS " + ", ".join(f"{k} -> {v}" for k, v in prep.bios.items()) + "; applies at the reset")
+    # Writes, only once nothing holds or refuses the install: BIOS first (boot mode), then Secure Boot.
+    try:
+        if prep.bios:
+            bmc.set_bios(bios, prep.bios)
+            change = "BIOS " + ", ".join(f"{k} -> {v}" for k, v in prep.bios.items())
+            prep.staged.append(change)
+            prep.done.append(change + "; applies at the reset")
+        if sb_change:
+            bmc.set_secure_boot(sb_change, want)
+            prep.staged.append(f"Secure Boot {'on' if want else 'off'}")
+            prep.done.append(f"Secure Boot set {'on' if want else 'off'} for bootMode {boot_mode}; it applies at the reset")
+    except RedfishError as exc:
+        raise RedfishError(f"{exc}{pending_note(prep.staged)}") from None
     return prep
+
+
+def pending_note(staged: List[str]) -> str:
+    """'' or a sentence naming the changes already staged in the firmware."""
+    if not staged:
+        return ""
+    return (f". Already staged in the firmware, pending until the next reset: {'; '.join(staged)}. "
+            "They apply at any reset, so revert them in the BMC if the host shouldn't change")
