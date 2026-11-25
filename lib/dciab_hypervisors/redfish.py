@@ -41,7 +41,7 @@ DISK_NAMES = ("hard drive", "hard disk")
 # Legacy firmware often lists only these. Matched as whole words.
 PATHLESS_DISK_WORDS = ("disk", "drive", "raid", "sata", "sas", "nvme", "ssd", "hdd")
 # Removable optical or floppy entries: a path-less name with one of these doesn't count.
-REMOVABLE_WORDS = ("cd", "dvd", "optical", "floppy", "cdrom", "cd-rom")
+REMOVABLE_WORDS = ("cd", "dvd", "optical", "floppy", "cdrom")
 
 
 def is_os_entry(name: str, device_path: str) -> bool:
@@ -68,7 +68,7 @@ def is_os_entry(name: str, device_path: str) -> bool:
     if on_disk or any(h in text for h in OS_HINTS + DISK_NAMES):
         return True
     if not lpath.strip():
-        words = set(re.findall(r"[a-z0-9-]+", lname))
+        words = set(re.findall(r"[a-z0-9]+", lname))      # "NVMe-1" -> {"nvme", "1"}
         return bool(words & set(PATHLESS_DISK_WORDS)) and not words & set(REMOVABLE_WORDS)
     return False
 

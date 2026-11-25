@@ -1128,6 +1128,8 @@ def test_network_entries_on_a_storage_bus_name_still_dont_count():
     "SAS Controller: Boot Volume",
     "Slot 3 SSD",
     "Internal HDD 0",
+    "NVMe-1",                                        # hyphenated words are split
+    "SATA_Disk_0",
 ])
 def test_pathless_disk_and_controller_names_are_os_evidence(name):
     assert redfish.is_os_entry(name, "")
@@ -1138,6 +1140,7 @@ def test_pathless_disk_and_controller_names_are_os_evidence(name):
     "Embedded SATA Port Optical Drive J",           # optical, not a disk
     "Virtual Floppy Drive",
     "Virtual CD/DVD Drive",
+    "SATA CD-ROM Drive",
     "PXE Device 1: Integrated NIC 1 Port 1",         # network
     "Integrated NIC 1: Network boot over SATA? no",  # a network word wins
     "USB Stick",                                     # removable, no disk word
