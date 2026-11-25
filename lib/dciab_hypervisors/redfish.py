@@ -115,23 +115,36 @@ def _basename(name: str) -> str:
 
 
 def slot_shows(slot: dict, image: str) -> bool:
-    """Whether a CD slot shows image as its inserted media. BMCs echo the image back in different
-    forms, so besides an exact match this accepts: the same URL after normalising (_norm_url:
-    case of scheme and host, credentials, default port, trailing slash); or, when the slot names
-    no URL, an ImageName (or an Image that is only a file name or path) equal to image's file name.
-    A different URL never matches."""
+    """Strict: whether a CD slot shows image's URL as its inserted media, exactly or after
+    normalising (_norm_url: case of scheme and host, credentials, default port, trailing slash).
+    A slot that names no usable URL (only an ImageName, a file name or path, a malformed URL)
+    never matches. Used where a match skips an insert: media with the same file name may be
+    stale (an earlier upload, another site's ISO) and would boot a stale answer file."""
     if not slot.get("Inserted"):
         return False
     shown = str(slot.get("Image") or "")
     if shown == image:
         return True
-    want = _norm_url(image)
-    if _norm_url(shown) is not None:
-        return want is not None and _norm_url(shown) == want
+    want, got = _norm_url(image), _norm_url(shown)
+    return want is not None and got is not None and got == want
+
+
+def slot_shows_after_insert(slot: dict, image: str) -> bool:
+    """Whether a CD slot shows image, in a slot this run has just emptied and inserted image
+    into (or whose recorded install this run's insert started): slot_shows, or, when the slot
+    names no usable URL, an ImageName (or an Image that is only a file name or path) equal to
+    image's file name. Some BMCs echo only that. A different URL never matches."""
+    if slot_shows(slot, image):
+        return True
+    if not slot.get("Inserted"):
+        return False
+    shown = str(slot.get("Image") or "")
+    if _norm_url(shown) is not None:                 # a usable URL, and not ours
+        return False
     name = _basename(image)
     if not name:
         return False
-    if shown:                                        # a file name or path, not a URL
+    if shown:                                        # a file name, a path or a malformed URL
         return _basename(shown) == name
     return _basename(str(slot.get("ImageName") or "")) == name
 
@@ -284,9 +297,10 @@ class Bmc:
                 "BootSourceOverrideEnabled": boot.get("BootSourceOverrideEnabled")}
 
     def attached(self, image: str) -> Dict[str, object]:
-        """state() plus whether image is the media in the CD slot. Reads only."""
+        """state() plus whether image is the media in the CD slot (slot_shows_after_insert: the
+        caller has a recorded install that this run's own insert started). Reads only."""
         _, slot = self.cd_slot()
-        return dict(self.state(), attached=slot_shows(slot, image))
+        return dict(self.state(), attached=slot_shows_after_insert(slot, image))
 
     def members(self, path: str) -> list:
         """Every member of a collection, across all its pages (Members@odata.nextLink). Raises
@@ -381,7 +395,7 @@ class Bmc:
             done.append(self._clear_override_line("the boot override"))
         try:
             _, again = self.cd_slot()
-            if slot_shows(again, image):
+            if slot_shows_after_insert(again, image):
                 done.append(f"{image} is STILL attached: eject it through the BMC before the server's next "
                             "power-on, or it may boot the installer")
             elif again.get("Inserted"):
@@ -396,13 +410,16 @@ class Bmc:
         """After an install: eject image if it is still in the CD slot and, when clear_override
         (DCiaB set it), clear a boot override that still points at Cd, so a fallback to CD never
         boots the installer again. Other media are left alone. Returns (done, failed, other):
-        other is the Image of media left in the slot because it isn't image, else None. Never raises."""
+        other is the Image of media left in the slot because it isn't image, else None. Never raises.
+
+        Uses slot_shows_after_insert: here a match only ejects, which is always safe, while a
+        miss would leave the installer attached on a BMC that echoes only a file name."""
         done: List[str] = []
         failed: List[str] = []
         other: Optional[str] = None
         try:
             path, slot = self.cd_slot()
-            if slot_shows(slot, image):
+            if slot_shows_after_insert(slot, image):
                 self.eject(path, slot)
                 done.append(f"ejected {image}")
             elif slot.get("Inserted"):
@@ -425,7 +442,7 @@ class Bmc:
         override this run set is cleared) before the error is raised."""
         done = []
         path, slot = self.cd_slot()
-        if slot_shows(slot, image):
+        if slot_shows(slot, image):                      # strict: a match skips the insert
             done.append(f"{image} already attached")
         else:
             if slot.get("Inserted"):
@@ -445,7 +462,8 @@ class Bmc:
 
     def _wait_attached(self, path: str, slot: dict, image: str) -> None:
         """After an insert the BMC answered: wait (attach_timeout) until its CD slot shows image
-        (slot_shows). A BMC can accept InsertMedia and then fail to mount it (an URL it can't
+        (slot_shows_after_insert: this run just emptied the slot and inserted image, so a file-name
+        echo can only be ours). A BMC can accept InsertMedia and then fail to mount it (an URL it can't
         reach). When the slot never shows it, or can't be read: eject regardless (a late mount
         may land after the last read), clear a boot override only if this run set one, and raise,
         so nothing is reset onto a missing installer."""
@@ -457,7 +475,7 @@ class Bmc:
                 undone = "; ".join(self.undo_attach(path, slot, image, clear_override=self.override_set))
                 raise RedfishError(f"{exc} (reading the CD slot after attaching {image}); nothing was reset "
                                    f"({undone})", exc.status) from None
-            if slot_shows(current, image):
+            if slot_shows_after_insert(current, image):
                 return
             if time.monotonic() > deadline:
                 undone = "; ".join(self.undo_attach(path, slot, image, clear_override=self.override_set))

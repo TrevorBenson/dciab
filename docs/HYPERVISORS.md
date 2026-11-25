@@ -78,9 +78,9 @@ Rules `dciab validate` checks for `tagged`: `network.nodes.vlan` isn't 1 (VLAN 1
 A BMC can accept the request to attach an ISO and then fail to mount it, for example when it can't reach the bootstrap host's URL. So after attaching, `media` reads the CD slot until it shows the host's ISO, for up to `--attach-timeout` seconds (default 60). BMCs echo the image back in different forms, so the slot counts as showing the ISO when it is inserted and:
 
 - its `Image` is the same URL, or the same after normalising: scheme and host in any case, credentials and a default port (80, 443) dropped, a trailing slash ignored; or
-- it names no URL, and its `ImageName` (or an `Image` that is only a file name or a path) is the ISO's file name.
+- it names no usable URL, and its `ImageName` (or an `Image` that is only a file name, a path or a malformed URL) is the ISO's file name.
 
-A different URL (another host, port, scheme, path or query) never counts. When the slot never shows the ISO, or can't be read:
+The file-name form counts only after DCiaB has emptied the slot and inserted the ISO itself (the attach check, an install recorded in progress, and ejecting after the install), because then the mounted media can only be its own. Before attaching, media already in the slot counts as the ISO only when its `Image` is the same URL (exactly or after normalising): media that only shares the file name may be stale (an earlier upload, another site's ISO) and would boot an old answer file, so it is ejected and the ISO inserted. A different URL (another host, port, scheme, path or query) never counts. `--attach-timeout` must be more than 0. When the slot never shows the ISO, or can't be read:
 
 - the ISO is ejected anyway, because a slow mount can land after the last read (a BMC that refuses the eject, for example with HTTP 405 on an empty slot, is logged and ignored);
 - a boot override is cleared only if this run set one; an override DCiaB didn't set this run is left as it is;

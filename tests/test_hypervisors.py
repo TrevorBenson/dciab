@@ -1,6 +1,7 @@
 """dciab hypervisors: Proxmox VE answer files, the Redfish virtual-media driver (against a local
 fake BMC), and the CLI plan. Nothing here touches a real BMC or server."""
 
+import argparse
 import base64
 import copy
 import hashlib
@@ -571,6 +572,52 @@ def test_a_slot_showing_another_image_keeps_waiting_then_fails(fake_bmc, form):
     with pytest.raises(redfish.RedfishError, match="doesn't show it"):
         f.bmc.install_from(ISO)
     assert not any(c[1].endswith("ComputerSystem.Reset") for c in f.calls)
+
+
+STALE_NAME = "proxmox-ve_9.2-1.iso"            # ISO's file name, served from somewhere else
+STALE_FORMS = {
+    # A slot naming no usable URL, but a file name equal to ours: maybe stale media (an earlier
+    # upload, another site's ISO). prepare() must not take it as attached (N6).
+    "image name only": lambda s: dict(s, Image=None, ImageName=STALE_NAME),
+    "image as a path": lambda s: dict(s, Image="/mnt/old/" + STALE_NAME),
+    "malformed url": lambda s: dict(s, Image="http:///elsewhere/" + STALE_NAME),
+}
+
+
+@pytest.mark.parametrize("form", list(STALE_FORMS), ids=list(STALE_FORMS))
+def test_prepare_replaces_same_named_media_it_cant_prove_is_ours(fake_bmc, form):
+    f = fake_bmc(inserted="http://old/elsewhere/" + STALE_NAME,
+                 slot_view=lambda s: STALE_FORMS[form](s) if s.get("Inserted") else s)
+    f.bmc.poll, f.bmc.attach_timeout = 0.01, 2
+    done = f.bmc.prepare(ISO)
+    assert done[:2] == ["ejected the attached media", f"attached {ISO}"]
+    inserts = [c for c in f.calls if c[1].endswith("VirtualMedia.InsertMedia")]
+    assert len(inserts) == 1 and inserts[0][2]["Image"] == ISO
+    assert f.slot["Image"] == ISO                    # ours now; the wait accepted the same echo
+    assert f.bmc.attached(ISO)["attached"] is True   # after this run's insert, the echo counts
+
+
+def test_slot_shows_is_strict_and_after_insert_adds_the_file_name():
+    strict, after = redfish.slot_shows, redfish.slot_shows_after_insert
+    name_only = {"Inserted": True, "Image": None, "ImageName": STALE_NAME}
+    path_only = {"Inserted": True, "Image": "/mnt/old/" + STALE_NAME}
+    malformed = {"Inserted": True, "Image": "http:///elsewhere/" + STALE_NAME}
+    other_host = {"Inserted": True, "Image": "http://10.30.110.6/isos/" + STALE_NAME}
+    for slot in (name_only, path_only, malformed):
+        assert not strict(slot, ISO) and after(slot, ISO)
+    assert not strict(other_host, ISO) and not after(other_host, ISO)   # a usable URL that isn't ours
+    assert not after(dict(name_only, ImageName="other.iso"), ISO)
+    assert not after(dict(name_only, Inserted=False), ISO)
+    assert strict({"Inserted": True, "Image": ISO.replace("http://", "HTTP://")}, ISO)
+
+
+def test_release_ejects_media_echoed_by_file_name_only(fake_bmc):
+    # After an install a match only ejects (always safe); a miss would leave the installer attached.
+    f = fake_bmc(inserted=ISO, slot_view=lambda s: dict(s, Image=None, ImageName=STALE_NAME)
+                 if s.get("Inserted") else s)
+    done, failed, other = f.bmc.release(ISO, clear_override=False)
+    assert done == [f"ejected {ISO}"] and not failed and other is None
+    assert f.slot["Inserted"] is False
 
 
 def test_slot_shows_matches_only_the_same_image():
@@ -1239,6 +1286,13 @@ def test_attach_timeout_reaches_each_bmc(fake_bmc, run_main):
     assert code == 0 and run_main.attach_timeouts and set(run_main.attach_timeouts) == {150.0}
     code, _, _ = run_main(lambda h: f.bmc)
     assert set(run_main.attach_timeouts) == {60.0}
+
+
+@pytest.mark.parametrize("value", ["0", "-5", "nan", "soon"])
+def test_attach_timeout_must_be_more_than_zero(value):
+    with pytest.raises(argparse.ArgumentTypeError):
+        cli._positive_seconds(value)
+    assert cli._positive_seconds("0.5") == 0.5
 
 
 def test_bmc_built_from_config_carries_the_attach_timeout(monkeypatch, tmp_path):

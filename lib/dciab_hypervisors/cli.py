@@ -472,6 +472,17 @@ def assistant_image(root: Path, lock: dict, run=None) -> str:
     return ref
 
 
+def _positive_seconds(text: str) -> float:
+    """argparse type for --attach-timeout: a number of seconds above zero."""
+    try:
+        value = float(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"{text!r} isn't a number of seconds") from None
+    if not value > 0:
+        raise argparse.ArgumentTypeError(f"{text} must be more than 0 seconds")
+    return value
+
+
 def _bmc(host: dict, config_dir: Path, attach_timeout: float = 60.0):
     from dciab_validate.live import _redfish_trust, read_secret
 
@@ -490,7 +501,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument("--iso", help="installer ISO file name in the ISOs folder (default: the bundle.lock file name)")
     ap.add_argument("--isos", help="the ISOs folder (default: as for dciab services)")
     ap.add_argument("--timeout", type=float, default=3600.0, help="seconds to wait for each host's install")
-    ap.add_argument("--attach-timeout", type=float, default=60.0, metavar="SECONDS",
+    ap.add_argument("--attach-timeout", type=_positive_seconds, default=60.0, metavar="SECONDS",
                     help="seconds to wait for a BMC's CD slot to show the installer ISO after attaching it "
                          "(default 60); when it never does, the ISO is ejected and nothing is reset")
     ap.add_argument("--reinstall", action="append", default=[], metavar="NAME",
