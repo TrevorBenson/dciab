@@ -28,7 +28,7 @@ jobs:
           key: crds-${{ hashFiles('bundle.lock') }}
       - name: Fetch the CRDs pinned in bundle.lock
         run: python hack/fetch_crds.py
-      - run: python -m pytest -v
+      - run: python -m pytest -n auto -v
       - name: Schema is valid JSON Schema 2020-12
         run: python -c "import json; from jsonschema import Draft202012Validator as V; V.check_schema(json.load(open('schema/dciab.schema.json')))"
       - name: docs/CONFIG.md matches the schema, and every schema key has a description
