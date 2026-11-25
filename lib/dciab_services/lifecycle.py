@@ -283,9 +283,6 @@ def undo(entry: List[str], say: Say = _say, firewalld: Optional[bool] = None,
             say(f"dropped '{' '.join(entry)}': written before this boot "
                 f"({'no boot ID' if boot is None else 'boot ' + boot}), so {cidr} isn't put back")
             return
-        if nic_gone(nic):
-            say(f"dropped '{' '.join(entry)}': {nic} no longer exists")
-            return
         _restore(nic, cidr, options, say)
     elif kind == "port" and len(args) in (2, 3):
         zone, port = args[0], args[1]
@@ -341,6 +338,9 @@ def _restore(nic: str, cidr: str, options: List[str], say: Say, took: str = "") 
     """Put an address back on nic (ip addr add, with its options) unless it is there. Raises
     Kept when the addresses can't be read or the address can't be added."""
     have = addresses(nic)
+    if have is None and nic_gone(nic):
+        say(f"{nic} no longer exists: {cidr} isn't put back")
+        return
     if have is None:
         raise Kept(f"couldn't read the addresses on {nic} to check {cidr} is still there "
                    f"(check: ip -4 addr show dev {nic})")

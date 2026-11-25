@@ -111,6 +111,10 @@ def host(monkeypatch, tmp_path):
     boot = tmp_path / "boot_id"
     boot.write_text(BOOT + "\n")
     monkeypatch.setattr(lifecycle, "BOOT_ID", str(boot))
+    sysnet = tmp_path / "sys-class-net"            # the fake host's NICs, whatever the machine has
+    for nic in ("eth0", "dciab0"):
+        (sysnet / nic).mkdir(parents=True)
+    monkeypatch.setattr(lifecycle, "SYS_NET", str(sysnet))
     return h
 
 
@@ -187,6 +191,8 @@ def test_down_keeps_lines_whose_state_cant_be_read(tmp_path, host):
 
 
 def test_a_missing_ip_tool_is_not_absence(tmp_path, monkeypatch):
+    (tmp_path / "sys-class-net" / "eth0").mkdir(parents=True)   # the NIC is there; ip isn't
+    monkeypatch.setattr(lifecycle, "SYS_NET", str(tmp_path / "sys-class-net"))
     real = lifecycle.query
     monkeypatch.setattr(lifecycle, "query", lambda cmd: lifecycle.subprocess.CompletedProcess(
         cmd, 127, "", "ip: not found") if cmd[0] == "ip" else real(cmd))
@@ -893,10 +899,7 @@ def test_units_slow_their_retries_where_systemd_can(tmp_path, monkeypatch):
 def test_an_address_on_a_nic_that_no_longer_exists_counts_as_gone(tmp_path, host, monkeypatch):
     """The bootstrap NIC was renamed or removed: ip can't read it and /sys/class/net has no entry.
     The address went with the NIC, so the line is dropped and --down finishes."""
-    sysnet = tmp_path / "sys-net"
-    sysnet.mkdir()
-    monkeypatch.setattr(lifecycle, "SYS_NET", str(sysnet))
-    host.error = {"ip -j -4 addr show dev gone0"}
+    host.error = {"ip -j -4 addr show dev gone0"}      # the fixture's /sys/class/net has no gone0
     conf = conf_with(tmp_path, ["address gone0 10.30.110.53/24"])
     msgs = []
     assert lifecycle.down(conf, msgs.append) == []
@@ -905,9 +908,7 @@ def test_an_address_on_a_nic_that_no_longer_exists_counts_as_gone(tmp_path, host
 
 
 def test_an_unreadable_nic_that_still_exists_stays_listed(tmp_path, host, monkeypatch):
-    sysnet = tmp_path / "sys-net"
-    (sysnet / "eth9").mkdir(parents=True)
-    monkeypatch.setattr(lifecycle, "SYS_NET", str(sysnet))
+    (Path(lifecycle.SYS_NET) / "eth9").mkdir()
     host.error = {"ip -j -4 addr show dev eth9"}
     conf = conf_with(tmp_path, ["address eth9 10.30.110.53/24"])
     assert lifecycle.down(conf, lambda m: None) == ["address eth9 10.30.110.53/24"]
@@ -1038,3 +1039,12 @@ def test_addresses_reads_noprefixroute_and_nodad_from_ip_json(monkeypatch):
     assert lifecycle.addresses("eth0") == [
         {"cidr": "10.30.110.60/24",
          "cmd": ["ip", "addr", "add", "10.30.110.60/24", "dev", "eth0", "noprefixroute", "nodad"]}]
+
+
+def test_a_restore_for_a_nic_that_no_longer_exists_is_dropped(tmp_path, host):
+    host.error = {"ip -j -4 addr show dev gone0"}
+    conf = conf_with(tmp_path, [f"restore gone0 10.30.110.60/24 boot={BOOT}"])
+    msgs = []
+    assert lifecycle.down(conf, msgs.append) == []
+    assert not (conf / "created").exists()
+    assert any("gone0 no longer exists" in m for m in msgs)
