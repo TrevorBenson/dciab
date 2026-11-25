@@ -1,0 +1,135 @@
+name: dciab hypervisors on emulated bare servers
+
+# dciab services, then dciab hypervisors against a VM behind a Redfish BMC emulator (sushy-tools
+# in front of libvirt), on a GitHub-hosted runner with KVM: real Proxmox VE installs from the
+# per-host ISO, the reinstall guard, Redfish preparation, post-install through the real Proxmox
+# VE API, in both node network modes (an access port, and the node VLAN tagged only).
+# hack/e2e/hypervisors/README.md says what each scenario proves and what an emulator can't.
+on:
+  pull_request:
+    paths:
+      - lib/dciab_hypervisors/**
+      - lib/dciab_services/**
+      - lib/steps/services.sh
+      - hack/e2e/hypervisors/**
+      - images/pve-assistant/**
+      - images/day0-chrony/**
+      - .github/workflows/hypervisors-emulated.yml
+  push:
+    branches: [main]
+    paths:
+      - lib/dciab_hypervisors/**
+      - lib/dciab_services/**
+      - lib/steps/services.sh
+      - hack/e2e/hypervisors/**
+      - images/pve-assistant/**
+      - images/day0-chrony/**
+      - bundle.lock
+      - .github/workflows/hypervisors-emulated.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: hypervisors-emulated-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  emulated:
+    name: emulated bare server (${{ matrix.mode }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [untagged, tagged]
+    env:
+      WORK: ${{ github.workspace }}/../emulator
+    steps:
+      - uses: actions/checkout@v4
+      - name: KVM, libvirt, OVMF
+        run: |
+          set -euo pipefail
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends qemu-system-x86 qemu-utils libvirt-daemon-system \
+            libvirt-clients ovmf python3-libvirt python3-yaml python3-jsonschema python3-pip dnsutils
+          ls -l /dev/kvm
+          free -g
+          df -h "$GITHUB_WORKSPACE"
+      - name: Proxmox VE installer ISO (bundle.lock)
+        id: iso
+        run: |
+          set -euo pipefail
+          read -r url sha < <(python3 -c 'import yaml; p = yaml.safe_load(open("bundle.lock"))["hypervisors"]["proxmox"]; print(p["isoURL"], p["isoSHA256"])')
+          echo "name=$(basename "$url")" >> "$GITHUB_OUTPUT"
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/isos
+          key: proxmox-iso-${{ steps.iso.outputs.sha }}
+      - name: Download and check the ISO
+        env:
+          URL: ${{ steps.iso.outputs.url }}
+          SHA: ${{ steps.iso.outputs.sha }}
+          NAME: ${{ steps.iso.outputs.name }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/isos" "$WORK/isos"
+          [ -f "$RUNNER_TEMP/isos/$NAME" ] || curl -fsSL --retry 3 -o "$RUNNER_TEMP/isos/$NAME" "$URL"
+          echo "$SHA  $RUNNER_TEMP/isos/$NAME" | sha256sum -c -
+          cp "$RUNNER_TEMP/isos/$NAME" "$WORK/isos/$NAME"
+      - name: This branch's chrony and proxmox-auto-install-assistant images (root's podman)
+        run: |
+          set -euo pipefail
+          echo "DCIAB_CHRONY_IMAGE=$(sudo images/day0-chrony/build.sh)" >> "$GITHUB_ENV"
+          echo "DCIAB_PVE_ASSISTANT_IMAGE=$(sudo images/pve-assistant/build.sh)" >> "$GITHUB_ENV"
+      - name: Emulated server, switch and BMC
+        run: sudo hack/e2e/hypervisors/setup.sh "${{ matrix.mode }}" "$WORK"
+      - name: Scenarios
+        run: |
+          sudo env "DCIAB_CHRONY_IMAGE=$DCIAB_CHRONY_IMAGE" "DCIAB_PVE_ASSISTANT_IMAGE=$DCIAB_PVE_ASSISTANT_IMAGE" \
+            python3 hack/e2e/hypervisors/run.py "$WORK"
+      - name: Report
+        if: always()
+        run: |
+          set +e
+          sudo python3 - "$WORK/report.json" <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json, sys
+          try:
+              r = json.load(open(sys.argv[1]))
+          except OSError:
+              print("no report.json"); sys.exit(0)
+          print(f"### {r['mode']}: {'passed' if r['passed'] else 'FAILED'}\n")
+          print("| Scenario | Result | Seconds | Details |\n| --- | --- | --- | --- |")
+          for s in r["scenarios"]:
+              print(f"| {s['name']} | {s['result']} | {s.get('seconds', '')} | {s.get('error') or json.dumps(s.get('details', {}))} |")
+          if r.get("error"):
+              print(f"\n{r['error']}")
+          PY
+      - name: Diagnostics
+        if: always()
+        run: |
+          set +e
+          d="$RUNNER_TEMP/diag"
+          mkdir -p "$d"
+          sudo virsh -c qemu:///system screenshot pve01 "$d/pve01-screen.ppm" >/dev/null 2>&1
+          sudo virsh -c qemu:///system dumpxml pve01 > "$d/pve01.xml" 2>&1
+          sudo virsh -c qemu:///system domstate --reason pve01 > "$d/pve01-state.txt" 2>&1
+          sudo bridge vlan show > "$d/bridge-vlans.txt" 2>&1
+          sudo cp "$WORK/report.json" "$WORK/sushy.log" "$WORK/pve01-serial.log" "$d/" 2>/dev/null
+          sudo cp -r "$WORK/logs" "$d/" 2>/dev/null
+          sudo podman pod ps > "$d/pods.txt" 2>&1
+          for c in coredns chrony-1 chrony-2 caddy; do sudo podman logs "dciab-services-$c" > "$d/$c.log" 2>&1; done
+          sudo find "$WORK/site/.dciab/state" -name '*.json' -path '*installs*' -exec cp {} "$d/" \; 2>/dev/null
+          sudo chown -R "$(id -u):$(id -g)" "$d"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: hypervisors-emulated-${{ matrix.mode }}
+          path: ${{ runner.temp }}/diag
+          retention-days: 14

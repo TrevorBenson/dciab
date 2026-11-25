@@ -290,6 +290,14 @@ imageDigests:
   registry.k8s.io/sig-storage/livenessprobe:v2.17.0: "sha256:9b75b9ade162136291d5e8f13a1dfc3dec71ee61419b1bfc112e0796ff8a6aa9"
   registry.k8s.io/sig-storage/livenessprobe:v2.19.0: "sha256:06da0d5b8908072f2e4522692aee8dc119fba7247a9658497e1153992cd777e9"
 
+# Test tooling for dciab hypervisors, never in the archive: the emulated bare servers of
+# .github/workflows/hypervisors-emulated.yml (hack/e2e/hypervisors/README.md).
+hypervisorEmulator:
+  # OpenStack's sushy-tools: a Redfish BMC in front of libvirt VMs (Apache-2.0).
+  sushyTools:
+    version: "2.2.0"
+    sha256: "a9efb547beee24b3a81a8db0af1c99ffa3818b82013a6165188734abffe95f65"   # of sushy_tools-<version>-py3-none-any.whl
+
 # sha256 of release binaries DCiaB runs, checked after download. clusterctl's version is
 # clusterAPI.core.version. Empty: the download warns and prints the sum to pin.
 # The self-hosted GitHub Actions runner image for DCiaB's infrastructure tests
