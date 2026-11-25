@@ -106,10 +106,10 @@ def hash_password(password: str, salt: str) -> str:
     return out.stdout.strip()
 
 
-def seal_with_age(recipients: List[str], plaintext: str, dest: Path) -> None:
+def seal_with_age(recipients: List[str], plaintext: str, dest: Path, what: str = "the root password") -> None:
     """Encrypt to every recipient with age; the plaintext goes on stdin, never to disk or argv."""
     if not recipients:
-        raise AnswerError("spec.bootstrap.recipients is empty: nobody could open the root password")
+        raise AnswerError(f"spec.bootstrap.recipients is empty: nobody could open {what}")
     tmp = dest.with_name(f".{dest.name}.tmp")
     args = ["age", "-o", str(tmp)]
     for r in recipients:
@@ -117,9 +117,9 @@ def seal_with_age(recipients: List[str], plaintext: str, dest: Path) -> None:
     try:
         subprocess.run(args, input=plaintext, capture_output=True, text=True, timeout=30, check=True)
     except FileNotFoundError:
-        raise AnswerError("age is needed to store the generated root password (the payload's bin/ has it)") from None
+        raise AnswerError(f"age is needed to store {what} (the payload's bin/ has it)") from None
     except subprocess.CalledProcessError as exc:
-        raise AnswerError(f"age could not encrypt the root password: {exc.stderr.strip()}") from None
+        raise AnswerError(f"age could not encrypt {what}: {exc.stderr.strip()}") from None
     os.chmod(tmp, 0o600)
     os.replace(tmp, dest)
 

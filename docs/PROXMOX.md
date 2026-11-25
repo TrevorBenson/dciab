@@ -49,7 +49,7 @@ Put the token secret (shown once) where `spec.platform.proxmox.credentials.token
 $ ./dciab validate dciab.yaml --live
 ```
 
-`dciab hypervisors` will create the same roles, user, token and ACLs through the API after installing a host (post-install, not built yet).
+On hosts it installs, `dciab hypervisors` creates the same roles, user, token and ACLs through the API, and seals the token's secret with age ([HYPERVISORS.md](HYPERVISORS.md#post-install)).
 
 ## The Proxmox CSI plugin's token
 

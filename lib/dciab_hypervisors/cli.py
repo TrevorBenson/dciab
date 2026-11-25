@@ -2,7 +2,7 @@
 
     dciab hypervisors <config> [--state DIR] [--isos DIR] [--host NAME ...] [--until STEP]
                       [--iso FILE] [--timeout SECONDS] [--reinstall NAME ...]
-                      [--first-install NAME ...] [--print]
+                      [--first-install NAME ...] [--age-identity FILE] [--print]
 
 Steps, per host, in order; each is safe to re-run:
   answer   render answer.toml -> <state>/answers/<host>.toml (dir 700, file 600)
@@ -29,6 +29,11 @@ Steps, per host, in order; each is safe to re-run:
            an open port) on the host's address, and
            record the install as done. Then eject the host's ISO and clear the boot override
            from Cd that DCiaB set; a failure there is logged and never fails the run
+  post     for each host DCiaB installed that is in spec.platform.proxmox.nodes, through the
+           Proxmox VE API as root@pam (post.py): check the bridge (VLAN-aware with vlanTag) and
+           the storage, and create the CAPMOX roles, user, privilege-separated token and ACLs
+           of docs/PROXMOX.md, its secret sealed with age in <state>/proxmox/<host>.token.age.
+           A generated root password is opened with --age-identity. Done once per install
 
 --until STEP stops after STEP. --print shows the plan and the answer files with the password
 hash masked, and changes nothing. <state> defaults as for dciab services: .dciab/state next to
@@ -51,7 +56,7 @@ from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple
 from urllib.parse import urlsplit
 
-STEPS = ("answer", "iso", "media", "wait")
+STEPS = ("answer", "iso", "media", "wait", "post")
 
 
 def _answers_dir(state: Path) -> Path:
@@ -326,7 +331,9 @@ def media(hosts: List[dict], doc: dict, installs: Path, reinstall: List[str], bm
             try:
                 # Recorded before the reset: from here on a rerun never resets this host by accident.
                 write_install(installs, name, started=_now(), iso=url, outcome="in-progress",
-                              media="attached", media_log=[], media_other=None, boot_override="Cd")
+                              media="attached", media_log=[], media_other=None, boot_override="Cd",
+                              post=None, post_at=None, post_log=None, api_fingerprint=None)
+                retire_token(installs, name, log)
                 log(f"  {name}: reset ({bmc.reset()})")
             except (RedfishError, OSError):
                 # Disarm, so the next power-on doesn't start the installer unasked; then hold the host.
@@ -345,6 +352,19 @@ def media(hosts: List[dict], doc: dict, installs: Path, reinstall: List[str], bm
             if name in live:
                 live.remove(name)
     return failed, held, live
+
+
+def retire_token(installs: Path, name: str, log=print) -> None:
+    """A new install wipes the host, and its CAPMOX token with it: move the old sealed secret aside
+    (mode 600, never deleted), so post creates a new token instead of trusting a dead one."""
+    from .post import token_file
+    sealed = token_file(installs.parent, name)
+    if not sealed.is_file():
+        return
+    aside = sealed.with_name(f"{sealed.name}.replaced-{time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())}")
+    os.replace(sealed, aside)
+    os.chmod(aside, 0o600)
+    log(f"  {name}: the old CAPMOX token no longer exists after this install; its sealed secret moved to {aside}")
 
 
 def detach(h: dict, installs: Path, bmc_for: Callable, log=print, err=None) -> Optional[str]:
@@ -442,6 +462,9 @@ def main(argv: Optional[List[str]] = None) -> int:
                     help="install this host when it has no install record and its BMC lists no boot "
                          "options, so nothing shows whether it holds an install (repeatable). Never "
                          "overrides a record, an answering host or an OS boot entry: that takes --reinstall")
+    ap.add_argument("--age-identity", metavar="FILE",
+                    help="an age identity for one of spec.bootstrap.recipients: post opens a generated root "
+                         "password with it")
     ap.add_argument("--print", dest="print_only", action="store_true")
     ap.add_argument("config")
     args = ap.parse_args(argv)
@@ -469,6 +492,12 @@ def main(argv: Optional[List[str]] = None) -> int:
     if hv["type"] != "proxmox":
         print(f"dciab hypervisors: {hv['type']} isn't supported yet; only proxmox (see docs/ROADMAP.md)",
               file=sys.stderr)
+        return 2
+    if hv.get("managementVLAN") == "tagged":
+        # Refused before anything is written or any BMC is called: the installer's network is
+        # untagged, so a host on a tagged-only port would be wiped and then unreachable.
+        from .post import TAGGED
+        print(f"dciab hypervisors: {TAGGED}", file=sys.stderr)
         return 2
     hosts = hv["hosts"]
     unknown = sorted(set(args.host) - {h["name"] for h in hosts})
@@ -520,6 +549,14 @@ def main(argv: Optional[List[str]] = None) -> int:
             from . import prepare
             for line in prepare.plan_lines(hv["bootMode"], h.get("rootDeviceHints") or {}):
                 print(f"    {line}")
+            px = doc["spec"]["platform"].get("proxmox") or {}
+            if h["name"] in (px.get("nodes") or []):
+                from . import post
+                print(f"    post-install: bridge {px['bridge']}{' (VLAN-aware)' if px.get('vlanTag') else ''}, storage "
+                      f"{px['storage']}, token {px['credentials']['tokenID']} sealed to "
+                      f"{post.token_file(state, h['name'])}")
+            else:
+                print("    post-install: none (not in spec.platform.proxmox.nodes)")
         for name, text in rendered.items():
             print(f"--- {answers / (name + '.toml')}")
             print(mask(text), end="")
@@ -616,6 +653,13 @@ def main(argv: Optional[List[str]] = None) -> int:
         else:
             write_install(installs, h["name"], outcome="installed")
             detach(h, installs, lambda x: _bmc(x, config_dir))
+    if args.until == "wait":
+        print("dciab hypervisors: stopped after 'wait' (--until)")
+    else:
+        print("\n== hypervisors: post")
+        identity = Path(args.age_identity) if args.age_identity else None
+        failed += post_install([h for h in hosts if h["name"] not in held and h["name"] not in failed], doc,
+                               state, installs, answers, site_password, identity)
     if held:
         print(f"dciab hypervisors: {', '.join(held)}: held, not reinstalled; each needs the operator "
               "(see above)", file=sys.stderr)
@@ -623,3 +667,46 @@ def main(argv: Optional[List[str]] = None) -> int:
         return 1
     print("installed: " + ", ".join(h["name"] for h in hosts))
     return 0
+
+
+def post_install(hosts: List[dict], doc: dict, state: Path, installs: Path, answers: Path,
+                 site_password: Optional[str], identity: Optional[Path], api_for=None, seen=None,
+                 log=print, err=None) -> List[str]:
+    """The post step. Returns the hosts it failed for."""
+    from . import post
+    from .answer import AnswerError, seal_with_age
+    err = err or (lambda msg: print(msg, file=sys.stderr))
+    px = doc["spec"]["platform"].get("proxmox") or {}
+    failed: List[str] = []
+    for h in hosts:
+        name = h["name"]
+        record = read_install(installs, name) or {}
+        if record.get("outcome") != "installed" or not record.get("iso"):
+            log(f"  {name}: skipped (not installed by DCiaB; DCiaB never logs in as root to a host it didn't install)")
+            continue
+        if name not in (px.get("nodes") or []):
+            log(f"  {name}: skipped (not in spec.platform.proxmox.nodes)")
+            continue
+        if record.get("post") == "done":
+            log(f"  {name}: post-install done ({record.get('post_at')})")
+            continue
+        try:
+            pin, note = post.trust_for(h, doc, record, **({"seen": seen} if seen else {}))
+            if note:
+                log(f"  {name}: {note}")
+            write_install(installs, name, api_fingerprint=pin)
+            password = post.root_password(answers, name, site_password, identity)
+            api = api_for(h, pin) if api_for else post.PveApi(h["address"], pin)
+            done = post.run(api, h, doc, state, password,
+                            lambda r, text, dest: seal_with_age(r, text, dest, what="the CAPMOX token secret"),
+                            lambda line: log(f"  {name}: {line}"))
+            del password
+            write_install(installs, name, post="done", post_at=_now(), post_log=done)
+        except (post.PostError, AnswerError, OSError) as exc:
+            err(f"dciab hypervisors: {name}: post-install: {exc}")
+            failed.append(name)
+            try:
+                write_install(installs, name, post="failed", post_at=_now(), post_log=[f"failed: {exc}"])
+            except OSError:
+                pass
+    return failed

@@ -68,7 +68,8 @@ Decided in [ADR 0001](adr/0001-day0-hypervisors-and-services.md).
 - [x] The CAPMOX API token's exact Proxmox VE privileges, one role per path, checked by `dciab validate --live` ([docs/PROXMOX.md](PROXMOX.md))
 - [x] `dciab hypervisors` reinstall guard: the Proxmox VE API's answer, not an open port; OS boot entries and `--first-install` for hosts without an install record ([docs/HYPERVISORS.md](HYPERVISORS.md#the-reinstall-guard))
 - [x] `dciab hypervisors` Redfish preparation before an install: UEFI boot mode, Secure Boot per `bootMode`, virtualization extensions, a disk matching `rootDeviceHints` ([docs/HYPERVISORS.md](HYPERVISORS.md#redfish-preparation))
-- [ ] `dciab hypervisors` for Proxmox VE, next: tagged management VLAN, post-install API token, bridge and storage
+- [x] `dciab hypervisors` post-install through the Proxmox VE API: the CAPMOX roles, user, token and ACLs (secret sealed with age), the VLAN-aware bridge, the storage ([docs/HYPERVISORS.md](HYPERVISORS.md#post-install))
+- [ ] `dciab hypervisors` for Proxmox VE, next: a tagged management VLAN (needs a switch-port design: the installer's network is untagged)
 - [x] Live checks: BMC routes, Redfish and credentials (`dciab validate --live`)
 
 ### Seed, bootstrap cluster and MGMT

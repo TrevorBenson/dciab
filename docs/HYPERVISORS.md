@@ -8,7 +8,7 @@ $ sudo ./dciab hypervisors dciab.yaml                  # every host
 $ sudo ./dciab hypervisors dciab.yaml --host pve02 --until media
 ```
 
-Options: `--state DIR` (default `.dciab/state` next to the config, or `/var/lib/dciab/work/state` on the bootstrap appliance; the same folder `dciab services` uses), `--host NAME` (repeatable), `--reinstall NAME` (repeatable: wipe and reinstall that host even if it's installed), `--first-install NAME` (repeatable: install that host when nothing shows whether it holds an install; see [the reinstall guard](#the-reinstall-guard)), `--until STEP`, `--iso FILE` (the base installer ISO's file name in the ISOs folder; default the file name of the Proxmox VE ISO in `bundle.lock`), `--isos DIR` (the ISOs folder; default as for `dciab services`), `--timeout SECONDS` (per host, for `wait`; default 3600).
+Options: `--state DIR` (default `.dciab/state` next to the config, or `/var/lib/dciab/work/state` on the bootstrap appliance; the same folder `dciab services` uses), `--host NAME` (repeatable), `--reinstall NAME` (repeatable: wipe and reinstall that host even if it's installed), `--first-install NAME` (repeatable: install that host when nothing shows whether it holds an install; see [the reinstall guard](#the-reinstall-guard)), `--until STEP`, `--iso FILE` (the base installer ISO's file name in the ISOs folder; default the file name of the Proxmox VE ISO in `bundle.lock`), `--isos DIR` (the ISOs folder; default as for `dciab services`), `--timeout SECONDS` (per host, for `wait`; default 3600), `--age-identity FILE` (an age identity for one of `spec.bootstrap.recipients`: `post` opens a generated root password with it).
 
 ## Steps
 
@@ -20,6 +20,7 @@ Each step runs for every selected host and is safe to re-run.
 | `iso` | Builds `<state>/host-isos/<host>.iso` (folder 700, file 600): the Proxmox VE installer ISO with that host's answer file inside (`proxmox-auto-install-assistant prepare-iso --fetch-from iso`, run with no network from the image built from `images/pve-assistant`). The base ISO is checked against `bundle.lock` first. An ISO is rebuilt only when its answer file or the base ISO changed. Caddy serves it at `http://<bootstrap.address>/host-isos/<host>.iso` to that host's BMC address only |
 | `media` | Skipped when the host's Proxmox VE API already answers, and held when anything shows an existing install ([the reinstall guard](#the-reinstall-guard)). Otherwise, it first [prepares the server](#redfish-preparation) over Redfish (boot mode, Secure Boot, virtualization, the disk), and refuses the install on a clear disk mismatch. Then, over Redfish: finds the system's CD/DVD virtual media slot (under the System or its Manager), ejects other media, attaches the host's ISO, sets a one-time UEFI boot from `Cd`, and resets the server (`ForceRestart` when on, `On` when off; a server in a transitional power state is left alone). Redfish tasks a BMC accepts with HTTP 202 are waited for. The installer boots its "Automated Installation" entry and reads the answer file from the ISO: no DHCP and no answer server |
 | `wait` | Waits for SSH (22) and then the Proxmox VE API on the host's address (an answer from `/api2/json/version` on 8006, not just an open port), and records the install as done. Then, for a host whose ISO DCiaB attached, ejects that ISO and clears the boot override DCiaB set if it still points at `Cd`, so a fallback to CD never boots the installer again. Other media and overrides are left alone. The result goes in the install record (`media`: `detached`, `detach-failed`, or `detach-unverified` when other media is in the slot). Only `detached` is final: otherwise the run says how to eject by hand, and the next run checks again. This never fails the run. Each new install (`media`, `--reinstall` too) starts the record's `media` over at `attached` |
+| `post` | For each host DCiaB installed (its record names the ISO DCiaB attached) that is in `spec.platform.proxmox.nodes`: [post-install](#post-install) through the Proxmox VE API. Done once per install; the record says when (`post: done`) |
 
 BMC trust comes from each host's `bmc.tlsFingerprint` or `bmc.caBundle`, as for `dciab validate --live`; the certificate is checked before credentials are sent.
 
@@ -60,6 +61,21 @@ BIOS changes are written before Secure Boot. If a write fails partway, or attach
 
 BIOS changes go to the settings object the Bios resource names (`Bios/Settings`), with `@Redfish.SettingsApplyTime: OnReset` when the BMC offers it. Attribute names vary by vendor; a server whose firmware uses other names gets notes, not failures.
 
+## Post-install
+
+`post` logs in to the Proxmox VE API as `root@pam` with the host's root password (`spec.hypervisors.rootPassword`, or the generated one, opened from `<state>/answers/<host>.root-password.age` with `--age-identity`). It never uses SSH, and it never logs in as root to a host DCiaB didn't install.
+
+| What | How |
+| --- | --- |
+| Trust | The API's certificate is pinned: `spec.platform.proxmox.tlsFingerprint` when `platform.proxmox.url` names this host (a fresh install has a new certificate, so the run stops with the fingerprint to set when they differ), else the fingerprint seen on first contact, recorded in the install record (`api_fingerprint`) and checked on every later run. `tlsFingerprint` may be SHA-256 or SHA-1 |
+| Bridge | `spec.platform.proxmox.bridge` must exist (the installer makes `vmbr0` on the management NIC). With `platform.proxmox.vlanTag` it is made VLAN-aware (`bridge_vids 2-4094`), keeping its address and gateway, and the network is reloaded. The API must answer again within about 30 seconds; otherwise the run stops, saying the reload left the API unreachable, and the host's console (through its BMC) is the way back |
+| Storage | `spec.platform.proxmox.storage` must exist on the node, enabled and active, and hold VM disks; `local` must take ISOs (CAPMOX uploads each machine's bootstrap data there) and gains `iso` content when it doesn't. DCiaB doesn't create other storage |
+| CAPMOX token | The roles, user, privilege-separated token and ACLs in [PROXMOX.md](PROXMOX.md), from `lib/dciab_validate/proxmox_privs.py`. Roles whose privileges differ are corrected. The token's secret, shown once, is encrypted at once to `spec.bootstrap.recipients` in `<state>/proxmox/<host>.token.age` and never written in plain text. Open it with `age -d -i <identity> <state>/proxmox/<host>.token.age` into the file `platform.proxmox.credentials.tokenSecret` points to (mode 600), or the environment variable it names. A token that already exists is kept only when its sealed secret is in the state folder; otherwise the run says how to replace it |
+
+A new install (`media`, `--reinstall` too) clears the record's post-install result and pinned certificate, so `post` runs again on the reinstalled host and pins its new certificate. Its old token no longer exists, so its sealed secret is moved aside to `<state>/proxmox/<host>.token.age.replaced-<time>` (mode 600, never deleted) and `post` creates a new one. A failed `post` records why in the install record (`post_log`).
+
+The user must be in the Proxmox VE realm (`<user>@pve!<token>`). On hosts that aren't clustered, each host in `platform.proxmox.nodes` gets its own token (clustering, which makes this once per cluster, is a later step).
+
 ## The reinstall guard
 
 `media` resets a server only when nothing suggests it already holds an install. It holds a host, does nothing to it, and exits 1 when:
@@ -81,6 +97,6 @@ The installer ISO and the answer files travel over plain HTTP from the bootstrap
 
 ## Not done yet
 
-- **A tagged management VLAN** (`managementVLAN: tagged`): the answer file can't set a VLAN, so the installer's network only works on an untagged port until post-install configuration exists.
-- **Post-install**: the CAPMOX API token (`platform.proxmox.credentials.tokenID`), the bridge and its VLAN-aware setting, and the storage, through the Proxmox VE API.
+- **A tagged management VLAN** (`managementVLAN: tagged`): the answer file can't set a VLAN, so the installer needs the node VLAN untagged on the host's port. Moving the host's address onto a tagged VLAN afterwards needs its switch port changed at the same moment, which DCiaB can't do; `dciab validate` and `dciab hypervisors` refuse `tagged` before anything is written or any BMC is called; `post` checks again before it sends the root password. Use an access port, or a trunk whose native VLAN is `network.nodes.vlan` (VMs can still use other VLANs through the VLAN-aware bridge).
+- **Joining a Proxmox VE cluster** and shared storage across hosts.
 - **ESXi.**

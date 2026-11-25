@@ -335,6 +335,13 @@ def test_hypervisor_type_must_match_platform(site):
     assert "use type: proxmox" in errors(report, "spec.hypervisors.type")[0]["fix"]
 
 
+def test_tagged_hypervisor_management_vlan_is_refused(site):
+    doc = load_example("proxmox-bare")
+    doc["spec"]["hypervisors"]["managementVLAN"] = "tagged"
+    _, report = site.validate(doc)
+    assert "use untagged" in errors(report, "spec.hypervisors.managementVLAN")[0]["fix"]
+
+
 def test_esxi_needs_installer_file(site):
     doc = load_example("vsphere")
     doc["spec"]["hypervisors"] = load_example("proxmox-bare")["spec"]["hypervisors"]

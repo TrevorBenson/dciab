@@ -485,6 +485,11 @@ class Checker:
             self.error(base + ("type",), hv["type"],
                        f"use type: {'esxi' if ptype == 'vsphere' else 'proxmox'} to match spec.platform.type ({ptype})")
 
+        if hv.get("managementVLAN") == "tagged":
+            self.error(base + ("managementVLAN",), "tagged",
+                       "use untagged (an access port for network.nodes.vlan, or a trunk with it as the native "
+                       "VLAN): the Proxmox VE installer can't set a VLAN, so a tagged-only port leaves the "
+                       "installed host unreachable (docs/HYPERVISORS.md)")
         self._unique(hv["hosts"], "name", base + ("hosts",))
         macs: Dict[str, Path] = {}
         bmcs: Dict[str, Path] = {}
