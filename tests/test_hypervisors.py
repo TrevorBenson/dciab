@@ -771,8 +771,15 @@ PXE_OPT = {"Id": "0001", "DisplayName": "UEFI PXEv4"}
     {SYS + "/BootOptions": {"Members": [{"@odata.id": SYS + "/BootOptions/0"}],
                             "Members@odata.nextLink": SYS + "/BootOptions?page=2"},
      SYS + "/BootOptions?page=2": 500},                                   # a later page can't be read
+    {SYS + "/BootOptions": {}},                                           # no Members at all
+    {SYS + "/BootOptions": {"Members@odata.nextLink": SYS + "/BootOptions?page=2"},
+     SYS + "/BootOptions?page=2": {"Members": [{"@odata.id": SYS + "/BootOptions/0"}]}},  # only a nextLink
+    {SYS + "/BootOptions": {"Members": [{"@odata.id": SYS + "/BootOptions/1"}],
+                            "Members@odata.nextLink": SYS + "/BootOptions?page=2"},
+     SYS + "/BootOptions?page=2": {}},                                    # a later page with no Members
 ], ids=["list-error", "member-error-after-match", "no-odata-id", "member-not-object", "body-not-object",
-        "members-object", "members-string", "next-link-loop", "later-page-error"])
+        "members-object", "members-string", "next-link-loop", "later-page-error", "no-members",
+        "first-page-only-next-link", "later-page-no-members"])
 def test_unreadable_boot_options_hold_the_host(fake_bmc, tmp_path, overrides):
     f = fake_bmc(power="Off", boot_options=[PROXMOX_OPT, PXE_OPT], overrides=overrides)
     failed, held, _, out = guard(f, tmp_path)
@@ -1172,3 +1179,29 @@ def test_open_8006_that_isnt_the_api_holds_even_with_first_install(fake_bmc, tmp
     assert not [c for c in f.calls if c[0] in CHANGES]
     # --reinstall still overrides it.
     assert guard(fake_bmc(power="Off"), tmp_path, reinstall=["pve01"], port_8006=True)[1] == []
+
+
+def test_a_missing_members_is_unreadable_and_an_explicit_empty_list_is_not(fake_bmc, tmp_path):
+    # Only Members: [] says "no boot options"; a page without Members can't be told from a page
+    # the BMC left out, so it must never let --first-install through.
+    f = fake_bmc(power="Off", boot_options=[PXE_OPT], overrides={
+        SYS + "/BootOptions": {"Members@odata.nextLink": SYS + "/BootOptions?page=2"},
+        SYS + "/BootOptions?page=2": {"Members": [{"@odata.id": SYS + "/BootOptions/0"}]}})
+    with pytest.raises(redfish.RedfishError):
+        f.bmc.os_boot_entries()
+    failed, held, _, out = guard(f, tmp_path, first_install=["pve01"])
+    assert (failed, held) == ([], ["pve01"]) and "boot options couldn't be read" in out
+    assert not [c for c in f.calls if c[0] in CHANGES]
+    empty = fake_bmc(power="Off", boot_options=[PXE_OPT], overrides={SYS + "/BootOptions": {"Members": []}})
+    assert empty.bmc.os_boot_entries() is None
+
+
+@pytest.mark.parametrize("path", [
+    "PciRoot(0x0)/Pci(0x17,0x0)/Sata(0x1,0xFFFF,0x0)/CDROM(0x0)",
+    "PciRoot(0x0)/Pci(0x1,0x0)/Scsi(0x0,0x0)/CDROM(0x1,0x0,0x0)",
+])
+def test_an_optical_drive_on_a_disk_bus_is_not_os_evidence(path):
+    assert not redfish.is_os_entry("UEFI: SATA CD/DVD", path)
+    assert not redfish.is_os_entry("Boot0004", path)
+    # A partition on the same path still counts (an installed OS, not a disc).
+    assert redfish.is_os_entry("Boot0005", path + "/HD(1,GPT,ab)")

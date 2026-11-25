@@ -50,7 +50,8 @@ def is_os_entry(name: str, device_path: str) -> bool:
     Explicit OS evidence wins over any other word in the name: Proxmox VE, a name in OS_HINTS
     (so "UEFI OS (Virtual Disk)" counts), a legacy disk entry ("Hard drive C:", BBS(HD,...)), or
     a device path into a local disk: a partition (HD(...)), or a whole disk on a SATA, SCSI, SAS
-    or NVMe bus with no partition node. So a USB-named entry on a partition, such as a bootable
+    or NVMe bus with no partition node (a path ending in a CDROM(...) node is an optical drive,
+    not a disk, and doesn't count unless it also has a partition node). So a USB-named entry on a partition, such as a bootable
     stick, counts too and holds the host. An entry with no device path whose name names a disk
     or a disk controller (a whole word from PATHLESS_DISK_WORDS, such as "Integrated RAID
     Controller 1: PERC H730" or "Embedded SATA Port Disk A") counts too, unless it names an
@@ -62,7 +63,9 @@ def is_os_entry(name: str, device_path: str) -> bool:
     if "proxmox" in text:
         return True
     network = any(n in lpath for n in NETWORK_PATH)
-    on_disk = "hd(" in lpath or "bbs(hd" in lpath or (not network and any(n in lpath for n in DISK_PATH))
+    optical = "cdrom(" in lpath       # a CD/DVD drive on a SATA, SCSI or SAS bus isn't a disk
+    on_disk = "hd(" in lpath or "bbs(hd" in lpath or (
+        not network and not optical and any(n in lpath for n in DISK_PATH))
     if not on_disk and (network or any(h in lname for h in NETWORK_HINTS)):
         return False
     if on_disk or any(h in text for h in OS_HINTS + DISK_NAMES):
@@ -74,6 +77,13 @@ def is_os_entry(name: str, device_path: str) -> bool:
 
 
 MAX_PAGES = 64
+
+
+def _required_members(page: object) -> object:
+    """A collection page's Members value; a page without one is unreadable, not empty."""
+    if not isinstance(page, dict) or "Members" not in page:
+        raise TypeError("a page of the list has no Members")
+    return page["Members"]
 
 
 def _members(value: object) -> list:
@@ -220,13 +230,13 @@ class Bmc:
 
     def members(self, path: str) -> list:
         """Every member of a collection, across all its pages (Members@odata.nextLink). Raises
-        RedfishError when a page can't be read, Members isn't an array, or the pages don't end."""
+        RedfishError when a page can't be read, a page has no Members (first page or later, even
+        one with only a nextLink), Members isn't an array, or the pages don't end. Only an explicit
+        Members: [] is an empty collection: a missing Members can't be told from a page the BMC
+        left out, so callers must treat it as unreadable."""
         try:
             page = self.get(path)
-            members = page.get("Members")
-            if members is None:
-                return []
-            members = list(_members(members))
+            members = list(_members(_required_members(page)))
             seen = {path}
             while page.get("Members@odata.nextLink"):
                 link = page["Members@odata.nextLink"]
@@ -234,7 +244,7 @@ class Bmc:
                     raise RedfishError(f"{self.client.where}: the list at {path} doesn't end ({link})")
                 seen.add(link)
                 page = self.get(link)
-                members += _members(page.get("Members", []))
+                members += _members(_required_members(page))
             return members
         except (TypeError, AttributeError) as exc:
             raise RedfishError(f"{self.client.where}: the list at {path} makes no sense ({exc})") from None
