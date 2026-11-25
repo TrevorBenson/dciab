@@ -303,6 +303,23 @@ labRunner:
   image: ghcr.io/trevorbenson/dciab-lab-runner@sha256:082f4f4baca828c45e764d4c8d140c52609f61d4a2632423602e8c568b5764c0
   disk: ghcr.io/trevorbenson/dciab-lab-runner-disk@sha256:c2dc4152602f037be74fa9496355292e4c86cdd28385cc9d4ab71305a835fe1f
 
+# Test tooling for dciab hypervisors, never in the archive: Redfish emulators the CI drives the
+# real Redfish code against (hack/redfish/README.md). Fetched by hack/redfish/fetch.py.
+redfishTesting:
+  # DMTF's Redfish Mockup Server serves recorded Redfish trees (BSD-3-Clause).
+  mockupServer:
+    repo: https://github.com/DMTF/Redfish-Mockup-Server
+    version: "1.3.0"
+    commit: "23d21f9a3610f6b6fbb71ffc941296b159a524d2"
+    # Its requirements.txt, pinned.
+    pip: {requests: "2.34.2", grequests: "0.7.0", gevent: "26.9.0", multipart: "2.0.1"}
+  # DMTF's public mockups (DSP2043, in the Redfish-Publications repository; BSD-3-Clause).
+  mockups:
+    repo: https://github.com/DMTF/Redfish-Publications
+    version: "2026.2"
+    commit: "4f81814e399213c9055863ddaff42791c6b3706a"
+    names: [public-rackmount1, public-tower, public-localstorage]
+
 binarySHA256:
   clusterctl-linux-amd64: "c7301a8515ed329562b06c958463051dd55d9649fac591393f5df54a868fa79b"
   oras-linux-amd64.tar.gz: "66fb0ad7206f3f6fa77ed5b552049d364ccf4b50b1684554f731f76302b52ca0"   # tools.oras

@@ -1,0 +1,3 @@
+{"@odata.id": "/redfish/v1/Systems/437XR1138R2/BootOptions/Boot000B", "@odata.type": "#BootOption.v1_0_4.BootOption",
+ "Id": "Boot000B", "BootOptionReference": "Boot000B", "DisplayName": "Red Hat Enterprise Linux",
+ "UefiDevicePath": "HD(1,GPT,5B2C7A4E-0D4B-4E7B-9C1E-3F0A1B2C3D4E,0x800,0x12C000)/\\EFI\\redhat\\shimx64.efi"}

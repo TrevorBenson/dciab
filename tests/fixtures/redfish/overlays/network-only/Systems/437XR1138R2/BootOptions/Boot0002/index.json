@@ -1,0 +1,3 @@
+{"@odata.id": "/redfish/v1/Systems/437XR1138R2/BootOptions/Boot0002", "@odata.type": "#BootOption.v1_0_4.BootOption",
+ "Id": "Boot0002", "BootOptionReference": "Boot0002", "DisplayName": "UEFI HTTPv4 (MAC:B8CA3A010301)",
+ "UefiDevicePath": "PciRoot(0x0)/Pci(0x1C,0x0)/Pci(0x0,0x0)/MAC(B8CA3A010301,0x1)/IPv4(0.0.0.0)/Uri()"}
