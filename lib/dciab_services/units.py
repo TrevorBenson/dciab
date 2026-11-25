@@ -20,6 +20,14 @@ and both retry without a start limit, so an interface that appears late is picke
 slowing to every 5 minutes where systemd (254 or later) has RestartSteps=, so a lasting failure
 doesn't fill the journal.
 
+The units only bring up addresses the record says dciab services added (address lines in
+<state>/services/created): a DNS service IP that is the operator's address (any prefix) is never
+asserted by them, so starting a unit can't change an address teardown doesn't know about.
+
+One state folder owns the units: dciab services refuses to write them over a dciab-services.kube
+that runs from another state folder (installed_conf), since that folder's --down would then stop
+and remove this one's pod.
+
 Firewall ports are made permanent by the firewall step itself (firewalld keeps them). Each unit
 file is listed in <state>/services/created (lifecycle) before it is written, so --down removes it.
 """
@@ -76,6 +84,8 @@ def addresses_unit(nic: str, prefix: int, service_ips: List[str], extra: List[st
                    backoff: bool = False) -> str:
     """extra: more ip/prefix entries (the previous config's, while the pod moves to a new one)."""
     lines = [f"ExecStart=ip addr replace {c} dev {nic}" for c in _cidrs(prefix, service_ips, extra)]
+    if not lines:   # every DNS service IP is someone else's address: nothing for this unit to add
+        lines = ["ExecStart=/usr/bin/true"]
     return HEAD + f"""[Unit]
 Description=DCiaB Day 0 services: the DNS service IPs on {nic}
 Wants=network-online.target
@@ -121,6 +131,19 @@ RestartSec=5
 [Install]
 WantedBy=multi-user.target
 """
+
+
+def installed_conf(quadlet_dir: Path = None) -> "Path | None":
+    """The services folder (<state>/services) the installed dciab-services.kube runs from
+    (its Yaml= line), None when there is no such unit or it names no Yaml."""
+    unit = (quadlet_dir or QUADLET_DIR) / KUBE
+    if not unit.is_file():
+        return None
+    for line in unit.read_text().splitlines():
+        if line.startswith("Yaml="):
+            yaml = line.split("=", 1)[1].strip()
+            return Path(yaml).parent if yaml else None
+    return None
 
 
 def render(conf: Path, nic: str, prefix: int, service_ips: List[str],

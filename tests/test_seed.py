@@ -465,6 +465,10 @@ class FakeHost:
             self.pods.discard(cmd[-1])
         elif cmd[:2] == ["ip", "-o"]:
             out = " ".join(f"2: {cmd[-1]} inet {a} scope global" for a in sorted(self.addrs.get(cmd[-1], ())))
+        elif cmd[:2] == ["ip", "-j"]:
+            out = json.dumps([{"ifname": cmd[-1], "addr_info": [
+                {"family": "inet", "local": a.split("/")[0], "prefixlen": int(a.split("/")[1]),
+                 "scope": "global", "label": cmd[-1]} for a in sorted(self.addrs.get(cmd[-1], ()))]}])
         elif cmd[:3] == ["ip", "addr", "del"]:
             self.addrs[cmd[-1]].discard(cmd[3])
         elif cmd[0] == "firewall-offline-cmd":
@@ -710,6 +714,32 @@ def test_registry_runs_as_a_quadlet_unit_and_survives_reboots(tmp_path, monkeypa
     cli.step_registry(tmp_path / "root", tmp_path, state, Seed())
     assert not any(c[:2] in (["systemctl", "restart"], ["systemctl", "daemon-reload"]) for c in calls)
     assert unit.read_text() == text and cli.load_created(state)["registry"]["token"] == rec["token"]
+
+
+def test_registry_unit_left_unloaded_is_reloaded_before_the_restart(tmp_path, monkeypatch):
+    """A run that stopped after writing the unit, before daemon-reload: the next run finds the
+    unit current but the service inactive, and reloads before restarting (CodeRabbit on #230)."""
+    calls, state, host = registry_env(tmp_path, monkeypatch)
+    cli.step_registry(tmp_path / "root", tmp_path, state, Seed())
+    host["active"] = False                       # systemd never generated the service
+    calls.clear()
+    cli.step_registry(tmp_path / "root", tmp_path, state, Seed())
+    reload, restart = ["systemctl", "daemon-reload"], ["systemctl", "restart", "dciab-registry.service"]
+    assert reload in calls and restart in calls and calls.index(reload) < calls.index(restart)
+
+
+def test_registry_unit_of_another_state_folder_is_refused(tmp_path, monkeypatch):
+    """dciab-registry.container serves another state folder's registry: seed changes nothing
+    and says which (that folder's --remove would remove this registry)."""
+    calls, state, host = registry_env(tmp_path, monkeypatch)
+    unit = tmp_path / "quadlet" / "dciab-registry.container"
+    unit.parent.mkdir()
+    unit.write_text(f"[Container]\nVolume={tmp_path / 'other' / 'registry' / 'data'}:/var/lib/registry:Z\n")
+    with pytest.raises(cli.SeedError, match="one state folder owns it"):
+        cli.step_registry(tmp_path / "root", tmp_path, state, Seed())
+    assert "other" in unit.read_text()
+    assert not any(c[:2] == ["systemctl", "restart"] for c in calls)
+    assert "registry" not in cli.load_created(state)
 
 
 def test_registry_from_an_older_seed_moves_under_systemd(tmp_path, monkeypatch):

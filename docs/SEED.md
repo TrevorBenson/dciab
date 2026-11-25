@@ -66,7 +66,9 @@ Seed records nothing for these hosts, so `--remove` only lists what is left. Rem
 
 ## After a reboot
 
-The seed registry, the DNS-only services and their firewalld ports come back on their own (systemd and Quadlet units). The bootstrap kind cluster doesn't: kind doesn't restart its node containers with podman, and a rerun of `dciab seed` only sees that the cluster exists.
+The seed registry, the DNS-only services and their firewalld ports come back on their own (systemd and Quadlet units). The bootstrap kind cluster doesn't: kind doesn't restart its node containers with podman.
+
+A rerun of `dciab seed` tries first: when the cluster's node container is stopped, the kind step starts it (`podman start`), refreshes `<state>/bootstrap.kubeconfig` and waits for the node to be ready. kind doesn't support restarting a cluster under podman, so this may not bring the API back. If the rerun fails at the kind step:
 
 - **Before `dciab mgmt` has created anything in it** (it holds only Cluster API and its providers): delete the stopped cluster and run seed again, which builds it afresh and installs the providers; the CA, the registry and DNS are unchanged.
   ```console

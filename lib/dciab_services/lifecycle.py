@@ -26,7 +26,14 @@ then checks that descriptor really is the lock and holds it, instead of trusting
 
 down() removes a permanent firewalld port with firewall-offline-cmd when firewalld isn't
 running. A line that can't be undone stays listed and is reported, so a later --down can finish
-the job.
+the job. That includes a line whose state can't be read (a query that fails for another reason
+than "not there": a missing tool, a podman or firewalld error) and a unit that won't stop: a
+change is only dropped from the record once it is known to be gone. While a unit couldn't be
+stopped, down() leaves the pod, the addresses and the ports alone too (the unit would bring them
+back, or bind addresses nobody records).
+
+Removing an address puts back every other address on the interface that the removal took along,
+the operator's included (with their lifetimes, scope and label): only the recorded one goes.
 
     python3 -m dciab_services.lifecycle down <state>/services
 """
@@ -130,6 +137,49 @@ def run(cmd: List[str]) -> subprocess.CompletedProcess:
     return subprocess.run([str(c) for c in cmd], check=True, text=True, capture_output=True)
 
 
+def present(cmd: List[str], what: str) -> bool:
+    """A query whose exit code says yes (0) or no (1). Anything else (a missing tool, an error)
+    says nothing: raises Kept, so the line stays listed."""
+    res = query(cmd)
+    if res.returncode in (0, 1):
+        return res.returncode == 0
+    detail = (res.stderr or "").strip() or f"exit {res.returncode}"
+    raise Kept(f"couldn't tell whether {what} is there ({' '.join(str(c) for c in cmd)}: {detail}); "
+               "it stays listed")
+
+
+def addresses(nic: str) -> Optional[List[dict]]:
+    """The IPv4 addresses on nic (ip -j), each {'cidr', 'cmd'}: cmd re-adds it as it was
+    (broadcast, scope, label, lifetimes). None when they can't be read."""
+    import json
+    res = query(["ip", "-j", "-4", "addr", "show", "dev", nic])
+    if res.returncode != 0:
+        return None
+    try:
+        links = json.loads(res.stdout or "[]")
+    except ValueError:
+        return None
+    out = []
+    for link in links if isinstance(links, list) else []:
+        for a in link.get("addr_info") or []:
+            if a.get("family", "inet") != "inet" or not a.get("local"):
+                continue
+            cidr = f"{a['local']}/{a.get('prefixlen', 32)}"
+            cmd = ["ip", "addr", "add", cidr, "dev", nic]
+            if a.get("broadcast"):
+                cmd += ["brd", a["broadcast"]]
+            if a.get("scope") and a["scope"] != "global":
+                cmd += ["scope", a["scope"]]
+            if a.get("label") and a["label"] != nic:
+                cmd += ["label", a["label"]]
+            valid, pref = a.get("valid_life_time"), a.get("preferred_life_time")
+            if isinstance(valid, int) and valid < 4294967295:
+                cmd += ["valid_lft", str(valid), "preferred_lft",
+                        str(pref if isinstance(pref, int) and pref < 4294967295 else valid)]
+            out.append({"cidr": cidr, "cmd": cmd})
+    return out
+
+
 def read(conf: Path) -> List[List[str]]:
     path = conf / RECORD
     if not path.is_file():
@@ -173,15 +223,11 @@ def undo(entry: List[str], say: Say = _say, firewalld: Optional[bool] = None) ->
     if kind == "unit" and len(args) == 1:
         _undo_unit(Path(args[0]), say)
     elif kind == "pod" and len(args) == 1:
-        if query(["podman", "pod", "exists", args[0]]).returncode == 0:
+        if present(["podman", "pod", "exists", args[0]], f"pod {args[0]}"):
             run(["podman", "pod", "rm", "-f", args[0]])
             say(f"removed pod {args[0]}")
     elif kind == "address" and len(args) == 2:
-        nic, cidr = args
-        have = query(["ip", "-o", "-4", "addr", "show", "dev", nic]).stdout.split()
-        if cidr in have:
-            run(["ip", "addr", "del", cidr, "dev", nic])
-            say(f"removed {cidr} from {nic}")
+        _undo_address(args[0], args[1], say)
     elif kind == "port" and len(args) in (2, 3):
         zone, port = args[0], args[1]
         scopes = [args[2]] if len(args) == 3 else ["runtime"]   # older lines: runtime opens only
@@ -195,6 +241,34 @@ def undo(entry: List[str], say: Say = _say, firewalld: Optional[bool] = None) ->
         raise ValueError(" ".join(entry))
 
 
+def _undo_address(nic: str, cidr: str, say: Say) -> None:
+    """Remove a recorded address, then put back any other address on nic that went with it
+    (the kernel drops secondaries with their primary unless promote_secondaries is set): the
+    operator's as well as recorded ones. Raises Kept when the addresses can't be read."""
+    before = addresses(nic)
+    if before is None:
+        raise Kept(f"couldn't read the addresses on {nic} (ip -j -4 addr show dev {nic}); "
+                   f"{cidr} stays listed")
+    if cidr not in {a["cidr"] for a in before}:
+        return
+    run(["ip", "addr", "del", cidr, "dev", nic])
+    say(f"removed {cidr} from {nic}")
+    after = addresses(nic)
+    if after is None:
+        raise Kept(f"removed {cidr} from {nic}, but couldn't read its addresses afterwards to put "
+                   f"back any the removal took along (check: ip -4 addr show dev {nic})")
+    still = {a["cidr"] for a in after}
+    for a in before:
+        if a["cidr"] == cidr or a["cidr"] in still:
+            continue
+        try:
+            run(a["cmd"])
+            say(f"re-added {a['cidr']} on {nic} (removing {cidr} took it along)")
+        except subprocess.CalledProcessError as exc:
+            raise Kept(f"removing {cidr} from {nic} took {a['cidr']} along and it couldn't be put "
+                       f"back ({_why(exc)}): {' '.join(a['cmd'])}") from None
+
+
 def _undo_port(zone: str, port: str, scope: str, firewalld: bool, say: Say) -> None:
     """Close one scope of a port DCiaB opened. Runtime rules don't outlive firewalld, so with
     firewalld stopped there is nothing to close at runtime; a permanent rule is removed from the
@@ -203,12 +277,14 @@ def _undo_port(zone: str, port: str, scope: str, firewalld: bool, say: Say) -> N
         if not firewalld:
             say(f"firewalld isn't running: {port} in zone {zone} isn't open at runtime")
             return
-        if query(["firewall-cmd", f"--zone={zone}", f"--query-port={port}"]).returncode == 0:
+        if present(["firewall-cmd", f"--zone={zone}", f"--query-port={port}"],
+                   f"{port} in zone {zone} (runtime)"):
             run(["firewall-cmd", f"--zone={zone}", f"--remove-port={port}"])
             say(f"closed {port} in zone {zone} (runtime)")
         return
     if firewalld:
-        if query(["firewall-cmd", "--permanent", f"--zone={zone}", f"--query-port={port}"]).returncode == 0:
+        if present(["firewall-cmd", "--permanent", f"--zone={zone}", f"--query-port={port}"],
+                   f"{port} in zone {zone} (permanent)"):
             run(["firewall-cmd", "--permanent", f"--zone={zone}", f"--remove-port={port}"])
             say(f"closed {port} in zone {zone} (permanent)")
         return
@@ -232,10 +308,13 @@ def _undo_unit(path: Path, say: Say) -> None:
         service = path.name
     else:
         raise ValueError(f"unit {path}")
-    if query(["systemctl", "cat", service]).returncode == 0:
-        query(["systemctl", "stop", service])
-        if path.suffix == ".service":
-            query(["systemctl", "disable", service])
+    if present(["systemctl", "cat", service], service):
+        for verb in ["stop"] + (["disable"] if path.suffix == ".service" else []):
+            res = query(["systemctl", verb, service])
+            if res.returncode != 0:
+                detail = (res.stderr or "").strip() or f"exit {res.returncode}"
+                raise Kept(f"systemctl {verb} {service} failed ({detail}); {path} stays, and so "
+                           "does its line (run this again once it can be stopped)")
         say(f"stopped {service}")
     if path.exists():
         path.unlink()
@@ -277,14 +356,20 @@ def prune(conf: Path, wanted: Set[str], kinds: Iterable[str] = ("address", "port
 
 
 def _restore_addresses(keep: List[List[str]], wanted: Set[str], say: Say) -> List[str]:
-    """Put back recorded addresses the config still wants that a removal took along (a
-    secondary goes with its primary unless promote_secondaries is set). Returns failures."""
+    """Put back recorded addresses the config still wants that went missing (a removal puts
+    back what it took along itself; this is the check that they are all there). Returns
+    failures."""
     left = []
     for entry in keep:
         if len(entry) != 3 or entry[0] != "address" or " ".join(entry) not in wanted:
             continue
         nic, cidr = entry[1], entry[2]
-        if cidr in query(["ip", "-o", "-4", "addr", "show", "dev", nic]).stdout.split():
+        have = addresses(nic)
+        if have is None:
+            say(f"couldn't read the addresses on {nic} to check {cidr} is still there")
+            left.append(" ".join(entry))
+            continue
+        if cidr in {a["cidr"] for a in have}:
             continue
         try:
             run(["ip", "addr", "replace", cidr, "dev", nic])
@@ -304,8 +389,12 @@ def down(conf: Path, say: Say = _say) -> List[str]:
         if not entries:
             say(f"{conf / RECORD} lists nothing dciab services added to this host")
         firewalld = firewalld_running() if any(e and e[0] == "port" for e in entries) else None
-        left = []
+        left, blocked = [], False
         for entry in sorted(entries, key=lambda e: ORDER.get(e[0] if e else "", 9)):
+            if blocked and entry and entry[0] != "unit":
+                say(f"left '{' '.join(entry)}' alone: a unit above couldn't be stopped")
+                left.append(entry)
+                continue
             try:
                 undo(entry, say, firewalld)
             except ValueError:
@@ -313,6 +402,7 @@ def down(conf: Path, say: Say = _say) -> List[str]:
             except (subprocess.CalledProcessError, Kept) as exc:
                 say(f"couldn't undo '{' '.join(entry)}': {_why(exc)}")
                 left.append(entry)
+                blocked = blocked or (bool(entry) and entry[0] == "unit")
         write(conf, left)
         if not left and (conf / APPLIED).exists():
             (conf / APPLIED).unlink()

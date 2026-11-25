@@ -325,18 +325,28 @@ def main(argv: Optional[List[str]] = None) -> int:
             print(f"dciab services: {args.action} needs --nic", file=sys.stderr)
             return 2
         if args.action == "apply":
+            owner = units.installed_conf()
+            if owner is not None and owner.resolve() != paths.conf.resolve():
+                print(f"dciab services: {units.QUADLET_DIR / units.KUBE} runs the services from "
+                      f"{owner.parent}, not {paths.conf.parent}: one state folder owns them. Use "
+                      f"--state {owner.parent}, or remove that one first: dciab services <config> "
+                      f"--down --state {owner.parent}", file=sys.stderr)
+                return 1
             rendered = {}
             if args.units:
                 net = render.network(doc)
                 mounts = unit_mounts(doc, paths, args.graphroot)
-                rendered = units.render(paths.conf, args.nic, net["prefix"], net["serviceIPs"],
-                                        mounts=mounts)
+                # Only addresses dciab services added (recorded by the address step): a service
+                # IP that is the operator's address isn't asserted by the units.
+                ours = recorded_addresses(paths.conf, args.nic)
+                ips = [ip for ip in net["serviceIPs"] if f"{ip}/{net['prefix']}" in ours]
+                rendered = units.render(paths.conf, args.nic, net["prefix"], ips, mounts=mounts)
                 # Before the files move: units that bring up the new addresses and the recorded
                 # (old) ones, so a crash or reboot at any point here finds every address the live
                 # pod.yaml, old or new, binds. After the move the units drop the old ones.
                 new = {f"{ip}/{net['prefix']}" for ip in net["serviceIPs"]}
-                old = sorted(recorded_addresses(paths.conf, args.nic) - new)
-                both = units.render(paths.conf, args.nic, net["prefix"], net["serviceIPs"],
+                old = sorted(ours - new)
+                both = units.render(paths.conf, args.nic, net["prefix"], ips,
                                     mounts=mounts, extra=old)
                 for path in units.write(paths.conf, both):
                     print(f"wrote {path}" + (" (keeps the old addresses until the pod moves)" if old else ""))

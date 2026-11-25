@@ -241,6 +241,11 @@ def step_registry(root: Path, payload: Path, state: Path, s) -> None:
     if units.persistent():
         # A Quadlet unit runs it, so it comes back after a reboot.
         unit = units.QUADLET_DIR / f"{REGISTRY_CONTAINER}.container"
+        other = registry_unit_data(unit)
+        if other is not None and other.resolve() != data.resolve():
+            raise SeedError(f"{unit} runs the registry from {other}, not {data}: one state folder "
+                            f"owns it. Use the state folder that holds {other}, or remove that "
+                            "seed first (dciab seed <config> --remove --state <that folder>)")
         graphroot = probe_cmd(["podman", "info", "--format", "{{.Store.GraphRoot}}"]).stdout.strip()
         text = registry_unit(image_id, want, token, s.address, data, etc, state, SEED_TOKEN_LABEL,
                              mounts=[Path(graphroot)] if graphroot else [])
@@ -255,7 +260,8 @@ def step_registry(root: Path, payload: Path, state: Path, s) -> None:
                 unit.parent.mkdir(parents=True, exist_ok=True)
                 unit.write_text(text)
                 unit.chmod(0o644)
-                run(["systemctl", "daemon-reload"])
+            # Always: a run that stopped after writing the unit left systemd without the service.
+            run(["systemctl", "daemon-reload"])
             run(["systemctl", "restart", REGISTRY_SERVICE])
             say(f"registry: started {REGISTRY_CONTAINER} on https://{s.address}:{REGISTRY_PORT} "
                 f"({REGISTRY_SERVICE}; it comes back after a reboot)")
@@ -275,6 +281,17 @@ def step_registry(root: Path, payload: Path, state: Path, s) -> None:
         say("registry: already serving")
     open_registry_port(state, s)
     wait_registry(s.address, state / "pki" / "trust-bundle.pem")
+
+
+def registry_unit_data(unit: Path) -> Optional[Path]:
+    """The registry data folder an installed dciab-registry.container serves
+    (Volume=<data>:/var/lib/registry), None without the unit or that line."""
+    if not unit.is_file():
+        return None
+    for line in unit.read_text().splitlines():
+        if line.startswith("Volume=") and ":/var/lib/registry" in line:
+            return Path(line.split("=", 1)[1].split(":/var/lib/registry", 1)[0])
+    return None
 
 
 def nic_name(want: str) -> Optional[str]:

@@ -61,10 +61,12 @@ Two parts on the same VM: **A**, the DNS-only services and the seed registry (a 
    findmnt -T /var/lib/dciab/work; podman info --format '{{.Store.GraphRoot}}'
    ls -Zd /var/lib/dciab/work/state/services /var/lib/dciab/work/isos /var/lib/dciab/work/state/host-isos
    sudo firewall-cmd --list-ports; sudo firewall-cmd --permanent --list-ports
-   dig +short @<dnsServiceIP 1> registry.<domain>; chronyc -h <dnsServiceIP 1> tracking | head -3
+   dig +short @<dnsServiceIP 1> registry.<domain>
+   # NTP on UDP 123 (the pod's chrony has cmdport 0, so chronyc can't ask it): prints the stratum
+   PYTHONPATH=/var/lib/dciab/work/dciab-src/lib python3 -c 'from dciab_services import probe; print(probe.ntp("<dnsServiceIP 1>"))'
    printf x | sudo tee /var/lib/dciab/work/isos/probe.iso >/dev/null; curl -s -o /dev/null -w '%{http_code}\n' http://<bootstrap address>/isos/probe.iso
    ```
-   Passing: both units `active`; `RequiresMountsFor` lists the state folder, both ISO folders and the container storage path; the ISO folders are labelled `container_file_t`; 53/udp, 53/tcp, 80/tcp and 123/udp in both port lists; dig answers; chronyc reports a stratum; curl prints `200`.
+   Passing: both units `active`; `RequiresMountsFor` lists the state folder, both ISO folders and the container storage path; the ISO folders are labelled `container_file_t`; 53/udp, 53/tcp, 80/tcp and 123/udp in both port lists; dig answers; the NTP query prints a stratum from 1 to 15; curl prints `200`.
 10. **Reboot** (ask first, as for step 3). **Compare:** repeat step 9's commands. Passing: the same results, and `journalctl -b -u dciab-services.service | grep -i -E 'avc|denied'` and `ausearch -m avc -ts boot` show no denials for the pod.
 11. **Teardown.** `sudo /var/lib/dciab/work/dciab-src/dciab services /var/lib/dciab/site-full/dciab.yaml --down`. Passing: the units are gone, the DNS service IPs are off the interface, and none of 53/udp, 53/tcp, 80/tcp or 123/udp is in either port list (unless it was there before step 8).
 12. **Clean up** as task 0009 step 8.
