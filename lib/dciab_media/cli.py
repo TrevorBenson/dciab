@@ -27,6 +27,9 @@ re-run, and a finished run changes nothing:
            archive's payload/isos/ if it carries them, else from --isos-from (default: the
            stick's isos/, USB_MOUNT/isos, where the stick builder puts the shipped ones);
            each is checked against its bundle.lock sha256 before it's placed
+  preload  on the appliance, the Day 0 images it carries (dciab_media.preload.PRELOAD_DIR)
+           loaded into root's storage, now on the work disk, so dciab services finds them
+           there instead of loading them from the payload
 
 Then it prints the commands that run the next steps from the copy, with their state on
 the work disk (--state <work>/state) and services and hypervisors given the ISOs the isos
@@ -53,9 +56,10 @@ from typing import Callable, Dict, List, NamedTuple, Optional, Sequence
 import yaml
 
 from dciab_archive import verify as verify_mod
+from dciab_media import preload
 from dciab_state import SITE
 
-STEPS = ["target", "state", "copy", "verify", "storage", "isos"]
+STEPS = ["target", "state", "copy", "verify", "storage", "isos", "preload"]
 # On the appliance, the root filesystem is on workDisk.disk; dciab's state lives under /var.
 WORK_DIR_APPLIANCE = Path("/var/lib/dciab/work")
 STORAGE_DROPIN = Path("/etc/containers/storage.conf.d/50-dciab-media.conf")
@@ -592,6 +596,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             say(f"copy:    {len(plan.to_copy)} of {len(plan.files)} files, {plan.copy_bytes} bytes")
             say(f"storage: {change or 'unchanged: podman already uses ' + str(graphroot)}")
             say(f"isos:    {work / 'isos'}")
+            say(f"preload: {preload.PRELOAD_DIR if (preload.PRELOAD_DIR / 'images.yaml').is_file() else 'none (not the appliance)'}")
             return 0
         work.mkdir(parents=True, exist_ok=True)
         lock_path = HOST_LOCK if HOST_LOCK.parent.is_dir() and os.access(HOST_LOCK.parent, os.W_OK) \
@@ -628,6 +633,15 @@ def main(argv: Optional[List[str]] = None) -> int:
                     for name in missing_isos(doc, work / "isos", pins):
                         say(f"  note: {name} (pinned in bundle.lock) isn't in {work / 'isos'} or {isos_from}: "
                             f"put it in either, then run again; dciab hypervisors needs it")
+                elif step == "preload":
+                    if (preload.PRELOAD_DIR / "images.yaml").is_file():
+                        try:
+                            loaded, present = preload.load(preload.PRELOAD_DIR)
+                        except preload.PreloadError as exc:
+                            raise MediaError(str(exc)) from None
+                        say(f"  loaded {len(loaded)}, {len(present)} already there ({preload.PRELOAD_DIR})")
+                    else:
+                        say("  none (not the appliance)")
                 if step == args.until:
                     say(f"stopped after {step} (--until)")
                     return 0

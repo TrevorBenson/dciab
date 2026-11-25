@@ -8,6 +8,7 @@ A Rocky Linux 10 image-mode (bootc) system that runs the whole DCiaB bootstrap. 
 - podman, skopeo, NetworkManager, firewalld, OpenSSH
 - kind, helm and kubectl at the `bundle.lock` versions
 - dciab, read-only under `/usr/share/dciab` (`dciab` on the PATH)
+- the Day 0 images (CoreDNS, Caddy, DCiaB's chrony, Zot, the proxmox-auto-install-assistant) at their `bundle.lock` digests, as an OCI layout under `/usr/share/dciab/day0-images` ([`lib/dciab_media/preload.py`](../../lib/dciab_media/preload.py)). They're files, not an additional image store: one under `/usr` breaks bootc updates, and root's container storage moves to the work disk when `dciab media` runs.
 
 ## Install
 
@@ -29,6 +30,7 @@ The disk choice is [`lib/dciab_bootstrap_host/install.py`](../../lib/dciab_boots
    4. configures `spec.bootstrap.interface` (a NIC name, or its MAC) with `spec.bootstrap.address`, the node network's gateway and `network.upstreamResolvers`, tagging `network.nodes.vlan` when `spec.bootstrap.managementVLAN` is `tagged`. It does this only when validation finds no errors under `spec.bootstrap`, `spec.network` or `spec.identity`, so a wrong address never reaches the site network. Other errors (a missing secret file, say) don't stop it, so the operator can SSH in and fix them.
 
    If the network isn't configured, fix `dciab.yaml` on the stick from a laptop and reboot the appliance with the stick plugged in.
+3. `dciab-day0-images.service` loads each Day 0 image root's container storage doesn't hold yet, under the name `bundle.lock` pins, so `dciab services` finds it and loads nothing from the payload. `dciab media` does the same in its `preload` step, after it moves the storage to the work disk.
 
 There are no passwords: access is by SSH key only.
 
@@ -39,6 +41,9 @@ $ sudo images/node-bootc/build.sh --type raw          # once: builds the Rocky 1
 $ images/bootstrap-bootc/build.sh --print            # pins and commands; builds nothing
 $ sudo images/bootstrap-bootc/build.sh               # installer ISO: output/bootiso/install.iso
 $ sudo images/bootstrap-bootc/build.sh --type qcow2  # a disk, to run it as a VM instead
+$ sudo images/bootstrap-bootc/build.sh --image-only  # only the bootc image (what CI checks)
 ```
+
+The build copies the Day 0 images into the image with oras, the way `build/archive.py` fills the archive's payload, and refuses to go on unless each one is at its pinned digest. The lab runner builds the image and checks them (`.github/workflows/lab-appliance.yml`).
 
 The USB image is then built by [`images/usb/`](../usb/README.md).

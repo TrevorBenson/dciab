@@ -6,7 +6,7 @@
 # ./dciab media dciab.yaml (--key cosign.pub | --checksums-only) [--source DIR] [--cosign BIN] [--isos-from DIR] [--until STEP] [--print]
 ```
 
-It runs as root; `--print` shows the plan (source, target, bytes to copy, state move, storage change) and changes nothing. Steps: `target`, `state`, `copy`, `verify`, `storage`, `isos`. Each one is safe to rerun, and a finished run changes nothing. A lock stops two runs at once on the host.
+It runs as root; `--print` shows the plan (source, target, bytes to copy, state move, storage change) and changes nothing. Steps: `target`, `state`, `copy`, `verify`, `storage`, `isos`, `preload`. Each one is safe to rerun, and a finished run changes nothing. A lock stops two runs at once on the host.
 
 `--key` is the cosign public key the site got separately from the archive; `--checksums-only` skips the signature, for unsigned builds only (the `MANIFEST` alone can't prove where the archive came from).
 
@@ -28,6 +28,7 @@ Before copying it checks the free space: what is left to copy, plus 5% of the ar
 - **verify:** `dciab verify-archive` on the copy: the signature (with `--key`), then every file against `MANIFEST`. Any missing, changed or extra file stops the run; files left by an earlier build of the same version count as extra, so remove the old copy first.
 - **storage:** root's podman storage (graphroot) moves to `<work>/containers`, with the drop-in `/etc/containers/storage.conf.d/50-dciab-media.conf` (and the SELinux labels of `/var/lib/containers`). Nothing changes if podman already uses it. With containers running it stops: stop them and rerun. Images in the old storage stay there, unused; `dciab seed` loads what it needs from the payload.
 - **isos:** `<work>/isos`, which `dciab services` serves. Installer ISOs the archive carries under `payload/isos/` are hard-linked there; a different file of the same name already there stops the run. The archive carries none today; instead, each installer ISO `bundle.lock` pins (`hypervisors.*`) that isn't in `<work>/isos` yet is copied from `--isos-from` (default: the stick's `isos/`, `/var/mnt/dciab/isos`, where a stick built with `--with-isos` holds the shipped ones) and checked against its `bundle.lock` sha256; a file that doesn't match stops the run, and files `bundle.lock` doesn't pin are ignored. For ESXi, put the ISO the site supplies there too. A site with `spec.hypervisors` gets a note naming any pinned ISO still missing.
+- **preload:** on the appliance, the Day 0 images it carries (`/usr/share/dciab/day0-images`) are loaded into root's storage, now on the work disk, so `dciab services` finds them there instead of loading them from the payload. Elsewhere it does nothing.
 
 When it's done it prints the next commands, run from the copy with their state on the work disk:
 

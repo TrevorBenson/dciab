@@ -1,0 +1,53 @@
+name: lab appliance image
+
+# Builds the bootstrap appliance's bootc image (images/bootstrap-bootc, --image-only: no
+# installer ISO) on the self-hosted lab runner, since it builds on the Rocky Linux 10 bootc base,
+# and checks what the image carries: the Day 0 images at their bundle.lock digests (#181) and the
+# unit that loads them at boot. The installer ISO and the boot itself stay with handoff task 0005.
+#
+# Like the other lab workflows, this runs only on a push to main or a dispatch of main.
+on:
+  push:
+    branches: [main]
+    paths:
+      - images/bootstrap-bootc/**
+      - lib/dciab_media/preload.py
+      - build/archive.py
+      - bundle.lock
+      - .github/workflows/lab-appliance.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dciab-lab
+  cancel-in-progress: false
+
+jobs:
+  appliance:
+    name: appliance image with the Day 0 images
+    runs-on: [self-hosted, dciab-lab]
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+      - name: Build the appliance image
+        run: sudo images/bootstrap-bootc/build.sh --image-only
+      - name: The image carries the Day 0 images and loads them at boot
+        run: |
+          set -euo pipefail
+          tag="localhost/dciab-bootstrap:$(cat VERSION)"
+          sudo podman run --rm --network none -e PYTHONPATH=/usr/share/dciab/lib "$tag" \
+            python3 -m dciab_media.preload --check
+          sudo podman run --rm --network none "$tag" systemctl is-enabled dciab-day0-images.service
+          want="$(PYTHONPATH=lib python3 -c 'import yaml; from dciab_media.preload import day0_refs; print(len(day0_refs(yaml.safe_load(open("bundle.lock")))))')"
+          got="$(sudo podman run --rm --network none "$tag" python3 -c 'import yaml; print(len(yaml.safe_load(open("/usr/share/dciab/day0-images/images.yaml"))["images"]))')"
+          [[ "$want" == "$got" ]] || { echo "the image carries $got Day 0 images, bundle.lock pins $want" >&2; exit 1; }
+          echo "ok: $got Day 0 images at their pinned digests"
+      - name: Clean up
+        if: always()
+        run: |
+          sudo podman rmi -f "localhost/dciab-bootstrap:$(cat VERSION)" || true
+          sudo rm -rf images/bootstrap-bootc/build images/bootstrap-bootc/output

@@ -808,7 +808,32 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: shellcheck dciab hack/e2e/run.sh hack/check_frozen_classes.sh images/node/build.sh lib/steps/mgmt.sh lib/steps/mgmt-pivot.sh lib/steps/services.sh lib/steps/capi-providers.sh lib/steps/storage-classes.sh lib/steps/block-storage.sh images/node-bootc/build.sh images/node-bootc/rootfs/usr/libexec/dciab/growroot images/bootstrap-bootc/build.sh images/usb/build.sh images/day0-chrony/build.sh images/backup/build.sh images/lab-runner/build.sh images/lab-runner/rootfs/usr/libexec/dciab-lab-runner/loop images/lab-runner/rootfs/usr/libexec/dciab-lab-runner/job-started.sh addons/cilium/install.sh addons/longhorn/install.sh addons/vsphere-cpi/install.sh addons/csi/install.sh addons/kubelet-csr-approver/install.sh hack/e2e/boot-node-image.sh hack/lab/runner-image-id.sh hack/lab/fetch-runner-disk.sh hack/lab/pve.sh hack/lab/check-token.sh hack/lab/template.sh hack/lab/cluster.sh hack/lab/mgmt.sh hack/e2e/hypervisors/setup.sh hack/media/rocky10-dropin.sh
+      - run: shellcheck dciab hack/e2e/run.sh hack/check_frozen_classes.sh images/node/build.sh lib/steps/mgmt.sh lib/steps/mgmt-pivot.sh lib/steps/services.sh lib/steps/capi-providers.sh lib/steps/storage-classes.sh lib/steps/block-storage.sh images/node-bootc/build.sh images/node-bootc/rootfs/usr/libexec/dciab/growroot images/bootstrap-bootc/build.sh images/usb/build.sh images/day0-chrony/build.sh images/backup/build.sh images/lab-runner/build.sh images/lab-runner/rootfs/usr/libexec/dciab-lab-runner/loop images/lab-runner/rootfs/usr/libexec/dciab-lab-runner/job-started.sh addons/cilium/install.sh addons/longhorn/install.sh addons/vsphere-cpi/install.sh addons/csi/install.sh addons/kubelet-csr-approver/install.sh hack/e2e/boot-node-image.sh hack/lab/runner-image-id.sh hack/lab/fetch-runner-disk.sh hack/lab/pve.sh hack/lab/check-token.sh hack/lab/template.sh hack/lab/cluster.sh hack/lab/mgmt.sh hack/e2e/hypervisors/setup.sh hack/media/rocky10-dropin.sh hack/media/preload-e2e.sh
+
+  day0-preload:
+    # The appliance carries the Day 0 images and loads them into root's storage at boot and in
+    # dciab media's preload step (#181). This copies two of them the way the appliance build
+    # does and loads them with dciab_media.preload into a real podman.
+    name: appliance Day 0 image preload
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install pyyaml
+      - name: oras (bundle.lock tools.oras, checked against binarySHA256)
+        run: |
+          set -euo pipefail
+          read -r ver sha < <(python3 -c 'import yaml; l = yaml.safe_load(open("bundle.lock")); print(l["tools"]["oras"], l["binarySHA256"]["oras-linux-amd64.tar.gz"])')
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/oras.tgz" "https://github.com/oras-project/oras/releases/download/$ver/oras_${ver#v}_linux_amd64.tar.gz"
+          echo "$sha  $RUNNER_TEMP/oras.tgz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/oras.tgz" -C "$RUNNER_TEMP" oras
+      - name: Preload into root's podman
+        run: sudo env "PATH=$PATH" hack/media/preload-e2e.sh "$RUNNER_TEMP/oras"
 
   media-dropin-rocky10:
     # dciab media's storage step moves root's podman storage with a storage.conf.d drop-in;

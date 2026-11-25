@@ -2,10 +2,13 @@
 # Build the DCiaB bootstrap appliance: an OCI image, then an unattended installer ISO for
 # the DCiaB USB (default) and, optionally, qcow2/vmdk/vhd for running it as a VM.
 #
-#   sudo images/bootstrap-bootc/build.sh [--type anaconda-iso] [--type qcow2] [--print]
+#   sudo images/bootstrap-bootc/build.sh [--type anaconda-iso] [--type qcow2] [--image-only] [--print]
 #
 # 1. Downloads kind, helm and kubectl, each checked against its sha256 in bundle.lock
-#    (bootstrapAppliance.toolChecksums).
+#    (bootstrapAppliance.toolChecksums), and copies the Day 0 images (CoreDNS, Caddy, chrony,
+#    Zot, the pve-assistant; lib/dciab_media/preload.py day0_refs) at their bundle.lock digests
+#    into an OCI layout with oras (tools.oras, checked against binarySHA256), the same way
+#    build/archive.py fills the archive's payload. The appliance loads them at boot.
 # 2. Builds images/bootstrap-bootc/Containerfile on nodeImages.bootc's base: the pinned
 #    baseImage, or the base images/node-bootc/build.sh built locally.
 # 3. bootc-image-builder writes the outputs under images/bootstrap-bootc/output/. The ISO
@@ -20,16 +23,18 @@ BUILD="$HERE/build"
 
 types=()
 print_only=false
+image_only=false
 while (( $# )); do
   case "$1" in
     --type) types+=(--type "${2:?--type needs a value: anaconda-iso, qcow2, vmdk, vhd, raw}"); shift 2 ;;
     --print) print_only=true; shift ;;
+    --image-only) image_only=true; shift ;;
     *) echo "build.sh: unknown argument '$1'" >&2; exit 2 ;;
   esac
 done
 (( ${#types[@]} )) || types=(--type anaconda-iso)
 
-read -r version k8s kind helm base_image manifest bib sha_kind sha_kubectl sha_helm < <(python3 - "$ROOT" <<'PY'
+read -r version k8s kind helm base_image manifest bib sha_kind sha_kubectl sha_helm oras sha_oras < <(python3 - "$ROOT" <<'PY'
 import re, sys
 from pathlib import Path
 import yaml
@@ -47,9 +52,12 @@ t = lock["bootstrapAppliance"]["toolChecksums"]
 for name in ("kind", "kubectl", "helm"):
     if not re.fullmatch(r"[0-9a-f]{64}", t.get(name) or ""):
         sys.exit(f"build.sh: pin bootstrapAppliance.toolChecksums.{name} (64 hex)")
+sha_oras = (lock.get("binarySHA256") or {}).get("oras-linux-amd64.tar.gz") or ""
+if not re.fullmatch(r"[0-9a-f]{64}", sha_oras):
+    sys.exit("build.sh: pin binarySHA256.oras-linux-amd64.tar.gz (64 hex)")
 print((root / "VERSION").read_text().strip(), lock["kubernetes"]["version"], lock["tools"]["kind"],
       lock["tools"]["helm"], b.get("baseImage") or "-", b["manifest"], b["bootcImageBuilder"],
-      t["kind"], t["kubectl"], t["helm"])
+      t["kind"], t["kubectl"], t["helm"], lock["tools"]["oras"], sha_oras)
 PY
 )
 base="$base_image"
@@ -65,6 +73,9 @@ disk_cmd=(podman run --rm --privileged --security-opt label=type:unconfined_t
 if [[ "$print_only" == true ]]; then
   echo "appliance $version: kubernetes $k8s, kind $kind, helm $helm"
   echo "base: $base"
+  echo "day0 images:"
+  PYTHONPATH="$ROOT/lib" python3 -c 'import sys, yaml; from dciab_media.preload import day0_refs
+for k, v in day0_refs(yaml.safe_load(open(sys.argv[1]))).items(): print(f"  {k}: {v}")' "$ROOT/bundle.lock"
   printf '\nimage:   '; printf '%q ' "${build_cmd[@]}"
   printf '\noutputs: '; printf '%q ' "${disk_cmd[@]}"; echo
   exit 0
@@ -105,6 +116,27 @@ mv "$BUILD/linux-amd64/helm" "$BUILD/bin/helm"
 rm -rf "$BUILD/helm.tar.gz" "$BUILD/linux-amd64"
 chmod 0755 "$BUILD"/bin/*
 
+echo "== day0 images"
+fetch "https://github.com/oras-project/oras/releases/download/$oras/oras_${oras#v}_linux_amd64.tar.gz" "$BUILD/oras.tar.gz" "$sha_oras"
+mkdir -p "$BUILD/tools"
+tar -xzf "$BUILD/oras.tar.gz" -C "$BUILD/tools" oras
+rm -f "$BUILD/oras.tar.gz"
+PYTHONPATH="$ROOT:$ROOT/lib" python3 - "$ROOT" "$BUILD/day0-images" "$BUILD/tools/oras" <<'PY'
+import sys
+from pathlib import Path
+import yaml
+from build.archive import copy_images
+from dciab_media.preload import check, day0_refs
+
+root, out, oras = Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[3]
+refs = day0_refs(yaml.safe_load((root / "bundle.lock").read_text()))
+copy_images([{"image": r, "digest": "pinned"} for r in refs.values()], out, oras=oras)
+problems = check(out)
+if problems:
+    sys.exit("build.sh: " + "; ".join(problems))
+print(f"   {len(refs)} images at their pinned digests")
+PY
+
 # The kickstart goes into config.toml as a TOML multi-line literal string.
 if grep -q "'''" "$HERE/kickstart.ks"; then
   echo "build.sh: kickstart.ks must not contain three single quotes in a row" >&2
@@ -119,6 +151,10 @@ fi
 
 echo "== image: $tag"
 "${build_cmd[@]}"
+if [[ "$image_only" == true ]]; then
+  echo "== $tag built (--image-only: no installer ISO or disks)"
+  exit 0
+fi
 echo "== outputs: ${types[*]}"
 "${disk_cmd[@]}"
 find "$OUT" -type f -printf '%p  %s bytes\n'

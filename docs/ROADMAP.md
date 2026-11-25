@@ -49,7 +49,7 @@ Decided in [ADR 0002](adr/0002-bootstrap-appliance-on-ventoy.md).
 - [x] Config: `bootstrap.interface` by name or MAC; `bootstrap.managementVLAN`; `bootstrap.workDisk`
 - [x] Recipes under evaluation: `images/bootstrap-bootc/` (appliance installer ISO), `images/usb/` (Ventoy stick)
 - [ ] Spike: unattended install of server zero from the stick with Secure Boot on, first boot from `dciab.yaml`, a short end-to-end check, installers from the same stick
-- [ ] Day 0 images preloaded in the appliance
+- [ ] Day 0 images preloaded in the appliance: carried at their pinned digests and loaded into root's storage at boot and by `dciab media`, so `dciab services` uses them; `dciab seed` and `dciab hypervisors` still load Zot and the pve-assistant from the payload
 - [x] `dciab media`: copy the USB payload to the work disk, and run the bootstrap's heavy state from it ([MEDIA.md](MEDIA.md))
 - [ ] The bootstrap host survives a reboot: service addresses, firewall rules, the services pod and the seed registry come back
 

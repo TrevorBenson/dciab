@@ -1,0 +1,16 @@
+[Unit]
+Description=DCiaB: load the appliance's Day 0 images into root's container storage
+Documentation=file:///usr/share/dciab/lib/dciab_media/preload.py
+ConditionPathExists=/usr/share/dciab/day0-images/images.yaml
+# Root's storage may be on the work disk (dciab media moves it under /var/lib/dciab/work).
+RequiresMountsFor=/var/lib/containers /var/lib/dciab
+After=local-fs.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+Environment=PYTHONPATH=/usr/share/dciab/lib
+ExecStart=/usr/bin/python3 -m dciab_media.preload
+
+[Install]
+WantedBy=multi-user.target
