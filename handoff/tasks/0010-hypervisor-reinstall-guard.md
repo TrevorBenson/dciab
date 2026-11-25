@@ -8,6 +8,21 @@ report: handoff/reports/0010-hypervisor-reinstall-guard.md
 may_change: []
 ---
 
+## CI takes over most of this task (2026-11-24, issue #226)
+
+The workflow `hypervisors-emulated.yml` now proves the reinstall guard on an emulated bare server
+(a libvirt VM behind sushy-tools' Redfish, on a GitHub-hosted runner): a rerun resets nothing, a
+lost install record is still held by the 8006 check, a host with no record and no boot options is
+held until `--first-install`, and `--reinstall` reinstalls (`hack/e2e/hypervisors/README.md`). The
+OS-boot-entry hold, paging and vendor BIOS names are proven against DMTF mockups
+(`tests/test_redfish_mockups.py`).
+
+**This task shrinks to a short real-hardware smoke test** of what an emulator can't show, tracked in
+its own `r1beta` issue: a vendor BMC fetching the host ISO over its own network, Redfish BIOS and
+Secure Boot writes taking effect on real firmware, and the BMC's real `BootOptions` list (steps 1
+to 3's read-only checks). Run only steps 1 to 3 and the read-only parts of step 4 (`--print`); skip
+step 4's real reinstall, which CI covers. Everything else below stays as written.
+
 ## Retry (2026-11-24)
 
 The task hasn't run yet; this updates it for the guard changes in issue #211 before the first run. What changed:

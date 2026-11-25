@@ -8,6 +8,16 @@ report: handoff/reports/0013-hypervisor-tagged-vlan.md
 may_change: []
 ---
 
+## Replaced by CI (2026-11-24, issue #226)
+
+The tagged run of the workflow `hypervisors-emulated.yml` proves this task's goal on every change
+to `dciab hypervisors`: an emulated bare server on a switch port that carries the node VLAN tagged
+only (checked from the switch), installed with `managementVLAN: tagged` and Secure Boot, comes up
+on `vmbr0.<vlan>` with `vmbr0` VLAN-aware, `post` completes, and it comes back the same after a
+reboot (`hack/e2e/hypervisors/README.md`). **Don't run this task** unless Trevor asks for a proof on
+a physical switch; the planner closes it with a report pointing at the CI run once the workflow is
+on `main`.
+
 ## Goal
 
 Prove on real hardware that `managementVLAN: tagged` works (issue #223): a host installed by `dciab hypervisors` on a switch port where `network.nodes.vlan` is carried **tagged only** comes up reachable on its management address, with that address on `vmbr0.<vlan>`, and `post` completes against it without changing the network.
