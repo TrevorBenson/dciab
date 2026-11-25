@@ -94,8 +94,12 @@ DEFAULT_PORTS = {"http": 80, "https": 443}
 
 def _norm_url(url: str) -> Optional[tuple]:
     """A URL compared the way BMCs may echo it back: scheme and host in lower case, credentials
-    and a default port dropped, the path unquoted without a trailing slash. None for no URL."""
-    parts = urlsplit(url.strip())
+    and a default port dropped, the path unquoted without a trailing slash. None for no URL,
+    and for a value that doesn't parse as one (for example "http://[broken/x.iso")."""
+    try:
+        parts = urlsplit(url.strip())
+    except ValueError:
+        return None
     if not parts.scheme or not parts.hostname:
         return None
     scheme = parts.scheme.lower()
@@ -109,8 +113,14 @@ def _norm_url(url: str) -> Optional[tuple]:
 
 
 def _basename(name: str) -> str:
-    """The file name at the end of a URL or a path ("" for none)."""
-    path = urlsplit(name.strip()).path if "://" in name else name.strip()
+    """The file name at the end of a URL or a path ("" for none). A value that doesn't parse as
+    a URL is read as a plain path, so this never raises."""
+    path = name.strip()
+    if "://" in path:
+        try:
+            path = urlsplit(path).path
+        except ValueError:
+            pass
     return unquote(path).rstrip("/").rsplit("/", 1)[-1]
 
 

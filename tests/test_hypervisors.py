@@ -611,6 +611,34 @@ def test_slot_shows_is_strict_and_after_insert_adds_the_file_name():
     assert strict({"Inserted": True, "Image": ISO.replace("http://", "HTTP://")}, ISO)
 
 
+def test_unparseable_slot_urls_never_raise():
+    bad = "http://[broken/" + STALE_NAME
+    assert redfish._norm_url(bad) is None and redfish._norm_url("http://[") is None
+    assert redfish._basename(bad) == STALE_NAME
+    assert not redfish.slot_shows({"Inserted": True, "Image": bad}, ISO)
+    assert redfish.slot_shows_after_insert({"Inserted": True, "Image": bad}, ISO)
+    assert not redfish.slot_shows_after_insert({"Inserted": True, "Image": "http://[broken/other.iso"}, ISO)
+
+
+def test_prepare_replaces_media_with_an_unparseable_url(fake_bmc):
+    f = fake_bmc(inserted="http://old/other.iso",
+                 slot_view=lambda s: dict(s, Image="http://[broken/old.iso") if s.get("Inserted")
+                 and s.get("Image") != ISO else s)
+    f.bmc.poll, f.bmc.attach_timeout = 0.01, 2
+    done = f.bmc.prepare(ISO)
+    assert done[:2] == ["ejected the attached media", f"attached {ISO}"]
+
+
+def test_an_unparseable_echo_after_insert_is_cleaned_up_without_a_reset(fake_bmc):
+    f = fake_bmc(slot_view=lambda s: dict(s, Image="http://[broken/other.iso") if s.get("Inserted") else s)
+    f.bmc.poll, f.bmc.attach_timeout = 0.01, 0.2
+    with pytest.raises(redfish.RedfishError, match="doesn't show it.*nothing was reset"):
+        f.bmc.install_from(ISO)
+    assert ("POST", "/redfish/v1/Managers/1/VirtualMedia/CD/Actions/VirtualMedia.EjectMedia", {}) in f.calls
+    assert f.slot["Inserted"] is False
+    assert not any(c[1].endswith("ComputerSystem.Reset") for c in f.calls)
+
+
 def test_release_ejects_media_echoed_by_file_name_only(fake_bmc):
     # After an install a match only ejects (always safe); a miss would leave the installer attached.
     f = fake_bmc(inserted=ISO, slot_view=lambda s: dict(s, Image=None, ImageName=STALE_NAME)
