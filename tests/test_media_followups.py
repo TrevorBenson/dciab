@@ -50,7 +50,14 @@ def site(tmp_path, monkeypatch):
     monkeypatch.setattr(cli, "current_graphroot", lambda runner=None: str(work / "containers"))
     monkeypatch.setattr(cli, "run", _runner())
     monkeypatch.setattr(cli, "USB_MOUNT", tmp_path / "stick")
+    from dciab_media import preload
+    monkeypatch.setattr(preload, "PRELOAD_DIR", tmp_path / "no-preload")   # never a real podman pull
     return src, work, cfg
+
+
+def _hv_config(cfg: Path, work: Path, **hv) -> None:
+    cfg.write_text(yaml.safe_dump({"spec": {"bootstrap": {"workDisk": {"path": str(work)}},
+                                            "hypervisors": {"type": "proxmox", "hosts": [], **hv}}}))
 
 
 # --- the state step -----------------------------------------------------------------------------
@@ -136,6 +143,7 @@ def _stick_iso(tmp_path, data=ISO, name="proxmox-ve_9.2-1.iso"):
 
 def test_pinned_iso_copied_from_the_stick(site, tmp_path, capsys):
     src, work, cfg = site
+    _hv_config(cfg, work)
     _lock(src, verify_mod.hashlib.sha256(ISO).hexdigest())
     _stick_iso(tmp_path)
     assert cli.main(args(src, cfg)) == 0
@@ -148,6 +156,7 @@ def test_pinned_iso_copied_from_the_stick(site, tmp_path, capsys):
 
 def test_a_damaged_iso_on_the_stick_is_refused(site, tmp_path, capsys):
     src, work, cfg = site
+    _hv_config(cfg, work)
     _lock(src, verify_mod.hashlib.sha256(ISO).hexdigest())
     _stick_iso(tmp_path, data=ISO[:-1] + b"X")
     assert cli.main(args(src, cfg)) == 1
@@ -158,6 +167,7 @@ def test_a_damaged_iso_on_the_stick_is_refused(site, tmp_path, capsys):
 
 def test_a_wrong_iso_already_in_work_isos_is_refused(site, tmp_path, capsys):
     src, work, cfg = site
+    _hv_config(cfg, work)
     _lock(src, verify_mod.hashlib.sha256(ISO).hexdigest())
     (work / "isos").mkdir()
     (work / "isos" / "proxmox-ve_9.2-1.iso").write_bytes(b"old build")
@@ -167,6 +177,7 @@ def test_a_wrong_iso_already_in_work_isos_is_refused(site, tmp_path, capsys):
 
 def test_isos_from_overrides_the_stick(site, tmp_path):
     src, work, cfg = site
+    _hv_config(cfg, work)
     _lock(src, verify_mod.hashlib.sha256(ISO).hexdigest())
     other = tmp_path / "downloads"
     other.mkdir()
@@ -178,10 +189,10 @@ def test_isos_from_overrides_the_stick(site, tmp_path):
 def test_missing_iso_is_a_note_for_hypervisor_sites(site, capsys):
     src, work, cfg = site
     _lock(src, verify_mod.hashlib.sha256(ISO).hexdigest())
-    cfg.write_text(yaml.safe_dump({"spec": {"bootstrap": {"workDisk": {"path": str(work)}},
-                                            "hypervisors": {"hosts": []}}}))
+    _hv_config(cfg, work)
     assert cli.main(args(src, cfg)) == 0
-    assert "note: proxmox-ve_9.2-1.iso (pinned in bundle.lock) isn't in" in capsys.readouterr().out
+    assert "note: proxmox-ve_9.2-1.iso (pinned in bundle.lock for this site's hypervisors) isn't in" \
+        in capsys.readouterr().out
 
 
 def test_no_note_without_hypervisors(site, capsys):
@@ -205,3 +216,184 @@ def test_bad_bundle_lock(tmp_path):
     with pytest.raises(cli.MediaError, match="bundle.lock"):
         cli.read_pins(tmp_path)
     assert cli.read_pins(tmp_path / "absent") == {}
+
+
+# --- review fixes: the state step (F1-F3) -------------------------------------------------------
+
+def test_a_changed_work_disk_moves_the_state_from_the_old_one(site, tmp_path, capsys):
+    """workDisk A then B: the link left on A must not hide A's state (F1)."""
+    src, work, cfg = site
+    old = _old_state(cfg)
+    assert cli.main(args(src, cfg)) == 0                              # state now on A, link left
+    b = tmp_path / "work-b"
+    b.mkdir()
+    cfg.write_text(yaml.safe_dump({"spec": {"bootstrap": {"workDisk": {"path": str(b)}}}}))
+    capsys.readouterr()
+    assert cli.main(args(src, cfg, "--until", "state")) == 0
+    out = capsys.readouterr().out
+    assert f"moved {work / 'state'} to {b / 'state'}" in out
+    assert (b / "state" / "pki" / "ca.crt").read_text() == "CA"
+    assert not (work / "state").exists()
+    assert old.is_symlink() and old.resolve() == (b / "state").resolve()
+
+
+def test_an_operator_link_to_state_elsewhere_is_moved_not_ignored(site, tmp_path):
+    src, work, cfg = site
+    elsewhere = tmp_path / "my-state"
+    (elsewhere / "pki").mkdir(parents=True)
+    (elsewhere / "pki" / "ca.crt").write_text("MINE")
+    legacy = cfg.parent / ".dciab" / "state"
+    legacy.parent.mkdir(parents=True)
+    legacy.symlink_to(elsewhere)
+    assert "move " + str(elsewhere) in cli.state_change(cfg, work)
+    assert cli.main(args(src, cfg)) == 0
+    assert (work / "state" / "pki" / "ca.crt").read_text() == "MINE"
+    assert legacy.resolve() == (work / "state").resolve()
+
+
+def test_a_link_to_state_elsewhere_with_state_on_the_work_disk_is_refused(site, tmp_path, capsys):
+    src, work, cfg = site
+    elsewhere = tmp_path / "my-state"
+    elsewhere.mkdir()
+    (elsewhere / "x").write_text("a")
+    (work / "state").mkdir()
+    (work / "state" / "y").write_text("b")
+    legacy = cfg.parent / ".dciab" / "state"
+    legacy.parent.mkdir(parents=True)
+    legacy.symlink_to(elsewhere)
+    assert cli.main(args(src, cfg)) == 1
+    err = capsys.readouterr().err
+    assert str(elsewhere) in err and str(work / "state") in err and "both hold dciab state" in err
+
+
+def test_a_missing_link_is_recreated(site, capsys):
+    """The state moved but the link wasn't left (F2): a rerun puts it back."""
+    src, work, cfg = site
+    (work / "state" / "pki").mkdir(parents=True)
+    (work / "state" / "pki" / "ca.crt").write_text("CA")
+    assert cli.main(args(src, cfg)) == 0
+    legacy = cfg.parent / ".dciab" / "state"
+    assert legacy.is_symlink() and legacy.resolve() == (work / "state").resolve()
+    assert "linked" in capsys.readouterr().out
+
+
+def test_a_link_that_cant_be_made_says_state_is_needed(site, monkeypatch, capsys):
+    src, work, cfg = site
+    _old_state(cfg)
+
+    def eperm(src_, dst):
+        raise PermissionError(1, "Operation not permitted")
+    monkeypatch.setattr(cli.os, "symlink", eperm)
+    assert cli.main(args(src, cfg)) == 0
+    out = capsys.readouterr().out
+    assert "couldn't link" in out and f"every dciab step needs --state {work / 'state'}" in out
+    assert (work / "state" / "pki" / "ca.crt").is_file()
+    assert f"--state {work / 'state'}" in out.split("Next, from the copy")[1]
+
+
+def test_a_move_across_filesystems_copies_syncs_then_removes(site, monkeypatch):
+    import errno
+    src, work, cfg = site
+    old = _old_state(cfg)
+    real_rename = cli.os.rename
+    calls = []
+
+    def rename(a, b):
+        calls.append((str(a), str(b)))
+        if str(a) == str(old):
+            raise OSError(errno.EXDEV, "Invalid cross-device link")
+        return real_rename(a, b)
+    monkeypatch.setattr(cli.os, "rename", rename)
+    assert cli.main(args(src, cfg)) == 0
+    assert (str(work / "state.partial"), str(work / "state")) in calls
+    assert (work / "state" / "pki" / "ca.crt").read_text() == "CA"
+    assert not (work / "state.partial").exists()
+    assert old.is_symlink()
+
+
+def test_an_interrupted_cross_filesystem_move_is_named(site, capsys):
+    src, work, cfg = site
+    old = _old_state(cfg)
+    (work / "state.partial" / "pki").mkdir(parents=True)
+    assert cli.main(args(src, cfg)) == 1
+    err = capsys.readouterr().err
+    assert str(work / "state.partial") in err and "partial copy" in err
+    assert (old / "pki" / "ca.crt").is_file()                          # the source is untouched
+
+
+def test_the_space_check_counts_state_copied_across_filesystems(site, monkeypatch):
+    src, work, cfg = site
+    old = _old_state(cfg)
+    (old / "big").write_bytes(b"x" * 5000)
+    real_stat = cli.os.stat
+
+    class St:
+        def __init__(self, st, dev):
+            self._st, self.st_dev = st, dev
+
+        def __getattr__(self, k):
+            return getattr(self._st, k)
+
+    def stat(path, *a, **kw):
+        st = real_stat(path, *a, **kw)
+        return St(st, 1 if str(path).startswith(str(old)) else 2)
+    monkeypatch.setattr(cli.os, "stat", stat)
+    assert cli.state_bytes(cfg, work) >= 5000
+    monkeypatch.setattr(cli.os, "stat", real_stat)
+    assert cli.state_bytes(cfg, work) == 0                              # same filesystem: a rename
+
+
+def test_check_space_includes_the_extra(tmp_path):
+    plan = cli.Plan(tmp_path, tmp_path, {}, [], 10, 0)
+    with pytest.raises(cli.MediaError, match="GiB free"):
+        cli.check_space(plan, tmp_path, disk_usage=lambda p: Usage(10, 10, 1), extra=5)
+    assert cli.check_space(plan, tmp_path, disk_usage=lambda p: Usage(10, 10, 1)) == 0
+
+
+# --- review fixes: ISOs (F9, F11, F13) ----------------------------------------------------------
+
+LOCK2 = {"hypervisors": {
+    "proxmox": {"isoURL": "https://x/proxmox-ve_9.2-1.iso", "isoSHA256": "AA"},
+    "esxi": {"isoFile": "VMware-ESXi-9.iso", "isoSHA256": "BB"}}}
+
+
+def test_pins_follow_the_sites_hypervisor_type():
+    by = cli.pins_by_type(LOCK2)
+    assert cli.site_pins({"spec": {"hypervisors": {"type": "proxmox"}}}, by) == {"proxmox-ve_9.2-1.iso": "aa"}
+    assert cli.site_pins({"spec": {"hypervisors": {"type": "esxi"}}}, by) == {"VMware-ESXi-9.iso": "bb"}
+    assert cli.site_pins({"spec": {}}, by) == {}
+
+
+def test_esxi_iso_comes_from_installer_file(tmp_path):
+    iso = tmp_path / "VMware-custom-name.iso"
+    iso.write_bytes(b"ESXI")
+    doc = {"spec": {"hypervisors": {"type": "esxi", "installerFile": "VMware-custom-name.iso"}}}
+    pins = {"VMware-ESXi-9.iso": verify_mod.hashlib.sha256(b"ESXI").hexdigest()}
+    sources = cli.site_sources(doc, pins, tmp_path / "dciab.yaml")
+    assert sources == {"VMware-ESXi-9.iso": iso}
+    archive = tmp_path / "a"
+    archive.mkdir()
+    assert cli.place_isos(archive, tmp_path / "isos", None, pins, sources=sources) == ["VMware-ESXi-9.iso"]
+    assert (tmp_path / "isos" / "VMware-ESXi-9.iso").read_bytes() == b"ESXI"
+
+
+def test_odd_iso_names_are_rejected():
+    for bad in ("https://x/", "https://x/.", "https://x/.."):
+        assert cli.pinned_isos({"hypervisors": {"p": {"isoURL": bad, "isoSHA256": "a"}}}) == {}
+    assert cli.pinned_isos({"hypervisors": {"e": {"isoFile": "..", "isoSHA256": "a"}}}) == {}
+
+
+def test_a_placed_iso_isnt_hashed_again(tmp_path, monkeypatch):
+    archive, isos = tmp_path / "a", tmp_path / "isos"
+    archive.mkdir()
+    stick = _stick_iso(tmp_path)
+    pins = {"proxmox-ve_9.2-1.iso": verify_mod.hashlib.sha256(ISO).hexdigest()}
+    assert cli.place_isos(archive, isos, stick, pins) == ["proxmox-ve_9.2-1.iso"]
+    hashed = []
+    real = verify_mod.sha256_file
+    monkeypatch.setattr(verify_mod, "sha256_file", lambda p: hashed.append(p) or real(p))
+    assert cli.place_isos(archive, isos, stick, pins) == []
+    assert hashed == []                                               # size and mtime unchanged
+    (isos / "proxmox-ve_9.2-1.iso").write_bytes(b"changed")
+    with pytest.raises(cli.MediaError, match="doesn't match"):
+        cli.place_isos(archive, isos, stick, pins)

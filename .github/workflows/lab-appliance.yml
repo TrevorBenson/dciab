@@ -40,14 +40,42 @@ jobs:
           set -euo pipefail
           tag="localhost/dciab-bootstrap:$(cat VERSION)"
           sudo podman run --rm --network none -e PYTHONPATH=/usr/share/dciab/lib "$tag" \
-            python3 -m dciab_media.preload --check
+            python3 -m dciab_media.preload --check --full
           sudo podman run --rm --network none "$tag" systemctl is-enabled dciab-day0-images.service
-          want="$(PYTHONPATH=lib python3 -c 'import yaml; from dciab_media.preload import day0_refs; print(len(day0_refs(yaml.safe_load(open("bundle.lock")))))')"
-          got="$(sudo podman run --rm --network none "$tag" python3 -c 'import yaml; print(len(yaml.safe_load(open("/usr/share/dciab/day0-images/images.yaml"))["images"]))')"
-          [[ "$want" == "$got" ]] || { echo "the image carries $got Day 0 images, bundle.lock pins $want" >&2; exit 1; }
-          echo "ok: $got Day 0 images at their pinned digests"
+          sudo podman run --rm --network none "$tag" \
+            cat /etc/containers/storage.conf.d/50-dciab-media.conf | grep -q 'graphroot = "/var/lib/dciab/work/containers"'
+          # The references the image lists must be exactly the ones bundle.lock pins (not a count).
+          PYTHONPATH=lib python3 -c 'import yaml; from dciab_media.preload import day0_refs
+          print("\n".join(sorted(day0_refs(yaml.safe_load(open("bundle.lock"))).values())))' > "$RUNNER_TEMP/want"
+          sudo podman run --rm --network none "$tag" python3 -c 'import yaml
+          print("\n".join(sorted(e["image"] for e in yaml.safe_load(open("/usr/share/dciab/day0-images/images.yaml"))["images"])))' > "$RUNNER_TEMP/got"
+          diff -u "$RUNNER_TEMP/want" "$RUNNER_TEMP/got"
+          echo "ok: the image carries exactly the $(wc -l < "$RUNNER_TEMP/want") Day 0 images bundle.lock pins"
+      - name: The images load from the image's own read-only copy
+        run: |
+          set -euo pipefail
+          tag="localhost/dciab-bootstrap:$(cat VERSION)"
+          scratch="$RUNNER_TEMP/preload-store"
+          sudo rm -rf "$scratch"
+          mkdir -p "$scratch"
+          printf '[storage]\ndriver = "vfs"\ngraphroot = "%s/graph"\nrunroot = "%s/run"\n' "$scratch" "$scratch" > "$scratch/storage.conf"
+          mnt="$(sudo podman image mount "$tag")"
+          echo "$mnt" > "$RUNNER_TEMP/mnt"
+          sudo du -sh "$mnt/usr/share/dciab/day0-images"
+          sudo env CONTAINERS_STORAGE_CONF="$scratch/storage.conf" PYTHONPATH=lib \
+            python3 -m dciab_media.preload --dir "$mnt/usr/share/dciab/day0-images"
+          while read -r ref; do
+            sudo env CONTAINERS_STORAGE_CONF="$scratch/storage.conf" podman image exists "$ref" \
+              || { echo "$ref: not loaded from the image's copy" >&2; exit 1; }
+            echo "loaded: $ref"
+          done < "$RUNNER_TEMP/want"
       - name: Clean up
         if: always()
         run: |
-          sudo podman rmi -f "localhost/dciab-bootstrap:$(cat VERSION)" || true
+          tag="localhost/dciab-bootstrap:$(cat VERSION)"
+          sudo podman image unmount "$tag" || true
+          sudo rm -rf "$RUNNER_TEMP/preload-store"
+          sudo podman rmi -f "$tag" || true
+          # Dangling layers from the build; the Rocky bootc base stays cached for the next build.
+          sudo podman image prune -f || true
           sudo rm -rf images/bootstrap-bootc/build images/bootstrap-bootc/output

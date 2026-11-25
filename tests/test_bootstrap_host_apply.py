@@ -12,21 +12,25 @@ from dciab_bootstrap_host.setup import ConfigError
 class Host:
     """Records the commands setup runs; fails the ones listed in `fail`."""
 
-    def __init__(self, fail=()):
+    def __init__(self, fail=(), active=None):
         self.calls = []
         self.fail = set(fail)
+        self.active = active or {}             # device -> the connection active on it
 
     def run(self, cmd, check=False, **kw):
         cmd = list(cmd)
         self.calls.append(cmd)
+        if cmd[:3] == ["nmcli", "-g", "GENERAL.CONNECTION"]:
+            return SimpleNamespace(returncode=0, stdout=self.active.get(cmd[-1], "") + "\n")
         if tuple(cmd) in self.fail:
             if check:
                 raise subprocess.CalledProcessError(1, cmd)
-            return SimpleNamespace(returncode=1)
-        return SimpleNamespace(returncode=0)
+            return SimpleNamespace(returncode=1, stdout="")
+        return SimpleNamespace(returncode=0, stdout="")
 
     def nmcli(self):
-        return [c[1:] for c in self.calls if c and c[0] == "nmcli"]
+        """The nmcli commands that change something (the GENERAL.CONNECTION reads left out)."""
+        return [c[1:] for c in self.calls if c and c[0] == "nmcli" and c[1] != "-g"]
 
 
 @pytest.fixture
@@ -90,6 +94,26 @@ def test_a_rejected_profile_is_removed_and_the_old_one_brought_back(monkeypatch)
     # The working profile was never deleted or renamed.
     assert ["connection", "delete", setup.CONNECTION] not in calls
     assert not any(c[:2] == ["connection", "modify"] for c in calls)
+
+
+def test_first_boot_rollback_brings_back_the_installers_profile(monkeypatch):
+    """At the first boot the working connection is the installer's profile, not dciab-node."""
+    staged = setup.CONNECTION + "-new"
+    h = Host(fail={("nmcli", "connection", "up", staged)}, active={"enp3s0f1": "Wired connection 1"})
+    monkeypatch.setattr(setup.subprocess, "run", h.run)
+    with pytest.raises(subprocess.CalledProcessError):
+        setup.apply_network(_plan(interface="enp3s0f1", managementVLAN="untagged"))
+    assert h.nmcli()[-2:] == [["connection", "delete", staged], ["connection", "up", "Wired connection 1"]]
+
+
+def test_tagged_rollback_prefers_the_vlan_devices_connection(monkeypatch):
+    staged = setup.CONNECTION + "-new"
+    h = Host(fail={("nmcli", "connection", "up", staged)},
+             active={"vlan110": setup.CONNECTION, "enp3s0f1": "Wired connection 1"})
+    monkeypatch.setattr(setup.subprocess, "run", h.run)
+    with pytest.raises(subprocess.CalledProcessError):
+        setup.apply_network(_plan(interface="enp3s0f1", managementVLAN="tagged"))
+    assert h.nmcli()[-1] == ["connection", "up", setup.CONNECTION]
 
 
 def test_a_failed_add_changes_nothing_else(monkeypatch):

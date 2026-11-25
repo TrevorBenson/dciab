@@ -36,14 +36,23 @@ def run(cmd: Sequence[str]) -> subprocess.CompletedProcess:
     return subprocess.run(list(cmd), check=True, capture_output=True, text=True)
 
 
+DAY0_KEYS = ("coredns", "caddy", "chrony", "zot", "pveAssistant")
+
+
 def day0_refs(lock: dict) -> Dict[str, str]:
-    """{key: reference} for the Day 0 images bundle.lock pins by digest. chronyBase is a build
-    input of the chrony image, not something the appliance runs."""
+    """{key: reference} for the five Day 0 images the appliance carries, each pinned by digest
+    in bundle.lock. chronyBase is a build input of the chrony image, not something the
+    appliance runs. Raises PreloadError naming any that is missing or not pinned by digest, so
+    the appliance never silently ships fewer."""
     day0 = ((lock.get("day0") or {}).get("images") or {})
     images = lock.get("images") or {}
     wanted = {"coredns": day0.get("coredns"), "caddy": day0.get("caddy"), "chrony": day0.get("chrony"),
               "zot": images.get("zot"), "pveAssistant": images.get("pveAssistant")}
-    return {k: str(v) for k, v in wanted.items() if v and DIGEST_RE.search(str(v))}
+    bad = [k for k in DAY0_KEYS if not wanted.get(k) or not DIGEST_RE.search(str(wanted[k]))]
+    if bad:
+        raise PreloadError("bundle.lock doesn't pin these Day 0 images by digest: " + ", ".join(bad)
+                           + " (day0.images.coredns/caddy/chrony, images.zot/pveAssistant)")
+    return {k: str(wanted[k]) for k in DAY0_KEYS}
 
 
 def split_ref(ref: str) -> Tuple[str, str, str]:
@@ -84,8 +93,42 @@ def layout_digests(directory: Path) -> Dict[str, str]:
     return {m.get("annotations", {}).get(REF_NAME, ""): m.get("digest", "") for m in index.get("manifests", [])}
 
 
-def check(directory: Path) -> List[str]:
-    """Problems with the layout: an image images.yaml lists that isn't there at its digest."""
+def _blob(directory: Path, digest: str) -> Path:
+    return directory / "images" / "blobs" / "sha256" / digest.split(":", 1)[1]
+
+
+def _sha256(path: Path) -> str:
+    import hashlib
+    h = hashlib.sha256()
+    with path.open("rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return "sha256:" + h.hexdigest()
+
+
+def _children(directory: Path, digest: str) -> List[dict]:
+    """The descriptors a manifest or index blob refers to (manifests, config, layers)."""
+    try:
+        doc = json.loads(_blob(directory, digest).read_text())
+    except (OSError, ValueError):
+        return []
+    out = list(doc.get("manifests") or [])
+    if isinstance(doc.get("config"), dict):
+        out.append(doc["config"])
+    out.extend(doc.get("layers") or [])
+    return [d for d in out if isinstance(d, dict) and str(d.get("digest", "")).startswith("sha256:")]
+
+
+def platform_digests(directory: Path, digest: str) -> List[str]:
+    """The pinned digest and, for an index, the digests of the manifests it lists."""
+    return [digest] + [d["digest"] for d in _children(directory, digest)
+                       if "manifest" in str(d.get("mediaType", "")) or "index" in str(d.get("mediaType", ""))]
+
+
+def check(directory: Path, full: bool = False) -> List[str]:
+    """Problems with the layout: an image images.yaml lists that isn't there at its digest. The
+    top blob (the pinned index or manifest) is hashed; with full, every blob it reaches (child
+    manifests, configs, layers) is hashed too, as at build time."""
     have = layout_digests(directory)
     problems = []
     for e in entries(directory):
@@ -93,14 +136,45 @@ def check(directory: Path) -> List[str]:
         got = have.get(e["name"])
         if got != want:
             problems.append(f"{e['image']}: the layout holds {got or 'nothing'} under {e['name']}")
-        elif not (directory / "images" / "blobs" / "sha256" / want.split(":", 1)[1]).is_file():
-            problems.append(f"{e['image']}: blob {want} is missing")
+            continue
+        todo, seen = [want], set()
+        while todo:
+            d = todo.pop()
+            if d in seen:
+                continue
+            seen.add(d)
+            blob = _blob(directory, d)
+            if not blob.is_file():
+                problems.append(f"{e['image']}: blob {d} is missing")
+                continue
+            if (d == want or full) and _sha256(blob) != d:
+                problems.append(f"{e['image']}: blob {d} doesn't match its digest")
+                continue
+            if d == want or full:
+                todo.extend(c["digest"] for c in _children(directory, d))
     return problems
 
 
 def _exists(ref: str, runner: Runner) -> bool:
     try:
         runner(["podman", "image", "exists", ref])
+        return True
+    except subprocess.CalledProcessError:
+        return False
+
+
+def _remove_if_ours(image_id: str, layout_name: str, runner: Runner) -> bool:
+    """Remove an image this load pulled, unless it already had other names (the same ID can be
+    an image root's storage held before, under its own correct name)."""
+    try:
+        tags = json.loads(runner(["podman", "image", "inspect", "--format", "{{json .RepoTags}}",
+                                  image_id]).stdout or "[]") or []
+    except (subprocess.CalledProcessError, ValueError):
+        return False
+    if any(not str(t).startswith(f"localhost/{layout_name}:") for t in tags):
+        return False
+    try:
+        runner(["podman", "rmi", image_id])
         return True
     except subprocess.CalledProcessError:
         return False
@@ -119,7 +193,15 @@ def load(directory: Path = PRELOAD_DIR, runner: Optional[Runner] = None) -> Tupl
         image_id = out.strip().splitlines()[-1] if out.strip() else ""
         if not image_id:
             raise PreloadError(f"{ref}: podman pull from the layout printed no image ID")
-        repo, tag, _ = split_ref(ref)
+        repo, tag, want = split_ref(ref)
+        # Check what was pulled before it gets the pinned name: a copy that doesn't match is
+        # removed, never left tagged where podman would use it.
+        got = runner(["podman", "image", "inspect", "--format", "{{.Digest}}", image_id]).stdout.strip()
+        if got not in platform_digests(directory, want):
+            removed = _remove_if_ours(image_id, e["name"], runner)
+            raise PreloadError(f"{ref}: the appliance's copy ({e['name']}) is {got or 'unknown'}, not the "
+                               "pinned digest or one of its platform manifests; "
+                               + ("removed it" if removed else "it keeps only the names it already had"))
         runner(["podman", "tag", image_id, f"{repo}:{tag}" if tag else repo])
         if not _exists(ref, runner):
             raise PreloadError(f"{ref}: the appliance's copy ({e['name']}) doesn't match the pinned digest")
@@ -131,14 +213,23 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap = argparse.ArgumentParser(prog="python3 -m dciab_media.preload", description=__doc__.splitlines()[0])
     ap.add_argument("--dir", type=Path, default=PRELOAD_DIR, help=f"the images (default {PRELOAD_DIR})")
     ap.add_argument("--check", action="store_true", help="only compare the layout with images.yaml")
+    ap.add_argument("--full", action="store_true", help="with --check: hash every blob, not just the top one")
+    ap.add_argument("--lock", type=Path,
+                    help="wait for this lock first (dciab media holds it while it moves the storage)")
     args = ap.parse_args(argv)
     say = lambda msg: print(f"dciab-day0-images: {msg}", file=sys.stderr)  # noqa: E731
     if not (args.dir / "images.yaml").is_file():
         say(f"{args.dir}: no preloaded images; nothing to do")
         return 0
+    lock = None
+    if args.lock and not args.check:
+        import fcntl
+        args.lock.parent.mkdir(parents=True, exist_ok=True)
+        lock = open(args.lock, "a")
+        fcntl.flock(lock, fcntl.LOCK_EX)          # waits while dciab media runs
     try:
         if args.check:
-            problems = check(args.dir)
+            problems = check(args.dir, full=args.full)
             for p in problems:
                 say(p)
             if not problems:

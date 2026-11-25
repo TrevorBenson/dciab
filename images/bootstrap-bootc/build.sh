@@ -74,8 +74,10 @@ if [[ "$print_only" == true ]]; then
   echo "appliance $version: kubernetes $k8s, kind $kind, helm $helm"
   echo "base: $base"
   echo "day0 images:"
-  PYTHONPATH="$ROOT/lib" python3 -c 'import sys, yaml; from dciab_media.preload import day0_refs
-for k, v in day0_refs(yaml.safe_load(open(sys.argv[1]))).items(): print(f"  {k}: {v}")' "$ROOT/bundle.lock"
+  PYTHONPATH="$ROOT/lib" python3 -c 'import sys, yaml; from dciab_media.preload import PreloadError, day0_refs
+try: refs = day0_refs(yaml.safe_load(open(sys.argv[1])))
+except PreloadError as exc: sys.exit(f"build.sh: {exc}")
+for k, v in refs.items(): print(f"  {k}: {v}")' "$ROOT/bundle.lock"
   printf '\nimage:   '; printf '%q ' "${build_cmd[@]}"
   printf '\noutputs: '; printf '%q ' "${disk_cmd[@]}"; echo
   exit 0
@@ -126,12 +128,15 @@ import sys
 from pathlib import Path
 import yaml
 from build.archive import copy_images
-from dciab_media.preload import check, day0_refs
+from dciab_media.preload import PreloadError, check, day0_refs
 
 root, out, oras = Path(sys.argv[1]), Path(sys.argv[2]), sys.argv[3]
-refs = day0_refs(yaml.safe_load((root / "bundle.lock").read_text()))
+try:
+    refs = day0_refs(yaml.safe_load((root / "bundle.lock").read_text()))   # all five, by digest
+except PreloadError as exc:
+    sys.exit(f"build.sh: {exc}")
 copy_images([{"image": r, "digest": "pinned"} for r in refs.values()], out, oras=oras)
-problems = check(out)
+problems = check(out, full=True)
 if problems:
     sys.exit("build.sh: " + "; ".join(problems))
 print(f"   {len(refs)} images at their pinned digests")

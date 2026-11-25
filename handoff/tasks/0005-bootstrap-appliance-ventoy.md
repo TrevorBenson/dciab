@@ -25,7 +25,7 @@ An earlier version of this task booted the appliance as a Ventoy vDisk. The part
 - `Ventoy2Disk.sh` on a loop device
 
 **Out of scope:**
-- `dciab media`, `services` and `hypervisors` (not implemented)
+- `dciab services` and `hypervisors` (step 6's storage checks and step 7.4 cover the part of `dciab media` that needs this enforcing host)
 - long-running load or power-loss testing
 - VLAN-tagged bootstrap ports
 
@@ -82,10 +82,13 @@ An earlier version of this task booted the appliance as a Ventoy vDisk. The part
    - `dciab validate /var/lib/dciab/site/dciab.yaml` passes.
    - `mokutil --sb-state` says Secure Boot is enabled.
    - `bootc status` and `getenforce` (Enforcing).
+   - Root's container storage is the work disk's from this first boot: `sudo podman info --format '{{.Store.GraphRoot}}'` prints `/var/lib/dciab/work/containers`, `ls -Zd /var/lib/dciab/work/containers` shows `container_var_lib_t`, and `systemctl status dciab-day0-images` ended successfully with the Day 0 images in `sudo podman images`.
+   - `sudo ausearch -m avc -ts boot` shows no denials for podman, `dciab-day0-images` or `/var/lib/dciab`.
 7. **End to end.** On the appliance, as the admin user with sudo:
    1. Start a registry container (`docker.io/library/registry` is fine for a test), then push and pull one small image through it.
    2. `KIND_EXPERIMENTAL_PROVIDER=podman kind create cluster`, then `kubectl get nodes` (Ready) and run one pod to completion. Delete the cluster.
    3. Shut down, detach the stick disk, and boot. It must come back with the same address and working SSH, with `dciab-bootstrap-setup` logging that it used the copy in `/var/lib/dciab/site`.
+   4. **SELinux path of `dciab media`'s storage step** (#165): reattach the stick, then on a copy of the config set `spec.bootstrap.workDisk` to `path: /var/tmp/dciab-alt-work` (create the folder) and run `sudo dciab media <copy> --checksums-only --until storage`. That moves root's storage, which runs the `semanage fcontext` / `restorecon` branch. Passing: `ls -Zd /var/tmp/dciab-alt-work/containers` shows `container_var_lib_t`, `sudo podman run --rm --network none <a Day 0 image> true` works, and `sudo ausearch -m avc -ts recent` shows no new denials. Then put the original drop-in back (`sudo cp /usr/etc/containers/storage.conf.d/50-dciab-media.conf /etc/containers/storage.conf.d/`), check `podman info` names `/var/lib/dciab/work/containers` again, and remove the folder.
    - Record the time for each part and any errors. This is a pass/fail check, not a measurement.
 8. **Safety check: an ambiguous disk choice.**
    - Attach the stick to a fresh VM with **two** empty disks that both have `serial=dciab-work`, boot the appliance installer, and confirm it stops before partitioning, listing the disks.
@@ -111,7 +114,7 @@ An earlier version of this task booted the appliance as a Ventoy vDisk. The part
 Use the format in `handoff/README.md`. It must include:
 - every edit under the `may_change` paths, with the reason
 - the boot and install sequence from step 5.4, with timings
-- the end-to-end and safety results (steps 7 and 8)
+- the end-to-end and safety results (steps 7 and 8), including the storage labels and AVC checks (steps 6 and 7.4)
 - whether the appliance installer is ready to be the documented way to set up server zero
 
 Record durable facts in `LAB.md`, such as how to create a Secure Boot OVMF VM, and a disk with a serial, through the API here.

@@ -43,4 +43,24 @@ for ref in "${refs[@]}"; do
 done
 PYTHONPATH="$ROOT/lib" python3 -m dciab_media.preload --dir "$work/day0-images" 2>&1 | tee "$work/second.log"
 grep -q "0 loaded, 2 already" "$work/second.log"
-echo "ok: the preloaded Day 0 images answer at their bundle.lock references"
+
+# A copy that isn't the pinned image must never get the pinned name: list CoreDNS's reference
+# against Caddy's layout entry, and the load refuses before it tags anything.
+cp -a "$work/day0-images" "$work/wrong"
+python3 - "$work/wrong/images.yaml" <<'PY'
+import sys, yaml
+path = sys.argv[1]
+listed = yaml.safe_load(open(path))["images"]
+coredns = next(e for e in listed if "coredns" in e["image"])
+caddy = next(e for e in listed if "caddy" in e["image"])
+yaml.safe_dump({"images": [{"image": coredns["image"], "name": caddy["name"]}]}, open(path, "w"))
+PY
+podman rmi -f "${refs[0]}" >/dev/null
+if PYTHONPATH="$ROOT/lib" python3 -m dciab_media.preload --dir "$work/wrong" 2>"$work/wrong.log"; then
+  echo "a mismatching copy was accepted" >&2; cat "$work/wrong.log" >&2; exit 1
+fi
+cat "$work/wrong.log"
+grep -q "not the pinned digest" "$work/wrong.log"
+if podman image exists "${refs[0]}"; then echo "${refs[0]} was tagged onto the wrong image" >&2; exit 1; fi
+podman image exists "${refs[1]}" || { echo "${refs[1]} was removed by the refused load" >&2; exit 1; }
+echo "ok: the preloaded Day 0 images answer at their bundle.lock references; a wrong copy is refused"

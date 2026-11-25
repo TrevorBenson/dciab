@@ -11,9 +11,11 @@ re-run, and a finished run changes nothing:
                    matching the rootDeviceHints (the appliance installed its root there)
            and enough free space for what is left to copy, plus a margin
   state    <work>/state, dciab's state folder (the CA, sealed passwords, kubeconfigs): state
-           an earlier step left next to the config (.dciab/state) is moved there and a
-           link left in its place, so a command run without --state finds the same
-           state; refused while containers run, or when both folders hold state
+           an earlier step left next to the config (.dciab/state), or where a link there
+           points, is moved there and the link left or repointed, so a command run without
+           --state finds the same state (a missing link is put back); across filesystems by
+           a synced copy to state.partial, renamed into place; refused while containers run,
+           when both folders hold state, or when a state.partial is left
   copy     the archive (--source; default the one this dciab runs from, or on the
            appliance the stick's USB_MOUNT/dciab-<VERSION>) to
            <work>/dciab-<VERSION>/: only the files MANIFEST lists, plus MANIFEST and its
@@ -23,10 +25,11 @@ re-run, and a finished run changes nothing:
   storage  podman's storage for root (graphroot) moved to <work>/containers with a
            drop-in in /etc/containers/storage.conf.d, unless it's there already;
            refused while containers are running
-  isos     <work>/isos, with the installer ISOs bundle.lock pins (hypervisors.*): from the
-           archive's payload/isos/ if it carries them, else from --isos-from (default: the
-           stick's isos/, USB_MOUNT/isos, where the stick builder puts the shipped ones);
-           each is checked against its bundle.lock sha256 before it's placed
+  isos     <work>/isos, with the installer ISO bundle.lock pins for the site's hypervisors
+           (hypervisors.<spec.hypervisors.type>): from the archive's payload/isos/ if it
+           carries them, else from spec.hypervisors.installerFile (ESXi) or --isos-from
+           (default: the stick's isos/, USB_MOUNT/isos); each is checked against its
+           bundle.lock sha256 before it's placed
   preload  on the appliance, the Day 0 images it carries (dciab_media.preload.PRELOAD_DIR)
            loaded into root's storage, now on the work disk, so dciab services finds them
            there instead of loading them from the payload
@@ -242,13 +245,15 @@ def make_plan(source: Path, work: Path) -> Plan:
     return Plan(source, dest, files, to_copy, total, copy)
 
 
-def check_space(plan: Plan, work: Path, disk_usage=None) -> int:
-    """Free bytes needed: what is left to copy plus a margin. Raises if there's less."""
-    need = plan.copy_bytes + max(MARGIN_MIN, int(plan.total_bytes * MARGIN_FRACTION)) if plan.copy_bytes else 0
+def check_space(plan: Plan, work: Path, disk_usage=None, extra: int = 0) -> int:
+    """Free bytes needed: what is left to copy (plus extra, the state the state step copies
+    across filesystems) and a margin. Raises if there's less."""
+    copy = plan.copy_bytes + extra
+    need = copy + max(MARGIN_MIN, int(plan.total_bytes * MARGIN_FRACTION)) if copy else 0
     free = (disk_usage or shutil.disk_usage)(str(work)).free
     if free < need:
         raise MediaError(f"{work}: {free / GiB:.1f} GiB free, needs {need / GiB:.1f} GiB "
-                         f"({plan.copy_bytes / GiB:.1f} GiB to copy plus a margin)")
+                         f"({copy / GiB:.1f} GiB to copy plus a margin)")
     return need
 
 
@@ -368,11 +373,48 @@ def set_storage(graphroot: Path, runner: Runner = run, dropin: Path = STORAGE_DR
 
 # ---------------------------------------------------------------- isos
 
+HASHES = ".dciab-sha256.json"
+
+
+def _recorded(isos: Path) -> Dict[str, dict]:
+    try:
+        data = json.loads((isos / HASHES).read_text())
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _record(isos: Path, name: str, path: Path, sha: str) -> None:
+    """Remember an ISO's sha256 with its size and mtime, so a rerun needn't hash 1.6 GB again."""
+    data = _recorded(isos)
+    st = path.stat()
+    data[name] = {"size": st.st_size, "mtime_ns": st.st_mtime_ns, "sha256": sha}
+    tmp = isos / (HASHES + TMP_SUFFIX)
+    tmp.write_text(json.dumps(data, indent=1, sort_keys=True))
+    os.replace(tmp, isos / HASHES)
+
+
+def _sha_of(isos: Path, name: str, path: Path) -> str:
+    """path's sha256: the recorded one when size and mtime haven't changed, else hashed."""
+    rec = _recorded(isos).get(name) or {}
+    try:
+        st = path.stat()
+    except OSError:
+        return ""
+    if rec.get("size") == st.st_size and rec.get("mtime_ns") == st.st_mtime_ns and rec.get("sha256"):
+        return str(rec["sha256"])
+    sha = verify_mod.sha256_file(path)
+    _record(isos, name, path, sha)
+    return sha
+
+
 def place_isos(archive: Path, isos: Path, isos_from: Optional[Path] = None,
-               pins: Optional[Dict[str, str]] = None, disk_usage=None) -> List[str]:
+               pins: Optional[Dict[str, str]] = None, disk_usage=None,
+               sources: Optional[Dict[str, Path]] = None) -> List[str]:
     """<work>/isos, holding the archive's installer ISOs (hard links into the copy), then any
-    ISO bundle.lock pins that isn't there yet, copied from isos_from and checked against its
-    sha256. A file in isos_from that bundle.lock doesn't pin is ignored."""
+    ISO bundle.lock pins that isn't there yet, copied from sources[name] (the ESXi ISO the site
+    supplies, spec.hypervisors.installerFile) or isos_from, and checked against its sha256.
+    A file in isos_from that bundle.lock doesn't pin is ignored."""
     isos.mkdir(parents=True, exist_ok=True)
     src_dir = archive / "payload" / "isos"
     placed: List[str] = []
@@ -401,36 +443,66 @@ def place_isos(archive: Path, isos: Path, isos_from: Optional[Path] = None,
     for name, sha in sorted(pins.items()):
         dst = isos / name
         if dst.is_file() and not dst.is_symlink():
-            if verify_mod.sha256_file(dst) == sha:
+            if _sha_of(isos, name, dst) == sha:
                 continue
             raise MediaError(f"{dst} doesn't match the sha256 bundle.lock pins for it ({sha}); rename or "
                              "remove it and run again")
-        src = isos_from / name if isos_from else None
+        src = (sources or {}).get(name) or (isos_from / name if isos_from else None)
         if src is None or not src.is_file():
             continue
         free = (disk_usage or shutil.disk_usage)(str(isos)).free
         need = src.stat().st_size + MARGIN_MIN
         if free < need:
             raise MediaError(f"{isos}: {free / GiB:.1f} GiB free, needs {need / GiB:.1f} GiB for {name}")
-        say(f"  copying {name} from {isos_from} (checked against bundle.lock)")
+        say(f"  copying {name} from {src.parent} (checked against bundle.lock)")
         try:
             copy_one(src, dst, sha)
         except MediaError:
             raise MediaError(f"{src} doesn't match the sha256 bundle.lock pins for it ({sha}); it is damaged "
-                             "or a different build: replace it on the stick and run again") from None
+                             "or a different build: replace it and run again") from None
         dst.chmod(0o644)
+        _record(isos, name, dst, sha)
         placed.append(name)
     return placed
 
 
 def missing_isos(doc: dict, isos: Path, pins: Dict[str, str]) -> List[str]:
-    """Pinned installer ISOs a site with spec.hypervisors still lacks in <work>/isos."""
+    """Pinned installer ISOs a site with spec.hypervisors still lacks in <work>/isos (pins is
+    already filtered to the site's hypervisor type, site_pins)."""
     if not (doc.get("spec") or {}).get("hypervisors"):
         return []
     return [n for n in sorted(pins) if not (isos / n).is_file()]
 
 
+def site_pins(doc: dict, lock_pins: Dict[str, Dict[str, str]]) -> Dict[str, str]:
+    """{file name: sha256} of the installer ISOs this site needs: the one for
+    spec.hypervisors.type (all of them when the type isn't given); none without hypervisors."""
+    hv = (doc.get("spec") or {}).get("hypervisors")
+    if not hv:
+        return {}
+    kind = hv.get("type") if isinstance(hv, dict) else None
+    out: Dict[str, str] = {}
+    for k, pin in lock_pins.items():
+        if kind is None or k == kind:
+            out.update(pin)
+    return out
+
+
+def site_sources(doc: dict, pins: Dict[str, str], config: Path) -> Dict[str, Path]:
+    """The ESXi ISO the site supplies (spec.hypervisors.installerFile, relative to the config)
+    as the source of its pinned name."""
+    hv = (doc.get("spec") or {}).get("hypervisors") or {}
+    f = hv.get("installerFile") if isinstance(hv, dict) else None
+    if not f or hv.get("type") != "esxi" or len(pins) != 1:
+        return {}
+    path = Path(f) if os.path.isabs(f) else Path(os.path.abspath(config)).parent / f
+    return {next(iter(pins)): path}
+
+
 # ---------------------------------------------------------------- state
+
+PARTIAL_SUFFIX = ".partial"
+
 
 def legacy_state(config: Path) -> Path:
     """Where dciab keeps state when --state isn't given and the config isn't the appliance's
@@ -443,69 +515,204 @@ def _holds_files(path: Path) -> bool:
     return path.is_dir() and not path.is_symlink() and any(path.iterdir())
 
 
-def state_change(config: Path, work: Path) -> Optional[str]:
-    """What the state step would do, or None when there's nothing to move."""
+class StatePlan(NamedTuple):
+    """What the state step does: action is None (nothing), 'refuse', 'move' or 'link'.
+    source is the folder that holds the state to move: .dciab/state itself, or where a link
+    there points (an earlier run's work disk, or the operator's own link)."""
+    action: Optional[str]
+    source: Optional[Path]
+    detail: str
+
+
+def state_plan(config: Path, work: Path) -> StatePlan:
     old, new = legacy_state(config), work / "state"
-    if old.is_symlink() and os.path.realpath(old) == os.path.realpath(new):
-        return None
-    if not _holds_files(old) or os.path.realpath(old) == os.path.realpath(new):
-        return None
+    partial = new.with_name(new.name + PARTIAL_SUFFIX)
+    new_real = os.path.realpath(new)
+    if old.is_symlink():
+        target = Path(os.path.realpath(old))
+        if str(target) == new_real:
+            return StatePlan(None, None, f"{old} links to {new}")
+        if not _holds_files(target):
+            if _holds_files(new):
+                return StatePlan("link", None, f"relink {old} (to {target}, which holds no state) to {new}")
+            return StatePlan(None, None, f"{old} links to {target}, which holds no state")
+        source = target
+    elif os.path.lexists(old):
+        if not _holds_files(old) or os.path.realpath(old) == new_real:
+            return StatePlan(None, None, f"{old} holds no state")
+        source = old
+    else:
+        if _holds_files(new):
+            return StatePlan("link", None, f"link {old} to {new} (the link was missing)")
+        return StatePlan(None, None, "no state to move")
+    if os.path.lexists(partial):
+        return StatePlan("refuse", source, f"{partial} is a partial copy left by an interrupted run (the state "
+                                           f"in {source} is complete): remove {partial} and run again")
     if _holds_files(new):
-        return f"refuse: both {old} and {new} hold state"
-    return f"move {old} to {new}, and link {old} to it"
+        return StatePlan("refuse", source, f"{source} and {new} both hold dciab state (CA, sealed passwords, "
+                                           "kubeconfigs). dciab media won't merge them: keep the right one, "
+                                           "move the other aside, and run again")
+    via = f" (where {old} links)" if source != old else ""
+    return StatePlan("move", source, f"move {source}{via} to {new}, and link {old} to it")
+
+
+def state_change(config: Path, work: Path) -> Optional[str]:
+    """What the state step would do, or None when there's nothing to do."""
+    plan = state_plan(config, work)
+    if plan.action is None:
+        return None
+    return ("refuse: " if plan.action == "refuse" else "") + plan.detail
+
+
+def tree_bytes(path: Path) -> int:
+    total = 0
+    for dirpath, _dirs, files in os.walk(path):
+        for f in files:
+            try:
+                total += os.lstat(os.path.join(dirpath, f)).st_size
+            except OSError:
+                pass
+    return total
+
+
+def state_bytes(config: Path, work: Path) -> int:
+    """Bytes the state step copies onto the work disk: the state's size when it moves across
+    filesystems (a rename on the same filesystem needs no room), else 0."""
+    plan = state_plan(config, work)
+    if plan.action != "move" or plan.source is None:
+        return 0
+    try:
+        if os.stat(plan.source).st_dev == os.stat(nearest_existing(work)).st_dev:
+            return 0
+    except OSError:
+        return 0
+    return tree_bytes(plan.source)
+
+
+def _fsync_tree(path: Path) -> None:
+    for dirpath, _dirs, files in os.walk(path):
+        for f in files:
+            fp = os.path.join(dirpath, f)
+            if os.path.islink(fp):
+                continue
+            fd = os.open(fp, os.O_RDONLY | os.O_NOFOLLOW)
+            try:
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+        fd = os.open(dirpath, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+
+
+def _move_tree(source: Path, new: Path) -> None:
+    """Move source to new. On the same filesystem a rename (atomic); across filesystems a copy
+    to new.partial, synced, renamed into place, and only then the source removed, so an
+    interruption leaves the source complete and at most a .partial the next run names."""
+    try:
+        os.rename(source, new)
+        return
+    except OSError as exc:
+        import errno
+        if exc.errno != errno.EXDEV:
+            raise
+    partial = new.with_name(new.name + PARTIAL_SUFFIX)
+    shutil.copytree(source, partial, symlinks=True, copy_function=shutil.copy2)
+    _fsync_tree(partial)
+    os.rename(partial, new)
+    fd = os.open(new.parent, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    shutil.rmtree(source)
+
+
+def _link(old: Path, new: Path) -> Optional[str]:
+    """Point .dciab/state at <work>/state. Returns a note when the link can't be made."""
+    try:
+        old.parent.mkdir(parents=True, exist_ok=True)
+        if old.is_symlink():
+            old.unlink()
+        os.symlink(str(new), str(old))
+        return None
+    except OSError as exc:
+        return (f"couldn't link {old} to {new} ({exc.strerror or exc}): every dciab step needs "
+                f"--state {new}")
 
 
 def move_state(config: Path, work: Path, runner: Optional[Runner] = None) -> Optional[str]:
-    """Move the state an earlier step left next to the config to <work>/state, leaving a link
-    behind. Returns what was done, or None when there was nothing to move."""
+    """Put the state an earlier step left next to the config (or where a link there points) in
+    <work>/state, and leave .dciab/state linking to it. Returns what was done, or None."""
     old, new = legacy_state(config), work / "state"
-    change = state_change(config, work)
-    if change is None:
+    plan = state_plan(config, work)
+    if plan.action is None:
         return None
-    if change.startswith("refuse"):
-        raise MediaError(f"{old} and {new} both hold dciab state (CA, sealed passwords, kubeconfigs). "
-                         f"dciab media won't merge them: keep the right one, move the other aside, "
-                         f"and run again")
+    if plan.action == "refuse":
+        raise MediaError(plan.detail)
+    if plan.action == "link":
+        note = _link(old, new)
+        return note or f"linked {old} to {new}"
     try:
         running = (runner or run)(["podman", "ps", "-q"]).stdout.split()
     except FileNotFoundError:
         running = []                              # no podman: nothing can be running
     if running:
-        raise MediaError(f"{len(running)} containers are running and may use {old}; stop them (podman ps) "
-                         "and run dciab media again, so the state can move to the work disk")
+        raise MediaError(f"{len(running)} containers are running and may use {plan.source}; stop them "
+                         "(podman ps) and run dciab media again, so the state can move to the work disk")
+    assert plan.source is not None
     new.parent.mkdir(parents=True, exist_ok=True)
     if new.is_dir() and not new.is_symlink():
-        new.rmdir()                               # empty, checked by state_change
+        new.rmdir()                               # empty, checked by state_plan
     elif os.path.lexists(new):
         raise MediaError(f"{new} exists and isn't a folder; remove it and run again")
-    shutil.move(str(old), str(new))
+    _move_tree(plan.source, new)
     new.chmod(0o700)
-    os.symlink(str(new), str(old))
-    return f"moved {old} to {new} (left a link)"
+    note = _link(old, new)
+    moved = f"moved {plan.source} to {new}"
+    return f"{moved}; {note}" if note else f"{moved} (left a link at {old})"
 
 
 # ---------------------------------------------------------------- installer ISOs
 
-def pinned_isos(lock: dict) -> Dict[str, str]:
-    """{file name: sha256} for each installer ISO bundle.lock pins (hypervisors.*)."""
+def pins_by_type(lock: dict) -> Dict[str, Dict[str, str]]:
+    """{hypervisor type: {file name: sha256}} for each installer ISO bundle.lock pins."""
     from urllib.parse import urlsplit
-    pins: Dict[str, str] = {}
-    for h in (lock.get("hypervisors") or {}).values():
+    out: Dict[str, Dict[str, str]] = {}
+    for kind, h in (lock.get("hypervisors") or {}).items():
         if not isinstance(h, dict) or not h.get("isoSHA256"):
             continue
         name = os.path.basename(urlsplit(str(h.get("isoURL") or "")).path) or str(h.get("isoFile") or "")
-        if name and "/" not in name:
-            pins[name] = str(h["isoSHA256"]).lower()
+        if name in ("", ".", "..") or "/" in name or "\\" in name:
+            continue
+        out[str(kind)] = {name: str(h["isoSHA256"]).lower()}
+    return out
+
+
+def pinned_isos(lock: dict) -> Dict[str, str]:
+    """{file name: sha256} for each installer ISO bundle.lock pins (hypervisors.*)."""
+    pins: Dict[str, str] = {}
+    for pin in pins_by_type(lock).values():
+        pins.update(pin)
     return pins
 
 
-def read_pins(archive: Path) -> Dict[str, str]:
+def read_lock_pins(archive: Path) -> Dict[str, Dict[str, str]]:
     try:
-        return pinned_isos(yaml.safe_load((archive / "bundle.lock").read_text()) or {})
+        return pins_by_type(yaml.safe_load((archive / "bundle.lock").read_text()) or {})
     except FileNotFoundError:
         return {}
     except (OSError, yaml.YAMLError) as exc:
         raise MediaError(f"{archive / 'bundle.lock'}: {exc}") from None
+
+
+def read_pins(archive: Path) -> Dict[str, str]:
+    pins: Dict[str, str] = {}
+    for pin in read_lock_pins(archive).values():
+        pins.update(pin)
+    return pins
 
 
 # ---------------------------------------------------------------- main
@@ -610,8 +817,9 @@ def main(argv: Optional[List[str]] = None) -> int:
             for step in STEPS:
                 say(f"==> {step}")
                 if step == "target":
-                    check_space(plan, work)
-                    say(f"  {work}: {plan.copy_bytes} bytes to copy")
+                    extra = state_bytes(config, work)
+                    check_space(plan, work, extra=extra)
+                    say(f"  {work}: {plan.copy_bytes + extra} bytes to copy")
                 elif step == "state":
                     moved = move_state(config, work)
                     say(f"  {moved}" if moved else f"  unchanged ({work / 'state'})")
@@ -627,12 +835,14 @@ def main(argv: Optional[List[str]] = None) -> int:
                     say(f"  {STORAGE_DROPIN}: graphroot {graphroot}" if set_storage(graphroot) else "  unchanged")
                 elif step == "isos":
                     isos_from = args.isos_from or (USB_MOUNT / "isos")
-                    pins = read_pins(plan.dest)
-                    placed = place_isos(plan.dest, work / "isos", isos_from, pins)
+                    pins = site_pins(doc, read_lock_pins(plan.dest))
+                    placed = place_isos(plan.dest, work / "isos", isos_from, pins,
+                                        sources=site_sources(doc, pins, config))
                     say(f"  placed {', '.join(placed)}" if placed else f"  unchanged ({work / 'isos'})")
                     for name in missing_isos(doc, work / "isos", pins):
-                        say(f"  note: {name} (pinned in bundle.lock) isn't in {work / 'isos'} or {isos_from}: "
-                            f"put it in either, then run again; dciab hypervisors needs it")
+                        say(f"  note: {name} (pinned in bundle.lock for this site's hypervisors) isn't in "
+                            f"{work / 'isos'} or {isos_from}: put it in either, then run again; dciab "
+                            f"hypervisors needs it")
                 elif step == "preload":
                     if (preload.PRELOAD_DIR / "images.yaml").is_file():
                         try:
