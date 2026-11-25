@@ -2,8 +2,9 @@ name: lab appliance image
 
 # Builds the bootstrap appliance's bootc image (images/bootstrap-bootc, --image-only: no
 # installer ISO) on the self-hosted lab runner, since it builds on the Rocky Linux 10 bootc base,
-# and checks what the image carries: the Day 0 images at their bundle.lock digests (#181) and the
-# unit that loads them at boot. The installer ISO and the boot itself stay with handoff task 0005.
+# and checks it: dciab runs from it, it carries no container images and no storage override
+# (the Day 0 images come from the archive's payload, #181), and the default graphroot's SELinux
+# labels in its own policy. The installer ISO and the boot itself stay with handoff task 0005.
 #
 # Like the other lab workflows, this runs only on a push to main or a dispatch of main.
 on:
@@ -11,8 +12,6 @@ on:
     branches: [main]
     paths:
       - images/bootstrap-bootc/**
-      - lib/dciab_media/preload.py
-      - build/archive.py
       - bundle.lock
       - .github/workflows/lab-appliance.yml
   workflow_dispatch:
@@ -26,7 +25,7 @@ concurrency:
 
 jobs:
   appliance:
-    name: appliance image with the Day 0 images
+    name: appliance image
     runs-on: [self-hosted, dciab-lab]
     timeout-minutes: 60
     permissions:
@@ -35,55 +34,32 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
       - name: Build the appliance image
         run: sudo images/bootstrap-bootc/build.sh --image-only
-      - name: The image carries the Day 0 images and loads them at boot
+      - name: dciab runs from the image; no images or storage override ship in it
         run: |
           set -euo pipefail
           tag="localhost/dciab-bootstrap:$(cat VERSION)"
-          sudo podman run --rm --network none -e PYTHONPATH=/usr/share/dciab/lib "$tag" \
-            python3 -m dciab_media.preload --check --full
-          sudo podman run --rm --network none "$tag" systemctl is-enabled dciab-day0-images.service
-          # Root's default storage stays (the root filesystem is the work disk): no override ships.
+          sudo podman run --rm --network none "$tag" dciab --help >/dev/null
+          if sudo podman run --rm --network none "$tag" test -e /usr/share/dciab/day0-images; then
+            echo "the image carries Day 0 images; they come from the archive's payload" >&2; exit 1
+          fi
           if sudo podman run --rm --network none "$tag" test -e /etc/containers/storage.conf.d/50-dciab-media.conf; then
             echo "the image ships a storage drop-in; root's default storage should stay" >&2; exit 1
           fi
-          # The graphroot's SELinux labels in the image's own policy (what restorecon gives at boot).
+          sudo podman image inspect --format '{{.Size}}' "$tag" | awk '{printf "image size: %.0f MiB\n", $1/1048576}'
+      - name: The default graphroot's SELinux labels in the image's policy
+        run: |
+          set -euo pipefail
+          tag="localhost/dciab-bootstrap:$(cat VERSION)"
           labels="$(sudo podman run --rm --network none "$tag" \
             matchpathcon /var/lib/containers/storage /var/lib/containers/storage/overlay /var/lib/containers/storage/volumes/x/_data)"
           echo "$labels"
           grep -q 'storage[[:space:]].*:container_var_lib_t:' <<<"$labels"
           grep -q 'overlay[[:space:]].*:container_ro_file_t:' <<<"$labels"
           grep -q '_data[[:space:]].*:container_file_t:' <<<"$labels"
-          # The references the image lists must be exactly the ones bundle.lock pins (not a count).
-          PYTHONPATH=lib python3 -c 'import yaml; from dciab_media.preload import day0_refs
-          print("\n".join(sorted(day0_refs(yaml.safe_load(open("bundle.lock"))).values())))' > "$RUNNER_TEMP/want"
-          sudo podman run --rm --network none "$tag" python3 -c 'import yaml
-          print("\n".join(sorted(e["image"] for e in yaml.safe_load(open("/usr/share/dciab/day0-images/images.yaml"))["images"])))' > "$RUNNER_TEMP/got"
-          diff -u "$RUNNER_TEMP/want" "$RUNNER_TEMP/got"
-          echo "ok: the image carries exactly the $(wc -l < "$RUNNER_TEMP/want") Day 0 images bundle.lock pins"
-      - name: The images load from the image's own read-only copy
-        run: |
-          set -euo pipefail
-          tag="localhost/dciab-bootstrap:$(cat VERSION)"
-          scratch="$RUNNER_TEMP/preload-store"
-          sudo rm -rf "$scratch"
-          mkdir -p "$scratch"
-          printf '[storage]\ndriver = "vfs"\ngraphroot = "%s/graph"\nrunroot = "%s/run"\n' "$scratch" "$scratch" > "$scratch/storage.conf"
-          mnt="$(sudo podman image mount "$tag")"
-          echo "$mnt" > "$RUNNER_TEMP/mnt"
-          sudo du -sh "$mnt/usr/share/dciab/day0-images"
-          sudo env CONTAINERS_STORAGE_CONF="$scratch/storage.conf" PYTHONPATH=lib \
-            python3 -m dciab_media.preload --dir "$mnt/usr/share/dciab/day0-images"
-          while read -r ref; do
-            sudo env CONTAINERS_STORAGE_CONF="$scratch/storage.conf" podman image exists "$ref" \
-              || { echo "$ref: not loaded from the image's copy" >&2; exit 1; }
-            echo "loaded: $ref"
-          done < "$RUNNER_TEMP/want"
       - name: Clean up
         if: always()
         run: |
           tag="localhost/dciab-bootstrap:$(cat VERSION)"
-          sudo podman image unmount "$tag" || true
-          sudo rm -rf "$RUNNER_TEMP/preload-store"
           sudo podman rmi -f "$tag" || true
           # Dangling layers from the build; the Rocky bootc base stays cached for the next build.
           sudo podman image prune -f || true

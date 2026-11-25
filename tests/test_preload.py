@@ -1,4 +1,4 @@
-"""The appliance's preloaded Day 0 images (#181): the list, the layout check, the loader."""
+"""The Day 0 images loaded once from the archive's payload (#181): the list, the check, the loader."""
 import hashlib
 import json
 import subprocess
@@ -44,8 +44,10 @@ def test_split_ref():
 
 
 def _layout(tmp_path, images):
-    """An OCI layout with one blob per image (its 'manifest') and an images.yaml."""
-    d = tmp_path / "day0-images"
+    """A payload: an OCI layout with one blob per image (its 'manifest') and an images.yaml,
+    plus an image that isn't a Day 0 one. Returns the payload and {name: ref} of images."""
+    d = tmp_path / "archive" / "payload"
+    images = list(images) + [("kindest-node-1", "docker.io/kindest/node", "v1.35.0")]
     blobs = d / "images" / "blobs" / "sha256"
     blobs.mkdir(parents=True)
     manifests, listed = [], []
@@ -58,7 +60,12 @@ def _layout(tmp_path, images):
         listed.append({"image": f"{repo}:{tag}@{digest}", "name": name, "tag": tag, "digest": digest})
     (d / "images" / "index.json").write_text(json.dumps({"schemaVersion": 2, "manifests": manifests}))
     (d / "images.yaml").write_text(yaml.safe_dump({"images": listed}))
-    return d, [e["image"] for e in listed]
+    return d, [e["image"] for e in listed[:-1]]
+
+
+def R(refs):
+    """refs as day0_refs returns them: {key: reference}."""
+    return {f"k{i}": r for i, r in enumerate(refs)}
 
 
 IMAGES = [("coredns-1", "docker.io/coredns/coredns", "1.14.6"), ("caddy-2", "docker.io/library/caddy", "2.11.7")]
@@ -66,18 +73,33 @@ IMAGES = [("coredns-1", "docker.io/coredns/coredns", "1.14.6"), ("caddy-2", "doc
 
 def test_check_passes_for_a_good_layout(tmp_path):
     d, _ = _layout(tmp_path, IMAGES)
-    assert preload.check(d) == []
+    assert preload.check(d, R(_)) == []
 
 
 def test_check_finds_a_wrong_digest_and_a_missing_blob(tmp_path):
     d, refs = _layout(tmp_path, IMAGES)
-    listed = yaml.safe_load((d / "images.yaml").read_text())
-    listed["images"][0]["image"] = refs[0].split("@")[0] + "@sha256:" + "b" * 64
-    (d / "images.yaml").write_text(yaml.safe_dump(listed))
+    index = json.loads((d / "images" / "index.json").read_text())
+    index["manifests"][0]["digest"] = "sha256:" + "b" * 64             # the layout holds another digest
+    (d / "images" / "index.json").write_text(json.dumps(index))
     blob = refs[1].split("sha256:")[1]
     (d / "images" / "blobs" / "sha256" / blob).unlink()
-    problems = preload.check(d)
+    problems = preload.check(d, R(refs))
     assert any("the layout holds" in p for p in problems) and any("is missing" in p for p in problems)
+
+
+def test_only_the_day0_images_are_chosen_and_matched_across_spellings(tmp_path):
+    d, refs = _layout(tmp_path, IMAGES)
+    short = "caddy:2.11.7@" + refs[1].split("@")[1]                     # docker.io/library/ spelled short
+    chosen = preload.day0_entries(d, {"coredns": refs[0], "caddy": short})
+    assert [e["name"] for e in chosen] == ["coredns-1", "caddy-2"]
+    assert chosen[1]["image"] == short                                  # tagged as bundle.lock spells it
+
+
+def test_a_day0_image_the_payload_lacks_is_named(tmp_path):
+    d, refs = _layout(tmp_path, IMAGES[:1])
+    missing = "docker.io/library/caddy:2.11.7@sha256:" + "d" * 64
+    with pytest.raises(preload.PreloadError, match="lacks these Day 0 images: " + missing.replace(".", r"\.")):
+        preload.day0_entries(d, {"coredns": refs[0], "caddy": missing})
 
 
 def test_entries_refuse_unpinned(tmp_path):
@@ -139,24 +161,25 @@ def test_load_pulls_what_storage_lacks_and_names_it_as_pinned(tmp_path):
             return r
 
     p = P(have={refs[1]}, digests={"id-coredns-1": _digest(refs[0])})
-    loaded, present = preload.load(d, p)
+    loaded, present = preload.load(d, R(refs), p)
     assert loaded == [refs[0]] and present == [refs[1]]
     assert ["podman", "pull", "-q", f"oci:{d / 'images'}:coredns-1"] in p.calls
     assert ["podman", "tag", "id-coredns-1", "docker.io/coredns/coredns:1.14.6"] in p.calls
     assert not any(c[:2] == ["podman", "pull"] and c[-1].endswith(":caddy-2") for c in p.calls)
+    assert not any(c[:2] == ["podman", "pull"] and "kindest" in c[-1] for c in p.calls)   # not a Day 0 image
 
 
 def test_load_refuses_a_copy_that_doesnt_match_the_pin(tmp_path):
     d, refs = _layout(tmp_path, IMAGES[:1])
     with pytest.raises(preload.PreloadError, match="doesn't match the pinned digest"):
-        preload.load(d, Podman(digests={"id-coredns-1": _digest(refs[0])}))
+        preload.load(d, R(refs), Podman(digests={"id-coredns-1": _digest(refs[0])}))
 
 
 def test_a_wrong_copy_is_removed_before_it_gets_the_pinned_name(tmp_path):
     d, refs = _layout(tmp_path, IMAGES[:1])
     p = Podman(digests={"id-coredns-1": "sha256:" + "c" * 64})
     with pytest.raises(preload.PreloadError, match="not the pinned digest.*removed it"):
-        preload.load(d, p)
+        preload.load(d, R(refs), p)
     assert p.removed == ["id-coredns-1"]
     assert not any(c[:2] == ["podman", "tag"] for c in p.calls)
 
@@ -166,40 +189,32 @@ def test_a_wrong_copy_that_is_another_known_image_is_left_under_its_own_names(tm
     p = Podman(digests={"id-coredns-1": "sha256:" + "c" * 64})
     p.tags["id-coredns-1"] = ["docker.io/library/caddy:2.11.7"]
     with pytest.raises(preload.PreloadError, match="keeps only the names it already had"):
-        preload.load(d, p)
+        preload.load(d, R(refs), p)
     assert p.removed == [] and not any(c[:2] == ["podman", "tag"] for c in p.calls)
 
 
-SHIPPED = ROOT / "images" / "bootstrap-bootc" / "rootfs"
+SHIPPED = ROOT / "images" / "bootstrap-bootc"
 
 
-def test_the_appliance_ships_no_storage_override():
-    """The appliance's root filesystem is the work disk, so root's default storage stays: no
-    drop-in, no tmpfiles entry, no SELinux equivalence in the image."""
+def test_the_appliance_carries_no_images():
+    """The Day 0 images come from the payload: the appliance embeds none and loads none at boot."""
     from dciab_media import cli
-    assert not (SHIPPED / str(cli.STORAGE_DROPIN).lstrip("/")).exists()
-    assert not (SHIPPED / "usr/lib/tmpfiles.d/dciab-work.conf").exists()
-    containerfile = (ROOT / "images" / "bootstrap-bootc" / "Containerfile").read_text()
-    assert "semanage fcontext" not in containerfile
-
-
-def test_the_boot_unit_waits_for_media_and_is_bounded():
-    from dciab_media import cli
-    unit = (SHIPPED / "usr/lib/systemd/system/dciab-day0-images.service").read_text()
-    assert f"--lock {cli.HOST_LOCK}" in unit
-    assert "TimeoutStartSec=" in unit
-    assert "storage.conf.d" not in unit.split("[Service]")[0].split("ConditionPathExists=/usr/share")[1]
+    containerfile = (SHIPPED / "Containerfile").read_text()
+    assert "day0-images" not in containerfile and "semanage fcontext" not in containerfile
+    assert "oras" not in (SHIPPED / "build.sh").read_text()
+    assert not (SHIPPED / "rootfs/usr/lib/systemd/system/dciab-day0-images.service").exists()
+    assert not (SHIPPED / "rootfs" / str(cli.STORAGE_DROPIN).lstrip("/")).exists()
 
 
 def test_the_lock_isnt_followed_through_a_symlink(tmp_path, monkeypatch):
-    d = tmp_path / "images"
+    d = tmp_path / "payload"
     d.mkdir()
     (d / "images.yaml").write_text("images: []\n")
     target = tmp_path / "victim"
     target.write_text("keep")
     link = tmp_path / "lock"
     link.symlink_to(target)
-    assert preload.main(["--dir", str(d), "--lock", str(link)]) == 1
+    assert preload.main(["--payload", str(d), "--lock", str(link)]) == 1
     assert target.read_text() == "keep"
 
 
@@ -233,20 +248,20 @@ def test_a_platform_manifest_of_the_pinned_index_is_accepted(tmp_path):
                 self.have.add(ref)
             return r
 
-    loaded, _ = preload.load(d, P(digests={"id-caddy-2": child}))
+    loaded, _ = preload.load(d, {"caddy": ref}, P(digests={"id-caddy-2": child}))
     assert loaded == [ref]
 
 
 def test_full_check_hashes_every_blob(tmp_path):
-    d, _, _ = _index_layout(tmp_path, corrupt_child=True)
-    assert preload.check(d) == []                       # the top blob is fine
-    assert any("doesn't match its digest" in p for p in preload.check(d, full=True))
+    d, ref, _ = _index_layout(tmp_path, corrupt_child=True)
+    assert preload.check(d, {"caddy": ref}) == []                        # the top blob is fine
+    assert any("doesn't match its digest" in p for p in preload.check(d, {"caddy": ref}, full=True))
 
 
 def test_check_finds_a_tampered_top_blob(tmp_path):
     d, refs = _layout(tmp_path, IMAGES[:1])
     (d / "images" / "blobs" / "sha256" / _digest(refs[0])[7:]).write_bytes(b"other")
-    assert any("doesn't match its digest" in p for p in preload.check(d))
+    assert any("doesn't match its digest" in p for p in preload.check(d, R(refs)))
 
 
 def test_main_waits_for_the_media_lock(tmp_path, monkeypatch):
@@ -255,7 +270,9 @@ def test_main_waits_for_the_media_lock(tmp_path, monkeypatch):
     lock = tmp_path / "run" / "dciab-media.lock"
     seen = []
 
-    def fake_load(directory):
+    monkeypatch.setattr(preload, "lock_refs", lambda directory: R(refs))
+
+    def fake_load(directory, refs_):
         # The lock is held while loading: a second non-blocking flock fails.
         with open(lock, "a") as f:
             try:
@@ -265,25 +282,34 @@ def test_main_waits_for_the_media_lock(tmp_path, monkeypatch):
                 seen.append("held")
         return [], refs
     monkeypatch.setattr(preload, "load", fake_load)
-    assert preload.main(["--dir", str(d), "--lock", str(lock)]) == 0
+    assert preload.main(["--payload", str(d), "--lock", str(lock)]) == 0
     assert seen == ["held"]
 
 
-def test_main_without_preloaded_images_does_nothing(tmp_path, capsys):
-    assert preload.main(["--dir", str(tmp_path / "absent")]) == 0
+def test_main_without_a_payload_does_nothing(tmp_path, capsys):
+    assert preload.main(["--payload", str(tmp_path / "absent")]) == 0
     assert "nothing to do" in capsys.readouterr().err
 
 
-def test_main_check(tmp_path, capsys):
-    d, _ = _layout(tmp_path, IMAGES)
-    assert preload.main(["--dir", str(d), "--check"]) == 0
-    assert "ok: 2 images" in capsys.readouterr().err
+def test_main_check_reads_the_archives_bundle_lock(tmp_path, capsys):
+    d, refs = _layout(tmp_path, IMAGES)
+    (d.parent / "bundle.lock").write_text(yaml.safe_dump({}))           # pins nothing: refused
+    assert preload.main(["--payload", str(d), "--check"]) == 1
+    assert "doesn't pin these Day 0 images" in capsys.readouterr().err
+
+
+def test_main_check(tmp_path, capsys, monkeypatch):
+    d, refs = _layout(tmp_path, IMAGES)
+    monkeypatch.setattr(preload, "lock_refs", lambda directory: R(refs))
+    assert preload.main(["--payload", str(d), "--check"]) == 0
+    assert "ok: 2 Day 0 images" in capsys.readouterr().err
     (d / "images" / "index.json").write_text("{}")
-    assert preload.main(["--dir", str(d), "--check"]) == 1
+    assert preload.main(["--payload", str(d), "--check"]) == 1
 
 
 def test_main_reports_a_failed_pull(tmp_path, monkeypatch, capsys):
-    d, _ = _layout(tmp_path, IMAGES[:1])
+    d, refs = _layout(tmp_path, IMAGES[:1])
+    monkeypatch.setattr(preload, "lock_refs", lambda directory: R(refs))
 
     def failing(cmd):
         if list(cmd)[:3] == ["podman", "image", "exists"]:
@@ -291,7 +317,7 @@ def test_main_reports_a_failed_pull(tmp_path, monkeypatch, capsys):
         raise subprocess.CalledProcessError(125, cmd, stderr="Error: no space left")
 
     monkeypatch.setattr(preload, "run", failing)
-    assert preload.main(["--dir", str(d)]) == 1
+    assert preload.main(["--payload", str(d)]) == 1
     assert "no space left" in capsys.readouterr().err
 
 
@@ -302,7 +328,7 @@ def test_media_preload_step(tmp_path, monkeypatch, capsys):
     from dciab_media import cli
     from test_media import args, make_archive, write_config
 
-    src = make_archive(tmp_path)
+    src = make_archive(tmp_path, extra={"payload/images.yaml": b"images: []\n"})
     work = tmp_path / "work"
     work.mkdir()
     cfg = write_config(tmp_path, work)
@@ -310,16 +336,16 @@ def test_media_preload_step(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(cli, "HOST_LOCK", tmp_path / "lock" / "l")
     monkeypatch.setattr(cli, "read_mounts", lambda: "/dev/sda1 / xfs rw 0 0\n")
     monkeypatch.setattr(cli, "current_graphroot", lambda runner=None: str(work / "containers"))
-    d, refs = _layout(tmp_path, IMAGES)
-    monkeypatch.setattr(preload, "PRELOAD_DIR", d)
+    refs = ["docker.io/coredns/coredns:1@sha256:" + "a" * 64, "docker.io/library/caddy:2@sha256:" + "b" * 64]
+    monkeypatch.setattr(preload, "lock_refs", lambda directory: R(refs))
     seen = []
-    monkeypatch.setattr(preload, "load", lambda directory: (seen.append(directory) or (refs, [])))
+    monkeypatch.setattr(preload, "load", lambda directory, r: (seen.append((directory, r)) or (refs, [])))
     assert cli.main(args(src, cfg)) == 0
-    assert seen == [d]
+    assert seen == [(work / "dciab-1.2.3" / "payload", R(refs))]       # the copy on the work disk
     assert "loaded 2, 0 already there" in capsys.readouterr().out
 
 
-def test_media_preload_failure_stops_the_run(tmp_path, monkeypatch, capsys):
+def test_media_preload_does_nothing_without_an_image_payload(tmp_path, monkeypatch, capsys):
     sys.path.insert(0, str(ROOT / "tests"))
     from dciab_media import cli
     from test_media import args, make_archive, write_config
@@ -332,10 +358,26 @@ def test_media_preload_failure_stops_the_run(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(cli, "HOST_LOCK", tmp_path / "lock" / "l")
     monkeypatch.setattr(cli, "read_mounts", lambda: "/dev/sda1 / xfs rw 0 0\n")
     monkeypatch.setattr(cli, "current_graphroot", lambda runner=None: str(work / "containers"))
-    d, _ = _layout(tmp_path, IMAGES)
-    monkeypatch.setattr(preload, "PRELOAD_DIR", d)
+    assert cli.main(args(src, cfg)) == 0
+    assert "none (the archive carries no images)" in capsys.readouterr().out
 
-    def bad(directory):
+
+def test_media_preload_failure_stops_the_run(tmp_path, monkeypatch, capsys):
+    sys.path.insert(0, str(ROOT / "tests"))
+    from dciab_media import cli
+    from test_media import args, make_archive, write_config
+
+    src = make_archive(tmp_path, extra={"payload/images.yaml": b"images: []\n"})
+    work = tmp_path / "work"
+    work.mkdir()
+    cfg = write_config(tmp_path, work)
+    monkeypatch.setattr(cli.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(cli, "HOST_LOCK", tmp_path / "lock" / "l")
+    monkeypatch.setattr(cli, "read_mounts", lambda: "/dev/sda1 / xfs rw 0 0\n")
+    monkeypatch.setattr(cli, "current_graphroot", lambda runner=None: str(work / "containers"))
+    monkeypatch.setattr(preload, "lock_refs", lambda directory: {})
+
+    def bad(directory, refs):
         raise preload.PreloadError("x: doesn't match the pinned digest")
     monkeypatch.setattr(preload, "load", bad)
     assert cli.main(args(src, cfg)) == 1

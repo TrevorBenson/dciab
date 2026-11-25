@@ -18,7 +18,7 @@ from dciab_media import cli  # noqa: E402
 Usage = collections.namedtuple("Usage", "total used free")
 
 
-def make_archive(base: Path, version="1.2.3") -> Path:
+def make_archive(base: Path, version="1.2.3", extra=None) -> Path:
     src = base / "usb" / f"dciab-{version}"
     files = {
         "dciab": b"#!/usr/bin/env bash\necho dciab\n",
@@ -27,6 +27,7 @@ def make_archive(base: Path, version="1.2.3") -> Path:
         "payload/SHA256SUMS": b"",
         "payload/images/blob": b"B" * 4096,
         "payload/isos/installer.iso": b"ISO" * 100,
+        **(extra or {}),
     }
     for rel, data in files.items():
         (src / rel).parent.mkdir(parents=True, exist_ok=True)
@@ -54,8 +55,6 @@ def site(tmp_path, monkeypatch):
     monkeypatch.setattr(cli, "read_mounts", lambda: "/dev/sda1 / xfs rw 0 0\n")
     # podman already on the work disk: the storage step changes nothing.
     monkeypatch.setattr(cli, "current_graphroot", lambda runner=None: str(work / "containers"))
-    from dciab_media import preload
-    monkeypatch.setattr(preload, "PRELOAD_DIR", tmp_path / "no-preload")   # never a real podman pull
     locks = tmp_path / "run-lock"
     locks.mkdir()
     monkeypatch.setattr(cli, "HOST_STEP_LOCKS", (locks / "dciab-seed.lock", locks / "dciab-services.lock"))

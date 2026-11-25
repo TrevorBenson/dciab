@@ -30,9 +30,9 @@ re-run, and a finished run changes nothing:
            carries them, else from spec.hypervisors.installerFile (ESXi) or --isos-from
            (default: the stick's isos/, USB_MOUNT/isos); each is checked against its
            bundle.lock sha256 before it's placed
-  preload  on the appliance, the Day 0 images it carries (dciab_media.preload.PRELOAD_DIR)
-           loaded into root's storage, now on the work disk, so dciab services finds them
-           there instead of loading them from the payload
+  preload  the Day 0 images (CoreDNS, Caddy, chrony, Zot, the pve-assistant) loaded once into
+           root's storage from the copy's payload, each checked against its bundle.lock digest
+           before it gets the pinned name, so dciab services finds them there
 
 Then it prints the commands that run the next steps from the copy, with their state on
 the work disk (--state <work>/state) and services and hypervisors given the ISOs the isos
@@ -955,7 +955,8 @@ def main(argv: Optional[List[str]] = None) -> int:
             say(f"copy:    {len(plan.to_copy)} of {len(plan.files)} files, {plan.copy_bytes} bytes")
             say(f"storage: {change or 'unchanged: root container storage is already on the work disk'}")
             say(f"isos:    {work / 'isos'}")
-            say(f"preload: {preload.PRELOAD_DIR if (preload.PRELOAD_DIR / 'images.yaml').is_file() else 'none (not the appliance)'}")
+            payload = plan.source / "payload"
+            say(f"preload: {'the Day 0 images from ' + str(plan.dest / 'payload') if (payload / 'images.yaml').is_file() else 'none (the archive carries no images)'}")
             return 0
         work.mkdir(parents=True, exist_ok=True)
         lock_path = HOST_LOCK if HOST_LOCK.parent.is_dir() and os.access(HOST_LOCK.parent, os.W_OK) \
@@ -997,14 +998,15 @@ def main(argv: Optional[List[str]] = None) -> int:
                             f"{work / 'isos'} or {isos_from}: put it in either, then run again; dciab "
                             f"hypervisors needs it")
                 elif step == "preload":
-                    if (preload.PRELOAD_DIR / "images.yaml").is_file():
+                    payload = plan.dest / "payload"
+                    if (payload / "images.yaml").is_file():
                         try:
-                            loaded, present = preload.load(preload.PRELOAD_DIR)
+                            loaded, present = preload.load(payload, preload.lock_refs(payload))
                         except preload.PreloadError as exc:
                             raise MediaError(str(exc)) from None
-                        say(f"  loaded {len(loaded)}, {len(present)} already there ({preload.PRELOAD_DIR})")
+                        say(f"  loaded {len(loaded)}, {len(present)} already there (from {payload})")
                     else:
-                        say("  none (not the appliance)")
+                        say("  none (the archive carries no images)")
                 if step == args.until:
                     say(f"stopped after {step} (--until)")
                     return 0

@@ -51,8 +51,6 @@ def site(tmp_path, monkeypatch):
     monkeypatch.setattr(cli, "current_graphroot", lambda runner=None: str(work / "containers"))
     monkeypatch.setattr(cli, "run", _runner())
     monkeypatch.setattr(cli, "USB_MOUNT", tmp_path / "stick")
-    from dciab_media import preload
-    monkeypatch.setattr(preload, "PRELOAD_DIR", tmp_path / "no-preload")   # never a real podman pull
     locks = tmp_path / "run-lock"
     locks.mkdir()
     monkeypatch.setattr(cli, "HOST_STEP_LOCKS", (locks / "dciab-seed.lock", locks / "dciab-services.lock"))

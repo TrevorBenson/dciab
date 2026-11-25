@@ -82,8 +82,8 @@ An earlier version of this task booted the appliance as a Ventoy vDisk. The part
    - `dciab validate /var/lib/dciab/site/dciab.yaml` passes.
    - `mokutil --sb-state` says Secure Boot is enabled.
    - `bootc status` and `getenforce` (Enforcing).
-   - Root's container storage is the default one on the work disk (the appliance's root filesystem): `sudo podman info --format '{{.Store.GraphRoot}}'` prints `/var/lib/containers/storage`, `ls -Zd /var/lib/containers/storage` shows `container_var_lib_t`, no `/etc/containers/storage.conf.d/50-dciab-media.conf` exists, `sudo dciab media <config> --checksums-only --print` says `storage: unchanged`, and `systemctl status dciab-day0-images` ended successfully with the Day 0 images in `sudo podman images`.
-   - `sudo ausearch -m avc -ts boot` shows no denials for podman, `dciab-day0-images` or `/var/lib/dciab`.
+   - Root's container storage is the default one on the work disk (the appliance's root filesystem): `sudo podman info --format '{{.Store.GraphRoot}}'` prints `/var/lib/containers/storage`, `ls -Zd /var/lib/containers/storage` shows `container_var_lib_t`, no `/etc/containers/storage.conf.d/50-dciab-media.conf` exists, `sudo dciab media <config> --checksums-only --print` says `storage: unchanged`, and `sudo podman images` is empty: the appliance carries no images (they come from the archive's payload when `dciab media` runs).
+   - `sudo ausearch -m avc -ts boot` shows no denials for podman or `/var/lib/dciab`.
 7. **End to end.** On the appliance, as the admin user with sudo:
    1. Start a registry container (`docker.io/library/registry` is fine for a test), then push and pull one small image through it.
    2. `KIND_EXPERIMENTAL_PROVIDER=podman kind create cluster`, then `kubectl get nodes` (Ready) and run one pod to completion. Delete the cluster.

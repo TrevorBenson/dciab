@@ -1,7 +1,7 @@
 # DCiaB bootstrap appliance ("server zero"), image mode (bootc): Rocky Linux 10 with
 # podman, kind, helm, kubectl and dciab. Delivered as an installer ISO on the DCiaB USB
 # and installed onto spec.bootstrap.workDisk.disk (docs/adr/0002-bootstrap-appliance-on-ventoy.md).
-# Built by build.sh; every version and image digest comes from bundle.lock.
+# Built by build.sh; every version comes from bundle.lock.
 #
 # Build context: the repository root (build.sh passes it). build.sh first downloads and
 # verifies kind, helm and kubectl into images/bootstrap-bootc/build/.
@@ -28,20 +28,10 @@ COPY addons /usr/share/dciab/addons
 COPY examples /usr/share/dciab/examples
 COPY images/bootstrap-bootc/rootfs/ /
 
-# The Day 0 images at their bundle.lock digests (an OCI layout and images.yaml, as in the
-# archive's payload), loaded into root's container storage by dciab-day0-images.service and by
-# dciab media's preload step: physically bound images, pre-pulled at build and copied into the
-# local storage at runtime. Not an additional image store in storage.conf: one under /usr breaks
-# bootc updates. The appliance's root filesystem is the work disk, so root's default storage
-# (/var/lib/containers/storage) is already where dciab media wants it.
-COPY images/bootstrap-bootc/build/day0-images/ /usr/share/dciab/day0-images/
-
 # The base image's /usr/local is an absolute symlink to /var/usrlocal, which bootc's
 # `container lint` (runtime-deps, bootc 1.17) rejects ("a path led outside of the
 # filesystem"). A relative link means the same thing and passes.
 RUN ln -sfn ../var/usrlocal /usr/local
 
 RUN systemctl enable sshd NetworkManager firewalld var-mnt-dciab.mount dciab-bootstrap-setup.service \
-      dciab-day0-images.service \
- && PYTHONPATH=/usr/share/dciab/lib python3 -m dciab_media.preload --check \
  && bootc container lint
