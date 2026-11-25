@@ -18,7 +18,7 @@ from dciab_media import cli  # noqa: E402
 Usage = collections.namedtuple("Usage", "total used free")
 
 
-def make_archive(base: Path, version="1.2.3") -> Path:
+def make_archive(base: Path, version="1.2.3", extra=None) -> Path:
     src = base / "usb" / f"dciab-{version}"
     files = {
         "dciab": b"#!/usr/bin/env bash\necho dciab\n",
@@ -27,6 +27,7 @@ def make_archive(base: Path, version="1.2.3") -> Path:
         "payload/SHA256SUMS": b"",
         "payload/images/blob": b"B" * 4096,
         "payload/isos/installer.iso": b"ISO" * 100,
+        **(extra or {}),
     }
     for rel, data in files.items():
         (src / rel).parent.mkdir(parents=True, exist_ok=True)
@@ -54,6 +55,9 @@ def site(tmp_path, monkeypatch):
     monkeypatch.setattr(cli, "read_mounts", lambda: "/dev/sda1 / xfs rw 0 0\n")
     # podman already on the work disk: the storage step changes nothing.
     monkeypatch.setattr(cli, "current_graphroot", lambda runner=None: str(work / "containers"))
+    locks = tmp_path / "run-lock"
+    locks.mkdir()
+    monkeypatch.setattr(cli, "HOST_STEP_LOCKS", (locks / "dciab-seed.lock", locks / "dciab-services.lock"))
     return src, work, cfg
 
 
@@ -127,6 +131,7 @@ def test_print_changes_nothing(site, capsys, monkeypatch):
 def test_print_shows_storage_change(site, capsys, monkeypatch):
     src, work, cfg = site
     monkeypatch.setattr(cli, "current_graphroot", lambda runner=None: "/var/lib/containers/storage")
+    monkeypatch.setattr(cli, "same_filesystem", lambda a, b: False)     # another disk than the work disk
     assert cli.main(args(src, cfg, "--print")) == 0
     assert f"graphroot {work / 'containers'}" in capsys.readouterr().out
 
@@ -187,7 +192,8 @@ def test_disk_mode_requires_root_on_matching_disk(tmp_path, monkeypatch):
                            mounts, lsblk("/dev/sda"), lambda: disks)
 
 
-def test_storage_refused_while_containers_run(tmp_path):
+def test_storage_refused_while_containers_run(tmp_path, monkeypatch):
+    monkeypatch.setattr(cli, "same_filesystem", lambda a, b: False)
     calls = []
 
     def runner(cmd):
@@ -200,7 +206,8 @@ def test_storage_refused_while_containers_run(tmp_path):
     assert not (tmp_path / "conf.d").exists()
 
 
-def test_storage_dropin_written(tmp_path):
+def test_storage_dropin_written(tmp_path, monkeypatch):
+    monkeypatch.setattr(cli, "same_filesystem", lambda a, b: False)
     graphroot = tmp_path / "containers"
     dropin = tmp_path / "conf.d/50.conf"
     state = {"root": "/var/lib/containers/storage"}
@@ -322,3 +329,38 @@ def test_unusable_graphroot_refused():
 def test_malformed_workdisk():
     with pytest.raises(cli.MediaError, match="mapping"):
         cli.resolve_target({"spec": {"bootstrap": {"workDisk": None}}}, "/dev/sda1 / xfs rw 0 0\n")
+
+
+def test_storage_already_on_the_work_disk_stays(tmp_path):
+    """The appliance: root's default storage is on the work disk's filesystem, so the storage
+    step changes nothing (no drop-in, no SELinux relabel)."""
+    current = tmp_path / "var-lib-containers-storage"
+    current.mkdir()
+    dropin = tmp_path / "conf.d/50.conf"
+    calls = []
+
+    def runner(cmd):
+        calls.append(cmd)
+        return subprocess.CompletedProcess(cmd, 0, str(current), "")
+
+    graphroot = tmp_path / "work" / "containers"                         # same filesystem as current
+    assert cli.storage_change(graphroot, runner, dropin) is None
+    assert cli.set_storage(graphroot, runner, dropin) is False
+    assert not dropin.exists() and not any(c[0] == "semanage" for c in calls)
+
+
+def test_a_new_graphroot_gets_the_default_graphroots_labels(tmp_path, monkeypatch):
+    monkeypatch.setattr(cli, "same_filesystem", lambda a, b: False)
+    monkeypatch.setattr(cli.shutil, "which", lambda name: "/usr/bin/" + name)
+    monkeypatch.setattr(cli.subprocess, "run", lambda *a, **k: subprocess.CompletedProcess(a, 0))
+    graphroot, dropin = tmp_path / "containers", tmp_path / "conf.d/50.conf"
+    calls = []
+
+    def runner(cmd):
+        calls.append(cmd)
+        if cmd[:2] == ["podman", "info"]:
+            return subprocess.CompletedProcess(cmd, 0, str(graphroot) if dropin.is_file() else "/x", "")
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    assert cli.set_storage(graphroot, runner, dropin) is True
+    assert ["semanage", "fcontext", "-a", "-e", "/var/lib/containers/storage", str(graphroot)] in calls

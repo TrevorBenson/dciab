@@ -2,7 +2,7 @@
 # Build the DCiaB bootstrap appliance: an OCI image, then an unattended installer ISO for
 # the DCiaB USB (default) and, optionally, qcow2/vmdk/vhd for running it as a VM.
 #
-#   sudo images/bootstrap-bootc/build.sh [--type anaconda-iso] [--type qcow2] [--print]
+#   sudo images/bootstrap-bootc/build.sh [--type anaconda-iso] [--type qcow2] [--image-only] [--print]
 #
 # 1. Downloads kind, helm and kubectl, each checked against its sha256 in bundle.lock
 #    (bootstrapAppliance.toolChecksums).
@@ -20,10 +20,12 @@ BUILD="$HERE/build"
 
 types=()
 print_only=false
+image_only=false
 while (( $# )); do
   case "$1" in
     --type) types+=(--type "${2:?--type needs a value: anaconda-iso, qcow2, vmdk, vhd, raw}"); shift 2 ;;
     --print) print_only=true; shift ;;
+    --image-only) image_only=true; shift ;;
     *) echo "build.sh: unknown argument '$1'" >&2; exit 2 ;;
   esac
 done
@@ -119,6 +121,10 @@ fi
 
 echo "== image: $tag"
 "${build_cmd[@]}"
+if [[ "$image_only" == true ]]; then
+  echo "== $tag built (--image-only: no installer ISO or disks)"
+  exit 0
+fi
 echo "== outputs: ${types[*]}"
 "${disk_cmd[@]}"
 find "$OUT" -type f -printf '%p  %s bytes\n'

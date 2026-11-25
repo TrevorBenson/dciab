@@ -1,0 +1,66 @@
+name: lab appliance image
+
+# Builds the bootstrap appliance's bootc image (images/bootstrap-bootc, --image-only: no
+# installer ISO) on the self-hosted lab runner, since it builds on the Rocky Linux 10 bootc base,
+# and checks it: dciab runs from it, it carries no container images and no storage override
+# (the Day 0 images come from the archive's payload, #181), and the default graphroot's SELinux
+# labels in its own policy. The installer ISO and the boot itself stay with handoff task 0005.
+#
+# Like the other lab workflows, this runs only on a push to main or a dispatch of main.
+on:
+  push:
+    branches: [main]
+    paths:
+      - images/bootstrap-bootc/**
+      - bundle.lock
+      - .github/workflows/lab-appliance.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dciab-lab
+  cancel-in-progress: false
+
+jobs:
+  appliance:
+    name: appliance image
+    runs-on: [self-hosted, dciab-lab]
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+      - name: Build the appliance image
+        run: sudo images/bootstrap-bootc/build.sh --image-only
+      - name: dciab runs from the image; no images or storage override ship in it
+        run: |
+          set -euo pipefail
+          tag="localhost/dciab-bootstrap:$(cat VERSION)"
+          sudo podman run --rm --network none "$tag" dciab --help >/dev/null
+          if sudo podman run --rm --network none "$tag" test -e /usr/share/dciab/day0-images; then
+            echo "the image carries Day 0 images; they come from the archive's payload" >&2; exit 1
+          fi
+          if sudo podman run --rm --network none "$tag" test -e /etc/containers/storage.conf.d/50-dciab-media.conf; then
+            echo "the image ships a storage drop-in; root's default storage should stay" >&2; exit 1
+          fi
+          sudo podman image inspect --format '{{.Size}}' "$tag" | awk '{printf "image size: %.0f MiB\n", $1/1048576}'
+      - name: The default graphroot's SELinux labels in the image's policy
+        run: |
+          set -euo pipefail
+          tag="localhost/dciab-bootstrap:$(cat VERSION)"
+          labels="$(sudo podman run --rm --network none "$tag" \
+            matchpathcon /var/lib/containers/storage /var/lib/containers/storage/overlay /var/lib/containers/storage/volumes/x/_data)"
+          echo "$labels"
+          grep -q 'storage[[:space:]].*:container_var_lib_t:' <<<"$labels"
+          grep -q 'overlay[[:space:]].*:container_ro_file_t:' <<<"$labels"
+          grep -q '_data[[:space:]].*:container_file_t:' <<<"$labels"
+      - name: Clean up
+        if: always()
+        run: |
+          tag="localhost/dciab-bootstrap:$(cat VERSION)"
+          sudo podman rmi -f "$tag" || true
+          # Dangling layers from the build; the Rocky bootc base stays cached for the next build.
+          sudo podman image prune -f || true
+          sudo rm -rf images/bootstrap-bootc/build images/bootstrap-bootc/output

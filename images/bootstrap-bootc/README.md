@@ -9,6 +9,8 @@ A Rocky Linux 10 image-mode (bootc) system that runs the whole DCiaB bootstrap. 
 - kind, helm and kubectl at the `bundle.lock` versions
 - dciab, read-only under `/usr/share/dciab` (`dciab` on the PATH)
 
+It carries no container images, which keeps it small. The Day 0 images (CoreDNS, Caddy, DCiaB's chrony, Zot, the proxmox-auto-install-assistant) come from the archive's payload: `dciab media` copies the archive onto the work disk and loads them from there once, each checked against its `bundle.lock` digest ([`docs/MEDIA.md`](../../docs/MEDIA.md)). The appliance's root filesystem is the work disk, so root's default container storage is already where they belong.
+
 ## Install
 
 The default build output is an unattended installer ISO. It boots through Rocky's signed shim, so it works with Secure Boot on (after Ventoy's key is enrolled, when booted from the Ventoy stick). Its kickstart ([`kickstart.ks`](kickstart.ks)):

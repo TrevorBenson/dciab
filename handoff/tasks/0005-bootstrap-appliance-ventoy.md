@@ -25,7 +25,7 @@ An earlier version of this task booted the appliance as a Ventoy vDisk. The part
 - `Ventoy2Disk.sh` on a loop device
 
 **Out of scope:**
-- `dciab media`, `services` and `hypervisors` (not implemented)
+- `dciab services` and `hypervisors` (step 6's storage checks and step 7.4 cover the part of `dciab media` that needs this enforcing host)
 - long-running load or power-loss testing
 - VLAN-tagged bootstrap ports
 
@@ -82,10 +82,13 @@ An earlier version of this task booted the appliance as a Ventoy vDisk. The part
    - `dciab validate /var/lib/dciab/site/dciab.yaml` passes.
    - `mokutil --sb-state` says Secure Boot is enabled.
    - `bootc status` and `getenforce` (Enforcing).
+   - Root's container storage is the default one on the work disk (the appliance's root filesystem): `sudo podman info --format '{{.Store.GraphRoot}}'` prints `/var/lib/containers/storage`, `ls -Zd /var/lib/containers/storage` shows `container_var_lib_t`, no `/etc/containers/storage.conf.d/50-dciab-media.conf` exists, `sudo dciab media <config> --checksums-only --print` says `storage: unchanged`, and `sudo podman images` is empty: the appliance carries no images (they come from the archive's payload when `dciab media` runs).
+   - `sudo ausearch -m avc -ts boot` shows no denials for podman or `/var/lib/dciab`.
 7. **End to end.** On the appliance, as the admin user with sudo:
    1. Start a registry container (`docker.io/library/registry` is fine for a test), then push and pull one small image through it.
    2. `KIND_EXPERIMENTAL_PROVIDER=podman kind create cluster`, then `kubectl get nodes` (Ready) and run one pod to completion. Delete the cluster.
    3. Shut down, detach the stick disk, and boot. It must come back with the same address and working SSH, with `dciab-bootstrap-setup` logging that it used the copy in `/var/lib/dciab/site`.
+   4. **SELinux path of `dciab media`'s storage step** (#165): the appliance's own storage never moves (its root filesystem is the work disk), so give the step another filesystem, big enough for what media copies there. Reattach the stick, make a copy of the config with `spec.bootstrap.workDisk` set to `path: /mnt/dciab-alt-work`, and run `sudo dciab media <copy> --print`. Size a loop image from it: the archive size on its `source:` line, plus the hypervisor ISO the `isos` step copies (about 1.6 GiB for Proxmox VE), plus 4 GiB for the copy step's margin (5% of the archive, at least 2 GiB) and the Day 0 images the `preload` step loads: `sudo truncate -s <size> /var/tmp/dciab-alt.img && sudo mkfs.xfs -q /var/tmp/dciab-alt.img && sudo mkdir -p /mnt/dciab-alt-work && sudo mount -o loop /var/tmp/dciab-alt.img /mnt/dciab-alt-work`. Then run `sudo dciab media <copy> --checksums-only --until preload`. That moves root's storage, which runs the `semanage fcontext` / `restorecon` branch, and loads the Day 0 images from the payload into the moved storage (the appliance carries none). Passing: `ls -Zd /mnt/dciab-alt-work/containers` shows `container_var_lib_t`; `sudo podman run --rm --network none <a Day 0 image from the preload output> true` works with no pull; and `sudo ausearch -m avc -ts recent` shows no new denials. Then undo it: `sudo rm /etc/containers/storage.conf.d/50-dciab-media.conf`, `sudo semanage fcontext -d /mnt/dciab-alt-work/containers`, check `sudo podman info --format '{{.Store.GraphRoot}}'` names `/var/lib/containers/storage` again, then `sudo umount /mnt/dciab-alt-work` and remove `/var/tmp/dciab-alt.img`.
    - Record the time for each part and any errors. This is a pass/fail check, not a measurement.
 8. **Safety check: an ambiguous disk choice.**
    - Attach the stick to a fresh VM with **two** empty disks that both have `serial=dciab-work`, boot the appliance installer, and confirm it stops before partitioning, listing the disks.
@@ -111,7 +114,7 @@ An earlier version of this task booted the appliance as a Ventoy vDisk. The part
 Use the format in `handoff/README.md`. It must include:
 - every edit under the `may_change` paths, with the reason
 - the boot and install sequence from step 5.4, with timings
-- the end-to-end and safety results (steps 7 and 8)
+- the end-to-end and safety results (steps 7 and 8), including the storage labels and AVC checks (steps 6 and 7.4)
 - whether the appliance installer is ready to be the documented way to set up server zero
 
 Record durable facts in `LAB.md`, such as how to create a Secure Boot OVMF VM, and a disk with a serial, through the API here.

@@ -36,6 +36,7 @@ MAC_RE = re.compile(r"^[0-9a-fA-F]{2}(:[0-9a-fA-F]{2}){5}$")
 CONNECTION = "dciab-node"
 SUDOERS = "/etc/sudoers.d/dciab-admins"
 ROSTER = "/var/lib/dciab/bootstrap-admins"
+SYS_NET = "/sys/class/net"
 NETWORK_PATHS = ("spec.bootstrap", "spec.network", "spec.time", "spec.identity")
 
 
@@ -164,10 +165,14 @@ def _run(*cmd: str) -> None:
 
 
 def _nic_by_mac(mac: str) -> str:
-    for name in sorted(os.listdir("/sys/class/net")):
+    try:
+        names = sorted(os.listdir(SYS_NET))
+    except OSError:
+        names = []
+    for name in names:
         try:
-            with open(f"/sys/class/net/{name}/address") as fh:
-                if fh.read().strip().lower() == mac:
+            with open(os.path.join(SYS_NET, name, "address")) as fh:
+                if fh.read().strip().lower() == mac.lower():
                     return name
         except OSError:
             continue
@@ -223,6 +228,15 @@ def apply_admins(admins: List[Dict[str, object]]) -> None:
         fh.write("".join(u + "\n" for u in wanted))
 
 
+def _active_connection(device: str) -> Optional[str]:
+    """The connection active on device (nmcli's GENERAL.CONNECTION), or None. `-e no`: terse
+    output escapes ':' and '\\' otherwise, and the escaped name matches no profile."""
+    out = subprocess.run(["nmcli", "-e", "no", "-g", "GENERAL.CONNECTION", "device", "show", device],
+                         check=False, capture_output=True, text=True)
+    name = (getattr(out, "stdout", "") or "").strip() if out.returncode == 0 else ""
+    return name if name and name != "--" else None
+
+
 def apply_network(p: Dict[str, object]) -> None:
     match = p["match"]
     nic = match["name"] if "name" in match else _nic_by_mac(match["mac"])  # type: ignore[index]
@@ -241,12 +255,15 @@ def apply_network(p: Dict[str, object]) -> None:
              "ifname", f"vlan{p['vlan']}", "vlan.parent", nic, "vlan.id", str(p["vlan"]),
              "connection.autoconnect", "yes", *ip4)
     # Bring the new profile up before removing the old one, so a rejected change keeps
-    # the working connection.
+    # the working connection. That's the connection active on the device now: CONNECTION
+    # after an earlier run, the installer's own profile at the first boot.
+    working = _active_connection(nic if p["vlan"] is None else f"vlan{p['vlan']}") or \
+        _active_connection(nic) or CONNECTION
     try:
         _run("nmcli", "connection", "up", staged)
     except subprocess.CalledProcessError:
         subprocess.run(["nmcli", "connection", "delete", staged], check=False)
-        subprocess.run(["nmcli", "connection", "up", CONNECTION], check=False)
+        subprocess.run(["nmcli", "connection", "up", working], check=False)
         raise
     subprocess.run(["nmcli", "connection", "delete", CONNECTION], check=False,
                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
