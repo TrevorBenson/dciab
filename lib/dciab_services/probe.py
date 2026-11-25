@@ -42,10 +42,13 @@ def _qname(name: str) -> bytes:
 
 
 def _read_name(msg: bytes, off: int) -> Tuple[str, int]:
-    labels, end = [], None
+    labels, end, jumps = [], None, 0
     while True:
         n = msg[off]
         if n & 0xC0 == 0xC0:
+            jumps += 1
+            if jumps > 32:   # a pointer loop in a malformed answer
+                raise IndexError("DNS name compression loop")
             if end is None:
                 end = off + 2
             off = ((n & 0x3F) << 8) | msg[off + 1]
@@ -80,28 +83,33 @@ def parse_answers(msg: bytes, qtype: int) -> List[str]:
     return out
 
 
-def dns(server: str, name: str, qtype: str, timeout: float = 2.0) -> Optional[List[str]]:
-    """Answers for name from server over UDP, or None when the server doesn't answer."""
+def dns(server: str, name: str, qtype: str, timeout: float = 2.0, port: int = 53) -> Optional[List[str]]:
+    """Answers for name from server over UDP, or None when the server doesn't answer or its
+    answer can't be read. port is for tests."""
     qid = struct.unpack("!H", os.urandom(2))[0]
     query = struct.pack("!6H", qid, 0x0100, 1, 0, 0, 0) + _qname(name) + struct.pack("!HH", TYPES[qtype], 1)
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
         s.settimeout(timeout)
         try:
-            s.sendto(query, (server, 53))
+            s.sendto(query, (server, port))
             msg, _ = s.recvfrom(4096)
         except OSError:
             return None
     if len(msg) < 12 or struct.unpack("!H", msg[:2])[0] != qid:
         return None
-    return parse_answers(msg, TYPES[qtype])
+    try:
+        return parse_answers(msg, TYPES[qtype])
+    except (IndexError, struct.error, UnicodeDecodeError, OSError):
+        return None   # a truncated or malformed answer is no answer
 
 
-def ntp(server: str, timeout: float = 2.0) -> Optional[int]:
-    """The stratum a server answers with (16 = unsynchronised), or None without an answer."""
+def ntp(server: str, timeout: float = 2.0, port: int = 123) -> Optional[int]:
+    """The stratum a server answers with (16 = unsynchronised), or None without an answer.
+    port is for tests."""
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
         s.settimeout(timeout)
         try:
-            s.sendto(b"\x23" + b"\0" * 47, (server, 123))  # LI 0, version 4, mode 3 (client)
+            s.sendto(b"\x23" + b"\0" * 47, (server, port))  # LI 0, version 4, mode 3 (client)
             msg, _ = s.recvfrom(512)
         except OSError:
             return None

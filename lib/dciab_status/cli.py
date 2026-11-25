@@ -59,15 +59,58 @@ def container_state(name: str, runner: Runner, kind: str = "container") -> Optio
     return r.stdout.strip().lower() if r.returncode == 0 else None
 
 
-def check_services(site: dict, runner: Runner = run) -> Optional[Dict[str, str]]:
-    if not site["spec"].get("hypervisors"):
-        return None   # this site starts at seed
+def dns_answers(site: dict, resolve: Callable[..., Optional[List[str]]]) -> List[str]:
+    """The DNS service IPs that fail the services step's own readiness checks (#163): the
+    bootstrap name forward and back, and registry.<domain> (the name every node's registry
+    mirror uses), all to the bootstrap address. One entry per failing IP, 'ip: what failed'."""
+    spec = site["spec"]
+    domain = spec["network"]["domain"].rstrip(".")
+    addr = spec["bootstrap"]["address"]
+    from dciab_services import probe
+    checks = [(f"bootstrap.{domain}", f"bootstrap.{domain}", "A", [addr]),
+              (f"{addr} (reverse)", probe.reverse_name(addr), "PTR", [f"bootstrap.{domain}"]),
+              (f"registry.{domain}", f"registry.{domain}", "A", [addr])]
+    bad = []
+    for ip in spec["network"]["dnsServiceIPs"]:
+        got = [(label, resolve(ip, name, qtype), want) for label, name, qtype, want in checks]
+        if all(g is None for _, g, _ in got):
+            bad.append(f"{ip}: no answer")
+            continue
+        wrong = [f"{label} gives {'no answer' if g is None else (', '.join(g) or 'nothing')}"
+                 for label, g, want in got if g != want]
+        if wrong:
+            bad.append(f"{ip}: " + "; ".join(wrong))
+    return bad
+
+
+def _resolve(ip: str, name: str, qtype: str = "A") -> Optional[List[str]]:
+    from dciab_services import probe
+    return probe.dns(ip, name, qtype)
+
+
+def check_services(site: dict, runner: Runner = run,
+                   resolve: Callable[[str, str], Optional[List[str]]] = _resolve) -> Optional[Dict[str, str]]:
+    """The Day 0 services pod. Sites with spec.hypervisors run all of it (check 'services');
+    the others run it DNS-only from dciab seed (check 'dns'), answering registry.<domain>.
+    Either way the DNS answer is checked from the network's side, which needs no root."""
+    spec = site["spec"]
+    full = bool(spec.get("hypervisors"))
+    if not full and not spec.get("network", {}).get("dnsServiceIPs"):
+        return None
+    name = "services" if full else "dns"
+    made_by = "dciab services" if full else "dciab seed"
+    bad = dns_answers(site, resolve)
+    dns_detail = ("DNS answers on every DNS service IP (bootstrap name both ways, registry name)"
+                  if not bad else "DNS fails on " + " | ".join(bad))
     if not is_root() or not shutil.which("podman"):
-        return result("services", "unknown", "needs root and podman")
+        return result(name, "ok" if not bad else "down",
+                      f"{dns_detail} (pod state needs root and podman)")
     state = container_state(SERVICES_POD, runner, kind="pod")
     if state is None:
-        return result("services", "missing", f"no pod {SERVICES_POD} (dciab services)")
-    return result("services", "ok" if state == "running" else "down", f"pod {SERVICES_POD} is {state}")
+        # Missing either way: DNS that still answers comes from something else.
+        return result(name, "missing", f"no pod {SERVICES_POD} ({made_by}); {dns_detail}")
+    ok = state == "running" and not bad
+    return result(name, "ok" if ok else "down", f"pod {SERVICES_POD} is {state}; {dns_detail}")
 
 
 def registry_answers(address: str, ca: Path, timeout: float = 5.0) -> Optional[str]:

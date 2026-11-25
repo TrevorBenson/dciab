@@ -3,6 +3,7 @@
 # servers (docs/adr/0001-day0-hypervisors-and-services.md); DNS only for the others.
 #
 #   dciab services <config> [--state DIR] [--isos DIR] [--payload DIR] [--until STEP] [--print]
+#   dciab services <config> --down [--state DIR] [--forget '<record line>']
 #
 # CoreDNS, chrony (only with spec.time.servedBy: dciab) and Caddy run as one podman pod with host
 # networking. CoreDNS and chrony answer only on network.dnsServiceIPs, Caddy only on
@@ -10,13 +11,21 @@
 # CoreDNS alone, so registry.<network.domain> resolves to the seed registry during bootstrap;
 # dciab seed runs this mode in its dns step. Steps, in order; each is safe to re-run:
 #   preflight   root, tools, the config is valid
-#   render      Corefile, zones, chrony.conf, Caddyfile and pod.yaml -> <state>/services (mode 600)
-#   address     network.dnsServiceIPs added to spec.bootstrap.interface (runtime, like ip addr add)
-#   firewall    runtime-only firewalld ports, when firewalld runs
+#   render      Corefile, zones, chrony.conf, Caddyfile and pod.yaml, staged under
+#               <state>/services/.staged (mode 600); the live files don't change yet
+#   address     network.dnsServiceIPs added to spec.bootstrap.interface
+#   firewall    firewalld ports for the pod, runtime and permanent, when firewalld runs; each
+#               scope is recorded only when this step opened it
 #   images      the pinned images present: loaded from the payload's OCI layout when there is
 #               one, else pulled. DCiaB's chrony image is one of them (day0.images.chrony,
 #               built and published by CI); it is never built here
-#   pod         podman kube play --replace, only when the rendered files changed or the pod isn't running
+#   pod         the staged files move into place and the units are written together, then
+#               recorded addresses and ports this config no longer wants are removed (a changed
+#               config); the pod runs as a systemd service (Quadlet dciab-services.kube, after
+#               dciab-services-addresses.service), so it and its addresses come back after a
+#               reboot; restarted only when something changed or it isn't running. A run
+#               stopped before this step (--until, a failure) leaves the previous config's
+#               files, units and addresses, which still match each other after a reboot
 #   ready       DNS (forward, reverse, registry.<domain>) and NTP on each service IP, HTTP on
 #               the bootstrap address
 #
@@ -28,8 +37,9 @@
 # DCIAB_CHRONY_IMAGE names a chrony image already in local storage instead of the pinned one
 # (building and testing DCiaB); the step warns when it is set.
 # What it adds to the host (addresses, firewalld ports, the pod) is listed in
-# <state>/services/created. Teardown: dciab seed --remove for the DNS-only services seed ran;
-# otherwise podman kube down <state>/services/pod.yaml, and undo the listed addresses and ports.
+# <state>/services/created (dciab_services.lifecycle). --down undoes exactly that list and
+# nothing else, whatever the config says now (dciab seed --remove does the same for the
+# DNS-only services seed ran).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -38,7 +48,7 @@ STEPS=(preflight render address firewall images pod ready)
 die() { echo "dciab services: $*" >&2; exit 1; }
 usage() { sed -n '5p' "${BASH_SOURCE[0]}" | sed 's/^# *//' >&2; exit 2; }
 
-config="" state="" isos="" until="" print=0 payload="${DCIAB_PAYLOAD:-}"
+config="" state="" isos="" until="" print=0 down=0 forget="" payload="${DCIAB_PAYLOAD:-}"
 while (( $# )); do
   case "$1" in
     --state) state="${2:?}"; shift 2 ;;
@@ -46,12 +56,15 @@ while (( $# )); do
     --isos) isos="${2:?}"; shift 2 ;;
     --until) until="${2:?}"; shift 2 ;;
     --print) print=1; shift ;;
+    --down) down=1; shift ;;
+    --forget) forget="${2:?}"; shift 2 ;;
     -*) echo "dciab services: unknown option '$1'" >&2; usage ;;
     *) [[ -z "$config" ]] || usage; config="$1"; shift ;;
   esac
 done
 [[ -n "$config" ]] || usage
 [[ -f "$config" ]] || die "no such config: $config"
+[[ -z "$forget" ]] || (( down )) || die "--forget goes with --down"
 if [[ -n "$until" ]] && ! printf '%s\n' "${STEPS[@]}" | grep -qx "$until"; then
   die "--until must be one of: ${STEPS[*]}"
 fi
@@ -61,6 +74,25 @@ if [[ -z "$state" ]]; then
   state="$(PYTHONPATH="$ROOT/lib" python3 -m dciab_state "${migrate[@]}" "$config")"
 fi
 state="$(realpath -m "$state")"
+export PYTHONPATH="$ROOT/lib${PYTHONPATH:+:$PYTHONPATH}"
+
+if (( down )); then
+  # Teardown needs no valid config: it undoes what <state>/services/created lists.
+  (( print )) && die "--down and --print don't go together"
+  [[ $EUID -eq 0 ]] || die "must run as root (try: sudo dciab services ... --down)"
+  exec 9>>/run/dciab-services.lock
+  flock -n 9 || die "another dciab services is running on this host"
+  echo "== services: down"
+  # The helper checks that fd 9 is the lock and holds it (lifecycle.locked); its own children
+  # (podman, systemctl) don't inherit it: Python closes fds for subprocesses.
+  if [[ -n "$forget" ]]; then
+    # Drops one listed line without touching the host: for a change the operator knows is gone.
+    DCIAB_SERVICES_LOCKED=1 python3 -m dciab_services.lifecycle down "$state/services" --forget "$forget"
+    exit $?
+  fi
+  DCIAB_SERVICES_LOCKED=1 python3 -m dciab_services.lifecycle down "$state/services"
+  exit $?
+fi
 if [[ -z "$payload" && -f "$ROOT/payload/images.yaml" ]]; then
   payload="$ROOT/payload"
 fi
@@ -69,7 +101,6 @@ if [[ -n "$payload" ]]; then
   payload="$(cd "$payload" && pwd)"
 fi
 
-export PYTHONPATH="$ROOT/lib${PYTHONPATH:+:$PYTHONPATH}"
 helper() {
   local args=(--root "$ROOT" --state "$state")
   [[ -n "$isos" ]] && args+=(--isos "$isos")
@@ -86,7 +117,7 @@ finish_if() { if [[ "$until" == "$1" ]]; then step_done; echo "dciab services: s
 
 # Read the plan: shell assignments from the helper, which validates the config.
 MODE="" INTERFACE="" PREFIX="" SERVICE_IPS="" BOOTSTRAP_ADDRESS="" NTP="" IMAGES=""
-IMAGE_LAYOUTS="" CHRONY_IMAGE="" CONF_DIR="" ISOS_DIR="" HOST_ISOS_DIR="" POD="" FINGERPRINT=""
+IMAGE_LAYOUTS="" CHRONY_IMAGE="" CONF_DIR="" ISOS_DIR="" HOST_ISOS_DIR="" POD="" PORTS="" FINGERPRINT=""
 plan="$(helper env)" || exit $?
 eval "$plan"
 dns_only() { [[ "$MODE" == dns ]]; }
@@ -109,14 +140,45 @@ nic_name() {   # spec.bootstrap.interface is a NIC name or its MAC
   [[ -e "/sys/class/net/$want" ]] && echo "$want"
 }
 has_addr() { ip -o -4 addr show dev "$1" | awk '{print $4}' | cut -d/ -f1 | grep -qxF "$2"; }
+# The ip/prefix entries on a NIC that carry this IP (any prefix), one per line.
+cidrs_of() { ip -o -4 addr show dev "$1" | awk '{print $4}' | grep -E "^${2//./\\.}/" || true; }
+recorded() { grep -qxF "$*" "$CONF_DIR/created" 2>/dev/null; }
+# Adds the DNS service IPs to the NIC ($1). An IP counts as there only with the wanted prefix:
+# the record and prune compare ip/prefix.
+add_service_ips() {
+  local nic="$1" ip want have others c
+  for ip in $SERVICE_IPS; do
+    want="$ip/$PREFIX"
+    have="$(cidrs_of "$nic" "$ip")"
+    if grep -qxF "$want" <<<"$have"; then
+      echo "$want already on $nic"
+      continue
+    fi
+    others=""
+    for c in $have; do recorded address "$nic" "$c" || others+=" $c"; done
+    if [[ -n "$others" ]]; then
+      # Someone else's address with another prefix: never touched; the pod still binds the IP.
+      echo "dciab services: $ip is on $nic as${others}, which dciab services didn't add; leaving it (the config wants $want)" >&2
+      continue
+    fi
+    record address "$nic" "$want"   # before the change: a crash can't leave it unlisted
+    ip addr add "$want" dev "$nic"
+    echo "added $want to $nic${have:+ (the old prefix, ${have//$'\n'/ }, goes in the pod step)}"
+  done
+}
 pod_running() {   # every container of the pod is running
   local states
   states="$(podman pod inspect "$POD" --format '{{range .Containers}}{{.State}} {{end}}' 2>/dev/null)" || return 1
   [[ -n "$states" ]] && ! grep -qv '^running$' < <(tr ' ' '\n' <<<"$states" | sed '/^$/d')
 }
 applied() { [[ -f "$CONF_DIR/applied" && "$(cat "$CONF_DIR/applied")" == "$FINGERPRINT" ]]; }
+# systemd with Podman's Quadlet generator: the pod and the addresses come back after a reboot.
+persistent() {
+  [[ -d /run/systemd/system ]] && command -v systemctl >/dev/null \
+    && { [[ -x /usr/libexec/podman/quadlet ]] || [[ -x /usr/lib/podman/quadlet ]]; }
+}
 # What this step added to the host, one line each, so it can be undone (dciab seed --remove):
-# "address <nic> <ip>/<prefix>", "port <zone> <port>", "pod <name>".
+# "address <nic> <ip>/<prefix>", "port <zone> <port> runtime|permanent", "pod <name>".
 record() {
   local f="$CONF_DIR/created"
   if ! grep -qxF "$*" "$f" 2>/dev/null; then echo "$*" >> "$f"; chmod 600 "$f"; fi
@@ -153,6 +215,7 @@ mkdir -p "$state" && chmod 700 "$state"
 # One run at a time per host, whatever the state folder: there is one pod.
 exec 9>>/run/dciab-services.lock
 flock -n 9 || die "another dciab services is running on this host"
+export DCIAB_SERVICES_LOCKED=1   # the helper's record changes run under this lock (fd 9; it checks)
 # Commands that leave processes behind (podman's conmon) must not inherit the lock: "9>&-".
 finish_if preflight
 
@@ -169,29 +232,34 @@ if command -v selinuxenabled >/dev/null && selinuxenabled; then
 fi
 finish_if render
 
-step address
-for ip in $SERVICE_IPS; do
-  if has_addr "$nic" "$ip"; then
-    echo "$ip already on $nic"
-  else
-    record address "$nic" "$ip/$PREFIX"   # before the change: a crash can't leave it unlisted
-    ip addr add "$ip/$PREFIX" dev "$nic"
-    echo "added $ip/$PREFIX to $nic"
+firewalld_zone() {   # the bootstrap NIC's zone, or nothing when firewalld isn't running
+  if command -v firewall-cmd >/dev/null && firewall-cmd --state >/dev/null 2>&1; then
+    firewall-cmd --get-zone-of-interface="$1" 2>/dev/null || firewall-cmd --get-default-zone
   fi
-done
+}
+zone="$(firewalld_zone "$nic")"
+
+step address
+# What the old config added and this one doesn't want goes in the pod step, with the old files.
+add_service_ips "$nic"
 finish_if address
 
 step firewall
-if command -v firewall-cmd >/dev/null && firewall-cmd --state >/dev/null 2>&1; then
-  zone="$(firewall-cmd --get-zone-of-interface="$nic" 2>/dev/null || firewall-cmd --get-default-zone)"
-  ports=(53/udp 53/tcp)
-  dns_only || ports+=(80/tcp)
-  [[ "$NTP" == 1 ]] && ports+=(123/udp)
+if [[ -n "$zone" ]]; then
+  read -ra ports <<<"$PORTS"
   for p in "${ports[@]}"; do
+    # Runtime for now, permanent for after a reboot. Each scope is recorded, before the change,
+    # only when this step opens it: a rule that was there already (the operator's) is left alone.
     if ! firewall-cmd --zone="$zone" --query-port="$p" >/dev/null; then
-      record port "$zone" "$p"
+      record port "$zone" "$p" runtime
       firewall-cmd --zone="$zone" --add-port="$p" >/dev/null || die "firewalld refused to open $p in zone $zone"
-      echo "opened $p in zone $zone (runtime only)"
+      echo "opened $p in zone $zone (runtime)"
+    fi
+    if ! firewall-cmd --permanent --zone="$zone" --query-port="$p" >/dev/null; then
+      record port "$zone" "$p" permanent
+      firewall-cmd --permanent --zone="$zone" --add-port="$p" >/dev/null \
+        || die "firewalld refused to keep $p open in zone $zone"
+      echo "opened $p in zone $zone (permanent)"
     fi
   done
 else
@@ -224,13 +292,40 @@ fi
 finish_if images
 
 step pod
-if applied && pod_running; then
-  echo "pod $POD already runs this config"
+mark_applied() { echo "$FINGERPRINT" > "$CONF_DIR/applied"; chmod 600 "$CONF_DIR/applied"; }
+apply=(--nic "$nic" --zone "$zone")
+if persistent; then
+  graphroot="$(podman info --format '{{.Store.GraphRoot}}' 2>/dev/null || true)"
+  apply+=(--units ${graphroot:+--graphroot "$graphroot"})
+fi
+# The staged files, the units and the pruning of what the old config added, together.
+out="$(helper apply "${apply[@]}")" || { [[ -n "$out" ]] && echo "$out"; exit 1; }
+[[ -n "$out" ]] && echo "$out"
+# Only these lines are changes (notes go to stderr); anything else must not restart the pod.
+changed="$(grep -E '^(wrote|removed|stopped|no longer wanted|re-added|closed) ' <<<"$out" || true)"
+if persistent; then
+  # systemd brings the addresses and the pod back after a reboot (Quadlet: dciab-services.kube).
+  grep -q '^wrote /' <<<"$changed" && systemctl daemon-reload
+  systemctl enable --quiet dciab-services-addresses.service
+  systemctl start dciab-services-addresses.service 9>&-
+  if [[ -z "$changed" ]] && applied && pod_running && systemctl is-active --quiet dciab-services.service; then
+    echo "pod $POD already runs this config"
+  else
+    record pod "$POD"
+    systemctl restart dciab-services.service 9>&- \
+      || die "dciab-services.service didn't start (journalctl -u dciab-services.service)"
+    mark_applied
+    echo "started pod $POD (dciab-services.service; it comes back after a reboot)"
+  fi
 else
-  record pod "$POD"
-  podman kube play --replace "$CONF_DIR/pod.yaml" 9>&-
-  echo "$FINGERPRINT" > "$CONF_DIR/applied"
-  chmod 600 "$CONF_DIR/applied"
+  echo "dciab services: warning: no systemd with Quadlet here; the pod and its addresses won't come back after a reboot" >&2
+  if [[ -z "$changed" ]] && applied && pod_running; then
+    echo "pod $POD already runs this config"
+  else
+    record pod "$POD"
+    podman kube play --replace "$CONF_DIR/pod.yaml" 9>&-
+    mark_applied
+  fi
 fi
 finish_if pod
 

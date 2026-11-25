@@ -13,6 +13,7 @@ People who plan a site, write its config and run the steps.
 | [COMPONENTS.md](COMPONENTS.md) | What a site runs, where each piece runs, and what each consumer wires to |
 | [CONFIG.md](CONFIG.md) | Every key of the site config, generated from the schema |
 | [MEDIA.md](MEDIA.md) | `dciab media`: the archive onto the bootstrap host's work disk |
+| [SERVICES.md](SERVICES.md) | `dciab services`: Day 0 DNS, NTP and HTTP on the bootstrap host, and taking them away |
 | [HYPERVISORS.md](HYPERVISORS.md) | `dciab hypervisors`: Proxmox VE onto bare servers over Redfish |
 | [PROXMOX.md](PROXMOX.md) | The Proxmox VE API tokens DCiaB needs, and their privileges |
 | [SEED.md](SEED.md) | `dciab seed`: seed DNS, the seed registry, the platform CA and the bootstrap cluster |

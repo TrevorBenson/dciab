@@ -134,12 +134,45 @@ def corefile(doc: dict) -> str:
         except ValueError:
             raise ServicesError(f"network.upstreamResolvers: '{u}' is not an IPv4 address") from None
     if upstream:
-        blocks.append(f". {{\n    bind {bind}\n    forward . {' '.join(upstream)}\n    cache {TTL}\n"
+        # Forwarding only for the site's own networks: anything else is refused, so the DNS
+        # service IPs are never an open resolver. No cache here: CoreDNS runs its cache before
+        # acl, so a name an allowed client looked up would be answered to anyone.
+        allow = " ".join(client_networks(doc))
+        blocks.append(f". {{\n    bind {bind}\n    acl {{\n        allow net {allow}\n        block\n    }}\n"
+                      f"    forward . {' '.join(upstream)}\n"
                       f"    errors\n    log\n}}\n")
     head = "# Rendered by dciab services from dciab.yaml. Changes are overwritten.\n"
     if not upstream:
         head += "# network.upstreamResolvers is empty: names outside these zones are refused.\n"
     return head + "\n".join(blocks)
+
+
+def client_networks(doc: dict) -> List[str]:
+    """The networks whose names the seed DNS forwards upstream: the node network (nodes,
+    hypervisors, the bootstrap host), the storage networks, each cluster's pod network (pods
+    resolving through their node) and loopback (checks on the bootstrap host itself)."""
+    spec = doc["spec"]
+    nets = [spec["network"]["nodes"]["cidr"]]
+    nets += [n["cidr"] for n in spec["network"].get("storage", []) if n.get("cidr")]
+    nets += [c["podCIDR"] for c in (spec.get("clusters") or {}).values()
+             if isinstance(c, dict) and c.get("podCIDR")]
+    nets.append("127.0.0.0/8")
+    out: List[str] = []
+    for n in nets:
+        n = str(ipaddress.ip_network(n, strict=False))
+        if n not in out:
+            out.append(n)
+    return out
+
+
+def ports(doc: dict) -> List[str]:
+    """The firewalld ports the pod needs on the bootstrap interface's zone."""
+    out = ["53/udp", "53/tcp"]
+    if not dns_only(doc):
+        out.append("80/tcp")
+    if chrony_confs(doc):
+        out.append("123/udp")
+    return out
 
 
 def chrony_confs(doc: dict) -> Dict[str, str]:

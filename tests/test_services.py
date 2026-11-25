@@ -465,5 +465,5 @@ def test_services_records_what_it_adds_to_the_host(tmp_path):
     created = tmp_path / "created"
     assert created.read_text() == "address eth0 10.0.0.53/24\nport public 53/udp\n"
     assert created.stat().st_mode & 0o777 == 0o600
-    for call in ('record address "$nic" "$ip/$PREFIX"', 'record port "$zone" "$p"', 'record pod "$POD"'):
+    for call in ('record address "$nic" "$want"', 'record port "$zone" "$p"', 'record pod "$POD"'):
         assert call in step
