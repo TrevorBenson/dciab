@@ -59,23 +59,33 @@ def container_state(name: str, runner: Runner, kind: str = "container") -> Optio
     return r.stdout.strip().lower() if r.returncode == 0 else None
 
 
-def dns_answers(site: dict, resolve: Callable[[str, str], Optional[List[str]]]) -> List[str]:
-    """The DNS service IPs that don't resolve registry.<domain> to the bootstrap address (the
-    name every node's registry mirror uses), as 'ip: what it answered'."""
+def dns_answers(site: dict, resolve: Callable[..., Optional[List[str]]]) -> List[str]:
+    """The DNS service IPs that fail the services step's own readiness checks (#163): the
+    bootstrap name forward and back, and registry.<domain> (the name every node's registry
+    mirror uses), all to the bootstrap address. One entry per failing IP, 'ip: what failed'."""
     spec = site["spec"]
-    name = f"registry.{spec['network']['domain'].rstrip('.')}"
-    want = [spec["bootstrap"]["address"]]
+    domain = spec["network"]["domain"].rstrip(".")
+    addr = spec["bootstrap"]["address"]
+    from dciab_services import probe
+    checks = [(f"bootstrap.{domain}", f"bootstrap.{domain}", "A", [addr]),
+              (f"{addr} (reverse)", probe.reverse_name(addr), "PTR", [f"bootstrap.{domain}"]),
+              (f"registry.{domain}", f"registry.{domain}", "A", [addr])]
     bad = []
     for ip in spec["network"]["dnsServiceIPs"]:
-        got = resolve(ip, name)
-        if got != want:
-            bad.append(f"{ip}: {'no answer' if got is None else (', '.join(got) or 'no address')}")
+        got = [(label, resolve(ip, name, qtype), want) for label, name, qtype, want in checks]
+        if all(g is None for _, g, _ in got):
+            bad.append(f"{ip}: no answer")
+            continue
+        wrong = [f"{label} gives {'no answer' if g is None else (', '.join(g) or 'nothing')}"
+                 for label, g, want in got if g != want]
+        if wrong:
+            bad.append(f"{ip}: " + "; ".join(wrong))
     return bad
 
 
-def _resolve(ip: str, name: str) -> Optional[List[str]]:
+def _resolve(ip: str, name: str, qtype: str = "A") -> Optional[List[str]]:
     from dciab_services import probe
-    return probe.dns(ip, name, "A")
+    return probe.dns(ip, name, qtype)
 
 
 def check_services(site: dict, runner: Runner = run,
@@ -90,8 +100,8 @@ def check_services(site: dict, runner: Runner = run,
     name = "services" if full else "dns"
     made_by = "dciab services" if full else "dciab seed"
     bad = dns_answers(site, resolve)
-    dns_detail = ("registry name resolves on every DNS service IP" if not bad
-                  else "registry name doesn't resolve on " + "; ".join(bad))
+    dns_detail = ("DNS answers on every DNS service IP (bootstrap name both ways, registry name)"
+                  if not bad else "DNS fails on " + " | ".join(bad))
     if not is_root() or not shutil.which("podman"):
         return result(name, "ok" if not bad else "down",
                       f"{dns_detail} (pod state needs root and podman)")

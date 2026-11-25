@@ -32,9 +32,19 @@ def test_nothing_yet(tmp_path, monkeypatch):
 NET = {"domain": "dc3.example.com", "dnsServiceIPs": ["10.0.0.53", "10.0.0.54"]}
 
 
-def answers(addr):
-    """A resolver that answers registry.dc3.example.com with addr on every IP (None: no answer)."""
-    return lambda ip, name: (None if addr is None else [addr]) if name == "registry.dc3.example.com" else []
+def answers(addr, registry=None):
+    """A resolver for the services readiness checks on every IP: bootstrap.dc3.example.com and
+    registry.dc3.example.com give addr (registry: its own answer), the reverse name gives
+    bootstrap.dc3.example.com. None: no answer at all."""
+    def resolve(ip, name, qtype="A"):
+        if addr is None:
+            return None
+        if qtype == "PTR":
+            return ["bootstrap.dc3.example.com"]
+        if name == "registry.dc3.example.com":
+            return [registry or addr]
+        return [addr] if name == "bootstrap.dc3.example.com" else []
+    return resolve
 
 
 def test_services_with_hypervisors(monkeypatch):
@@ -60,12 +70,25 @@ def test_dns_only_pod_reported_as_dns(monkeypatch):
     c = cli.check_services(site, running, resolve=answers("10.0.0.5"))
     assert (c["check"], c["status"]) == ("dns", "ok")
     assert "dciab seed" in cli.check_services(site, fake([]), resolve=answers(None))["detail"]
-    c = cli.check_services(site, running, resolve=answers("10.9.9.9"))
-    assert c["status"] == "down" and "10.0.0.54: 10.9.9.9" in c["detail"]
+    c = cli.check_services(site, running, resolve=answers("10.0.0.5", registry="10.9.9.9"))
+    assert c["status"] == "down" and "10.0.0.54: registry.dc3.example.com gives 10.9.9.9" in c["detail"]
     # a pod that's gone is missing, even while something else still answers
     assert cli.check_services(site, fake([]), resolve=answers("10.0.0.5"))["status"] == "missing"
     assert cli.check_services(site, fake([("pod inspect", 0, "Exited\n")]),
                               resolve=answers("10.0.0.5"))["status"] == "down"
+
+
+def test_status_checks_forward_and_reverse_too(monkeypatch):
+    """The same three checks as the services ready step (#163): a wrong reverse answer is down."""
+    monkeypatch.setattr(cli, "is_root", lambda: True)
+    monkeypatch.setattr(cli.shutil, "which", lambda t: "/usr/bin/" + t)
+    site = {"spec": {"bootstrap": {"address": "10.0.0.5"}, "network": NET}}
+    good = answers("10.0.0.5")
+
+    def no_ptr(ip, name, qtype="A"):
+        return [] if qtype == "PTR" else good(ip, name, qtype)
+    c = cli.check_services(site, fake([("pod inspect", 0, "Running\n")]), resolve=no_ptr)
+    assert c["status"] == "down" and "10.0.0.5 (reverse) gives nothing" in c["detail"]
 
 
 def test_dns_only_without_root_still_probes(monkeypatch):

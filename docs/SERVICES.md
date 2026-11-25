@@ -52,4 +52,4 @@ The seed registry comes back the same way (`dciab seed`, [SEED.md](SEED.md)). Th
 
 ## Status
 
-`dciab status` reports the pod (`services`, or `dns` for the DNS-only pod seed runs) and checks that `registry.<domain>` resolves on each DNS service IP, from the network's side. No pod is `missing`, even when something else still answers on the addresses.
+`dciab status` reports the pod (`services`, or `dns` for the DNS-only pod seed runs) and runs the services step's DNS readiness checks on each DNS service IP, from the network's side: `bootstrap.<domain>` forward and reverse, and `registry.<domain>`. No pod is `missing`, even when something else still answers on the addresses.
