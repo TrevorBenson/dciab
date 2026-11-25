@@ -23,10 +23,13 @@ The script edits the vmbr0 stanza in place:
 
     auto vmbr0.<network.nodes.vlan>
     iface vmbr0.<network.nodes.vlan> inet static
-        address <the stanza's address lines, moved; the config's when it had none>
+        address <the stanza's address line, moved; the config's when it had none (a lone
+                 netmask line is then dropped)>
         gateway <the stanza's gateway, moved; network.nodes.gateway when it had none>
 
-Only the stanza's address, netmask and gateway lines move, and only bridge-vlan-aware and
+If the stanza has command lines (up, down, pre-up, post-up, pre-down, post-down, either
+spelling), the hook refuses and changes nothing: they may use vmbr0's address, and the installer
+never writes them. Only the stanza's address, netmask and gateway lines move, and only bridge-vlan-aware and
 bridge-vids are replaced (either spelling, `-` or `_`). Every other line in the file, and every
 other key in the stanza, is kept as it was (the current file is edited, so nothing changed
 since is lost), and the installer's file is kept once as interfaces.dciab-installer. Running it
@@ -118,6 +121,20 @@ if [ -z "$PORTS" ] || [ "$PORTS" = "none" ]; then
     exit 1
 fi
 
+HOOKS=$(awk '
+    /^iface[ \t]+vmbr0[ \t]/ {{ in_br = 1; next }}
+    /^(auto|allow-|iface|source|mapping)/ {{ in_br = 0 }}
+    in_br {{ k = $1; gsub(/_/, "-", k) }}
+    in_br && (k == "up" || k == "down" || k == "pre-up" || k == "post-up" || k == "pre-down" || k == "post-down") && !(k in seen) {{
+        seen[k] = 1; out = out (out == "" ? "" : " ") k
+    }}
+    END {{ printf "%s", out }}
+' "$FILE")
+if [ -n "$HOOKS" ]; then
+    log "vmbr0 in $FILE has command lines ($HOOKS) that may use its address; moving it could cut the host off; nothing changed"
+    exit 1
+fi
+
 [ -f "$BACKUP" ] || cp -p "$FILE" "$BACKUP"
 TMP="$FILE.dciab-tmp"
 awk -v vlan="$VLAN" -v cidr="$CIDR" -v gw="$GATEWAY" -v vids="$VIDS" '
@@ -134,11 +151,15 @@ awk -v vlan="$VLAN" -v cidr="$CIDR" -v gw="$GATEWAY" -v vids="$VIDS" '
         print ""
         print "auto vmbr0." vlan
         print "iface vmbr0." vlan " inet static"
-        has_gw = 0
-        if (m == 0) print "\taddress " cidr
-        for (i = 1; i <= m; i++) {{ print "\t" mv[i]; if (key(mv[i]) == "gateway") has_gw = 1 }}
+        has_gw = 0; has_addr = 0
+        for (i = 1; i <= m; i++) if (key(mv[i]) == "address") has_addr = 1
+        if (!has_addr) print "\taddress " cidr
+        for (i = 1; i <= m; i++) {{
+            if (!has_addr && key(mv[i]) == "netmask") continue
+            print "\t" mv[i]; if (key(mv[i]) == "gateway") has_gw = 1
+        }}
         if (!has_gw) print "\tgateway " gw
-        if (last == n && !at_end) print ""
+        if (last < n ? buf[last + 1] !~ /^[ \t]*$/ : !at_end) print ""
         for (i = last + 1; i <= n; i++) print buf[i]
         n = 0; m = 0; in_br = 0
     }}

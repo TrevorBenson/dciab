@@ -1953,6 +1953,7 @@ auto vmbr0.110
 iface vmbr0.110 inet static
 \taddress 10.30.110.6/24
 \tgateway 10.30.110.1
+
 # a comment the site added after the stanza
 
 source /etc/network/interfaces.d/*
@@ -1990,6 +1991,48 @@ def test_hook_uses_the_config_address_when_the_stanza_has_none(tmp_path):
     proc, net = run_hook(tmp_path, firstboot.render(doc, host(doc)), old)
     assert proc.returncode == 0, proc.stderr
     assert "iface vmbr0.110 inet static\n\taddress 10.30.110.6/24\n\tgateway 10.30.110.1\n" in (net / "interfaces").read_text()
+
+
+def test_hook_adds_the_config_address_when_only_a_gateway_moves(tmp_path):
+    doc = tagged_doc()
+    script = firstboot.render(doc, host(doc))
+    old = INSTALLER_INTERFACES.replace("\taddress 10.30.110.6/24\n", "")
+    proc, net = run_hook(tmp_path, script, old)
+    assert proc.returncode == 0, proc.stderr
+    text = (net / "interfaces").read_text()
+    assert "iface vmbr0.110 inet static\n\taddress 10.30.110.6/24\n\tgateway 10.30.110.1\n" in text
+    proc, net = run_hook(tmp_path, script, text)                              # a rerun changes nothing
+    assert proc.returncode == 0 and (net / "interfaces").read_text() == text
+
+
+def test_hook_drops_a_lone_netmask_when_it_adds_the_config_address(tmp_path):
+    doc = tagged_doc()
+    old = INSTALLER_INTERFACES.replace("\taddress 10.30.110.6/24\n", "\tnetmask 255.255.255.0\n")
+    proc, net = run_hook(tmp_path, firstboot.render(doc, host(doc)), old)
+    assert proc.returncode == 0, proc.stderr
+    text = (net / "interfaces").read_text()
+    assert "iface vmbr0.110 inet static\n\taddress 10.30.110.6/24\n\tgateway 10.30.110.1\n" in text
+    assert "netmask" not in text
+
+
+@pytest.mark.parametrize("line", ["post-up ip route add 10.9.0.0/16 via 10.30.110.1 dev vmbr0",
+                                  "up true", "pre_down true", "down true", "pre-up true", "post_down true"])
+def test_hook_refuses_a_stanza_with_command_lines(tmp_path, line):
+    doc = tagged_doc()
+    old = INSTALLER_INTERFACES.replace("\tbridge-fd 0\n", f"\tbridge-fd 0\n\t{line}\n")
+    proc, net = run_hook(tmp_path, firstboot.render(doc, host(doc)), old)
+    assert proc.returncode == 1
+    assert "command lines" in proc.stderr and "nothing changed" in proc.stderr
+    assert (net / "interfaces").read_text() == old
+    assert not (net / "interfaces.dciab-installer").exists()
+
+
+def test_hook_puts_a_blank_line_after_the_new_stanza(tmp_path):
+    doc = tagged_doc()
+    old = INSTALLER_INTERFACES.replace("\tbridge-fd 0\n\n", "\tbridge-fd 0\n")
+    proc, net = run_hook(tmp_path, firstboot.render(doc, host(doc)), old)
+    assert proc.returncode == 0, proc.stderr
+    assert "\tgateway 10.30.110.1\n\niface eno2 inet manual" in (net / "interfaces").read_text()
 
 
 def test_hook_logs_once_through_logger_and_to_stderr_without_it(tmp_path):

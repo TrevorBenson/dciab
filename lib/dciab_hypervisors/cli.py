@@ -253,7 +253,8 @@ def wait_hint(doc: dict) -> str:
         vlan = doc["spec"]["network"]["nodes"].get("vlan")
         hint += (f". With managementVLAN: tagged, check on that console `journalctl -t dciab-first-boot` and "
                  f"`systemctl status proxmox-first-boot-network-pre` (a failed hook runs again at every boot "
-                 f"until it succeeds), and that the switch port carries VLAN {vlan} tagged")
+                 f"until it succeeds; it refuses a vmbr0 stanza with up/down command lines), and that the switch port "
+                 f"carries VLAN {vlan} tagged")
     return hint
 
 
