@@ -470,6 +470,22 @@ jobs:
           if grep -E "^dns: (wrote|added|opened|loaded) " "$RUNNER_TEMP/rerun.txt"; then echo "the dns rerun changed something"; exit 1; fi
           grep -q "registry: already serving" "$RUNNER_TEMP/rerun.txt"
           grep -q "kind: cluster dciab-bootstrap exists" "$RUNNER_TEMP/rerun.txt"
+      - name: The seed registry and the DNS-only pod run as systemd units (back after a reboot)
+        run: |
+          set -euo pipefail
+          for unit in dciab-registry.service dciab-services.service dciab-services-addresses.service; do
+            systemctl is-active --quiet "$unit" || { systemctl status "$unit" --no-pager || true; exit 1; }
+            systemctl show -p WantedBy "$unit" | grep -q multi-user.target || { echo "$unit isn't started at boot"; exit 1; }
+          done
+          # systemd brings the registry back on its own (Restart=always), and a restart keeps serving.
+          sudo podman kill dciab-registry >/dev/null
+          for i in $(seq 1 30); do
+            code="$(curl -sk -o /dev/null -w '%{http_code}' https://10.30.110.5/v2/ || true)"
+            [[ "$code" == 200 ]] && break
+            sleep 2
+          done
+          test "$code" = 200 || { journalctl -u dciab-registry.service --no-pager | tail -40; exit 1; }
+          test "$(dig +short @10.30.110.53 registry.dc3.example.com)" = 10.30.110.5
       - name: dciab mgmt from seed's outputs, offline from the payload (up to the Cluster)
         env:
           DCIAB_PVE_TOKEN: ci-not-a-secret
@@ -489,7 +505,7 @@ jobs:
           out="$(sudo env "PATH=$RUNNER_TEMP/payload/bin:$PATH" ./dciab status "$RUNNER_TEMP/site/dciab.yaml" \
             --state "$RUNNER_TEMP/state" || true)"
           echo "$out"
-          for check in pki registry bootstrap; do
+          for check in dns pki registry bootstrap; do
             grep -Eq "^$check +ok " <<<"$out" || { echo "$check should be ok"; exit 1; }
           done
           grep -Eq "^mgmt +down .*not moved" <<<"$out"
@@ -729,7 +745,9 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
-      - run: sudo apt-get update -q && sudo apt-get install -y -q python3-yaml python3-jsonschema dnsutils
+      - run: sudo apt-get update -q && sudo apt-get install -y -q python3-yaml python3-jsonschema dnsutils firewalld
+      - name: firewalld runs, as on the bootstrap host
+        run: sudo systemctl start firewalld && sudo firewall-cmd --state
       - name: This branch's chrony image (job day0-chrony publishes it on main)
         run: echo "DCIAB_CHRONY_IMAGE=$(sudo images/day0-chrony/build.sh)" >> "$GITHUB_ENV"
       - name: Site and dummy interface
@@ -773,6 +791,37 @@ jobs:
           for ip in 10.30.110.53 10.30.110.54; do
             PYTHONPATH=lib python3 -c "import sys; from dciab_services import probe; s = probe.ntp(sys.argv[1]); print(sys.argv[1], 'stratum', s); sys.exit(0 if s and s < 16 else 1)" "$ip"
           done
+      - name: Units and permanent ports, so a reboot brings everything back
+        run: |
+          set -euo pipefail
+          test "$(systemctl is-enabled dciab-services-addresses.service)" = enabled
+          systemctl is-active --quiet dciab-services.service
+          for unit in dciab-services.service dciab-services-addresses.service; do
+            systemctl show -p WantedBy "$unit" | grep -q multi-user.target || { echo "$unit isn't started at boot"; exit 1; }
+          done
+          zone="$(sudo firewall-cmd --get-default-zone)"
+          for p in 53/udp 53/tcp 80/tcp 123/udp; do
+            sudo firewall-cmd --zone="$zone" --query-port="$p" >/dev/null
+            sudo firewall-cmd --permanent --zone="$zone" --query-port="$p" >/dev/null || { echo "$p isn't permanent"; exit 1; }
+          done
+      - name: A simulated reboot (units stopped, addresses gone, runtime firewall reset) comes back
+        run: |
+          set -euo pipefail
+          sudo systemctl stop dciab-services.service dciab-services-addresses.service
+          if sudo podman pod exists dciab-services; then echo "the pod should stop with its unit"; exit 1; fi
+          sudo ip addr del 10.30.110.53/24 dev dciab0
+          sudo ip addr del 10.30.110.54/24 dev dciab0
+          sudo firewall-cmd --reload   # runtime rules back to the permanent ones, as after a boot
+          # What boot starts: multi-user.target wants both units; the pod's unit pulls in the addresses.
+          systemctl list-dependencies --plain multi-user.target | grep -q dciab-services.service
+          sudo systemctl start dciab-services.service
+          test "$(dig +short @10.30.110.53 pve01.dc3.example.com)" = 10.30.110.6
+          test "$(dig +short @10.30.110.54 registry.dc3.example.com)" = 10.30.110.5
+          zone="$(sudo firewall-cmd --get-default-zone)"
+          sudo firewall-cmd --zone="$zone" --query-port=53/udp >/dev/null
+          out="$(sudo DCIAB_PVE_TOKEN=placeholder DCIAB_PVE_CSI_TOKEN=placeholder DCIAB_CHRONY_IMAGE="$DCIAB_CHRONY_IMAGE" ./dciab services /tmp/site/dciab.yaml)"
+          echo "$out"
+          grep -q "already runs this config" <<<"$out"
       - name: A changed config (new DNS service IP, forwarding for the site only), then --down
         run: |
           set -euo pipefail
@@ -803,6 +852,17 @@ jobs:
           if sudo podman pod exists dciab-services; then echo "the pod is still there"; exit 1; fi
           test "$(ip -o -4 addr show dev dciab0 | awk '{print $4}')" = 10.30.110.5/24
           sudo test ! -e /tmp/site/.dciab/state/services/created
+          for f in /etc/systemd/system/dciab-services-addresses.service /etc/containers/systemd/dciab-services.kube; do
+            if test -e "$f"; then echo "$f is still there"; exit 1; fi
+          done
+          if systemctl is-enabled dciab-services-addresses.service 2>/dev/null; then echo "still enabled"; exit 1; fi
+          zone="$(sudo firewall-cmd --get-default-zone)"
+          for p in 53/udp 53/tcp 80/tcp 123/udp; do
+            if sudo firewall-cmd --zone="$zone" --query-port="$p" >/dev/null \
+               || sudo firewall-cmd --permanent --zone="$zone" --query-port="$p" >/dev/null; then
+              echo "$p is still open"; exit 1
+            fi
+          done
           sudo ./dciab services /tmp/site/dciab.yaml --down | grep -q "lists nothing"
       - name: Pod logs
         if: failure()

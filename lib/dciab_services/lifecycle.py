@@ -71,6 +71,14 @@ def write(conf: Path, entries: Iterable[List[str]]) -> None:
     os.replace(tmp, path)
 
 
+def record(conf: Path, entry: List[str]) -> None:
+    """Add a line to the record unless it is there (before the change it describes)."""
+    entries = read(conf)
+    if entry not in entries:
+        conf.mkdir(parents=True, exist_ok=True)
+        write(conf, entries + [entry])
+
+
 def firewalld_running() -> bool:
     return query(["firewall-cmd", "--state"]).returncode == 0
 

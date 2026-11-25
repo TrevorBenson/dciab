@@ -21,6 +21,39 @@ REGISTRY_PORT = 443
 UPSTREAM_SERVERS = {"docker.io": "https://registry-1.docker.io"}
 
 
+REGISTRY_SERVICE = "dciab-registry.service"   # Quadlet's unit for dciab-registry.container
+
+
+def registry_unit(image_id: str, spec: str, token: str, address: str, data: Path, etc: Path,
+                  state: Path, token_label: str) -> str:
+    """The Quadlet unit that runs Zot as dciab-registry, and brings it back after a reboot."""
+    return f"""# Written by dciab seed. Removed by dciab seed --remove. Changes are overwritten.
+[Unit]
+Description=DCiaB seed registry (Zot) on {address}:{REGISTRY_PORT}
+Wants=network-online.target
+After=network-online.target
+RequiresMountsFor={state}
+
+[Container]
+Image={image_id}
+ContainerName={REGISTRY_CONTAINER}
+User=0
+Group=0
+Label=dciab.io/spec={spec}
+Label={token_label}={token}
+PublishPort={address}:{REGISTRY_PORT}:5000
+Volume={data}:/var/lib/registry:Z
+Volume={etc}:/etc/zot:ro,Z
+
+[Service]
+Restart=always
+TimeoutStartSec=120
+
+[Install]
+WantedBy=multi-user.target
+"""
+
+
 class SeedError(Exception):
     pass
 
@@ -31,6 +64,7 @@ class Settings:
         self.config_path = config_path
         self.config_dir = config_path.parent
         self.address: str = spec["bootstrap"]["address"]
+        self.interface: str = spec["bootstrap"].get("interface", "")
         self.recipients: List[str] = list(spec["bootstrap"]["recipients"])
         self.domain: str = spec["network"]["domain"]
         self.registry_host = f"registry.{self.domain}"

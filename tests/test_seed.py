@@ -616,6 +616,8 @@ def test_registry_is_recorded_before_it_is_started(tmp_path, monkeypatch):
         out = "sha256:img\n" if cmd[:2] == ["podman", "pull"] else ""
         return subprocess.CompletedProcess(cmd, 0, out, "")
     monkeypatch.setattr(cli, "run", fake_run)
+    monkeypatch.setattr(cli.units, "persistent", lambda: False)
+    monkeypatch.setattr(cli, "open_registry_port", lambda state, s: None)
     monkeypatch.setattr(cli, "wait_registry", lambda *a: None)
     monkeypatch.setattr(cli, "payload_images", lambda p: [])
     monkeypatch.setattr(cli, "missing_images", lambda i, d: [])
@@ -633,6 +635,159 @@ def test_registry_is_recorded_before_it_is_started(tmp_path, monkeypatch):
     assert seen and seen[0]["name"] == "dciab-registry"
     cli.step_registry(root, tmp_path, tmp_path, S())       # a rerun that recreates it keeps the token
     assert seen[1]["token"] == seen[0]["token"]
+
+
+def registry_env(tmp_path, monkeypatch, persistent=True):
+    """step_registry against a fake host; returns (calls, state)."""
+    calls = []
+    host = {"have": "", "active": False}
+
+    def fake_run(cmd, **kw):
+        cmd = [str(c) for c in cmd]
+        calls.append(cmd)
+        out = ""
+        if cmd[:2] == ["podman", "pull"]:
+            out = "sha256:img\n"
+        elif cmd[:3] == ["podman", "ps", "-a"]:
+            out = host["have"]
+        elif cmd[:2] == ["systemctl", "restart"]:
+            host["active"] = True
+        return subprocess.CompletedProcess(cmd, 0, out, "")
+
+    def fake_probe(cmd, **kw):
+        cmd = [str(c) for c in cmd]
+        calls.append(cmd)
+        if cmd[:2] == ["systemctl", "is-active"]:
+            return subprocess.CompletedProcess(cmd, 0 if host["active"] else 3, "", "")
+        return subprocess.CompletedProcess(cmd, 1, "", "")
+
+    monkeypatch.setattr(cli, "run", fake_run)
+    monkeypatch.setattr(cli, "probe_cmd", fake_probe)
+    monkeypatch.setattr(cli.units, "persistent", lambda: persistent)
+    monkeypatch.setattr(cli.units, "QUADLET_DIR", tmp_path / "quadlet")
+    monkeypatch.setattr(cli, "open_registry_port", lambda state, s: None)
+    monkeypatch.setattr(cli, "wait_registry", lambda *a: None)
+    monkeypatch.setattr(cli, "payload_images", lambda p: [])
+    monkeypatch.setattr(cli, "missing_images", lambda i, d: [])
+    monkeypatch.setattr(cli, "find_image", lambda i, ref: {"name": "zot"})
+    state = tmp_path / "state"
+    (state / "pki").mkdir(parents=True)
+    for f in ("registry.crt", "registry.key"):
+        (state / "pki" / f).write_text("x")
+    root = tmp_path / "root"
+    root.mkdir()
+    (root / "bundle.lock").write_text("images: {zot: z}\n")
+    return calls, state, host
+
+
+class Seed:
+    address = "10.0.0.5"
+    interface = "eth0"
+
+
+def test_registry_runs_as_a_quadlet_unit_and_survives_reboots(tmp_path, monkeypatch):
+    calls, state, host = registry_env(tmp_path, monkeypatch)
+    cli.step_registry(tmp_path / "root", tmp_path, state, Seed())
+    unit = tmp_path / "quadlet" / "dciab-registry.container"
+    text = unit.read_text()
+    rec = cli.load_created(state)["registry"]
+    assert rec["unit"] == str(unit)
+    assert f"Label=dciab.io/seed-token={rec['token']}" in text
+    assert "PublishPort=10.0.0.5:443:5000" in text and "WantedBy=multi-user.target" in text
+    assert "Restart=always" in text and f"RequiresMountsFor={state}" in text
+    assert ["systemctl", "daemon-reload"] in calls and ["systemctl", "restart", "dciab-registry.service"] in calls
+    assert not any(c[:2] == ["podman", "run"] for c in calls)
+    # A rerun with the container running and the unit unchanged touches nothing.
+    spec = [line.split("=", 2)[2] for line in text.splitlines() if line.startswith("Label=dciab.io/spec=")][0]
+    host["have"] = f"{spec} running"
+    calls.clear()
+    cli.step_registry(tmp_path / "root", tmp_path, state, Seed())
+    assert not any(c[:2] in (["systemctl", "restart"], ["systemctl", "daemon-reload"]) for c in calls)
+    assert unit.read_text() == text and cli.load_created(state)["registry"]["token"] == rec["token"]
+
+
+def test_registry_from_an_older_seed_moves_under_systemd(tmp_path, monkeypatch):
+    """A container started by podman run (before #81) is replaced by the unit's."""
+    calls, state, host = registry_env(tmp_path, monkeypatch)
+    host["have"] = "whatever running"
+    cli.step_registry(tmp_path / "root", tmp_path, state, Seed())
+    assert ["podman", "rm", "-f", "dciab-registry"] in calls
+    assert calls.index(["podman", "rm", "-f", "dciab-registry"]) < calls.index(
+        ["systemctl", "restart", "dciab-registry.service"])
+
+
+def test_registry_without_quadlet_still_runs(tmp_path, monkeypatch, capsys):
+    calls, state, host = registry_env(tmp_path, monkeypatch, persistent=False)
+    cli.step_registry(tmp_path / "root", tmp_path, state, Seed())
+    assert any(c[:2] == ["podman", "run"] for c in calls)
+    assert "won't come back after a reboot" in capsys.readouterr().out
+    assert "unit" not in cli.load_created(state)["registry"]
+
+
+def test_registry_port_opened_and_kept(tmp_path, monkeypatch):
+    calls, ports = [], {"runtime": set(), "permanent": set()}
+
+    def fake_probe(cmd, **kw):
+        cmd = [str(c) for c in cmd]
+        calls.append(cmd)
+        if cmd == ["firewall-cmd", "--state"]:
+            return subprocess.CompletedProcess(cmd, 0, "running", "")
+        if cmd[1].startswith("--get-zone-of-interface"):
+            return subprocess.CompletedProcess(cmd, 0, "internal\n", "")
+        where = "permanent" if cmd[1] == "--permanent" else "runtime"
+        if "--query-port=443/tcp" in cmd:
+            return subprocess.CompletedProcess(cmd, 0 if "443/tcp" in ports[where] else 1, "", "")
+        return subprocess.CompletedProcess(cmd, 1, "", "")
+
+    def fake_run(cmd, **kw):
+        cmd = [str(c) for c in cmd]
+        calls.append(cmd)
+        where = "permanent" if cmd[1] == "--permanent" else "runtime"
+        ports[where].add("443/tcp")
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    from dciab_services import lifecycle
+    monkeypatch.setattr(cli, "probe_cmd", fake_probe)
+    monkeypatch.setattr(cli, "run", fake_run)
+    monkeypatch.setattr(lifecycle, "firewalld_running", lambda: True)
+    cli.open_registry_port(tmp_path, Seed())
+    assert ports == {"runtime": {"443/tcp"}, "permanent": {"443/tcp"}}
+    assert cli.load_created(tmp_path)["registry-port"] == {"zone": "internal", "port": "443/tcp"}
+    calls.clear()
+    cli.open_registry_port(tmp_path, Seed())       # a rerun changes nothing
+    assert not any("--add-port=443/tcp" in c for c in calls)
+    # A port open before seed is never recorded, nor made permanent.
+    other = tmp_path / "other"
+    other.mkdir()
+    ports.update(runtime={"443/tcp"}, permanent=set())
+    cli.open_registry_port(other, Seed())
+    assert "registry-port" not in cli.load_created(other) and ports["permanent"] == set()
+
+
+def test_remove_closes_the_registry_port_and_stops_the_unit(tmp_path, host, monkeypatch):
+    state = seeded_state(tmp_path)
+    unit = tmp_path / "dciab-registry.container"
+    unit.write_text("[Container]\n")
+    created = cli.load_created(state)
+    created["registry"]["unit"] = str(unit)
+    created["registry-port"] = {"zone": "public", "port": "443/tcp"}
+    cli.save_created(state, created)
+    host.ports.add(("public", "443/tcp"))
+    undone = []
+    from dciab_services import lifecycle
+    real_undo = lifecycle.undo
+
+    def undo(entry, say=print, firewalld=None):
+        undone.append(entry)
+        if entry[0] == "unit":
+            Path(entry[1]).unlink()
+            return None
+        return real_undo(entry, say, firewalld)
+    monkeypatch.setattr(lifecycle, "undo", undo)
+    assert cli.remove(state, purge=False, force=False) == 0
+    assert undone[0] == ["unit", str(unit)] and not unit.exists()
+    assert ("public", "443/tcp") not in host.ports
+    assert "registry-port" not in cli.load_created(state)
 
 
 def test_services_pod_name_matches_services():

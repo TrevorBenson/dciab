@@ -14,7 +14,9 @@ Steps, in order. Each is safe to re-run, and a finished run changes nothing:
              With them: checks that `dciab services` (run before the hypervisors) answers.
   registry   every payload image written into the registry's storage under its upstream
              name and tag, then Zot serving it read-only over TLS on
-             spec.bootstrap.address:443 (container dciab-registry)
+             spec.bootstrap.address:443 (container dciab-registry, run by the Quadlet unit
+             dciab-registry.container so it comes back after a reboot; port 443 opened in
+             firewalld, runtime and permanent, when it runs)
   kind       the kind node image pulled from the registry, and the kind cluster
              dciab-bootstrap, whose containerd pulls every upstream registry through the seed
              registry; kubeconfig in <state>/bootstrap.kubeconfig
@@ -26,8 +28,8 @@ Then: dciab mgmt <config> --bootstrap-kubeconfig <state>/bootstrap.kubeconfig
 
 --remove undoes what seed did to the host, and only what <state>/seed-created.json (and, for
 the DNS-only services seed ran, <state>/services/created) says it created: the kind cluster,
-the registry container, the services pod, the service IPs on the NIC and the runtime firewalld
-ports. It refuses to delete a bootstrap cluster that still holds Cluster API Clusters unless
+the registry's unit and container, port 443, the services' units and pod, the service IPs on
+the NIC and the firewalld ports. It refuses to delete a bootstrap cluster that still holds Cluster API Clusters unless
 --force is given. The state folder stays (it holds the CA) unless --purge-state is also given;
 even then, it stays while a kind cluster dciab-bootstrap, a dciab-registry container or the
 dciab-services pod is still on the host, recorded or not.
@@ -52,10 +54,12 @@ from pathlib import Path
 from typing import List, Optional
 
 import yaml
+from dciab_services import units
 from dciab_state import default_state
 
 from . import pki
-from .plan import (KIND_CLUSTER, REGISTRY_CONTAINER, REGISTRY_PORT, SeedError, find_image, hosts_toml,
+from .plan import (KIND_CLUSTER, REGISTRY_CONTAINER, REGISTRY_PORT, REGISTRY_SERVICE, SeedError, find_image,
+                   hosts_toml, registry_unit,
                    kind_config, load_settings, missing_images, payload_images, registry_tag, spec_hash,
                    upstream, zot_config)
 
@@ -232,12 +236,33 @@ def step_registry(root: Path, payload: Path, state: Path, s) -> None:
     want = spec_hash(image_id.encode(), *files.values(), f"{s.address}:{REGISTRY_PORT}".encode())
     have = run(["podman", "ps", "-a", "--filter", f"name=^{REGISTRY_CONTAINER}$",
                 "--format", '{{index .Labels "dciab.io/spec"}} {{.State}}']).stdout.split()
-    if have != [want, "running"]:
+    rec = load_created(state).get("registry")
+    token = rec.get("token") if isinstance(rec, dict) and rec.get("token") else secrets.token_hex(16)
+    if units.persistent():
+        # A Quadlet unit runs it, so it comes back after a reboot.
+        unit = units.QUADLET_DIR / f"{REGISTRY_CONTAINER}.container"
+        text = registry_unit(image_id, want, token, s.address, data, etc, state, SEED_TOKEN_LABEL)
+        active = probe_cmd(["systemctl", "is-active", "--quiet", REGISTRY_SERVICE]).returncode == 0
+        current = unit.is_file() and unit.read_text() == text
+        if have != [want, "running"] or not current or not active:
+            # Recorded before the start: the container carries the token, so --remove knows it as seed's.
+            record_created(state, "registry", {"name": REGISTRY_CONTAINER, "token": token, "unit": str(unit)})
+            if have and not active:
+                run(["podman", "rm", "-f", REGISTRY_CONTAINER])   # started outside systemd (an older seed)
+            if not current:
+                unit.parent.mkdir(parents=True, exist_ok=True)
+                unit.write_text(text)
+                unit.chmod(0o644)
+                run(["systemctl", "daemon-reload"])
+            run(["systemctl", "restart", REGISTRY_SERVICE])
+            say(f"registry: started {REGISTRY_CONTAINER} on https://{s.address}:{REGISTRY_PORT} "
+                f"({REGISTRY_SERVICE}; it comes back after a reboot)")
+        else:
+            say("registry: already serving")
+    elif have != [want, "running"]:
+        say("registry: warning: no systemd with Quadlet here; the registry won't come back after a reboot")
         if have:
             run(["podman", "rm", "-f", REGISTRY_CONTAINER])
-        # Recorded before the run: the container carries the token, so --remove knows it as seed's.
-        rec = load_created(state).get("registry")
-        token = rec.get("token") if isinstance(rec, dict) and rec.get("token") else secrets.token_hex(16)
         record_created(state, "registry", {"name": REGISTRY_CONTAINER, "token": token})
         run(["podman", "run", "-d", "--name", REGISTRY_CONTAINER, "--restart=always", "--user", "0:0",
              "--label", f"dciab.io/spec={want}", "--label", f"{SEED_TOKEN_LABEL}={token}",
@@ -246,7 +271,44 @@ def step_registry(root: Path, payload: Path, state: Path, s) -> None:
         say(f"registry: started {REGISTRY_CONTAINER} on https://{s.address}:{REGISTRY_PORT}")
     else:
         say("registry: already serving")
+    open_registry_port(state, s)
     wait_registry(s.address, state / "pki" / "trust-bundle.pem")
+
+
+def nic_name(want: str) -> Optional[str]:
+    """spec.bootstrap.interface is a NIC name or its MAC."""
+    import re
+    if re.fullmatch(r"([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}", want or ""):
+        for dev in sorted(Path("/sys/class/net").iterdir()):
+            try:
+                if (dev / "address").read_text().strip().lower() == want.lower():
+                    return dev.name
+            except OSError:
+                continue
+        return None
+    return want or None
+
+
+def open_registry_port(state: Path, s) -> None:
+    """Port 443 in the bootstrap interface's firewalld zone, runtime and permanent, when
+    firewalld runs. Recorded first; a port open before seed is left alone."""
+    from dciab_services import lifecycle
+    if not lifecycle.firewalld_running():
+        return
+    nic = nic_name(getattr(s, "interface", "") or "")
+    zone = (probe_cmd(["firewall-cmd", f"--get-zone-of-interface={nic}"]).stdout.strip() if nic else "") \
+        or probe_cmd(["firewall-cmd", "--get-default-zone"]).stdout.strip()
+    port = f"{REGISTRY_PORT}/tcp"
+    rec = load_created(state).get("registry-port")
+    ours = rec == {"zone": zone, "port": port}
+    if probe_cmd(["firewall-cmd", f"--zone={zone}", f"--query-port={port}"]).returncode != 0:
+        record_created(state, "registry-port", {"zone": zone, "port": port})
+        ours = True
+        run(["firewall-cmd", f"--zone={zone}", f"--add-port={port}"])
+        say(f"registry: opened {port} in zone {zone} (runtime)")
+    if ours and probe_cmd(["firewall-cmd", "--permanent", f"--zone={zone}", f"--query-port={port}"]).returncode != 0:
+        run(["firewall-cmd", "--permanent", f"--zone={zone}", f"--add-port={port}"])
+        say(f"registry: opened {port} in zone {zone} (permanent)")
 
 
 def wait_registry(address: str, ca: Path, timeout: int = 90) -> None:
@@ -344,6 +406,11 @@ def remove_kind(state: Path, force: bool) -> None:
 
 def remove_registry(recorded) -> None:
     token = recorded.get("token", "") if isinstance(recorded, dict) else ""
+    unit = recorded.get("unit") if isinstance(recorded, dict) else None
+    if unit:
+        # Stopped first, or systemd would start it again (Restart=always).
+        from dciab_services import lifecycle
+        lifecycle.undo(["unit", unit], lambda m: say(f"remove: {m}"))
     have = run(["podman", "ps", "-a", "--no-trunc", "--filter", f"name=^{REGISTRY_CONTAINER}$",
                 "--format", f'{{{{.ID}}}} {{{{index .Labels "{SEED_TOKEN_LABEL}"}}}}']).stdout.split()
     if not have:
@@ -392,7 +459,7 @@ def remove(state: Path, purge: bool, force: bool) -> int:
     if not created:
         say(f"remove: {state / CREATED} lists nothing seed created on this host")
     failed = False
-    for key in ("kind", "registry", "services"):
+    for key in ("kind", "registry", "registry-port", "services"):
         if key not in created:
             continue
         try:
@@ -400,6 +467,11 @@ def remove(state: Path, purge: bool, force: bool) -> int:
                 remove_kind(state, force)
             elif key == "registry":
                 remove_registry(created[key])
+            elif key == "registry-port":
+                from dciab_services import lifecycle
+                rec = created[key] if isinstance(created[key], dict) else {}
+                if rec.get("zone") and rec.get("port"):
+                    lifecycle.undo(["port", rec["zone"], rec["port"]], lambda m: say(f"remove: {m}"))
             elif remove_services(state):
                 failed = True
                 continue

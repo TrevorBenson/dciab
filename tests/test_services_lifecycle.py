@@ -225,3 +225,70 @@ def test_lifecycle_cli(tmp_path, host, capsys):
     conf2 = conf_with(tmp_path / "x" if (tmp_path / "x").mkdir() is None else tmp_path, ["pod dciab-services"])
     host.pods = {"dciab-services"}
     assert lifecycle.main(["down", str(conf2)]) == 1
+
+
+# Reboot survival (#81): the units that bring the addresses and the pod back.
+
+from dciab_services import units  # noqa: E402
+
+
+def test_units_render(tmp_path):
+    conf = tmp_path / "state" / "services"
+    got = units.render(conf, "eth0", 24, ["10.30.110.53", "10.30.110.54"],
+                       systemd_dir=tmp_path / "systemd", quadlet_dir=tmp_path / "quadlet")
+    addr = got[tmp_path / "systemd" / "dciab-services-addresses.service"]
+    kube = got[tmp_path / "quadlet" / "dciab-services.kube"]
+    assert "ExecStart=ip addr replace 10.30.110.53/24 dev eth0\nExecStart=ip addr replace 10.30.110.54/24 dev eth0" in addr
+    assert "Type=oneshot" in addr and "RemainAfterExit=yes" in addr and "Before=dciab-services.service" in addr
+    assert "WantedBy=multi-user.target" in addr and "After=network-online.target" in addr
+    assert f"Yaml={conf}/pod.yaml" in kube and f"RequiresMountsFor={conf}" in kube
+    assert "Requires=dciab-services-addresses.service" in kube and "WantedBy=multi-user.target" in kube
+
+
+def test_units_written_once_and_recorded_first(tmp_path):
+    conf = tmp_path / "services"
+    conf.mkdir()
+    u = units.render(conf, "eth0", 24, ["10.0.0.53", "10.0.0.54"],
+                     systemd_dir=tmp_path / "systemd", quadlet_dir=tmp_path / "quadlet")
+    assert sorted(units.write(conf, u)) == sorted(u)
+    assert sorted(lifecycle.read(conf)) == sorted([["unit", str(p)] for p in u])
+    assert units.write(conf, u) == []                     # unchanged: nothing written
+    for p in u:
+        assert p.stat().st_mode & 0o777 == 0o644
+    # another DNS service IP rewrites the addresses unit only, and the record isn't duplicated
+    u2 = units.render(conf, "eth0", 24, ["10.0.0.53", "10.0.0.55"],
+                      systemd_dir=tmp_path / "systemd", quadlet_dir=tmp_path / "quadlet")
+    assert [p.name for p in units.write(conf, u2)] == ["dciab-services-addresses.service"]
+    assert len(lifecycle.read(conf)) == 2
+
+
+def test_units_cli_action(tmp_path, monkeypatch, capsys):
+    from conftest import ROOT
+    monkeypatch.setattr(units, "SYSTEMD_DIR", tmp_path / "systemd")
+    monkeypatch.setattr(units, "QUADLET_DIR", tmp_path / "quadlet")
+    monkeypatch.setenv("DCIAB_PVE_TOKEN", "placeholder")
+    monkeypatch.setenv("DCIAB_PVE_CSI_TOKEN", "placeholder")
+    from test_services import CHRONY_LOCAL, bare_site
+    monkeypatch.setenv("DCIAB_CHRONY_IMAGE", CHRONY_LOCAL)
+    cfg = bare_site(tmp_path)
+    assert cli.main(["--root", str(ROOT), "--state", str(tmp_path / "st"), str(cfg), "units"]) == 2   # needs --nic
+    capsys.readouterr()
+    assert cli.main(["--root", str(ROOT), "--state", str(tmp_path / "st"), "--nic", "eth0", str(cfg), "units"]) == 0
+    out = capsys.readouterr().out
+    assert "wrote " in out and (tmp_path / "quadlet" / "dciab-services.kube").is_file()
+    assert cli.main(["--root", str(ROOT), "--state", str(tmp_path / "st"), "--nic", "eth0", str(cfg), "units"]) == 0
+    assert capsys.readouterr().out == ""
+
+
+def test_persistent_needs_systemd_and_quadlet(monkeypatch, tmp_path):
+    import os
+    monkeypatch.setattr(os.path, "isdir", lambda p: True)
+    monkeypatch.setattr(units, "QUADLET_BINARIES", (str(tmp_path / "missing"),))
+    assert not units.persistent()
+    q = tmp_path / "quadlet"
+    q.write_text("#!/bin/sh\n")
+    q.chmod(0o755)
+    monkeypatch.setattr(units, "QUADLET_BINARIES", (str(q),))
+    import shutil
+    monkeypatch.setattr(shutil, "which", lambda t: "/usr/bin/systemctl")
+    assert units.persistent()

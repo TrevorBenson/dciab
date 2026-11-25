@@ -11,6 +11,8 @@ Actions:
           when served
   prune   undo the recorded addresses and firewalld ports this config no longer wants
           (--nic: the bootstrap NIC's name; --zone: its firewalld zone, empty without firewalld)
+  units   write the systemd and Quadlet units that bring the addresses and the pod back after
+          a reboot (--nic); prints each unit it wrote
 
 Sites without spec.hypervisors get DNS only (render.dns_only). With --payload, env also
 gives each image's name in the payload's OCI layout (IMAGE_LAYOUTS, same order as IMAGES).
@@ -29,9 +31,9 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 try:
-    from . import lifecycle, probe, render
+    from . import lifecycle, probe, render, units
 except ImportError:  # PyYAML missing: main() says what to install
-    lifecycle = probe = render = None  # type: ignore[assignment]
+    lifecycle = probe = render = units = None  # type: ignore[assignment]
 
 
 
@@ -188,7 +190,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument("--nic", help="prune: the bootstrap interface's name")
     ap.add_argument("--zone", default="", help="prune: its firewalld zone (empty: firewalld isn't running)")
     ap.add_argument("config")
-    ap.add_argument("action", choices=["env", "show", "write", "check", "prune"])
+    ap.add_argument("action", choices=["env", "show", "write", "check", "prune", "units"])
     args = ap.parse_args(argv)
     try:
         import jsonschema  # noqa: F401
@@ -253,6 +255,13 @@ def main(argv: Optional[List[str]] = None) -> int:
         if left:
             print("dciab services: couldn't undo: " + "; ".join(left), file=sys.stderr)
             return 1
+    elif args.action == "units":
+        if not args.nic:
+            print("dciab services: units needs --nic", file=sys.stderr)
+            return 2
+        net = render.network(doc)
+        for path in units.write(paths.conf, units.render(paths.conf, args.nic, net["prefix"], net["serviceIPs"])):
+            print(f"wrote {path}")
     elif args.action == "check":
         failed = check(doc)
         for f in failed:

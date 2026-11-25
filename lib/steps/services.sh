@@ -14,11 +14,13 @@
 #   render      Corefile, zones, chrony.conf, Caddyfile and pod.yaml -> <state>/services (mode 600)
 #   address     recorded addresses and ports this config no longer wants are removed (a changed
 #               config); network.dnsServiceIPs added to spec.bootstrap.interface
-#   firewall    firewalld ports for the pod, when firewalld runs
+#   firewall    firewalld ports for the pod, runtime and permanent, when firewalld runs
 #   images      the pinned images present: loaded from the payload's OCI layout when there is
 #               one, else pulled. DCiaB's chrony image is one of them (day0.images.chrony,
 #               built and published by CI); it is never built here
-#   pod         podman kube play --replace, only when the rendered files changed or the pod isn't running
+#   pod         the pod as a systemd service (Quadlet dciab-services.kube, after
+#               dciab-services-addresses.service), so it and its addresses come back after a
+#               reboot; restarted only when the rendered files changed or it isn't running
 #   ready       DNS (forward, reverse, registry.<domain>) and NTP on each service IP, HTTP on
 #               the bootstrap address
 #
@@ -130,6 +132,11 @@ pod_running() {   # every container of the pod is running
   [[ -n "$states" ]] && ! grep -qv '^running$' < <(tr ' ' '\n' <<<"$states" | sed '/^$/d')
 }
 applied() { [[ -f "$CONF_DIR/applied" && "$(cat "$CONF_DIR/applied")" == "$FINGERPRINT" ]]; }
+# systemd with Podman's Quadlet generator: the pod and the addresses come back after a reboot.
+persistent() {
+  [[ -d /run/systemd/system ]] && command -v systemctl >/dev/null \
+    && { [[ -x /usr/libexec/podman/quadlet ]] || [[ -x /usr/lib/podman/quadlet ]]; }
+}
 # What this step added to the host, one line each, so it can be undone (dciab seed --remove):
 # "address <nic> <ip>/<prefix>", "port <zone> <port>", "pod <name>".
 record() {
@@ -209,10 +216,19 @@ step firewall
 if [[ -n "$zone" ]]; then
   read -ra ports <<<"$PORTS"
   for p in "${ports[@]}"; do
+    # Ours: listed already, or opened now. A port open before dciab services is left alone.
+    ours=0
+    grep -qxF "port $zone $p" "$CONF_DIR/created" 2>/dev/null && ours=1
     if ! firewall-cmd --zone="$zone" --query-port="$p" >/dev/null; then
-      record port "$zone" "$p"
+      record port "$zone" "$p"; ours=1
       firewall-cmd --zone="$zone" --add-port="$p" >/dev/null || die "firewalld refused to open $p in zone $zone"
-      echo "opened $p in zone $zone (runtime only)"
+      echo "opened $p in zone $zone (runtime)"
+    fi
+    # Permanent too, so a reboot (or firewall-cmd --reload) keeps it.
+    if (( ours )) && ! firewall-cmd --permanent --zone="$zone" --query-port="$p" >/dev/null; then
+      firewall-cmd --permanent --zone="$zone" --add-port="$p" >/dev/null \
+        || die "firewalld refused to keep $p open in zone $zone"
+      echo "opened $p in zone $zone (permanent)"
     fi
   done
 else
@@ -245,13 +261,31 @@ fi
 finish_if images
 
 step pod
-if applied && pod_running; then
-  echo "pod $POD already runs this config"
+mark_applied() { echo "$FINGERPRINT" > "$CONF_DIR/applied"; chmod 600 "$CONF_DIR/applied"; }
+if persistent; then
+  # systemd brings the addresses and the pod back after a reboot (Quadlet: dciab-services.kube).
+  written="$(helper units --nic "$nic")"
+  [[ -n "$written" ]] && { echo "$written"; systemctl daemon-reload; }
+  systemctl enable --quiet dciab-services-addresses.service
+  systemctl start dciab-services-addresses.service 9>&-
+  if [[ -z "$written" ]] && applied && pod_running && systemctl is-active --quiet dciab-services.service; then
+    echo "pod $POD already runs this config"
+  else
+    record pod "$POD"
+    systemctl restart dciab-services.service 9>&- \
+      || die "dciab-services.service didn't start (journalctl -u dciab-services.service)"
+    mark_applied
+    echo "started pod $POD (dciab-services.service; it comes back after a reboot)"
+  fi
 else
-  record pod "$POD"
-  podman kube play --replace "$CONF_DIR/pod.yaml" 9>&-
-  echo "$FINGERPRINT" > "$CONF_DIR/applied"
-  chmod 600 "$CONF_DIR/applied"
+  echo "dciab services: warning: no systemd with Quadlet here; the pod and its addresses won't come back after a reboot" >&2
+  if applied && pod_running; then
+    echo "pod $POD already runs this config"
+  else
+    record pod "$POD"
+    podman kube play --replace "$CONF_DIR/pod.yaml" 9>&-
+    mark_applied
+  fi
 fi
 finish_if pod
 
