@@ -128,8 +128,8 @@ spec:
     type: proxmox
     method: virtualmedia
     bootMode: UEFISecureBoot             # UEFI | UEFISecureBoot
-    managementVLAN: untagged             # the management NIC sits on an access port for network.nodes.vlan
-                                         # (tagged: not yet supported)
+    managementVLAN: untagged             # untagged: an access port (or native VLAN) for network.nodes.vlan
+                                         # tagged: a trunk carrying network.nodes.vlan tagged
     # rootPassword: {file: ./secrets/hv/root}   # [opt] unset: one generated per host, sealed with age
     installer:                           # what the Proxmox VE installer asks for
       keyboard: en-us

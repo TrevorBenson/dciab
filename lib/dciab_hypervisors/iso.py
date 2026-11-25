@@ -10,8 +10,11 @@ Each ISO holds its host's root password hash, so:
   - it lives in <state>/host-isos/<host>.iso (folder 700, file 600);
   - dciab services' Caddy serves it at /host-isos/<host>.iso only to that host's BMC address.
 
-A rerun rebuilds an ISO only when its answer file or the base ISO changed: a <host>.iso.inputs
-file next to it records the sha256 of both.
+With spec.hypervisors.managementVLAN: tagged, the ISO also carries the host's first-boot script
+(firstboot.py; `prepare-iso --on-first-boot`).
+
+A rerun rebuilds an ISO only when its answer file, its first-boot script or the base ISO changed:
+a <host>.iso.inputs file next to it records the sha256 of each.
 """
 
 from __future__ import annotations
@@ -58,19 +61,24 @@ def bmc_ip(bmc_address: str, resolve: Callable[[str], str] = socket.gethostbynam
         raise IsoError(f"can't resolve BMC {host}: {exc}") from None
 
 
-def inputs_record(answer: str, base_sha256: str) -> str:
-    return (f"answer {hashlib.sha256(answer.encode()).hexdigest()}\n"
-            f"base {base_sha256}\n")
+def inputs_record(answer: str, base_sha256: str, first_boot: Optional[str] = None) -> str:
+    record = (f"answer {hashlib.sha256(answer.encode()).hexdigest()}\n"
+              f"base {base_sha256}\n")
+    if first_boot is not None:      # untagged hosts keep the record they had, so no rebuild
+        record += f"first-boot {hashlib.sha256(first_boot.encode()).hexdigest()}\n"
+    return record
 
 
 def build(name: str, answer: str, base_iso: Path, base_sha256: str, out_dir: Path, image: str,
-          runner: Runner = run) -> bool:
-    """Build <out_dir>/<name>.iso unless it's current. Returns True when it was (re)built."""
+          runner: Runner = run, first_boot: Optional[str] = None) -> bool:
+    """Build <out_dir>/<name>.iso unless it's current. Returns True when it was (re)built.
+    first_boot is the host's first-boot script (managementVLAN: tagged), put on the ISO with
+    --on-first-boot; None for none."""
     out_dir.mkdir(parents=True, exist_ok=True)
     os.chmod(out_dir, 0o700)
     target = out_dir / f"{name}.iso"
     record = out_dir / f"{name}.iso.inputs"
-    want = inputs_record(answer, base_sha256)
+    want = inputs_record(answer, base_sha256, first_boot)
     if target.is_file() and record.is_file() and record.read_text() == want:
         return False
     with tempfile.TemporaryDirectory(dir=out_dir, prefix=f".{name}.") as tmp:
@@ -78,12 +86,17 @@ def build(name: str, answer: str, base_iso: Path, base_sha256: str, out_dir: Pat
         os.chmod(work, 0o700)
         (work / "answer.toml").write_text(answer)
         os.chmod(work / "answer.toml", 0o600)
+        extra: List[str] = []
+        if first_boot is not None:
+            (work / "first-boot.sh").write_text(first_boot)
+            os.chmod(work / "first-boot.sh", 0o700)
+            extra = ["--on-first-boot", "/work/first-boot.sh"]
         # No network: everything the assistant needs is in the image and the mounts.
         runner(["podman", "run", "--rm", "--network", "none",
                 "-v", f"{base_iso.resolve()}:/in/base.iso:ro,Z",
                 "-v", f"{work}:/work:Z",
                 image, "prepare-iso", "/in/base.iso", "--fetch-from", "iso",
-                "--answer-file", "/work/answer.toml", "--output", "/work/out.iso"])
+                "--answer-file", "/work/answer.toml", *extra, "--output", "/work/out.iso"])
         built = work / "out.iso"
         if not built.is_file():
             raise IsoError(f"{name}: prepare-iso wrote no ISO")

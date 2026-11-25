@@ -10,9 +10,10 @@ site's (spec.hypervisors.rootPassword) or the generated one, opened from
            install record (api_fingerprint) and pinned from then on
   network  spec.platform.proxmox.bridge must exist (the installer makes vmbr0 on the
            management NIC). With platform.proxmox.vlanTag it is made VLAN-aware, keeping its
-           address, and the network is reloaded. managementVLAN: tagged isn't built: the
-           installer's network is untagged, and moving the address onto a VLAN needs the
-           switch port changed at the same moment, so the step refuses it
+           address, and the network is reloaded. With managementVLAN: tagged the first-boot
+           hook (firstboot.py) already made it VLAN-aware and put the address on
+           <bridge>.<network.nodes.vlan>; the step checks that and changes nothing, so the
+           address never moves
   storage  spec.platform.proxmox.storage must exist on the node, enabled, holding VM disks
            (images); `local` must take ISOs (CAPMOX's bootstrap data), and gains `iso` when not
   token    the roles, user, token and ACLs of lib/dciab_validate/proxmox_privs.py (the one
@@ -41,15 +42,30 @@ class PostError(Exception):
     """A post-install step that can't go on. The message is safe to print."""
 
 
-TAGGED = ("managementVLAN: tagged isn't built yet: the installer's network is untagged, and moving the host's "
-          "address onto the VLAN needs its switch port changed at the same moment (docs/HYPERVISORS.md). Use an "
-          "access port, or a trunk with network.nodes.vlan as the native VLAN, and managementVLAN: untagged")
+def host_cidr(doc: dict, node: str) -> str:
+    """The host's management address with the node network's prefix."""
+    import ipaddress
+    nodes = doc["spec"]["network"]["nodes"]
+    host = next(h for h in doc["spec"]["hypervisors"]["hosts"] if h["name"] == node)
+    return f"{host['address']}/{ipaddress.ip_network(nodes['cidr'], strict=False).prefixlen}"
 
 
-def refuse_tagged(doc: dict) -> None:
-    """managementVLAN: tagged isn't built: refused before anything is written or sent."""
-    if (doc["spec"].get("hypervisors") or {}).get("managementVLAN") == "tagged":
-        raise PostError(TAGGED)
+def check_tagged(ifaces: list, bridge: dict, node: str, doc: dict, log: Callable[[str], None]) -> None:
+    """managementVLAN: tagged: the first-boot hook made the bridge VLAN-aware and put the address
+    on <bridge>.<vlan>. Checked only: changing either now could cut the host off."""
+    px = doc["spec"]["platform"]["proxmox"]
+    vlan = int(doc["spec"]["network"]["nodes"]["vlan"])
+    name = f"{px['bridge']}.{vlan}"
+    want = host_cidr(doc, node)
+    sub = next((i for i in ifaces if isinstance(i, dict) and i.get("iface") == name), None)
+    hint = ("the first-boot hook didn't apply; on the host's console (through its BMC) see "
+            "`journalctl -t dciab-first-boot` and /etc/network/interfaces.dciab-installer")
+    if str(bridge.get("bridge_vlan_aware") or "0") != "1":
+        raise PostError(f"bridge {px['bridge']} on {node} isn't VLAN-aware with managementVLAN: tagged: {hint}")
+    if sub is None or str(sub.get("cidr") or "") != want:
+        got = (sub or {}).get("cidr") or "no address"
+        raise PostError(f"{name} on {node} doesn't hold {want} ({got}) with managementVLAN: tagged: {hint}")
+    log(f"bridge {px['bridge']} is VLAN-aware and {name} holds {want} (managementVLAN: tagged)")
 
 
 def seen_certificate(address: str, port: int = 8006, timeout: float = 10.0) -> bytes:
@@ -155,19 +171,22 @@ class PveApi:
 def network(api: PveApi, node: str, doc: dict, log: Callable[[str], None], tries: int = 6, delay: float = 5.0,
             sleep: Callable[[float], None] = time.sleep) -> None:
     px = doc["spec"]["platform"]["proxmox"]
-    refuse_tagged(doc)
     ifaces = api.get(f"/nodes/{quote(node)}/network") or []
     bridge = next((i for i in ifaces if isinstance(i, dict) and i.get("iface") == px["bridge"]), None)
     if bridge is None or bridge.get("type") != "bridge":
         raise PostError(f"{node} has no bridge {px['bridge']} (spec.platform.proxmox.bridge); the installer makes "
                         "vmbr0 on the management NIC, so name that, or create the bridge before running again")
+    if (doc["spec"].get("hypervisors") or {}).get("managementVLAN") == "tagged":
+        check_tagged(ifaces, bridge, node, doc, log)
+        return
     if not px.get("vlanTag"):
         log(f"bridge {px['bridge']} present (no vlanTag, so it needn't be VLAN-aware)")
         return
     if str(bridge.get("bridge_vlan_aware") or "0") == "1":
         log(f"bridge {px['bridge']} is VLAN-aware")
         return
-    form = {"type": "bridge", "bridge_vlan_aware": 1, "bridge_vids": "2-4094"}
+    from .firstboot import bridge_vids
+    form = {"type": "bridge", "bridge_vlan_aware": 1, "bridge_vids": bridge_vids(doc)}
     for key in ("cidr", "gateway", "bridge_ports", "autostart", "comments", "mtu", "cidr6", "gateway6"):
         if bridge.get(key) not in (None, ""):
             form[key] = bridge[key]
@@ -292,7 +311,6 @@ def run(api: PveApi, host: dict, doc: dict, state: Path, password: str, sealer,
         done.append(line)
         log(line)
 
-    refuse_tagged(doc)       # before the root password is sent
     api.login(password)
     del password
     node = host["name"]

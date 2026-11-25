@@ -677,6 +677,7 @@ def test_first_run_installs_and_records_it(fake_bmc, tmp_path):
     assert f.calls[-1] == ("POST", SYS + "/Actions/ComputerSystem.Reset", {"ResetType": "On"})
     record = cli.read_install(tmp_path / "installs", "pve01")
     assert record["outcome"] == "in-progress" and record["iso"] == HOST_ISO and record["started"]
+    assert record["management_vlan"] == "untagged" and record["node_vlan"] == bare()["spec"]["network"]["nodes"]["vlan"]
     assert (tmp_path / "installs" / "pve01.json").stat().st_mode & 0o777 == 0o600
 
 
@@ -1729,37 +1730,373 @@ def test_existing_token_without_its_sealed_secret_fails_clearly(fake_pve, cert, 
     assert not [w for w in f.writes if "/token/" in w[1] or w[1] == "/access/acl"]
 
 
-def test_tagged_management_vlan_is_refused_before_any_write(fake_pve, cert, tmp_path, monkeypatch):
+def tagged_doc():
     doc = bare()
     doc["spec"]["hypervisors"]["managementVLAN"] = "tagged"
+    doc["spec"]["platform"]["proxmox"]["vlanTag"] = doc["spec"]["network"]["nodes"]["vlan"]
+    return doc
+
+
+def test_post_on_a_tagged_host_checks_the_hook_and_never_moves_the_address(fake_pve, cert, tmp_path, monkeypatch):
     f = fake_pve()
-    failed, out, _, _ = run_post(f, cert, tmp_path, monkeypatch, doc=doc)
-    assert failed == ["pve01"] and "managementVLAN: tagged isn't built" in out and f.writes == []
-    assert f.logins == 0                                  # the root password is never sent
+    f.ifaces = [{"iface": "eno1", "type": "eth"},
+                {"iface": "vmbr0", "type": "bridge", "bridge_ports": "eno1", "bridge_vlan_aware": 1,
+                 "bridge_vids": "2-4094", "autostart": 1},
+                {"iface": "vmbr0.110", "type": "vlan", "cidr": "10.30.110.6/24", "gateway": "10.30.110.1"}]
+    failed, out, _, record = run_post(f, cert, tmp_path, monkeypatch, doc=tagged_doc())
+    assert failed == [], out
+    assert "vmbr0.110 holds 10.30.110.6/24 (managementVLAN: tagged)" in out
+    assert not f.reloaded and not [w for w in f.writes if "/network" in w[1]]       # the network is untouched
+    assert record["post"] == "done"
 
 
-def test_tagged_management_vlan_stops_the_run_before_anything(tmp_path, monkeypatch, capsys):
+def test_post_on_a_tagged_host_where_the_hook_didnt_apply_fails_clearly(fake_pve, cert, tmp_path, monkeypatch):
+    f = fake_pve()                    # the installer's untagged vmbr0, holding the address
+    failed, out, _, record = run_post(f, cert, tmp_path, monkeypatch, doc=tagged_doc())
+    assert failed == ["pve01"] and "isn't VLAN-aware with managementVLAN: tagged" in out
+    assert "journalctl -t dciab-first-boot" in out and record["post"] == "failed"
+    assert not [w for w in f.writes if "/network" in w[1]]
+
+
+def test_tagged_runs_without_any_refusal(tmp_path, monkeypatch, capsys):
     Site(tmp_path, monkeypatch, capsys)
-    doc = bare()
-    doc["spec"]["hypervisors"]["managementVLAN"] = "tagged"
+    doc = tagged_doc()
     cfg = tmp_path / "dciab.yaml"
     cfg.write_text(yaml.safe_dump(doc, sort_keys=False))
-    monkeypatch.setattr(cli.os, "geteuid", lambda: 0)
-    monkeypatch.setattr(cli, "media", lambda *a, **k: pytest.fail("media ran"))
-    monkeypatch.setattr(cli, "_bmc", lambda *a, **k: pytest.fail("a BMC was called"))
-    try:
-        rc = cli.main(["--root", str(ROOT), "--state", str(tmp_path / "state"), str(cfg)])
-    except SystemExit as exc:          # the config check (dciab validate's rules) stops it first
-        rc = exc.code
-    captured = capsys.readouterr()
-    assert rc != 0 and "is not valid" in captured.out + captured.err
-    assert not (tmp_path / "state" / "answers").exists()
-    # The step's own refusal, for a config that skips validate's rule (a backstop).
-    import dciab_services.cli as services_cli
-    monkeypatch.setattr(services_cli, "_load", lambda config, root: doc)
-    assert cli.main(["--root", str(ROOT), "--state", str(tmp_path / "state"), str(cfg)]) == 2
-    assert "managementVLAN: tagged isn't built" in capsys.readouterr().err
-    assert not (tmp_path / "state").exists()
+    rc = cli.main(["--root", str(ROOT), "--state", str(tmp_path / "state"), "--print", str(cfg)])
+    out = capsys.readouterr().out
+    assert rc == 0, out
+    assert "[first-boot]" in out and 'ordering = "before-network"' in out
+    assert "--- first-boot script on pve01's ISO (managementVLAN: tagged)" in out and "VLAN=110" in out
+
+
+# -- the first-boot hook (managementVLAN: tagged) ---------------------------------------------
+
+from dciab_hypervisors import firstboot  # noqa: E402
+
+INSTALLER_INTERFACES = """auto lo
+iface lo inet loopback
+
+iface eno1 inet manual
+
+auto vmbr0
+iface vmbr0 inet static
+\taddress 10.30.110.6/24
+\tgateway 10.30.110.1
+\tbridge-ports eno1
+\tbridge-stp off
+\tbridge-fd 0
+
+iface eno2 inet manual
+
+
+source /etc/network/interfaces.d/*
+"""
+
+TAGGED_INTERFACES = """auto lo
+iface lo inet loopback
+
+iface eno1 inet manual
+
+auto vmbr0
+iface vmbr0 inet manual
+\tbridge-ports eno1
+\tbridge-stp off
+\tbridge-fd 0
+\tbridge-vlan-aware yes
+\tbridge-vids 2-4094
+
+auto vmbr0.110
+iface vmbr0.110 inet static
+\taddress 10.30.110.6/24
+\tgateway 10.30.110.1
+
+iface eno2 inet manual
+
+
+source /etc/network/interfaces.d/*
+"""
+
+
+def run_hook(tmp_path, script, interfaces=INSTALLER_INTERFACES, logger=True):
+    """Run the hook on a copy of /etc/network. With logger, a fake logger echoes each message to
+    stderr as "logger[<tag>]: ..."; without it, PATH holds only the tools the hook needs."""
+    root = tmp_path / "root"
+    (root / "etc" / "network").mkdir(parents=True, exist_ok=True)
+    (root / "etc" / "network" / "interfaces").write_text(interfaces)
+    hook = tmp_path / "first-boot.sh"
+    hook.write_text(script)
+    hook.chmod(0o700)
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir(exist_ok=True)
+    for tool in ("sh", "awk", "grep", "cp", "chmod", "mv", "cat"):
+        target = shutil.which(tool, path="/usr/bin:/bin")
+        if target and not (bin_dir / tool).exists():
+            (bin_dir / tool).symlink_to(target)
+    if logger:
+        fake = bin_dir / "logger"
+        fake.write_text('#!/bin/sh\ntag=$2; shift 3; echo "logger[$tag]: $*" >&2\n')
+        fake.chmod(0o755)
+    env = dict(os.environ, DCIAB_ROOT=str(root), PATH=str(bin_dir))
+    proc = subprocess.run([str(bin_dir / "sh"), str(hook)], env=env, capture_output=True, text=True)
+    return proc, root / "etc" / "network"
+
+
+def test_untagged_has_no_hook_and_the_answer_file_is_unchanged():
+    doc = bare()
+    assert firstboot.render(doc, host(doc)) is None
+    assert "[first-boot]" not in answer.render(doc, host(doc), "$6$fake$pve01")
+    assert answer.render(doc, host(doc), "$6$fake$pve01") == GOLDEN
+
+
+def test_tagged_answer_file_runs_the_hook_from_the_iso_before_networking():
+    doc = tagged_doc()
+    text = answer.render(doc, host(doc), "$6$fake$pve01")
+    assert text == GOLDEN + '\n[first-boot]\nsource = "from-iso"\nordering = "before-network"\n'
+
+
+@pytest.mark.skipif(sys.version_info < (3, 11), reason="tomllib is in Python 3.11+")
+def test_tagged_answer_file_is_valid_toml():
+    import tomllib
+    doc = tagged_doc()
+    parsed = tomllib.loads(answer.render(doc, host(doc), "$6$fake$pve01"))
+    assert parsed["first-boot"] == {"source": "from-iso", "ordering": "before-network"}
+
+
+def test_hook_moves_the_address_onto_the_tagged_vlan(tmp_path):
+    doc = tagged_doc()
+    proc, net = run_hook(tmp_path, firstboot.render(doc, host(doc)))
+    assert proc.returncode == 0, proc.stderr
+    assert (net / "interfaces").read_text() == TAGGED_INTERFACES
+    assert (net / "interfaces.dciab-installer").read_text() == INSTALLER_INTERFACES      # the installer's, kept
+    assert "moved to vmbr0.110 (tagged)" in proc.stderr
+    assert not (net / "interfaces.dciab-tmp").exists()
+    assert (net / "interfaces").stat().st_mode & 0o777 == 0o644
+
+
+def test_hook_rerun_changes_nothing(tmp_path):
+    doc = tagged_doc()
+    script = firstboot.render(doc, host(doc))
+    run_hook(tmp_path, script)
+    proc, net = run_hook(tmp_path, script, TAGGED_INTERFACES)
+    assert proc.returncode == 0 and "already configured" in proc.stderr
+    assert (net / "interfaces").read_text() == TAGGED_INTERFACES
+
+
+def test_hook_keeps_the_nic_the_installer_chose(tmp_path):
+    doc = tagged_doc()
+    proc, net = run_hook(tmp_path, firstboot.render(doc, host(doc)), INSTALLER_INTERFACES.replace("eno1", "nic0"))
+    assert proc.returncode == 0, proc.stderr
+    text = (net / "interfaces").read_text()
+    assert "\tbridge-ports nic0\n" in text and "iface nic0 inet manual" in text and "eno1" not in text
+
+
+def test_hook_retry_rewrites_the_current_file(tmp_path):
+    doc = tagged_doc()
+    script = firstboot.render(doc, host(doc))
+    edited = INSTALLER_INTERFACES.replace("iface eno2 inet manual", "iface eno2 inet manual\n\tmtu 9000")
+    root = tmp_path / "root" / "etc" / "network"
+    root.mkdir(parents=True)
+    (root / "interfaces.dciab-installer").write_text(INSTALLER_INTERFACES)   # a first run stopped after the backup
+    proc, net = run_hook(tmp_path, script, edited)
+    assert proc.returncode == 0, proc.stderr
+    assert "\tmtu 9000" in (net / "interfaces").read_text()                  # the edit since isn't lost
+    assert (net / "interfaces.dciab-installer").read_text() == INSTALLER_INTERFACES
+
+
+def test_hook_without_a_bridge_port_changes_nothing(tmp_path):
+    doc = tagged_doc()
+    broken = INSTALLER_INTERFACES.replace("\tbridge-ports eno1\n", "")
+    proc, net = run_hook(tmp_path, firstboot.render(doc, host(doc)), broken)
+    assert proc.returncode == 1 and "no bridge-ports on vmbr0" in proc.stderr
+    assert (net / "interfaces").read_text() == broken and not (net / "interfaces.dciab-installer").exists()
+
+
+RICH_INSTALLER_INTERFACES = """auto lo
+iface lo inet loopback
+
+iface eno1 inet manual
+
+auto vmbr0
+iface vmbr0 inet static
+\taddress 10.30.110.6/24
+\tgateway 10.30.110.1
+\tbridge_ports eno1
+\tbridge-stp off
+\tbridge-fd 0
+\t# the management bridge
+\tmtu 9000
+\thwaddress aa:bb:cc:dd:ee:01
+\tbridge_vlan_aware no
+# a comment the site added after the stanza
+
+source /etc/network/interfaces.d/*
+"""
+
+RICH_TAGGED_INTERFACES = """auto lo
+iface lo inet loopback
+
+iface eno1 inet manual
+
+auto vmbr0
+iface vmbr0 inet manual
+\tbridge_ports eno1
+\tbridge-stp off
+\tbridge-fd 0
+\t# the management bridge
+\tmtu 9000
+\thwaddress aa:bb:cc:dd:ee:01
+\tbridge-vlan-aware yes
+\tbridge-vids 110 200-210
+
+auto vmbr0.110
+iface vmbr0.110 inet static
+\taddress 10.30.110.6/24
+\tgateway 10.30.110.1
+
+# a comment the site added after the stanza
+
+source /etc/network/interfaces.d/*
+"""
+
+
+def test_hook_edits_the_stanza_in_place_and_keeps_every_other_key(tmp_path):
+    doc = tagged_doc()
+    doc["spec"]["hypervisors"]["bridgeVids"] = "200-210 110"
+    script = firstboot.render(doc, host(doc))
+    proc, net = run_hook(tmp_path, script, RICH_INSTALLER_INTERFACES)
+    assert proc.returncode == 0, proc.stderr
+    assert (net / "interfaces").read_text() == RICH_TAGGED_INTERFACES
+    proc, net = run_hook(tmp_path, script, RICH_TAGGED_INTERFACES)          # a rerun changes nothing
+    assert proc.returncode == 0 and "already configured" in proc.stderr
+    assert (net / "interfaces").read_text() == RICH_TAGGED_INTERFACES
+
+
+def test_hook_moves_a_netmask_line_and_adds_a_missing_gateway(tmp_path):
+    doc = tagged_doc()
+    old = INSTALLER_INTERFACES.replace("\taddress 10.30.110.6/24\n\tgateway 10.30.110.1\n",
+                                       "\taddress 10.30.110.6\n\tnetmask 255.255.255.0\n")
+    proc, net = run_hook(tmp_path, firstboot.render(doc, host(doc)), old)
+    assert proc.returncode == 0, proc.stderr
+    text = (net / "interfaces").read_text()
+    assert ("iface vmbr0.110 inet static\n\taddress 10.30.110.6\n\tnetmask 255.255.255.0\n"
+            "\tgateway 10.30.110.1\n") in text
+    assert "netmask" not in text.split("auto vmbr0.110")[0]
+
+
+def test_hook_uses_the_config_address_when_the_stanza_has_none(tmp_path):
+    doc = tagged_doc()
+    old = INSTALLER_INTERFACES.replace("iface vmbr0 inet static\n\taddress 10.30.110.6/24\n\tgateway 10.30.110.1\n",
+                                       "iface vmbr0 inet manual\n")
+    proc, net = run_hook(tmp_path, firstboot.render(doc, host(doc)), old)
+    assert proc.returncode == 0, proc.stderr
+    assert "iface vmbr0.110 inet static\n\taddress 10.30.110.6/24\n\tgateway 10.30.110.1\n" in (net / "interfaces").read_text()
+
+
+def test_hook_adds_the_config_address_when_only_a_gateway_moves(tmp_path):
+    doc = tagged_doc()
+    script = firstboot.render(doc, host(doc))
+    old = INSTALLER_INTERFACES.replace("\taddress 10.30.110.6/24\n", "")
+    proc, net = run_hook(tmp_path, script, old)
+    assert proc.returncode == 0, proc.stderr
+    text = (net / "interfaces").read_text()
+    assert "iface vmbr0.110 inet static\n\taddress 10.30.110.6/24\n\tgateway 10.30.110.1\n" in text
+    proc, net = run_hook(tmp_path, script, text)                              # a rerun changes nothing
+    assert proc.returncode == 0 and (net / "interfaces").read_text() == text
+
+
+def test_hook_drops_a_lone_netmask_when_it_adds_the_config_address(tmp_path):
+    doc = tagged_doc()
+    old = INSTALLER_INTERFACES.replace("\taddress 10.30.110.6/24\n", "\tnetmask 255.255.255.0\n")
+    proc, net = run_hook(tmp_path, firstboot.render(doc, host(doc)), old)
+    assert proc.returncode == 0, proc.stderr
+    text = (net / "interfaces").read_text()
+    assert "iface vmbr0.110 inet static\n\taddress 10.30.110.6/24\n\tgateway 10.30.110.1\n" in text
+    assert "netmask" not in text
+
+
+@pytest.mark.parametrize("line", ["post-up ip route add 10.9.0.0/16 via 10.30.110.1 dev vmbr0",
+                                  "up true", "pre_down true", "down true", "pre-up true", "post_down true"])
+def test_hook_refuses_a_stanza_with_command_lines(tmp_path, line):
+    doc = tagged_doc()
+    old = INSTALLER_INTERFACES.replace("\tbridge-fd 0\n", f"\tbridge-fd 0\n\t{line}\n")
+    proc, net = run_hook(tmp_path, firstboot.render(doc, host(doc)), old)
+    assert proc.returncode == 1
+    assert "command lines" in proc.stderr and "nothing changed" in proc.stderr
+    assert (net / "interfaces").read_text() == old
+    assert not (net / "interfaces.dciab-installer").exists()
+
+
+def test_hook_puts_a_blank_line_after_the_new_stanza(tmp_path):
+    doc = tagged_doc()
+    old = INSTALLER_INTERFACES.replace("\tbridge-fd 0\n\n", "\tbridge-fd 0\n")
+    proc, net = run_hook(tmp_path, firstboot.render(doc, host(doc)), old)
+    assert proc.returncode == 0, proc.stderr
+    assert "\tgateway 10.30.110.1\n\niface eno2 inet manual" in (net / "interfaces").read_text()
+
+
+def test_hook_logs_once_through_logger_and_to_stderr_without_it(tmp_path):
+    doc = tagged_doc()
+    script = firstboot.render(doc, host(doc))
+    proc, _ = run_hook(tmp_path / "with", script)
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stderr.count("moved to vmbr0.110") == 1 and proc.stderr.startswith("logger[dciab-first-boot]: ")
+    proc, _ = run_hook(tmp_path / "without", script, logger=False)
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stderr.count("moved to vmbr0.110") == 1 and proc.stderr.startswith("dciab-first-boot: ")
+
+
+def test_hook_bridge_vids_default_and_canonical_form():
+    doc = tagged_doc()
+    assert 'VIDS="2-4094"' in firstboot.render(doc, host(doc))
+    doc["spec"]["hypervisors"]["bridgeVids"] = "300  110 111-120 115"
+    assert 'VIDS="110-120 300"' in firstboot.render(doc, host(doc))
+    doc["spec"]["hypervisors"]["bridgeVids"] = "110; reboot"
+    with pytest.raises(ValueError):
+        firstboot.render(doc, host(doc))
+
+
+def test_hook_is_shellcheck_clean(tmp_path):
+    if not shutil.which("shellcheck"):
+        pytest.skip("shellcheck isn't installed")
+    doc = tagged_doc()
+    path = tmp_path / "first-boot.sh"
+    path.write_text(firstboot.render(doc, host(doc)))
+    proc = subprocess.run(["shellcheck", "-s", "sh", str(path)], capture_output=True, text=True)
+    assert proc.returncode == 0, proc.stdout
+
+
+def test_hook_values_come_from_the_config():
+    doc = tagged_doc()
+    doc["spec"]["network"]["nodes"]["vlan"] = 210
+    script = firstboot.render(doc, host(doc, "pve02"))
+    assert "VLAN=210\nCIDR=10.30.110.7/24\nGATEWAY=10.30.110.1\n" in script
+    assert script.startswith("#!/bin/sh\n")
+
+
+def test_iso_carries_the_hook_only_when_tagged_and_rebuilds_when_it_changes(tmp_path):
+    base = tmp_path / "pve.iso"
+    base.write_bytes(b"base")
+    out = tmp_path / "host-isos"
+    calls = []
+    assert iso.build("pve01", "a=1\n", base, "s1", out, "img", fake_assistant(calls))
+    assert "--on-first-boot" not in calls[-1]
+    untagged_record = (out / "pve01.iso.inputs").read_text()
+    assert "first-boot" not in untagged_record                 # untagged hosts keep the record they had
+    seen = {}
+
+    def runner(cmd):
+        work = next(a.split(":")[0] for a in cmd if a.endswith(":/work:Z"))
+        hook = Path(work) / "first-boot.sh"
+        seen["script"], seen["mode"] = hook.read_text(), hook.stat().st_mode & 0o777
+        return fake_assistant(calls)(cmd)
+    assert iso.build("pve01", "a=1\n", base, "s1", out, "img", runner, first_boot="#!/bin/sh\necho one\n")
+    assert calls[-1][calls[-1].index("--on-first-boot") + 1] == "/work/first-boot.sh"
+    assert calls[-1].index("--on-first-boot") < calls[-1].index("--output")
+    assert seen == {"script": "#!/bin/sh\necho one\n", "mode": 0o700}
+    assert not iso.build("pve01", "a=1\n", base, "s1", out, "img", runner, first_boot="#!/bin/sh\necho one\n")
+    assert iso.build("pve01", "a=1\n", base, "s1", out, "img", runner, first_boot="#!/bin/sh\necho two\n")
+    assert len(calls) == 3
 
 
 def test_a_network_reload_that_drops_the_api_fails_clearly(fake_pve, cert, tmp_path, monkeypatch):
@@ -1862,3 +2199,32 @@ def test_print_shows_post_install(tmp_path, monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "post-install: bridge vmbr0, storage local-lvm, token dciab@pve!capmox sealed to" in out
     assert "post-install: none (not in spec.platform.proxmox.nodes)" in out
+
+
+def test_a_changed_management_network_on_an_installed_host_is_a_note():
+    doc = bare()
+    vlan = doc["spec"]["network"]["nodes"]["vlan"]
+    record = {"outcome": "installed", "management_vlan": "untagged", "node_vlan": vlan}
+    assert cli.network_drift(record, doc) is None
+    assert cli.network_drift({"outcome": "installed"}, doc) is None            # recorded before this existed
+    assert cli.network_drift(dict(record, outcome="in-progress"), tagged_doc()) is None
+    note = cli.network_drift(record, tagged_doc())
+    assert "installed for managementVLAN untagged" in note and "config now says tagged" in note
+    assert "--reinstall" in note and "console" in note
+
+
+def test_drift_note_is_printed_before_media(fake_bmc, run_main, tmp_path):
+    f = fake_bmc(inserted=HOST_ISO)
+    vlan = bare()["spec"]["network"]["nodes"]["vlan"]
+    cli.write_install(tmp_path / "state" / "installs", "pve01", outcome="installed", management_vlan="tagged",
+                      node_vlan=vlan)
+    code, out, _ = run_main(lambda h: f.bmc)
+    assert "pve01: note: installed for managementVLAN tagged" in out
+    assert out.index("note: installed for managementVLAN") > out.index("== hypervisors: media")
+
+
+def test_wait_hint_points_to_the_hook_log_only_when_tagged():
+    assert cli.wait_hint(bare()) == "watch the server's console through its BMC"
+    hint = cli.wait_hint(tagged_doc())
+    assert "journalctl -t dciab-first-boot" in hint and "proxmox-first-boot-network-pre" in hint
+    assert "carries VLAN 110 tagged" in hint
