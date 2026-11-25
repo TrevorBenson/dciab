@@ -3,32 +3,83 @@
 <state>/services/created lists each change, one per line, written before the change is made:
 
     address <nic> <ip>/<prefix>   a DNS service IP on the bootstrap interface
-    port <zone> <port>            a firewalld port (runtime, and permanent when it was made so)
+    port <zone> <port> <scope>    a firewalld port DCiaB opened, scope runtime or permanent; each
+                                  scope is listed only when DCiaB opened it, so an operator's own
+                                  rule (say, a permanent one not loaded at runtime) is never
+                                  removed. A line without a scope (older records) means both.
     pod <name>                    the services pod
     unit <path>                   a systemd or Quadlet unit file that brings the above back after
                                   a reboot (#81)
 
 prune() undoes the address and port lines the current config no longer wants; down() undoes
 every line, units first, so nothing restarts what is being removed. Only listed changes are
-undone: an address or port that was there before dciab services is never touched.
+undone: an address or port that was there before dciab services is never touched. Both take
+/run/dciab-services.lock (dciab services and dciab seed --remove share the record), unless the
+caller holds it already (DCIAB_SERVICES_LOCKED=1, set by lib/steps/services.sh).
+
+A permanent firewalld port is removed with firewall-offline-cmd when firewalld isn't running. A
+line that can't be undone stays listed and is reported, so a later --down can finish the job.
 
     python3 -m dciab_services.lifecycle down <state>/services
 """
 
 from __future__ import annotations
 
+import contextlib
+import errno
+import fcntl
 import os
 import subprocess
 import sys
 from pathlib import Path
-from typing import Callable, Iterable, List, Optional, Set
+from typing import Callable, Iterable, Iterator, List, Optional, Set
 
 RECORD = "created"
 APPLIED = "applied"
 # down() order: units first (nothing brings the pod back), then the pod, then what it used.
 ORDER = {"unit": 0, "pod": 1, "address": 2, "port": 3}
 
+SCOPES = ("runtime", "permanent")
+LOCK = "/run/dciab-services.lock"
+# The Quadlet unit dciab services installs (dciab_services.units.KUBE in QUADLET_DIR).
+KUBE_UNIT = "dciab-services.kube"
+
 Say = Callable[[str], None]
+
+
+class Busy(Exception):
+    """Another dciab services, or dciab seed --remove, holds the lock."""
+
+
+class Kept(Exception):
+    """A recorded change that can't be undone now; its line stays listed."""
+
+
+@contextlib.contextmanager
+def locked() -> Iterator[None]:
+    """/run/dciab-services.lock (DCIAB_SERVICES_LOCK overrides it), held while the record and the
+    host change. A caller that holds it already sets DCIAB_SERVICES_LOCKED=1. Without root the
+    lock can't be taken, and nothing on the host can be changed either: carry on."""
+    if os.environ.get("DCIAB_SERVICES_LOCKED") == "1":
+        yield
+        return
+    path = os.environ.get("DCIAB_SERVICES_LOCK", LOCK)
+    try:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0), 0o600)
+    except OSError as exc:
+        if exc.errno in (errno.EACCES, errno.EPERM, errno.EROFS, errno.ENOENT):
+            yield
+            return
+        raise
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise Busy("another dciab services (or dciab seed --remove) is changing this host's "
+                       f"services ({path}); try again when it has finished") from None
+        yield
+    finally:
+        os.close(fd)
 
 
 def _say(msg: str) -> None:
@@ -99,21 +150,45 @@ def undo(entry: List[str], say: Say = _say, firewalld: Optional[bool] = None) ->
         if cidr in have:
             run(["ip", "addr", "del", cidr, "dev", nic])
             say(f"removed {cidr} from {nic}")
-    elif kind == "port" and len(args) == 2:
-        zone, port = args
+    elif kind == "port" and len(args) in (2, 3):
+        zone, port = args[0], args[1]
+        scopes = [args[2]] if len(args) == 3 else list(SCOPES)
+        if any(sc not in SCOPES for sc in scopes):
+            raise ValueError(" ".join(entry))
         if firewalld is None:
             firewalld = firewalld_running()
+        for scope in scopes:
+            _undo_port(zone, port, scope, firewalld, say)
+    else:
+        raise ValueError(" ".join(entry))
+
+
+def _undo_port(zone: str, port: str, scope: str, firewalld: bool, say: Say) -> None:
+    """Close one scope of a port DCiaB opened. Runtime rules don't outlive firewalld, so with
+    firewalld stopped there is nothing to close at runtime; a permanent rule is removed from the
+    zone files with firewall-offline-cmd then. Raises Kept when it can't be removed now."""
+    if scope == "runtime":
         if not firewalld:
-            say(f"firewalld isn't running; nothing to close for {port}")
+            say(f"firewalld isn't running: {port} in zone {zone} isn't open at runtime")
             return
         if query(["firewall-cmd", f"--zone={zone}", f"--query-port={port}"]).returncode == 0:
             run(["firewall-cmd", f"--zone={zone}", f"--remove-port={port}"])
             say(f"closed {port} in zone {zone} (runtime)")
+        return
+    if firewalld:
         if query(["firewall-cmd", "--permanent", f"--zone={zone}", f"--query-port={port}"]).returncode == 0:
             run(["firewall-cmd", "--permanent", f"--zone={zone}", f"--remove-port={port}"])
             say(f"closed {port} in zone {zone} (permanent)")
-    else:
-        raise ValueError(" ".join(entry))
+        return
+    have = query(["firewall-offline-cmd", f"--zone={zone}", f"--query-port={port}"])
+    if have.returncode == 1:
+        return
+    if have.returncode != 0:
+        raise Kept(f"firewalld isn't running and firewall-offline-cmd can't check {port} in zone "
+                   f"{zone}; it stays listed (start firewalld and run this again, or: "
+                   f"firewall-cmd --permanent --zone={zone} --remove-port={port})")
+    run(["firewall-offline-cmd", f"--zone={zone}", f"--remove-port={port}"])
+    say(f"closed {port} in zone {zone} (permanent; firewalld isn't running)")
 
 
 def _undo_unit(path: Path, say: Say) -> None:
@@ -141,26 +216,24 @@ def prune(conf: Path, wanted: Set[str], kinds: Iterable[str] = ("address", "port
     """Undo recorded lines of the given kinds that aren't in wanted (the lines this config
     would record). Returns the lines it couldn't undo; they stay in the record."""
     kinds = set(kinds)
-    keep, left = [], []
-    firewalld = None
-    for entry in read(conf):
-        line = " ".join(entry)
-        if not entry or entry[0] not in kinds or line in wanted:
-            keep.append(entry)
-            continue
-        if entry[0] == "port" and firewalld is None:
-            firewalld = firewalld_running()
-        if entry[0] == "port" and not firewalld:
-            keep.append(entry)   # can't tell whether it's still open; leave it listed
-            continue
-        try:
-            undo(entry, say, firewalld)
-            say(f"no longer wanted: {line}")
-        except (subprocess.CalledProcessError, ValueError) as exc:
-            say(f"couldn't undo '{line}': {_why(exc)}")
-            keep.append(entry)
-            left.append(line)
-    write(conf, keep)
+    with locked():
+        keep, left = [], []
+        firewalld = None
+        for entry in read(conf):
+            line = " ".join(entry)
+            if not entry or entry[0] not in kinds or line in wanted:
+                keep.append(entry)
+                continue
+            if entry[0] == "port" and firewalld is None:
+                firewalld = firewalld_running()
+            try:
+                undo(entry, say, firewalld)
+                say(f"no longer wanted: {line}")
+            except (subprocess.CalledProcessError, ValueError, Kept) as exc:
+                say(f"couldn't undo '{line}': {_why(exc)}")
+                keep.append(entry)
+                left.append(line)
+        write(conf, keep)
     return left
 
 
@@ -168,23 +241,45 @@ def down(conf: Path, say: Say = _say) -> List[str]:
     """Undo every recorded change, units first. Returns the lines it couldn't undo (they stay
     listed); with none, the record and the applied fingerprint go, so the next dciab services
     starts from scratch."""
-    entries = read(conf)
-    if not entries:
-        say(f"{conf / RECORD} lists nothing dciab services added to this host")
-    firewalld = firewalld_running() if any(e and e[0] == "port" for e in entries) else None
-    left = []
-    for entry in sorted(entries, key=lambda e: ORDER.get(e[0] if e else "", 9)):
-        try:
-            undo(entry, say, firewalld)
-        except ValueError:
-            say(f"{conf / RECORD}: skipping a line it doesn't understand: {' '.join(entry)}")
-        except subprocess.CalledProcessError as exc:
-            say(f"couldn't undo '{' '.join(entry)}': {_why(exc)}")
-            left.append(entry)
-    write(conf, left)
-    if not left and (conf / APPLIED).exists():
-        (conf / APPLIED).unlink()
+    with locked():
+        entries = read(conf)
+        if not entries:
+            say(f"{conf / RECORD} lists nothing dciab services added to this host")
+        firewalld = firewalld_running() if any(e and e[0] == "port" for e in entries) else None
+        left = []
+        for entry in sorted(entries, key=lambda e: ORDER.get(e[0] if e else "", 9)):
+            try:
+                undo(entry, say, firewalld)
+            except ValueError:
+                say(f"{conf / RECORD}: skipping a line it doesn't understand: {' '.join(entry)}")
+            except (subprocess.CalledProcessError, Kept) as exc:
+                say(f"couldn't undo '{' '.join(entry)}': {_why(exc)}")
+                left.append(entry)
+        write(conf, left)
+        if not left and (conf / APPLIED).exists():
+            (conf / APPLIED).unlink()
     return [" ".join(e) for e in left]
+
+
+def installed_elsewhere(conf: Path) -> Optional[str]:
+    """With an empty record: the services unit installed on this host and the state folder it
+    runs from, when there is one. Says why --down can't remove it from here, else None."""
+    unit = Path(os.environ.get("DCIAB_QUADLET_DIR", "/etc/containers/systemd")) / KUBE_UNIT
+    if read(conf) or not unit.is_file():
+        return None
+    yaml = ""
+    for line in unit.read_text().splitlines():
+        if line.startswith("Yaml="):
+            yaml = line.split("=", 1)[1].strip()
+    where = Path(yaml).parent if yaml else None
+    if where and where.parent.resolve() != conf.parent.resolve():
+        return (f"{unit} is installed, but for the state folder {where.parent}, not {conf.parent}; "
+                f"run: dciab services <config> --down --state {where.parent}")
+    return (f"{unit} is installed, but {conf / RECORD} lists nothing (the record is gone); "
+            f"remove it by hand: systemctl stop dciab-services.service "
+            f"dciab-services-addresses.service; rm {unit} "
+            "/etc/systemd/system/dciab-services-addresses.service; systemctl daemon-reload; "
+            "then the DNS service IPs and the firewalld ports")
 
 
 def _why(exc: Exception) -> str:
@@ -199,7 +294,16 @@ def main(argv: Optional[List[str]] = None) -> int:
     if len(args) != 2 or args[0] != "down":
         print("usage: python3 -m dciab_services.lifecycle down <state>/services", file=sys.stderr)
         return 2
-    left = down(Path(args[1]), lambda m: _say(f"down: {m}"))
+    conf = Path(args[1])
+    elsewhere = installed_elsewhere(conf)
+    if elsewhere:
+        print(f"dciab services: --down: {elsewhere}", file=sys.stderr)
+        return 1
+    try:
+        left = down(conf, lambda m: _say(f"down: {m}"))
+    except Busy as exc:
+        print(f"dciab services: {exc}", file=sys.stderr)
+        return 1
     if left:
         print("dciab services: --down left these behind (above); fix them and run it again:\n  "
               + "\n  ".join(left), file=sys.stderr)

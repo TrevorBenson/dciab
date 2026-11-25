@@ -62,8 +62,8 @@ def test_dns_only_pod_reported_as_dns(monkeypatch):
     assert "dciab seed" in cli.check_services(site, fake([]), resolve=answers(None))["detail"]
     c = cli.check_services(site, running, resolve=answers("10.9.9.9"))
     assert c["status"] == "down" and "10.0.0.54: 10.9.9.9" in c["detail"]
-    # a pod that's gone while something else still answers: down, not missing
-    assert cli.check_services(site, fake([]), resolve=answers("10.0.0.5"))["status"] == "down"
+    # a pod that's gone is missing, even while something else still answers
+    assert cli.check_services(site, fake([]), resolve=answers("10.0.0.5"))["status"] == "missing"
     assert cli.check_services(site, fake([("pod inspect", 0, "Exited\n")]),
                               resolve=answers("10.0.0.5"))["status"] == "down"
 

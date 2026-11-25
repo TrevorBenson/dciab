@@ -25,14 +25,16 @@ REGISTRY_SERVICE = "dciab-registry.service"   # Quadlet's unit for dciab-registr
 
 
 def registry_unit(image_id: str, spec: str, token: str, address: str, data: Path, etc: Path,
-                  state: Path, token_label: str) -> str:
-    """The Quadlet unit that runs Zot as dciab-registry, and brings it back after a reboot."""
+                  state: Path, token_label: str, mounts: List[Path] = ()) -> str:
+    """The Quadlet unit that runs Zot as dciab-registry, and brings it back after a reboot.
+    It waits for the state folder (registry data, its config) and container storage (mounts)."""
+    paths = " ".join(dict.fromkeys(str(m) for m in [state, data, etc, *mounts] if m))
     return f"""# Written by dciab seed. Removed by dciab seed --remove. Changes are overwritten.
 [Unit]
 Description=DCiaB seed registry (Zot) on {address}:{REGISTRY_PORT}
 Wants=network-online.target
 After=network-online.target
-RequiresMountsFor={state}
+RequiresMountsFor={paths}
 
 [Container]
 Image={image_id}

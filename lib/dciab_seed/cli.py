@@ -241,7 +241,9 @@ def step_registry(root: Path, payload: Path, state: Path, s) -> None:
     if units.persistent():
         # A Quadlet unit runs it, so it comes back after a reboot.
         unit = units.QUADLET_DIR / f"{REGISTRY_CONTAINER}.container"
-        text = registry_unit(image_id, want, token, s.address, data, etc, state, SEED_TOKEN_LABEL)
+        graphroot = probe_cmd(["podman", "info", "--format", "{{.Store.GraphRoot}}"]).stdout.strip()
+        text = registry_unit(image_id, want, token, s.address, data, etc, state, SEED_TOKEN_LABEL,
+                             mounts=[Path(graphroot)] if graphroot else [])
         active = probe_cmd(["systemctl", "is-active", "--quiet", REGISTRY_SERVICE]).returncode == 0
         current = unit.is_file() and unit.read_text() == text
         if have != [want, "running"] or not current or not active:
@@ -289,9 +291,32 @@ def nic_name(want: str) -> Optional[str]:
     return want or None
 
 
+def registry_ports(created: dict) -> List[List[str]]:
+    """The firewalld port scopes seed opened for the registry, as lifecycle lines
+    ["port", zone, port, scope]. An older record ("registry-port": {"zone", "port"}) means both
+    scopes in that zone."""
+    out = [list(e) for e in created.get("registry-ports") or [] if isinstance(e, list) and len(e) == 4]
+    old = created.get("registry-port")
+    if isinstance(old, dict) and old.get("zone") and old.get("port"):
+        out.append(["port", old["zone"], old["port"]])
+    return out
+
+
+def save_registry_ports(state: Path, entries: List[List[str]]) -> None:
+    created = load_created(state)
+    created.pop("registry-port", None)
+    if entries:
+        created["registry-ports"] = entries
+    else:
+        created.pop("registry-ports", None)
+    save_created(state, created)
+
+
 def open_registry_port(state: Path, s) -> None:
     """Port 443 in the bootstrap interface's firewalld zone, runtime and permanent, when
-    firewalld runs. Recorded first; a port open before seed is left alone."""
+    firewalld runs. Each scope is recorded before it is opened, and only when seed opens it: a
+    rule that was there already is left alone. Ports seed opened in another zone (the interface
+    moved) are closed first."""
     from dciab_services import lifecycle
     if not lifecycle.firewalld_running():
         return
@@ -299,16 +324,24 @@ def open_registry_port(state: Path, s) -> None:
     zone = (probe_cmd(["firewall-cmd", f"--get-zone-of-interface={nic}"]).stdout.strip() if nic else "") \
         or probe_cmd(["firewall-cmd", "--get-default-zone"]).stdout.strip()
     port = f"{REGISTRY_PORT}/tcp"
-    rec = load_created(state).get("registry-port")
-    ours = rec == {"zone": zone, "port": port}
-    if probe_cmd(["firewall-cmd", f"--zone={zone}", f"--query-port={port}"]).returncode != 0:
-        record_created(state, "registry-port", {"zone": zone, "port": port})
-        ours = True
-        run(["firewall-cmd", f"--zone={zone}", f"--add-port={port}"])
-        say(f"registry: opened {port} in zone {zone} (runtime)")
-    if ours and probe_cmd(["firewall-cmd", "--permanent", f"--zone={zone}", f"--query-port={port}"]).returncode != 0:
-        run(["firewall-cmd", "--permanent", f"--zone={zone}", f"--add-port={port}"])
-        say(f"registry: opened {port} in zone {zone} (permanent)")
+    entries = registry_ports(load_created(state))
+    keep = []
+    for entry in entries:
+        if entry[1] == zone:
+            keep.append(entry)
+            continue
+        lifecycle.undo(entry, lambda m: say(f"registry: {m} (the bootstrap interface is in zone {zone} now)"))
+    if keep != entries:
+        save_registry_ports(state, keep)
+    for scope, permanent in (("runtime", []), ("permanent", ["--permanent"])):
+        if probe_cmd(["firewall-cmd", *permanent, f"--zone={zone}", f"--query-port={port}"]).returncode == 0:
+            continue
+        entry = ["port", zone, port, scope]
+        if entry not in keep:
+            keep.append(entry)
+            save_registry_ports(state, keep)
+        run(["firewall-cmd", *permanent, f"--zone={zone}", f"--add-port={port}"])
+        say(f"registry: opened {port} in zone {zone} ({scope})")
 
 
 def wait_registry(address: str, ca: Path, timeout: int = 90) -> None:
@@ -423,11 +456,33 @@ def remove_registry(recorded) -> None:
     say(f"remove: removed container {REGISTRY_CONTAINER}")
 
 
+def remove_registry_ports(state: Path, created: dict) -> List[str]:
+    """Close the port scopes seed opened for the registry. Returns the ones it couldn't close
+    (firewalld stopped and no firewall-offline-cmd); they stay listed in the record."""
+    from dciab_services import lifecycle
+    left = []
+    for entry in registry_ports(created):
+        try:
+            lifecycle.undo(entry, lambda m: say(f"remove: {m}"))
+        except lifecycle.Kept as exc:
+            say(f"remove: {exc}")
+            left.append(entry)
+    if left:
+        save_registry_ports(state, [e for e in left if len(e) == 4] +
+                            [["port", e[1], e[2], sc] for e in left if len(e) == 3
+                             for sc in lifecycle.SCOPES])
+    return [" ".join(e) for e in left]
+
+
 def remove_services(state: Path) -> List[str]:
     """Undo what the DNS-only `dciab services` listed in <state>/services/created
-    (dciab_services.lifecycle.down). Returns the lines it couldn't undo."""
+    (dciab_services.lifecycle.down, under the services lock). Returns the lines it couldn't undo."""
     from dciab_services import lifecycle
-    return lifecycle.down(state / "services", lambda m: say(f"remove: {m}"))
+    try:
+        return lifecycle.down(state / "services", lambda m: say(f"remove: {m}"))
+    except lifecycle.Busy as exc:
+        say(f"remove: {exc}")
+        return [str(exc)]
 
 
 def leftovers(state: Path) -> List[tuple]:
@@ -459,7 +514,7 @@ def remove(state: Path, purge: bool, force: bool) -> int:
     if not created:
         say(f"remove: {state / CREATED} lists nothing seed created on this host")
     failed = False
-    for key in ("kind", "registry", "registry-port", "services"):
+    for key in ("kind", "registry", "registry-ports", "registry-port", "services"):
         if key not in created:
             continue
         try:
@@ -467,11 +522,11 @@ def remove(state: Path, purge: bool, force: bool) -> int:
                 remove_kind(state, force)
             elif key == "registry":
                 remove_registry(created[key])
-            elif key == "registry-port":
-                from dciab_services import lifecycle
-                rec = created[key] if isinstance(created[key], dict) else {}
-                if rec.get("zone") and rec.get("port"):
-                    lifecycle.undo(["port", rec["zone"], rec["port"]], lambda m: say(f"remove: {m}"))
+            elif key in ("registry-ports", "registry-port"):
+                if remove_registry_ports(state, {key: created[key]}):
+                    failed = True
+                    created = load_created(state)   # what's left is listed there now
+                    continue
             elif remove_services(state):
                 failed = True
                 continue

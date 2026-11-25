@@ -467,6 +467,8 @@ class FakeHost:
             out = " ".join(f"2: {cmd[-1]} inet {a} scope global" for a in sorted(self.addrs.get(cmd[-1], ())))
         elif cmd[:3] == ["ip", "addr", "del"]:
             self.addrs[cmd[-1]].discard(cmd[3])
+        elif cmd[0] == "firewall-offline-cmd":
+            rc = 1   # nothing permanent on this host
         elif cmd[0] == "firewall-cmd":
             if not self.firewalld:
                 rc = 252
@@ -659,6 +661,8 @@ def registry_env(tmp_path, monkeypatch, persistent=True):
         calls.append(cmd)
         if cmd[:2] == ["systemctl", "is-active"]:
             return subprocess.CompletedProcess(cmd, 0 if host["active"] else 3, "", "")
+        if cmd[:2] == ["podman", "info"]:
+            return subprocess.CompletedProcess(cmd, 0, "/srv/containers/storage\n", "")
         return subprocess.CompletedProcess(cmd, 1, "", "")
 
     monkeypatch.setattr(cli, "run", fake_run)
@@ -694,7 +698,9 @@ def test_registry_runs_as_a_quadlet_unit_and_survives_reboots(tmp_path, monkeypa
     assert rec["unit"] == str(unit)
     assert f"Label=dciab.io/seed-token={rec['token']}" in text
     assert "PublishPort=10.0.0.5:443:5000" in text and "WantedBy=multi-user.target" in text
-    assert "Restart=always" in text and f"RequiresMountsFor={state}" in text
+    assert "Restart=always" in text
+    # the state folder (registry data, its config) and container storage, wherever they live (#230 14)
+    assert f"RequiresMountsFor={state} {state}/registry/data {state}/registry/etc /srv/containers/storage\n" in text
     assert ["systemctl", "daemon-reload"] in calls and ["systemctl", "restart", "dciab-registry.service"] in calls
     assert not any(c[:2] == ["podman", "run"] for c in calls)
     # A rerun with the container running and the unit unchanged touches nothing.
@@ -724,8 +730,8 @@ def test_registry_without_quadlet_still_runs(tmp_path, monkeypatch, capsys):
     assert "unit" not in cli.load_created(state)["registry"]
 
 
-def test_registry_port_opened_and_kept(tmp_path, monkeypatch):
-    calls, ports = [], {"runtime": set(), "permanent": set()}
+def _port_env(monkeypatch, ports, zone="internal"):
+    calls = []
 
     def fake_probe(cmd, **kw):
         cmd = [str(c) for c in cmd]
@@ -733,35 +739,73 @@ def test_registry_port_opened_and_kept(tmp_path, monkeypatch):
         if cmd == ["firewall-cmd", "--state"]:
             return subprocess.CompletedProcess(cmd, 0, "running", "")
         if cmd[1].startswith("--get-zone-of-interface"):
-            return subprocess.CompletedProcess(cmd, 0, "internal\n", "")
+            return subprocess.CompletedProcess(cmd, 0, f"{zone}\n", "")
         where = "permanent" if cmd[1] == "--permanent" else "runtime"
         if "--query-port=443/tcp" in cmd:
-            return subprocess.CompletedProcess(cmd, 0 if "443/tcp" in ports[where] else 1, "", "")
+            z = [c for c in cmd if c.startswith("--zone=")][0].split("=")[1]
+            return subprocess.CompletedProcess(cmd, 0 if (z, "443/tcp") in ports[where] else 1, "", "")
         return subprocess.CompletedProcess(cmd, 1, "", "")
 
     def fake_run(cmd, **kw):
         cmd = [str(c) for c in cmd]
         calls.append(cmd)
         where = "permanent" if cmd[1] == "--permanent" else "runtime"
-        ports[where].add("443/tcp")
+        z = [c for c in cmd if c.startswith("--zone=")][0].split("=")[1]
+        if any(c.startswith("--add-port") for c in cmd):
+            ports[where].add((z, "443/tcp"))
+        else:
+            ports[where].discard((z, "443/tcp"))
         return subprocess.CompletedProcess(cmd, 0, "", "")
 
     from dciab_services import lifecycle
     monkeypatch.setattr(cli, "probe_cmd", fake_probe)
     monkeypatch.setattr(cli, "run", fake_run)
+    monkeypatch.setattr(lifecycle, "query", fake_probe)
+    monkeypatch.setattr(lifecycle, "run", fake_run)
     monkeypatch.setattr(lifecycle, "firewalld_running", lambda: True)
+    return calls
+
+
+def test_registry_port_opened_and_kept(tmp_path, monkeypatch):
+    ports = {"runtime": set(), "permanent": set()}
+    calls = _port_env(monkeypatch, ports)
     cli.open_registry_port(tmp_path, Seed())
-    assert ports == {"runtime": {"443/tcp"}, "permanent": {"443/tcp"}}
-    assert cli.load_created(tmp_path)["registry-port"] == {"zone": "internal", "port": "443/tcp"}
+    assert ports == {"runtime": {("internal", "443/tcp")}, "permanent": {("internal", "443/tcp")}}
+    assert cli.load_created(tmp_path)["registry-ports"] == [
+        ["port", "internal", "443/tcp", "runtime"], ["port", "internal", "443/tcp", "permanent"]]
     calls.clear()
     cli.open_registry_port(tmp_path, Seed())       # a rerun changes nothing
     assert not any("--add-port=443/tcp" in c for c in calls)
-    # A port open before seed is never recorded, nor made permanent.
+    # An operator's runtime rule is never recorded; seed adds (and records) only the permanent one.
     other = tmp_path / "other"
     other.mkdir()
-    ports.update(runtime={"443/tcp"}, permanent=set())
+    ports.update(runtime={("internal", "443/tcp")}, permanent=set())
     cli.open_registry_port(other, Seed())
-    assert "registry-port" not in cli.load_created(other) and ports["permanent"] == set()
+    assert cli.load_created(other)["registry-ports"] == [["port", "internal", "443/tcp", "permanent"]]
+
+
+def test_registry_port_follows_the_interface_to_another_zone(tmp_path, monkeypatch):
+    """The bootstrap interface moved zones between seed runs: what seed opened in the old zone
+    is closed, not forgotten (#230 6). An older single-zone record counts too."""
+    ports = {"runtime": {("public", "443/tcp")}, "permanent": {("public", "443/tcp")}}
+    cli.save_created(tmp_path, {"registry-port": {"zone": "public", "port": "443/tcp"}})
+    _port_env(monkeypatch, ports, zone="internal")
+    cli.open_registry_port(tmp_path, Seed())
+    assert ports == {"runtime": {("internal", "443/tcp")}, "permanent": {("internal", "443/tcp")}}
+    rec = cli.load_created(tmp_path)
+    assert "registry-port" not in rec
+    assert rec["registry-ports"] == [["port", "internal", "443/tcp", "runtime"],
+                                     ["port", "internal", "443/tcp", "permanent"]]
+
+
+def test_remove_keeps_registry_ports_it_cannot_close(tmp_path, monkeypatch):
+    """firewalld stopped and no firewall-offline-cmd: the permanent rule stays listed (#230 4)."""
+    from dciab_services import lifecycle
+    cli.save_created(tmp_path, {"registry-ports": [["port", "public", "443/tcp", "permanent"]]})
+    monkeypatch.setattr(lifecycle, "firewalld_running", lambda: False)
+    monkeypatch.setattr(lifecycle, "query", lambda cmd: subprocess.CompletedProcess(cmd, 127, "", ""))
+    assert cli.remove(tmp_path, purge=False, force=False) == 1
+    assert cli.load_created(tmp_path)["registry-ports"] == [["port", "public", "443/tcp", "permanent"]]
 
 
 def test_remove_closes_the_registry_port_and_stops_the_unit(tmp_path, host, monkeypatch):
@@ -787,7 +831,8 @@ def test_remove_closes_the_registry_port_and_stops_the_unit(tmp_path, host, monk
     assert cli.remove(state, purge=False, force=False) == 0
     assert undone[0] == ["unit", str(unit)] and not unit.exists()
     assert ("public", "443/tcp") not in host.ports
-    assert "registry-port" not in cli.load_created(state)
+    rec = cli.load_created(state)
+    assert "registry-port" not in rec and "registry-ports" not in rec
 
 
 def test_services_pod_name_matches_services():

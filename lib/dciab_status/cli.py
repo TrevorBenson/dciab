@@ -97,8 +97,8 @@ def check_services(site: dict, runner: Runner = run,
                       f"{dns_detail} (pod state needs root and podman)")
     state = container_state(SERVICES_POD, runner, kind="pod")
     if state is None:
-        return result(name, "missing" if bad else "down",
-                      f"no pod {SERVICES_POD} ({made_by}); {dns_detail}")
+        # Missing either way: DNS that still answers comes from something else.
+        return result(name, "missing", f"no pod {SERVICES_POD} ({made_by}); {dns_detail}")
     ok = state == "running" and not bad
     return result(name, "ok" if ok else "down", f"pod {SERVICES_POD} is {state}; {dns_detail}")
 

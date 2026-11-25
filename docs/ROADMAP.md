@@ -51,7 +51,7 @@ Decided in [ADR 0002](adr/0002-bootstrap-appliance-on-ventoy.md).
 - [ ] Spike: unattended install of server zero from the stick with Secure Boot on, first boot from `dciab.yaml`, a short end-to-end check, installers from the same stick
 - [ ] Day 0 images preloaded in the appliance
 - [x] `dciab media`: copy the USB payload to the work disk, and run the bootstrap's heavy state from it ([MEDIA.md](MEDIA.md))
-- [x] The bootstrap host survives a reboot: service addresses, firewall rules, the services pod and the seed registry come back (systemd and Quadlet units; proven in CI by a simulated reboot, and on the appliance by handoff task 0014)
+- [ ] The bootstrap host survives a reboot: service addresses, firewall rules, the services pod and the seed registry come back (systemd and Quadlet units, proven in CI by a simulated reboot; built, real reboot on the appliance pending)
 
 ### Day 0 services and hypervisors
 

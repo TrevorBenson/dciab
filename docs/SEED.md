@@ -62,4 +62,16 @@ Seed records nothing for these hosts, so `--remove` only lists what is left. Rem
 # firewall-cmd --zone=<zone> --remove-port=53/udp     # and 53/tcp (123/udp, 80/tcp with full services), unless open before
 ```
 
-`firewall-cmd --get-zone-of-interface=<nic>` names the zone. The ports were opened at runtime only, so `firewall-cmd --reload` or a reboot also closes them, along with any other runtime change.
+`firewall-cmd --get-zone-of-interface=<nic>` names the zone. The ports are open at runtime and permanently, so close each with `--permanent` too (`firewall-cmd --permanent --zone=<zone> --remove-port=<port>`), and remove the units seed and services installed: `systemctl stop dciab-registry.service dciab-services.service dciab-services-addresses.service`, then delete `/etc/containers/systemd/dciab-registry.container`, `/etc/containers/systemd/dciab-services.kube` and `/etc/systemd/system/dciab-services-addresses.service`, and run `systemctl daemon-reload`.
+
+## After a reboot
+
+The seed registry, the DNS-only services and their firewalld ports come back on their own (systemd and Quadlet units). The bootstrap kind cluster doesn't: kind doesn't restart its node containers with podman, and a rerun of `dciab seed` only sees that the cluster exists.
+
+- **Before `dciab mgmt` has created anything in it** (it holds only Cluster API and its providers): delete the stopped cluster and run seed again, which builds it afresh and installs the providers; the CA, the registry and DNS are unchanged.
+  ```console
+  # KIND_EXPERIMENTAL_PROVIDER=podman kind delete cluster --name dciab-bootstrap
+  # dciab seed <config> --payload <payload>
+  ```
+- **After `dciab mgmt` has started building MGMT, and before it has moved Cluster API**: don't delete it, it holds MGMT's Cluster objects. Start the node container (`podman start dciab-bootstrap-control-plane`), check the API answers (`kubectl --kubeconfig <state>/bootstrap.kubeconfig get nodes`), then rerun `dciab mgmt`. kind doesn't support restarting a cluster under podman, so if the API doesn't come back, stop and recover MGMT's objects from the kind node's etcd before going further.
+- **After `dciab mgmt` has moved Cluster API**: nothing to do; the bootstrap cluster isn't needed any more.

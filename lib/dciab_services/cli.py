@@ -5,14 +5,17 @@
 Actions:
   env     shell assignments the step reads (eval): interface, addresses, images, paths
   show    every rendered file, for --print; writes nothing
-  write   write the rendered files under <state>/services (dirs 700, files 600); only
-          files whose content changed are rewritten
+  write   stage the rendered files under <state>/services/.staged (dirs 700, files 600); the
+          live files, which the running pod and its units read, don't change until apply
+  apply   the pod step: move the staged files into place, write the systemd and Quadlet units
+          (--units; --graphroot: container storage, a mount the pod needs), then undo the
+          recorded addresses and firewalld ports this config no longer wants (--nic: the
+          bootstrap NIC's name; --zone: its firewalld zone, empty without firewalld). The files,
+          the units and the addresses change together, so a run stopped before this step leaves
+          the previous config whole, and a reboot brings back that one
   check   readiness: DNS both ways and registry.<domain> on each service IP; HTTP and NTP
           when served
-  prune   undo the recorded addresses and firewalld ports this config no longer wants
-          (--nic: the bootstrap NIC's name; --zone: its firewalld zone, empty without firewalld)
-  units   write the systemd and Quadlet units that bring the addresses and the pod back after
-          a reboot (--nic); prints each unit it wrote
+  prune   only the last part of apply
 
 Sites without spec.hypervisors get DNS only (render.dns_only). With --payload, env also
 gives each image's name in the payload's OCI layout (IMAGE_LAYOUTS, same order as IMAGES).
@@ -115,6 +118,21 @@ def _files(doc: dict, root: Path, paths: Paths) -> Dict[str, str]:
     return render.render(doc, images, chrony, str(paths.conf), str(paths.isos), str(paths.host_isos))
 
 
+STAGE = ".staged"
+
+
+def _write_file(p: Path, text: str) -> None:
+    """Mode 600, through a temporary file and a rename."""
+    tmp = p.with_name("." + p.name + ".tmp")
+    if tmp.is_symlink() or tmp.exists():
+        tmp.unlink()
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
+    with os.fdopen(fd, "w") as fh:
+        fh.write(text)
+    os.chmod(tmp, 0o600)
+    os.replace(tmp, p)
+
+
 def write(files: Dict[str, str], conf: Path) -> List[str]:
     """Write files under conf; return the ones that changed. Removes rendered files no longer wanted."""
     changed = []
@@ -126,14 +144,7 @@ def write(files: Dict[str, str], conf: Path) -> List[str]:
         os.chmod(p.parent, 0o700)
         if p.is_file() and p.read_text() == text and (p.stat().st_mode & 0o777) == 0o600:
             continue
-        tmp = p.with_name("." + p.name + ".tmp")
-        if tmp.is_symlink() or tmp.exists():
-            tmp.unlink()
-        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
-        with os.fdopen(fd, "w") as fh:
-            fh.write(text)
-        os.chmod(tmp, 0o600)
-        os.replace(tmp, p)
+        _write_file(p, text)
         changed.append(rel)
     for p in sorted(conf.rglob("*")):
         rel = p.relative_to(conf).as_posix()
@@ -141,6 +152,60 @@ def write(files: Dict[str, str], conf: Path) -> List[str]:
             p.unlink()
             changed.append(f"{rel} (removed)")
     return changed
+
+
+def _matches(path: Path, text: str) -> bool:
+    return path.is_file() and path.read_text() == text and (path.stat().st_mode & 0o777) == 0o600
+
+
+def stage(files: Dict[str, str], conf: Path) -> List[str]:
+    """Write the rendered files to <conf>/.staged; return the ones that differ from the live
+    files (what apply will change). The live files are left alone."""
+    conf.mkdir(parents=True, exist_ok=True)
+    os.chmod(conf, 0o700)
+    write(files, conf / STAGE)
+    return [rel for rel, text in sorted(files.items()) if not _matches(conf / rel, text)]
+
+
+def apply_files(files: Dict[str, str], conf: Path) -> List[str]:
+    """Move the staged files over the live ones (a rename: the SELinux label set at render
+    time comes along); return the ones that changed. Files no longer rendered (zones,
+    chrony configs) are removed. A file missing from the stage is written from files."""
+    staged_dir = conf / STAGE
+    changed = []
+    conf.mkdir(parents=True, exist_ok=True)
+    os.chmod(conf, 0o700)
+    for rel, text in sorted(files.items()):
+        live, staged = conf / rel, staged_dir / rel
+        if _matches(live, text):
+            continue
+        live.parent.mkdir(parents=True, exist_ok=True)
+        os.chmod(live.parent, 0o700)
+        if _matches(staged, text):
+            os.replace(staged, live)
+        else:
+            _write_file(live, text)
+        changed.append(rel)
+    for p in sorted(conf.rglob("*")):
+        rel = p.relative_to(conf).as_posix()
+        if rel.startswith(STAGE + "/") or rel == STAGE:
+            continue
+        if p.is_file() and rel not in files and (rel.startswith("coredns/zones/") or rel.startswith("chrony-")):
+            p.unlink()
+            changed.append(f"{rel} (removed)")
+    if staged_dir.exists():
+        import shutil
+        shutil.rmtree(staged_dir)
+    return changed
+
+
+def unit_mounts(doc: dict, paths: "Paths", graphroot: Optional[str]) -> List[Path]:
+    """What the pod reads besides the state folder: the ISO folders (full mode) and container
+    storage. RequiresMountsFor waits for each."""
+    out = [] if render.dns_only(doc) else [paths.isos, paths.host_isos]
+    if graphroot:
+        out.append(Path(graphroot))
+    return out
 
 
 def check(doc: dict, timeout: float = 60.0) -> List[str]:
@@ -177,7 +242,8 @@ def wanted(doc: dict, nic: str, zone: str) -> set:
     net = render.network(doc)
     out = {f"address {nic} {ip}/{net['prefix']}" for ip in net["serviceIPs"]}
     if zone:
-        out |= {f"port {zone} {p}" for p in render.ports(doc)}
+        for p in render.ports(doc):
+            out |= {f"port {zone} {p}", f"port {zone} {p} runtime", f"port {zone} {p} permanent"}
     return out
 
 
@@ -189,8 +255,10 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument("--payload", help="the archive's payload: images come from its OCI layout")
     ap.add_argument("--nic", help="prune: the bootstrap interface's name")
     ap.add_argument("--zone", default="", help="prune: its firewalld zone (empty: firewalld isn't running)")
+    ap.add_argument("--units", action="store_true", help="apply: write the systemd and Quadlet units")
+    ap.add_argument("--graphroot", help="apply: container storage, a mount the pod's unit waits for")
     ap.add_argument("config")
-    ap.add_argument("action", choices=["env", "show", "write", "check", "prune", "units"])
+    ap.add_argument("action", choices=["env", "show", "write", "apply", "check", "prune"])
     args = ap.parse_args(argv)
     try:
         import jsonschema  # noqa: F401
@@ -245,23 +313,29 @@ def main(argv: Optional[List[str]] = None) -> int:
             print(f"--- {paths.conf / rel}")
             print(text, end="" if text.endswith("\n") else "\n")
     elif args.action == "write":
-        for rel in write(files, paths.conf):
-            print(f"wrote {paths.conf / rel}")
-    elif args.action == "prune":
+        for rel in stage(files, paths.conf):
+            print(f"rendered {paths.conf / rel} (changes in the pod step)")
+    elif args.action in ("apply", "prune"):
         if not args.nic:
-            print("dciab services: prune needs --nic", file=sys.stderr)
+            print(f"dciab services: {args.action} needs --nic", file=sys.stderr)
             return 2
-        left = lifecycle.prune(paths.conf, wanted(doc, args.nic, args.zone))
+        if args.action == "apply":
+            for rel in apply_files(files, paths.conf):
+                print(f"wrote {paths.conf / rel}")
+            if args.units:
+                net = render.network(doc)
+                rendered = units.render(paths.conf, args.nic, net["prefix"], net["serviceIPs"],
+                                        mounts=unit_mounts(doc, paths, args.graphroot))
+                for path in units.write(paths.conf, rendered):
+                    print(f"wrote {path}")
+        try:
+            left = lifecycle.prune(paths.conf, wanted(doc, args.nic, args.zone))
+        except lifecycle.Busy as exc:
+            print(f"dciab services: {exc}", file=sys.stderr)
+            return 1
         if left:
             print("dciab services: couldn't undo: " + "; ".join(left), file=sys.stderr)
             return 1
-    elif args.action == "units":
-        if not args.nic:
-            print("dciab services: units needs --nic", file=sys.stderr)
-            return 2
-        net = render.network(doc)
-        for path in units.write(paths.conf, units.render(paths.conf, args.nic, net["prefix"], net["serviceIPs"])):
-            print(f"wrote {path}")
     elif args.action == "check":
         failed = check(doc)
         for f in failed:

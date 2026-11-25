@@ -105,7 +105,8 @@ HTTP listens on `bootstrap.address`: only installers and BMCs use it, and it goe
 **Decisions.**
 - `dciab services` runs the pod as a Quadlet unit (`dciab-services.kube`), after a systemd unit that adds the DNS service IPs at boot (`dciab-services-addresses.service`). `dciab seed` runs Zot as a Quadlet unit (`dciab-registry.container`).
 - Firewalld ports are opened at runtime and permanently; seed opens port 443 too.
-- Every unit file and port is recorded before it is created, and `dciab services --down` (or `dciab seed --remove`) stops and removes the units and closes the ports, runtime and permanent. Teardown no longer relies on a reboot.
+- Every unit file and port is recorded before it is created, and `dciab services --down` (or `dciab seed --remove`) stops and removes the units and closes the ports. Each port scope (runtime, permanent) is recorded only when DCiaB opened it, so an operator's own rule is never removed; with firewalld stopped, the permanent rules are removed with `firewall-offline-cmd`. Teardown no longer relies on a reboot.
+- The rendered files and both units change together, in the `pod` step: a run stopped earlier leaves the previous config whole, so a reboot or a crash restart brings back one consistent config.
 - A host without systemd and Quadlet still works, with a warning that nothing comes back after a reboot.
 
 **Consequences.** The bootstrap kind cluster still doesn't survive a reboot; it is needed only until `dciab mgmt` moves Cluster API to MGMT.
