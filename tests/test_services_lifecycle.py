@@ -206,6 +206,63 @@ def test_removing_an_address_puts_back_what_it_took_along(tmp_path, host):
                for m in msgs)
 
 
+def test_a_restore_that_fails_is_kept_for_the_next_run(tmp_path, host):
+    """Removing the recorded primary takes the operator's address along and putting it back
+    fails: a restore line stays in the record, and the next run puts it back even though the
+    primary is gone by then (CodeRabbit on #230)."""
+    host.addrs["eth0"] = {"10.30.110.53/24", "10.30.110.60/24"}
+    host.dynamic = {"10.30.110.60/24": 3600}
+    host.takes_along = {"10.30.110.53/24": ["10.30.110.60/24"]}
+    host.fail = {"ip addr add 10.30.110.60/24"}
+    conf = conf_with(tmp_path, ["address eth0 10.30.110.53/24"])
+    left = lifecycle.down(conf, lambda m: None)
+    restore = "restore eth0 10.30.110.60/24 valid_lft 3600 preferred_lft 3600"
+    assert restore in left and "10.30.110.53/24" not in host.addrs["eth0"]
+    assert restore in (conf / "created").read_text()
+    host.fail = set()                                       # the next run
+    msgs = []
+    assert lifecycle.down(conf, msgs.append) == []
+    assert "10.30.110.60/24" in host.addrs["eth0"] and not (conf / "created").exists()
+    assert any("re-added 10.30.110.60/24 on eth0" in m for m in msgs)
+
+
+def test_an_unreadable_interface_after_the_removal_keeps_every_restore(tmp_path, host, monkeypatch):
+    """The addresses can't be read after the removal: every other address on the interface is
+    left in the record as a restore line (written before the removal); the next run checks
+    each and puts back the ones that are missing."""
+    host.takes_along = {"10.30.110.53/24": ["10.30.110.54/24"]}
+    real, calls = lifecycle.addresses, []
+
+    def flaky(nic):
+        calls.append(nic)
+        return None if len(calls) == 2 else real(nic)      # the read right after the removal
+    monkeypatch.setattr(lifecycle, "addresses", flaky)
+    conf = conf_with(tmp_path, ["address eth0 10.30.110.53/24"])
+    left = lifecycle.down(conf, lambda m: None)
+    assert "restore eth0 10.30.110.5/24" in left and "restore eth0 10.30.110.54/24" in left
+    assert "restore eth0 10.30.110.54/24" in (conf / "created").read_text()
+    assert lifecycle.down(conf, lambda m: None) == []
+    assert host.addrs["eth0"] == {"10.30.110.5/24", "10.30.110.54/24"}
+    assert not (conf / "created").exists()
+
+
+def test_prune_finishes_restores_a_previous_run_left(tmp_path, host):
+    host.addrs["eth0"].discard("10.30.110.54/24")
+    conf = conf_with(tmp_path, ["address eth0 10.30.110.54/24", "restore eth0 10.30.110.60/24"])
+    doc = copy.deepcopy(load_example("proxmox"))
+    doc["spec"]["network"]["dnsServiceIPs"] = ["10.30.110.53", "10.30.110.54"]
+    assert lifecycle.prune(conf, cli.wanted(doc, "eth0", "public"), say=lambda m: None) == []
+    assert "10.30.110.60/24" in host.addrs["eth0"]
+    assert (conf / "created").read_text() == "address eth0 10.30.110.54/24\n"
+
+
+def test_a_failed_removal_lists_nothing_to_restore(tmp_path, host):
+    host.fail = {"ip addr del 10.30.110.53/24"}
+    conf = conf_with(tmp_path, ["address eth0 10.30.110.53/24"])
+    assert lifecycle.down(conf, lambda m: None) == ["address eth0 10.30.110.53/24"]
+    assert (conf / "created").read_text() == "address eth0 10.30.110.53/24\n"
+
+
 def test_a_unit_that_wont_stop_stays_and_holds_back_the_rest(tmp_path, host, monkeypatch, capsys):
     """systemctl stop failing: the unit file and its line stay, and so do the pod, the addresses
     and the ports it would bring back; down() reports them and --down exits 1."""
@@ -675,6 +732,33 @@ def test_units_assert_only_addresses_dciab_added(tmp_path, monkeypatch, capsys, 
     text = (tmp_path / "systemd" / "dciab-services-addresses.service").read_text()
     assert "ip addr replace" not in text and "ExecStart=/usr/bin/true" in text
     assert "ExecStartPre" not in (tmp_path / "quadlet" / "dciab-services.kube").read_text()
+
+
+def test_a_crash_while_moving_to_another_nic_keeps_the_old_nics_addresses(tmp_path, monkeypatch, capsys, host):
+    """The bootstrap interface changes (eth0 to eth1) and the run dies before the files move:
+    the units still bring up the old addresses on eth0, which the live pod.yaml binds, as well
+    as the new ones on eth1 (CodeRabbit on #230)."""
+    from test_services import CHRONY_LOCAL, bare_site
+    monkeypatch.setattr(units, "SYSTEMD_DIR", tmp_path / "systemd")
+    monkeypatch.setattr(units, "QUADLET_DIR", tmp_path / "quadlet")
+    monkeypatch.setenv("DCIAB_PVE_TOKEN", "placeholder")
+    monkeypatch.setenv("DCIAB_PVE_CSI_TOKEN", "placeholder")
+    monkeypatch.setenv("DCIAB_CHRONY_IMAGE", CHRONY_LOCAL)
+    monkeypatch.setattr(lifecycle, "prune", lambda *a, **k: [])
+    cfg = bare_site(tmp_path)
+    conf = tmp_path / "st" / "services"
+    record_addresses(tmp_path, "10.30.110.53", "10.30.110.54")          # on eth0
+    assert _apply(cfg, tmp_path, "--units") == 0
+    for ip in ("10.30.110.53", "10.30.110.54"):                          # the address step on eth1
+        lifecycle.record(conf, ["address", "eth1", f"{ip}/24"])
+    monkeypatch.setattr(cli, "apply_files", lambda *a, **k: (_ for _ in ()).throw(KeyboardInterrupt()))
+    with pytest.raises(KeyboardInterrupt):
+        _apply(cfg, tmp_path, "--units", "--nic", "eth1")
+    for unit in (tmp_path / "systemd" / "dciab-services-addresses.service",
+                 tmp_path / "quadlet" / "dciab-services.kube"):
+        text = unit.read_text()
+        for ip in ("10.30.110.53", "10.30.110.54"):
+            assert f"{ip}/24 dev eth0" in text and f"{ip}/24 dev eth1" in text
 
 
 def test_apply_refuses_units_another_state_folder_owns(tmp_path, monkeypatch, capsys, host):

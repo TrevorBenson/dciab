@@ -241,6 +241,11 @@ def recorded_addresses(conf: Path, nic: str) -> set:
     return {e[2] for e in lifecycle.read(conf) if len(e) == 3 and e[0] == "address" and e[1] == nic}
 
 
+def recorded_pairs(conf: Path) -> set:
+    """Every service IP the record says dciab services added, as (ip/prefix, NIC)."""
+    return {(e[2], e[1]) for e in lifecycle.read(conf) if len(e) == 3 and e[0] == "address"}
+
+
 def wanted(doc: dict, nic: str, zone: str) -> set:
     """The record lines (lifecycle) this config would leave: its service IPs on the NIC and
     its ports in the zone."""
@@ -342,10 +347,11 @@ def main(argv: Optional[List[str]] = None) -> int:
                 ips = [ip for ip in net["serviceIPs"] if f"{ip}/{net['prefix']}" in ours]
                 rendered = units.render(paths.conf, args.nic, net["prefix"], ips, mounts=mounts)
                 # Before the files move: units that bring up the new addresses and the recorded
-                # (old) ones, so a crash or reboot at any point here finds every address the live
-                # pod.yaml, old or new, binds. After the move the units drop the old ones.
-                new = {f"{ip}/{net['prefix']}" for ip in net["serviceIPs"]}
-                old = sorted(ours - new)
+                # (old) ones, each on its own NIC (the bootstrap interface may have changed), so
+                # a crash or reboot at any point here finds every address the live pod.yaml, old
+                # or new, binds. After the move the units drop the old ones.
+                new = {(f"{ip}/{net['prefix']}", args.nic) for ip in net["serviceIPs"]}
+                old = sorted(recorded_pairs(paths.conf) - new)
                 both = units.render(paths.conf, args.nic, net["prefix"], ips,
                                     mounts=mounts, extra=old)
                 for path in units.write(paths.conf, both):

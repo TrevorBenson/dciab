@@ -742,6 +742,25 @@ def test_registry_unit_of_another_state_folder_is_refused(tmp_path, monkeypatch)
     assert "registry" not in cli.load_created(state)
 
 
+def test_remove_leaves_a_registry_unit_another_state_folder_installed(tmp_path, monkeypatch, capsys):
+    """A retry of a partial --remove finds the unit path now serving another state folder's
+    registry: neither that unit nor its container is touched, and this seed's record goes
+    (CodeRabbit on #230)."""
+    calls = []
+    monkeypatch.setattr(cli, "run", lambda cmd, **kw: calls.append([str(c) for c in cmd])
+                        or subprocess.CompletedProcess(cmd, 0, "", ""))
+    from dciab_services import lifecycle
+    monkeypatch.setattr(lifecycle, "undo", lambda *a, **k: calls.append(["undo", *a[0]]))
+    unit = tmp_path / "quadlet" / "dciab-registry.container"
+    unit.parent.mkdir()
+    unit.write_text(f"[Container]\nVolume={tmp_path / 'other' / 'registry' / 'data'}:/var/lib/registry:Z\n")
+    state = tmp_path / "state"
+    state.mkdir()
+    cli.remove_registry({"name": "dciab-registry", "token": "tok1", "unit": str(unit)}, state)
+    assert unit.exists() and calls == []
+    assert "another state folder" in capsys.readouterr().out
+
+
 def test_registry_from_an_older_seed_moves_under_systemd(tmp_path, monkeypatch):
     """A container started by podman run (before #81) is replaced by the unit's."""
     calls, state, host = registry_env(tmp_path, monkeypatch)
@@ -851,7 +870,7 @@ def test_remove_closes_the_registry_port_and_stops_the_unit(tmp_path, host, monk
     from dciab_services import lifecycle
     real_undo = lifecycle.undo
 
-    def undo(entry, say=print, firewalld=None):
+    def undo(entry, say=print, firewalld=None, journal=None):
         undone.append(entry)
         if entry[0] == "unit":
             Path(entry[1]).unlink()

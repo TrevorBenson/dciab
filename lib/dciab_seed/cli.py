@@ -455,13 +455,24 @@ def remove_kind(state: Path, force: bool) -> None:
         say(f"remove: kind cluster {KIND_CLUSTER} is already gone")
 
 
-def remove_registry(recorded) -> None:
+def remove_registry(recorded, state: Path) -> None:
     token = recorded.get("token", "") if isinstance(recorded, dict) else ""
     unit = recorded.get("unit") if isinstance(recorded, dict) else None
     if unit:
+        data = state / "registry" / "data"
+        owner = registry_unit_data(Path(unit))
+        if owner is not None and owner.resolve() != data.resolve():
+            # This seed's unit is gone and another state folder installed its own since (a retry
+            # after a partial --remove): its unit and container aren't this seed's to remove.
+            say(f"remove: {unit} now serves {owner} (another state folder's seed); leaving it, "
+                "and its container, alone")
+            return
         # Stopped first, or systemd would start it again (Restart=always).
         from dciab_services import lifecycle
-        lifecycle.undo(["unit", unit], lambda m: say(f"remove: {m}"))
+        try:
+            lifecycle.undo(["unit", unit], lambda m: say(f"remove: {m}"))
+        except lifecycle.Kept as exc:
+            raise SeedError(str(exc)) from None
     have = run(["podman", "ps", "-a", "--no-trunc", "--filter", f"name=^{REGISTRY_CONTAINER}$",
                 "--format", f'{{{{.ID}}}} {{{{index .Labels "{SEED_TOKEN_LABEL}"}}}}']).stdout.split()
     if not have:
@@ -539,7 +550,7 @@ def remove(state: Path, purge: bool, force: bool) -> int:
             if key == "kind":
                 remove_kind(state, force)
             elif key == "registry":
-                remove_registry(created[key])
+                remove_registry(created[key], state)
             elif key in ("registry-ports", "registry-port"):
                 if remove_registry_ports(state, {key: created[key]}):
                     failed = True

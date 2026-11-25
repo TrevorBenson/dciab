@@ -76,14 +76,20 @@ def systemd_version() -> int:
     return int(m.group(1)) if m else 0
 
 
-def _cidrs(prefix: int, service_ips: List[str], extra: List[str] = ()) -> List[str]:
-    return list(dict.fromkeys([f"{ip}/{prefix}" for ip in service_ips] + list(extra)))
+def _pairs(nic: str, prefix: int, service_ips: List[str], extra=()) -> List[tuple]:
+    """(ip/prefix, NIC) for each address to bring up. extra entries are ip/prefix strings (on
+    nic) or (ip/prefix, NIC) pairs, so the previous config's addresses stay on their own NIC
+    while the pod moves (the bootstrap interface may have changed too)."""
+    out = [(f"{ip}/{prefix}", nic) for ip in service_ips]
+    out += [tuple(e) if isinstance(e, (tuple, list)) else (e, nic) for e in extra]
+    return list(dict.fromkeys(out))
 
 
-def addresses_unit(nic: str, prefix: int, service_ips: List[str], extra: List[str] = (),
+def addresses_unit(nic: str, prefix: int, service_ips: List[str], extra=(),
                    backoff: bool = False) -> str:
-    """extra: more ip/prefix entries (the previous config's, while the pod moves to a new one)."""
-    lines = [f"ExecStart=ip addr replace {c} dev {nic}" for c in _cidrs(prefix, service_ips, extra)]
+    """extra: more addresses (the previous config's, while the pod moves to a new one):
+    ip/prefix on nic, or (ip/prefix, NIC)."""
+    lines = [f"ExecStart=ip addr replace {c} dev {n}" for c, n in _pairs(nic, prefix, service_ips, extra)]
     if not lines:   # every DNS service IP is someone else's address: nothing for this unit to add
         lines = ["ExecStart=/usr/bin/true"]
     return HEAD + f"""[Unit]
@@ -105,12 +111,12 @@ WantedBy=multi-user.target
 """
 
 
-def _pre(nic: str, prefix: int, service_ips: List[str], extra: List[str] = ()) -> List[str]:
-    return [f"ExecStartPre=ip addr replace {c} dev {nic}" for c in _cidrs(prefix, service_ips, extra)]
+def _pre(nic: str, prefix: int, service_ips: List[str], extra=()) -> List[str]:
+    return [f"ExecStartPre=ip addr replace {c} dev {n}" for c, n in _pairs(nic, prefix, service_ips, extra)]
 
 
 def kube_unit(conf: Path, nic: str = "", prefix: int = 0, service_ips: List[str] = (),
-              mounts: List[Path] = (), extra: List[str] = (), backoff: bool = False) -> str:
+              mounts: List[Path] = (), extra=(), backoff: bool = False) -> str:
     paths = " ".join(dict.fromkeys(str(m) for m in [conf, *mounts] if m))
     pre = "\n".join(_pre(nic, prefix, list(service_ips), extra)) if nic else ""
     return HEAD + f"""[Unit]
@@ -148,9 +154,10 @@ def installed_conf(quadlet_dir: Path = None) -> "Path | None":
 
 def render(conf: Path, nic: str, prefix: int, service_ips: List[str],
            systemd_dir: Path = None, quadlet_dir: Path = None,
-           mounts: List[Path] = (), extra: List[str] = (), backoff: bool = None) -> Dict[Path, str]:
+           mounts: List[Path] = (), extra=(), backoff: bool = None) -> Dict[Path, str]:
     """mounts: what the pod reads besides the state folder (ISO folders, container storage).
-    extra: addresses (ip/prefix) to bring up as well, while the pod moves off them.
+    extra: addresses to bring up as well while the pod moves off them: ip/prefix on nic, or
+    (ip/prefix, NIC) for one on another interface.
     backoff: slow the retries down (RestartSteps=); None: when this host's systemd has it."""
     systemd_dir = systemd_dir or SYSTEMD_DIR
     quadlet_dir = quadlet_dir or QUADLET_DIR

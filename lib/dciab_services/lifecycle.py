@@ -11,6 +11,11 @@
     pod <name>                    the services pod
     unit <path>                   a systemd or Quadlet unit file that brings the above back after
                                   a reboot (#81)
+    restore <nic> <ip>/<prefix> [ip addr add options]
+                                  another address on that interface, written before a recorded
+                                  address is removed (the kernel may take it along); dropped once
+                                  it is known to be there, so a failed or interrupted removal
+                                  still puts it back on the next run
 
 prune() undoes the address and port lines the current config no longer wants; down() undoes
 every line, units first, so nothing restarts what is being removed. Only listed changes are
@@ -52,7 +57,7 @@ from typing import Callable, Iterable, Iterator, List, Optional, Set
 RECORD = "created"
 APPLIED = "applied"
 # down() order: units first (nothing brings the pod back), then the pod, then what it used.
-ORDER = {"unit": 0, "pod": 1, "address": 2, "port": 3}
+ORDER = {"unit": 0, "pod": 1, "address": 2, "restore": 3, "port": 4}
 
 SCOPES = ("runtime", "permanent")
 LOCK = "/run/dciab-services.lock"
@@ -216,9 +221,15 @@ def firewalld_running() -> bool:
     return query(["firewall-cmd", "--state"]).returncode == 0
 
 
-def undo(entry: List[str], say: Say = _say, firewalld: Optional[bool] = None) -> None:
+Journal = Callable[[List[List[str]], List[List[str]]], None]
+
+
+def undo(entry: List[str], say: Say = _say, firewalld: Optional[bool] = None,
+         journal: Optional[Journal] = None) -> None:
     """Undo one recorded change if it is still there. Raises CalledProcessError when a command
-    fails, ValueError for a line it doesn't understand."""
+    fails, ValueError for a line it doesn't understand. journal(add, remove) updates the record
+    on disk: an address removal lists the interface's other addresses there first (restore
+    lines), so they are put back even if this run stops halfway."""
     kind, args = (entry[0], entry[1:]) if entry else ("", [])
     if kind == "unit" and len(args) == 1:
         _undo_unit(Path(args[0]), say)
@@ -227,7 +238,9 @@ def undo(entry: List[str], say: Say = _say, firewalld: Optional[bool] = None) ->
             run(["podman", "pod", "rm", "-f", args[0]])
             say(f"removed pod {args[0]}")
     elif kind == "address" and len(args) == 2:
-        _undo_address(args[0], args[1], say)
+        _undo_address(args[0], args[1], say, journal)
+    elif kind == "restore" and len(args) >= 2:
+        _restore(args[0], args[1], args[2:], say)
     elif kind == "port" and len(args) in (2, 3):
         zone, port = args[0], args[1]
         scopes = [args[2]] if len(args) == 3 else ["runtime"]   # older lines: runtime opens only
@@ -241,32 +254,55 @@ def undo(entry: List[str], say: Say = _say, firewalld: Optional[bool] = None) ->
         raise ValueError(" ".join(entry))
 
 
-def _undo_address(nic: str, cidr: str, say: Say) -> None:
+def _undo_address(nic: str, cidr: str, say: Say, journal: Optional[Journal] = None) -> None:
     """Remove a recorded address, then put back any other address on nic that went with it
     (the kernel drops secondaries with their primary unless promote_secondaries is set): the
-    operator's as well as recorded ones. Raises Kept when the addresses can't be read."""
+    operator's as well as recorded ones. With a journal, those addresses are written to the
+    record as restore lines before the removal and dropped once they are back, so an
+    interrupted or failed run still restores them next time. Raises Kept when the addresses
+    can't be read or put back."""
     before = addresses(nic)
     if before is None:
         raise Kept(f"couldn't read the addresses on {nic} (ip -j -4 addr show dev {nic}); "
                    f"{cidr} stays listed")
     if cidr not in {a["cidr"] for a in before}:
         return
-    run(["ip", "addr", "del", cidr, "dev", nic])
+    pending = [["restore", nic, *a["cmd"][3:4], *a["cmd"][6:]] for a in before if a["cidr"] != cidr]
+    if journal and pending:
+        journal(pending, [])
+    try:
+        run(["ip", "addr", "del", cidr, "dev", nic])
+    except subprocess.CalledProcessError:
+        if journal and pending:
+            journal([], pending)   # nothing was removed, so nothing to put back
+        raise
     say(f"removed {cidr} from {nic}")
-    after = addresses(nic)
-    if after is None:
-        raise Kept(f"removed {cidr} from {nic}, but couldn't read its addresses afterwards to put "
-                   f"back any the removal took along (check: ip -4 addr show dev {nic})")
-    still = {a["cidr"] for a in after}
-    for a in before:
-        if a["cidr"] == cidr or a["cidr"] in still:
-            continue
-        try:
-            run(a["cmd"])
-            say(f"re-added {a['cidr']} on {nic} (removing {cidr} took it along)")
-        except subprocess.CalledProcessError as exc:
-            raise Kept(f"removing {cidr} from {nic} took {a['cidr']} along and it couldn't be put "
-                       f"back ({_why(exc)}): {' '.join(a['cmd'])}") from None
+    done = []
+    try:
+        for entry in pending:
+            _restore(entry[1], entry[2], entry[3:], say, took=cidr)
+            done.append(entry)
+    finally:
+        if journal and done:
+            journal([], done)
+
+
+def _restore(nic: str, cidr: str, options: List[str], say: Say, took: str = "") -> None:
+    """Put an address back on nic (ip addr add, with its options) unless it is there. Raises
+    Kept when the addresses can't be read or the address can't be added."""
+    have = addresses(nic)
+    if have is None:
+        raise Kept(f"couldn't read the addresses on {nic} to check {cidr} is still there "
+                   f"(check: ip -4 addr show dev {nic})")
+    if cidr in {a["cidr"] for a in have}:
+        return
+    cmd = ["ip", "addr", "add", cidr, "dev", nic, *options]
+    try:
+        run(cmd)
+    except subprocess.CalledProcessError as exc:
+        raise Kept(f"{cidr} on {nic} is gone{f' (removing {took} took it along)' if took else ''} "
+                   f"and couldn't be put back ({_why(exc)}): {' '.join(cmd)}") from None
+    say(f"re-added {cidr} on {nic}" + (f" (removing {took} took it along)" if took else ""))
 
 
 def _undo_port(zone: str, port: str, scope: str, firewalld: bool, say: Say) -> None:
@@ -322,6 +358,18 @@ def _undo_unit(path: Path, say: Say) -> None:
         say(f"removed {path}")
 
 
+def _journal(conf: Path, extra: List[List[str]]) -> Journal:
+    """journal(add, remove) for down()/prune(): the record on disk gains and loses restore
+    lines at once (so they survive an interruption), and extra tracks the ones still pending
+    for the final rewrite."""
+    def journal(add: List[List[str]], remove: List[List[str]]) -> None:
+        entries = [e for e in read(conf) if e not in remove]
+        entries += [a for a in add if a not in entries]
+        write(conf, entries)
+        extra[:] = [e for e in extra if e not in remove] + [a for a in add if a not in extra]
+    return journal
+
+
 def prune(conf: Path, wanted: Set[str], kinds: Iterable[str] = ("address", "port"),
           say: Say = _say, note: Say = _note) -> List[str]:
     """Undo recorded lines of the given kinds that aren't in wanted (the lines this config
@@ -335,14 +383,23 @@ def prune(conf: Path, wanted: Set[str], kinds: Iterable[str] = ("address", "port
             kinds.discard("port")
             note("firewalld isn't running: the firewall ports weren't checked (they stay as they "
                  "are; run dciab services again with firewalld running to update them)")
-        keep, left, removed = [], [], False
+        keep, left, removed, pending = [], [], False, []
+        journal = _journal(conf, pending)
         for entry in entries:
             line = " ".join(entry)
+            if entry and entry[0] == "restore":   # a removal that didn't finish putting it back
+                try:
+                    undo(entry, say)
+                except (subprocess.CalledProcessError, ValueError, Kept) as exc:
+                    say(f"couldn't undo '{line}': {_why(exc)}")
+                    keep.append(entry)
+                    left.append(line)
+                continue
             if not entry or entry[0] not in kinds or line in wanted:
                 keep.append(entry)
                 continue
             try:
-                undo(entry, say, True if entry[0] == "port" else None)
+                undo(entry, say, True if entry[0] == "port" else None, journal)
                 say(f"no longer wanted: {line}")
                 removed = removed or entry[0] == "address"
             except (subprocess.CalledProcessError, ValueError, Kept) as exc:
@@ -351,7 +408,8 @@ def prune(conf: Path, wanted: Set[str], kinds: Iterable[str] = ("address", "port
                 left.append(line)
         if removed:
             left += _restore_addresses(keep, wanted, say)
-        write(conf, keep)
+        left += [" ".join(e) for e in pending]
+        write(conf, keep + [e for e in pending if e not in keep])
     return left
 
 
@@ -389,20 +447,22 @@ def down(conf: Path, say: Say = _say) -> List[str]:
         if not entries:
             say(f"{conf / RECORD} lists nothing dciab services added to this host")
         firewalld = firewalld_running() if any(e and e[0] == "port" for e in entries) else None
-        left, blocked = [], False
+        left, blocked, pending = [], False, []
+        journal = _journal(conf, pending)
         for entry in sorted(entries, key=lambda e: ORDER.get(e[0] if e else "", 9)):
             if blocked and entry and entry[0] != "unit":
                 say(f"left '{' '.join(entry)}' alone: a unit above couldn't be stopped")
                 left.append(entry)
                 continue
             try:
-                undo(entry, say, firewalld)
+                undo(entry, say, firewalld, journal)
             except ValueError:
                 say(f"{conf / RECORD}: skipping a line it doesn't understand: {' '.join(entry)}")
             except (subprocess.CalledProcessError, Kept) as exc:
                 say(f"couldn't undo '{' '.join(entry)}': {_why(exc)}")
                 left.append(entry)
                 blocked = blocked or (bool(entry) and entry[0] == "unit")
+        left += [e for e in pending if e not in left]
         write(conf, left)
         if not left and (conf / APPLIED).exists():
             (conf / APPLIED).unlink()
