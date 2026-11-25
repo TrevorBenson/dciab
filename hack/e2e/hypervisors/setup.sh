@@ -61,14 +61,40 @@ for k in iptables ip6tables arptables; do sysctl -qw "net.bridge.bridge-nf-call-
 # The switch, and the bootstrap host's access port on it.
 ip link add dciabsw0 type bridge vlan_filtering 1 vlan_default_pvid 0
 ip link set dciabsw0 up
-ip link add dciab-boot type veth peer name dciab-boot-sw
-ip link set dciab-boot address "$BOOT_MAC"
+# The MAC is given at creation, so the kernel marks it as set (addr_assign_type 3). Set afterwards,
+# it races systemd-udevd: MACAddressPolicy=persistent (99-default.link on Ubuntu) can still replace
+# a veth's random MAC after our change, and dciab services then finds no NIC with BOOT_MAC (#232).
+ip link add dciab-boot address "$BOOT_MAC" type veth peer name dciab-boot-sw
+if command -v nmcli >/dev/null 2>&1; then
+  nmcli device set dciab-boot managed no 2>/dev/null || true
+  nmcli device set dciab-boot-sw managed no 2>/dev/null || true
+fi
 ip link set dciab-boot-sw master dciabsw0
 bridge vlan add dev dciab-boot-sw vid "$VLAN" pvid untagged
 ip link set dciab-boot-sw up
 ip link set dciab-boot up
 ip addr add 10.30.110.5/24 dev dciab-boot
 ip addr add 10.30.110.1/24 dev dciab-boot          # the node gateway the hosts are given
+
+# Wait until udev is done with the new links and the bootstrap veth shows BOOT_MAC and is up.
+udevadm settle --timeout=30 2>/dev/null || true
+boot_ready() {
+  python3 - "$BOOT_MAC" <<'PY'
+import json, subprocess, sys
+want = sys.argv[1].lower()
+links = json.loads(subprocess.run(["ip", "-j", "link", "show", "dev", "dciab-boot"],
+                                  capture_output=True, text=True, check=True).stdout)
+ok = bool(links) and links[0].get("address", "").lower() == want and "UP" in links[0].get("flags", [])
+sys.exit(0 if ok else 1)
+PY
+}
+for _ in $(seq 1 30); do boot_ready && break; sleep 1; done
+if ! boot_ready; then
+  echo "setup.sh: dciab-boot doesn't show $BOOT_MAC and UP after 30 s" >&2
+  ip -br link >&2
+  cat /sys/class/net/dciab-boot/addr_assign_type >&2 2>/dev/null || true
+  exit 1
+fi
 
 # The BMC network: its own namespace, routed from the bootstrap host.
 ip netns add dciab-bmc
