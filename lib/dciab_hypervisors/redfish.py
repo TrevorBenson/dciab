@@ -341,3 +341,58 @@ class Bmc:
         done = self.prepare(image)
         done.append(f"reset ({self.reset()})")
         return done
+
+    # -- preparation before an install (prepare.py) ----------------------------------------------
+
+    def bios(self) -> Optional[dict]:
+        """The system's Bios resource (Attributes, and @Redfish.Settings when it has a pending
+        settings object), or None when the BMC offers none. Reads only."""
+        link = (self.system().get("Bios") or {}).get("@odata.id")
+        if not link:
+            return None
+        body = self.get(link)
+        body.setdefault("@odata.id", link)
+        return body
+
+    def set_bios(self, bios: dict, attrs: Dict[str, object]) -> None:
+        """Stage BIOS attributes to apply at the next reset: PATCH the settings object the Bios
+        resource names (Bios/Settings by convention), with ApplyTime OnReset when it's offered."""
+        settings = bios.get("@Redfish.Settings") or {}
+        target = (settings.get("SettingsObject") or {}).get("@odata.id") or f"{bios['@odata.id'].rstrip('/')}/Settings"
+        body: Dict[str, object] = {"Attributes": attrs}
+        if "OnReset" in (settings.get("SupportedApplyTimes") or []):
+            body["@Redfish.SettingsApplyTime"] = {"ApplyTime": "OnReset"}
+        self._call("PATCH", target, body)
+
+    def secure_boot(self) -> Optional[Tuple[str, dict]]:
+        """(path, resource) of ComputerSystem.SecureBoot, or None when the BMC offers none."""
+        link = (self.system().get("SecureBoot") or {}).get("@odata.id")
+        if not link:
+            return None
+        return link, self.get(link)
+
+    def set_secure_boot(self, path: str, enable: bool) -> None:
+        """SecureBootEnable takes effect at the next reset."""
+        self._call("PATCH", path, {"SecureBootEnable": enable})
+
+    def drives(self) -> Optional[List[dict]]:
+        """Every drive and volume under the system's Storage (volumes, a RAID controller's
+        virtual disks, are marked "_volume": True), or None when the BMC lists no Storage.
+        Every page of the Storage and Volumes collections is read (Bmc.members). Raises
+        RedfishError when the list can't be read in full."""
+        link = (self.system().get("Storage") or {}).get("@odata.id")
+        if not link:
+            return None
+        out: List[dict] = []
+        try:
+            for member in self.members(link):
+                storage = self.get(member["@odata.id"])
+                for d in storage.get("Drives") or []:
+                    out.append(self.get(d["@odata.id"]))
+                vols = (storage.get("Volumes") or {}).get("@odata.id")
+                if vols:
+                    for v in self.members(vols):
+                        out.append(dict(self.get(v["@odata.id"]), _volume=True))
+        except (KeyError, TypeError, AttributeError) as exc:
+            raise RedfishError(f"{self.client.where}: the storage list makes no sense ({type(exc).__name__}: {exc})") from None
+        return out

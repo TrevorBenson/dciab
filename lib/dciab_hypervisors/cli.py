@@ -9,7 +9,10 @@ Steps, per host, in order; each is safe to re-run:
   iso      build <state>/host-isos/<host>.iso: the Proxmox VE installer ISO (--iso, from the
            ISOs folder dciab services serves; checked against bundle.lock) with that host's
            answer file inside (iso.py). Caddy serves it to that host's BMC address only
-  media    attach http://<bootstrap.address>/host-isos/<host>.iso through the BMC, set a
+  media    for a host it will install, first prepare it over Redfish (prepare.py: UEFI boot
+           mode, Secure Boot per spec.hypervisors.bootMode, virtualization extensions, a disk
+           matching rootDeviceHints; refused on a clear disk mismatch). Then
+           attach http://<bootstrap.address>/host-isos/<host>.iso through the BMC, set a
            one-time UEFI boot from Cd, and reset the server. Each install is recorded in
            <state>/installs/<host>.json (when it started, the ISO, the outcome). A host whose
            Proxmox VE API answers on 8006 or that has a recorded install (any file there, even an
@@ -224,6 +227,7 @@ def media(hosts: List[dict], doc: dict, installs: Path, reinstall: List[str], bm
     that need the operator (an install recorded, an OS already there, an install that can't be
     running, or no evidence either way without --first-install); and hosts reset with --reinstall
     while the Proxmox VE API answered (wait must see them go down first)."""
+    from . import prepare
     from .redfish import RedfishError
     err = err or (lambda msg: print(msg, file=sys.stderr))
     failed: List[str] = []
@@ -303,8 +307,22 @@ def media(hosts: List[dict], doc: dict, installs: Path, reinstall: List[str], bm
                 f"{st['BootSourceOverrideEnabled']}")
             if st["PowerState"] not in ("On", "Off"):
                 raise RedfishError(f"the server is {st['PowerState']}; run again once it is On or Off")
-            for line in bmc.prepare(url):
+            prep = prepare.run(bmc, doc["spec"]["hypervisors"]["bootMode"], h.get("rootDeviceHints") or {},
+                               hold_legacy=name not in reinstall)
+            if prep.hold:
+                hold(name, f"no install recorded, but {prep.hold}")
+                continue
+            for line in prep.done:
                 log(f"  {name}: {line}")
+            for line in prep.notes:
+                log(f"  {name}: note: {line}")
+            if prep.refuse:
+                raise RedfishError(f"not installing: {prep.refuse}")
+            try:
+                for line in bmc.prepare(url):
+                    log(f"  {name}: {line}")
+            except RedfishError as exc:
+                raise RedfishError(f"{exc}{prepare.pending_note(prep.staged)}") from None
             try:
                 # Recorded before the reset: from here on a rerun never resets this host by accident.
                 write_install(installs, name, started=_now(), iso=url, outcome="in-progress",
@@ -314,7 +332,8 @@ def media(hosts: List[dict], doc: dict, installs: Path, reinstall: List[str], bm
                 # Disarm, so the next power-on doesn't start the installer unasked; then hold the host.
                 for line in bmc.disarm():
                     log(f"  {name}: {line}")
-                log(f"  {name}: the reset may have happened anyway; check the server's console through its BMC")
+                log(f"  {name}: the reset may have happened anyway; check the server's console through its BMC"
+                    + prepare.pending_note(prep.staged))
                 try:
                     write_install(installs, name, outcome="reset-failed")
                 except OSError as exc:
@@ -498,6 +517,9 @@ def main(argv: Optional[List[str]] = None) -> int:
                       f"not reset without --reinstall {h['name']}")
             elif h["name"] in args.first_install:
                 print("    --first-install: installed if nothing shows an existing install")
+            from . import prepare
+            for line in prepare.plan_lines(hv["bootMode"], h.get("rootDeviceHints") or {}):
+                print(f"    {line}")
         for name, text in rendered.items():
             print(f"--- {answers / (name + '.toml')}")
             print(mask(text), end="")
