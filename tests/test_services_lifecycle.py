@@ -101,10 +101,16 @@ class FakeHost:
         return subprocess.CompletedProcess(cmd, rc, out, "")
 
 
+BOOT = "boot-1"
+
+
 @pytest.fixture
-def host(monkeypatch):
+def host(monkeypatch, tmp_path):
     h = FakeHost()
     monkeypatch.setattr(lifecycle.subprocess, "run", h)
+    boot = tmp_path / "boot_id"
+    boot.write_text(BOOT + "\n")
+    monkeypatch.setattr(lifecycle, "BOOT_ID", str(boot))
     return h
 
 
@@ -216,7 +222,7 @@ def test_a_restore_that_fails_is_kept_for_the_next_run(tmp_path, host):
     host.fail = {"ip addr add 10.30.110.60/24"}
     conf = conf_with(tmp_path, ["address eth0 10.30.110.53/24"])
     left = lifecycle.down(conf, lambda m: None)
-    restore = "restore eth0 10.30.110.60/24 valid_lft 3600 preferred_lft 3600"
+    restore = f"restore eth0 10.30.110.60/24 boot={BOOT} valid_lft 3600 preferred_lft 3600"
     assert restore in left and "10.30.110.53/24" not in host.addrs["eth0"]
     assert restore in (conf / "created").read_text()
     host.fail = set()                                       # the next run
@@ -239,8 +245,9 @@ def test_an_unreadable_interface_after_the_removal_keeps_every_restore(tmp_path,
     monkeypatch.setattr(lifecycle, "addresses", flaky)
     conf = conf_with(tmp_path, ["address eth0 10.30.110.53/24"])
     left = lifecycle.down(conf, lambda m: None)
-    assert "restore eth0 10.30.110.5/24" in left and "restore eth0 10.30.110.54/24" in left
-    assert "restore eth0 10.30.110.54/24" in (conf / "created").read_text()
+    assert f"restore eth0 10.30.110.5/24 boot={BOOT}" in left
+    assert f"restore eth0 10.30.110.54/24 boot={BOOT}" in left
+    assert f"restore eth0 10.30.110.54/24 boot={BOOT}" in (conf / "created").read_text()
     assert lifecycle.down(conf, lambda m: None) == []
     assert host.addrs["eth0"] == {"10.30.110.5/24", "10.30.110.54/24"}
     assert not (conf / "created").exists()
@@ -248,7 +255,7 @@ def test_an_unreadable_interface_after_the_removal_keeps_every_restore(tmp_path,
 
 def test_prune_finishes_restores_a_previous_run_left(tmp_path, host):
     host.addrs["eth0"].discard("10.30.110.54/24")
-    conf = conf_with(tmp_path, ["address eth0 10.30.110.54/24", "restore eth0 10.30.110.60/24"])
+    conf = conf_with(tmp_path, ["address eth0 10.30.110.54/24", f"restore eth0 10.30.110.60/24 boot={BOOT}"])
     doc = copy.deepcopy(load_example("proxmox"))
     doc["spec"]["network"]["dnsServiceIPs"] = ["10.30.110.53", "10.30.110.54"]
     assert lifecycle.prune(conf, cli.wanted(doc, "eth0", "public"), say=lambda m: None) == []
@@ -879,3 +886,155 @@ def test_units_slow_their_retries_where_systemd_can(tmp_path, monkeypatch):
         assert units.systemd_version() == version
         auto = units.render(conf, "eth0", 24, ["10.0.0.53"], **kw)
         assert all(("RestartSteps" in t) == has for t in auto.values())
+
+
+# R1-R4 (fourth review of #230)
+
+def test_an_address_on_a_nic_that_no_longer_exists_counts_as_gone(tmp_path, host, monkeypatch):
+    """The bootstrap NIC was renamed or removed: ip can't read it and /sys/class/net has no entry.
+    The address went with the NIC, so the line is dropped and --down finishes."""
+    sysnet = tmp_path / "sys-net"
+    sysnet.mkdir()
+    monkeypatch.setattr(lifecycle, "SYS_NET", str(sysnet))
+    host.error = {"ip -j -4 addr show dev gone0"}
+    conf = conf_with(tmp_path, ["address gone0 10.30.110.53/24"])
+    msgs = []
+    assert lifecycle.down(conf, msgs.append) == []
+    assert not (conf / "created").exists()
+    assert any("gone0 no longer exists" in m for m in msgs)
+
+
+def test_an_unreadable_nic_that_still_exists_stays_listed(tmp_path, host, monkeypatch):
+    sysnet = tmp_path / "sys-net"
+    (sysnet / "eth9").mkdir(parents=True)
+    monkeypatch.setattr(lifecycle, "SYS_NET", str(sysnet))
+    host.error = {"ip -j -4 addr show dev eth9"}
+    conf = conf_with(tmp_path, ["address eth9 10.30.110.53/24"])
+    assert lifecycle.down(conf, lambda m: None) == ["address eth9 10.30.110.53/24"]
+
+
+class ZoneGoneHost(FakeHost):
+    """firewall-cmd answers INVALID_ZONE (112) for zone 'old'."""
+
+    def __call__(self, cmd, check=False, **kw):
+        if cmd and str(cmd[0]) in ("firewall-cmd", "firewall-offline-cmd") and any(
+                str(c) == "--zone=old" for c in cmd):
+            self.calls.append([str(c) for c in cmd])
+            if check:
+                raise subprocess.CalledProcessError(112, cmd, "", "INVALID_ZONE: old")
+            return subprocess.CompletedProcess(cmd, 112, "", "Error: INVALID_ZONE: old")
+        return super().__call__(cmd, check=check, **kw)
+
+
+@pytest.mark.parametrize("firewalld", [True, False])
+def test_a_port_in_a_zone_that_no_longer_exists_counts_as_gone(tmp_path, monkeypatch, firewalld):
+    h = ZoneGoneHost()
+    h.firewalld = firewalld
+    monkeypatch.setattr(lifecycle.subprocess, "run", h)
+    conf = conf_with(tmp_path, ["port old 53/udp runtime", "port old 53/udp permanent"])
+    msgs = []
+    assert lifecycle.down(conf, msgs.append) == []
+    assert not (conf / "created").exists()
+    assert any("zone old no longer exists" in m for m in msgs)
+
+
+def test_another_firewalld_error_still_keeps_the_port(tmp_path, host):
+    host.error = {"--query-port=53/udp"}
+    conf = conf_with(tmp_path, ["port public 53/udp runtime"])
+    assert lifecycle.down(conf, lambda m: None) == ["port public 53/udp runtime"]
+
+
+def test_forget_drops_one_line_and_touches_nothing(tmp_path, host):
+    conf = conf_with(tmp_path, ["address eth0 10.30.110.53/24", "pod dciab-services"])
+    msgs = []
+    assert lifecycle.forget(conf, "pod   dciab-services", msgs.append)
+    assert (conf / "created").read_text() == "address eth0 10.30.110.53/24\n"
+    assert host.calls == [] and "dciab-services" in host.pods
+    assert not lifecycle.forget(conf, "pod other", msgs.append)
+    assert lifecycle.forget(conf, "address eth0 10.30.110.53/24", msgs.append)
+    assert not (conf / "created").exists() and not (conf / "applied").exists()
+
+
+def test_forget_needs_root(tmp_path, monkeypatch, capsys):
+    conf = conf_with(tmp_path, ["pod dciab-services"])
+    monkeypatch.setattr(lifecycle.os, "geteuid", lambda: 1000)
+    assert lifecycle.main(["down", str(conf), "--forget", "pod dciab-services"]) == 1
+    assert "root" in capsys.readouterr().err
+    assert (conf / "created").exists()
+
+
+def test_forget_with_no_match_lists_the_record(tmp_path, monkeypatch, capsys):
+    conf = conf_with(tmp_path, ["pod dciab-services"])
+    monkeypatch.setattr(lifecycle.os, "geteuid", lambda: 0)
+    monkeypatch.setenv("DCIAB_SERVICES_LOCK", str(tmp_path / "lock"))
+    assert lifecycle.main(["down", str(conf), "--forget", "pod nope"]) == 1
+    err = capsys.readouterr().err
+    assert "has no line 'pod nope'" in err and "pod dciab-services" in err
+
+
+def test_a_stale_restore_for_a_removed_address_doesnt_bring_it_back(tmp_path, host):
+    """The reviewer's scenario: a crash left a restore line for .54 next to its address line.
+    --down removes .54 and must not put it back."""
+    conf = conf_with(tmp_path, ["address eth0 10.30.110.54/24", f"restore eth0 10.30.110.54/24 boot={BOOT}"])
+    msgs = []
+    assert lifecycle.down(conf, msgs.append) == []
+    assert "10.30.110.54/24" not in host.addrs["eth0"]
+    assert not (conf / "created").exists()
+
+
+def test_prune_settles_restores_first_and_drops_one_for_an_address_it_removes(tmp_path, host):
+    host.addrs["eth0"].discard("10.30.110.60/24")
+    conf = conf_with(tmp_path, ["address eth0 10.30.110.54/24", f"restore eth0 10.30.110.54/24 boot={BOOT}",
+                                f"restore eth0 10.30.110.60/24 boot={BOOT}"])
+    doc = copy.deepcopy(load_example("proxmox"))
+    doc["spec"]["network"]["dnsServiceIPs"] = ["10.30.110.53", "10.30.110.55"]   # .54 no longer wanted
+    assert lifecycle.prune(conf, cli.wanted(doc, "eth0", "public"), say=lambda m: None) == []
+    assert "10.30.110.54/24" not in host.addrs["eth0"]                  # removed, not put back
+    assert "10.30.110.60/24" in host.addrs["eth0"]                      # the other restore replayed
+    adds = [c for c in host.calls if c[:3] == ["ip", "addr", "add"]]
+    dels = [c for c in host.calls if c[:3] == ["ip", "addr", "del"]]
+    assert host.calls.index(adds[0]) < host.calls.index(dels[0])        # restores before removals
+
+
+@pytest.mark.parametrize("line", ["restore eth0 10.30.110.60/24", "restore eth0 10.30.110.60/24 boot=boot-0"])
+def test_a_restore_from_an_earlier_boot_is_dropped_not_replayed(tmp_path, host, line):
+    host.addrs["eth0"].discard("10.30.110.60/24")
+    conf = conf_with(tmp_path, [line])
+    msgs = []
+    assert lifecycle.down(conf, msgs.append) == []
+    assert "10.30.110.60/24" not in host.addrs["eth0"]
+    assert not (conf / "created").exists()
+    assert any("written before this boot" in m for m in msgs)
+
+
+def test_restore_keeps_noprefixroute_and_nodad(tmp_path, host, monkeypatch):
+    """NetworkManager's addresses carry noprefixroute; put back without it, the kernel adds its
+    own prefix route next to NetworkManager's."""
+    real = lifecycle.addresses
+
+    def flagged(nic):
+        out = real(nic)
+        if out is None:
+            return out
+        for a in out:
+            if a["cidr"] == "10.30.110.60/24":
+                a["cmd"] += ["noprefixroute", "nodad"]
+        return out
+    monkeypatch.setattr(lifecycle, "addresses", flagged)
+    host.addrs["eth0"] |= {"10.30.110.60/24"}
+    host.takes_along = {"10.30.110.53/24": ["10.30.110.60/24"]}
+    conf = conf_with(tmp_path, ["address eth0 10.30.110.53/24"])
+    assert lifecycle.down(conf, lambda m: None) == []
+    assert ["ip", "addr", "add", "10.30.110.60/24", "dev", "eth0", "noprefixroute", "nodad"] in host.calls
+
+
+def test_addresses_reads_noprefixroute_and_nodad_from_ip_json(monkeypatch):
+    import json
+    out = json.dumps([{"ifname": "eth0", "addr_info": [
+        {"family": "inet", "local": "10.30.110.60", "prefixlen": 24, "scope": "global", "label": "eth0",
+         "noprefixroute": True, "nodad": True, "valid_life_time": 4294967295,
+         "preferred_life_time": 4294967295}]}])
+    monkeypatch.setattr(lifecycle, "query", lambda cmd: subprocess.CompletedProcess(cmd, 0, out, ""))
+    assert lifecycle.addresses("eth0") == [
+        {"cidr": "10.30.110.60/24",
+         "cmd": ["ip", "addr", "add", "10.30.110.60/24", "dev", "eth0", "noprefixroute", "nodad"]}]

@@ -11,11 +11,14 @@
     pod <name>                    the services pod
     unit <path>                   a systemd or Quadlet unit file that brings the above back after
                                   a reboot (#81)
-    restore <nic> <ip>/<prefix> [ip addr add options]
+    restore <nic> <ip>/<prefix> boot=<id> [ip addr add options]
                                   another address on that interface, written before a recorded
                                   address is removed (the kernel may take it along); dropped once
                                   it is known to be there, so a failed or interrupted removal
-                                  still puts it back on the next run
+                                  still puts it back on the next run. boot= is the boot ID when it
+                                  was written: a line from an earlier boot (or without one) is
+                                  dropped, not replayed, since by then the address may belong to
+                                  someone else, or the operator removed it on purpose
 
 prune() undoes the address and port lines the current config no longer wants; down() undoes
 every line, units first, so nothing restarts what is being removed. Only listed changes are
@@ -38,9 +41,15 @@ stopped, down() leaves the pod, the addresses and the ports alone too (the unit 
 back, or bind addresses nobody records).
 
 Removing an address puts back every other address on the interface that the removal took along,
-the operator's included (with their lifetimes, scope and label): only the recorded one goes.
+the operator's included (with their lifetimes, scope, label and flags): only the recorded one goes.
+Restore lines are replayed before any removal, and a restore line for an address this run
+removes (a recorded address line) is dropped, so a leftover one can't bring it back.
 
-    python3 -m dciab_services.lifecycle down <state>/services
+A recorded address whose interface no longer exists, or a port in a firewalld zone that no
+longer exists, counts as gone. Anything else that can't be read stays listed; forget() drops one
+line by hand when the operator knows it is gone (dciab services --down --forget '<line>').
+
+    python3 -m dciab_services.lifecycle down <state>/services [--forget '<record line>']
 """
 
 from __future__ import annotations
@@ -57,13 +66,19 @@ from typing import Callable, Iterable, Iterator, List, Optional, Set
 RECORD = "created"
 APPLIED = "applied"
 # down() order: units first (nothing brings the pod back), then the pod, then what it used.
-ORDER = {"unit": 0, "pod": 1, "address": 2, "restore": 3, "port": 4}
+# Restore lines go before the address lines: a leftover one is put back (or dropped) first, so it
+# can't re-add an address this run removes.
+ORDER = {"unit": 0, "pod": 1, "restore": 2, "address": 3, "port": 4}
 
 SCOPES = ("runtime", "permanent")
 LOCK = "/run/dciab-services.lock"
 LOCK_FD = 9   # lib/steps/services.sh: exec 9>>/run/dciab-services.lock; flock -n 9
 # The Quadlet unit dciab services installs (dciab_services.units.KUBE in QUADLET_DIR).
 KUBE_UNIT = "dciab-services.kube"
+SYS_NET = "/sys/class/net"
+BOOT_ID = "/proc/sys/kernel/random/boot_id"
+# firewall-cmd's exit code for a zone that doesn't exist (INVALID_ZONE).
+INVALID_ZONE = 112
 
 Say = Callable[[str], None]
 
@@ -177,12 +192,35 @@ def addresses(nic: str) -> Optional[List[dict]]:
                 cmd += ["scope", a["scope"]]
             if a.get("label") and a["label"] != nic:
                 cmd += ["label", a["label"]]
+            for flag in ("noprefixroute", "nodad"):   # NetworkManager sets noprefixroute
+                if a.get(flag):
+                    cmd.append(flag)
             valid, pref = a.get("valid_life_time"), a.get("preferred_life_time")
             if isinstance(valid, int) and valid < 4294967295:
                 cmd += ["valid_lft", str(valid), "preferred_lft",
                         str(pref if isinstance(pref, int) and pref < 4294967295 else valid)]
             out.append({"cidr": cidr, "cmd": cmd})
     return out
+
+
+def nic_gone(nic: str) -> bool:
+    """Whether the interface no longer exists (renamed, a deleted VLAN, an unplugged NIC)."""
+    return not (Path(SYS_NET) / nic).exists()
+
+
+def boot_id() -> str:
+    try:
+        return Path(BOOT_ID).read_text().strip() or "unknown"
+    except OSError:
+        return "unknown"
+
+
+def _restore_parts(entry: List[str]) -> tuple:
+    """(nic, cidr, boot id or None, ip addr add options) of a restore line."""
+    nic, cidr, rest = entry[1], entry[2], entry[3:]
+    if rest and rest[0].startswith("boot="):
+        return nic, cidr, rest[0].split("=", 1)[1], rest[1:]
+    return nic, cidr, None, rest
 
 
 def read(conf: Path) -> List[List[str]]:
@@ -240,7 +278,15 @@ def undo(entry: List[str], say: Say = _say, firewalld: Optional[bool] = None,
     elif kind == "address" and len(args) == 2:
         _undo_address(args[0], args[1], say, journal)
     elif kind == "restore" and len(args) >= 2:
-        _restore(args[0], args[1], args[2:], say)
+        nic, cidr, boot, options = _restore_parts(entry)
+        if boot != boot_id():
+            say(f"dropped '{' '.join(entry)}': written before this boot "
+                f"({'no boot ID' if boot is None else 'boot ' + boot}), so {cidr} isn't put back")
+            return
+        if nic_gone(nic):
+            say(f"dropped '{' '.join(entry)}': {nic} no longer exists")
+            return
+        _restore(nic, cidr, options, say)
     elif kind == "port" and len(args) in (2, 3):
         zone, port = args[0], args[1]
         scopes = [args[2]] if len(args) == 3 else ["runtime"]   # older lines: runtime opens only
@@ -263,11 +309,15 @@ def _undo_address(nic: str, cidr: str, say: Say, journal: Optional[Journal] = No
     can't be read or put back."""
     before = addresses(nic)
     if before is None:
+        if nic_gone(nic):
+            say(f"{nic} no longer exists: {cidr} went with it")
+            return
         raise Kept(f"couldn't read the addresses on {nic} (ip -j -4 addr show dev {nic}); "
                    f"{cidr} stays listed")
     if cidr not in {a["cidr"] for a in before}:
         return
-    pending = [["restore", nic, *a["cmd"][3:4], *a["cmd"][6:]] for a in before if a["cidr"] != cidr]
+    boot = f"boot={boot_id()}"
+    pending = [["restore", nic, a["cmd"][3], boot, *a["cmd"][6:]] for a in before if a["cidr"] != cidr]
     if journal and pending:
         journal(pending, [])
     try:
@@ -280,7 +330,7 @@ def _undo_address(nic: str, cidr: str, say: Say, journal: Optional[Journal] = No
     done = []
     try:
         for entry in pending:
-            _restore(entry[1], entry[2], entry[3:], say, took=cidr)
+            _restore(entry[1], entry[2], _restore_parts(entry)[3], say, took=cidr)
             done.append(entry)
     finally:
         if journal and done:
@@ -313,18 +363,21 @@ def _undo_port(zone: str, port: str, scope: str, firewalld: bool, say: Say) -> N
         if not firewalld:
             say(f"firewalld isn't running: {port} in zone {zone} isn't open at runtime")
             return
-        if present(["firewall-cmd", f"--zone={zone}", f"--query-port={port}"],
-                   f"{port} in zone {zone} (runtime)"):
+        if _port_open(["firewall-cmd", f"--zone={zone}", f"--query-port={port}"],
+                      zone, port, scope, say):
             run(["firewall-cmd", f"--zone={zone}", f"--remove-port={port}"])
             say(f"closed {port} in zone {zone} (runtime)")
         return
     if firewalld:
-        if present(["firewall-cmd", "--permanent", f"--zone={zone}", f"--query-port={port}"],
-                   f"{port} in zone {zone} (permanent)"):
+        if _port_open(["firewall-cmd", "--permanent", f"--zone={zone}", f"--query-port={port}"],
+                      zone, port, scope, say):
             run(["firewall-cmd", "--permanent", f"--zone={zone}", f"--remove-port={port}"])
             say(f"closed {port} in zone {zone} (permanent)")
         return
     have = query(["firewall-offline-cmd", f"--zone={zone}", f"--query-port={port}"])
+    if have.returncode == INVALID_ZONE:
+        say(f"zone {zone} no longer exists: {port} ({scope}) went with it")
+        return
     if have.returncode == 1:
         return
     if have.returncode != 0:
@@ -333,6 +386,19 @@ def _undo_port(zone: str, port: str, scope: str, firewalld: bool, say: Say) -> N
                    f"firewall-cmd --permanent --zone={zone} --remove-port={port})")
     run(["firewall-offline-cmd", f"--zone={zone}", f"--remove-port={port}"])
     say(f"closed {port} in zone {zone} (permanent; firewalld isn't running)")
+
+
+def _port_open(cmd: List[str], zone: str, port: str, scope: str, say: Say) -> bool:
+    """present() for a firewalld port query, where a zone that no longer exists means gone."""
+    res = query(cmd)
+    if res.returncode == INVALID_ZONE:
+        say(f"zone {zone} no longer exists: {port} ({scope}) went with it")
+        return False
+    if res.returncode in (0, 1):
+        return res.returncode == 0
+    detail = (res.stderr or "").strip() or f"exit {res.returncode}"
+    raise Kept(f"couldn't tell whether {port} in zone {zone} ({scope}) is there "
+               f"({' '.join(str(c) for c in cmd)}: {detail}); it stays listed")
 
 
 def _undo_unit(path: Path, say: Say) -> None:
@@ -385,16 +451,23 @@ def prune(conf: Path, wanted: Set[str], kinds: Iterable[str] = ("address", "port
                  "are; run dciab services again with firewalld running to update them)")
         keep, left, removed, pending = [], [], False, []
         journal = _journal(conf, pending)
-        for entry in entries:
+        doomed = {(e[1], e[2]) for e in entries if len(e) == 3 and e[0] == "address"
+                  and "address" in kinds and " ".join(e) not in wanted}
+        # Restore lines first (a removal that didn't finish putting them back), so a leftover one
+        # is settled before any address goes; one for an address this run removes is dropped.
+        for entry in [e for e in entries if e and e[0] == "restore"]:
             line = " ".join(entry)
-            if entry and entry[0] == "restore":   # a removal that didn't finish putting it back
-                try:
-                    undo(entry, say)
-                except (subprocess.CalledProcessError, ValueError, Kept) as exc:
-                    say(f"couldn't undo '{line}': {_why(exc)}")
-                    keep.append(entry)
-                    left.append(line)
+            if len(entry) >= 3 and (entry[1], entry[2]) in doomed:
+                say(f"dropped '{line}': {entry[2]} is being removed")
                 continue
+            try:
+                undo(entry, say)
+            except (subprocess.CalledProcessError, ValueError, Kept) as exc:
+                say(f"couldn't undo '{line}': {_why(exc)}")
+                keep.append(entry)
+                left.append(line)
+        for entry in [e for e in entries if not e or e[0] != "restore"]:
+            line = " ".join(entry)
             if not entry or entry[0] not in kinds or line in wanted:
                 keep.append(entry)
                 continue
@@ -449,7 +522,11 @@ def down(conf: Path, say: Say = _say) -> List[str]:
         firewalld = firewalld_running() if any(e and e[0] == "port" for e in entries) else None
         left, blocked, pending = [], False, []
         journal = _journal(conf, pending)
+        doomed = {(e[1], e[2]) for e in entries if len(e) == 3 and e[0] == "address"}
         for entry in sorted(entries, key=lambda e: ORDER.get(e[0] if e else "", 9)):
+            if entry and entry[0] == "restore" and len(entry) >= 3 and (entry[1], entry[2]) in doomed:
+                say(f"dropped '{' '.join(entry)}': {entry[2]} is one of the addresses being removed")
+                continue
             if blocked and entry and entry[0] != "unit":
                 say(f"left '{' '.join(entry)}' alone: a unit above couldn't be stopped")
                 left.append(entry)
@@ -467,6 +544,22 @@ def down(conf: Path, say: Say = _say) -> List[str]:
         if not left and (conf / APPLIED).exists():
             (conf / APPLIED).unlink()
     return [" ".join(e) for e in left]
+
+
+def forget(conf: Path, line: str, say: Say = _say) -> bool:
+    """Drop one record line by hand, for a change the operator knows is gone but --down can't
+    confirm (it stays listed otherwise). The line must match exactly (spaces aside). Returns
+    whether it was there."""
+    want = line.split()
+    with locked():
+        entries = read(conf)
+        if want not in entries:
+            return False
+        write(conf, [e for e in entries if e != want])
+        say(f"forgot '{' '.join(want)}' (nothing on the host was changed)")
+        if not read(conf) and (conf / APPLIED).exists():
+            (conf / APPLIED).unlink()
+    return True
 
 
 def installed_elsewhere(conf: Path) -> Optional[str]:
@@ -499,8 +592,24 @@ def _why(exc: Exception) -> str:
 
 def main(argv: Optional[List[str]] = None) -> int:
     args = sys.argv[1:] if argv is None else argv
+    if len(args) == 4 and args[0] == "down" and args[2] == "--forget":
+        conf = Path(args[1])
+        if os.geteuid() != 0:
+            print("dciab services: --forget must run as root", file=sys.stderr)
+            return 1
+        try:
+            found = forget(conf, args[3], lambda m: _say(f"down: {m}"))
+        except Busy as exc:
+            print(f"dciab services: {exc}", file=sys.stderr)
+            return 1
+        if not found:
+            print(f"dciab services: --forget: {conf / RECORD} has no line '{args[3]}'; it lists:\n  "
+                  + "\n  ".join(" ".join(e) for e in read(conf)), file=sys.stderr)
+            return 1
+        return 0
     if len(args) != 2 or args[0] != "down":
-        print("usage: python3 -m dciab_services.lifecycle down <state>/services", file=sys.stderr)
+        print("usage: python3 -m dciab_services.lifecycle down <state>/services "
+              "[--forget '<record line>']", file=sys.stderr)
         return 2
     conf = Path(args[1])
     elsewhere = installed_elsewhere(conf)

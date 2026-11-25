@@ -3,7 +3,7 @@
 # servers (docs/adr/0001-day0-hypervisors-and-services.md); DNS only for the others.
 #
 #   dciab services <config> [--state DIR] [--isos DIR] [--payload DIR] [--until STEP] [--print]
-#   dciab services <config> --down [--state DIR]
+#   dciab services <config> --down [--state DIR] [--forget '<record line>']
 #
 # CoreDNS, chrony (only with spec.time.servedBy: dciab) and Caddy run as one podman pod with host
 # networking. CoreDNS and chrony answer only on network.dnsServiceIPs, Caddy only on
@@ -48,7 +48,7 @@ STEPS=(preflight render address firewall images pod ready)
 die() { echo "dciab services: $*" >&2; exit 1; }
 usage() { sed -n '5p' "${BASH_SOURCE[0]}" | sed 's/^# *//' >&2; exit 2; }
 
-config="" state="" isos="" until="" print=0 down=0 payload="${DCIAB_PAYLOAD:-}"
+config="" state="" isos="" until="" print=0 down=0 forget="" payload="${DCIAB_PAYLOAD:-}"
 while (( $# )); do
   case "$1" in
     --state) state="${2:?}"; shift 2 ;;
@@ -57,12 +57,14 @@ while (( $# )); do
     --until) until="${2:?}"; shift 2 ;;
     --print) print=1; shift ;;
     --down) down=1; shift ;;
+    --forget) forget="${2:?}"; shift 2 ;;
     -*) echo "dciab services: unknown option '$1'" >&2; usage ;;
     *) [[ -z "$config" ]] || usage; config="$1"; shift ;;
   esac
 done
 [[ -n "$config" ]] || usage
 [[ -f "$config" ]] || die "no such config: $config"
+[[ -z "$forget" ]] || (( down )) || die "--forget goes with --down"
 if [[ -n "$until" ]] && ! printf '%s\n' "${STEPS[@]}" | grep -qx "$until"; then
   die "--until must be one of: ${STEPS[*]}"
 fi
@@ -83,6 +85,11 @@ if (( down )); then
   echo "== services: down"
   # The helper checks that fd 9 is the lock and holds it (lifecycle.locked); its own children
   # (podman, systemctl) don't inherit it: Python closes fds for subprocesses.
+  if [[ -n "$forget" ]]; then
+    # Drops one listed line without touching the host: for a change the operator knows is gone.
+    DCIAB_SERVICES_LOCKED=1 python3 -m dciab_services.lifecycle down "$state/services" --forget "$forget"
+    exit $?
+  fi
   DCIAB_SERVICES_LOCKED=1 python3 -m dciab_services.lifecycle down "$state/services"
   exit $?
 fi
