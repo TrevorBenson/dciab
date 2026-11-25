@@ -1,0 +1,3 @@
+{"@odata.id": "/redfish/v1/Systems/437XR1138R2/BootOptions", "@odata.type": "#BootOptionCollection.BootOptionCollection",
+ "Name": "Boot Options", "Members@odata.count": 1,
+ "Members@odata.nextLink": "/redfish/v1/Systems/437XR1138R2/BootOptions/Page2"}

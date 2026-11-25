@@ -1,0 +1,3 @@
+{"@odata.id": "/redfish/v1/Systems/437XR1138R2/BootOptions/Boot000A", "@odata.type": "#BootOption.v1_0_4.BootOption",
+ "Id": "Boot000A", "BootOptionReference": "Boot000A", "DisplayName": "Embedded LOM 1 Port 1 : HPE Ethernet 1Gb 4-port 331i Adapter - NIC (PXE IPv4)",
+ "UefiDevicePath": "PciRoot(0x0)/Pci(0x1C,0x0)/Pci(0x0,0x0)/MAC(B8CA3A010301,0x1)/IPv4(0.0.0.0)"}

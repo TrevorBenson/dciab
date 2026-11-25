@@ -780,6 +780,30 @@ jobs:
           sudo podman ps -a || true
           for c in coredns chrony-1 chrony-2 caddy; do echo "== $c"; sudo podman logs "dciab-services-$c" 2>&1 | tail -40 || true; done
 
+  redfish-mockups:
+    # dciab hypervisors' Redfish code (reinstall guard, preparation, media) against DMTF's Redfish
+    # Mockup Server and public mockups, plus overlays for vendor behaviour (hack/redfish/README.md).
+    name: Redfish mockups (DMTF Mockup Server)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: The pinned Mockup Server, its requirements and DMTF's mockups
+        run: |
+          set -euo pipefail
+          pip install -r requirements-dev.txt
+          pip install --require-hashes -r "$(python3 -c 'import yaml; print(yaml.safe_load(open("bundle.lock"))["redfishTesting"]["mockupServer"]["requirements"])')"
+          echo "DCIAB_REDFISH_MOCKUPS=$(python3 hack/redfish/fetch.py "$RUNNER_TEMP/redfish")" >> "$GITHUB_ENV"
+      - name: Tests (none may be skipped)
+        run: |
+          set -euo pipefail
+          python3 -m pytest -q -rs tests/test_redfish_mockups.py tests/test_redfish_tooling.py | tee "$RUNNER_TEMP/out.txt"
+          if grep -q "skipped" "$RUNNER_TEMP/out.txt"; then echo "::error::the mockup tests were skipped"; exit 1; fi
+
   shellcheck:
     runs-on: ubuntu-latest
     steps:

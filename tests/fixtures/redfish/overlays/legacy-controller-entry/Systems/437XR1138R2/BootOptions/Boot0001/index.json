@@ -1,0 +1,3 @@
+{"@odata.id": "/redfish/v1/Systems/437XR1138R2/BootOptions/Boot0001", "@odata.type": "#BootOption.v1_0_4.BootOption",
+ "Id": "Boot0001", "BootOptionReference": "Boot0001", "BootOptionEnabled": true,
+ "DisplayName": "Integrated RAID Controller 1: PERC H730P Mini(bus 18 dev 00)", "UefiDevicePath": ""}

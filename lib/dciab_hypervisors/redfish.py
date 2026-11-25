@@ -12,13 +12,18 @@ import json
 import re
 import time
 from typing import Dict, List, Optional, Tuple
-from urllib.parse import urlsplit
+from urllib.parse import unquote, urlsplit
 
 from dciab_validate.probes import HttpsClient, ProbeError, Trust
 
 
 class RedfishError(Exception):
-    """Something the BMC refused or doesn't offer. The message is safe to print."""
+    """Something the BMC refused or doesn't offer. The message is safe to print. status is the
+    HTTP status the BMC answered with, when it answered with one."""
+
+    def __init__(self, message: str, status: Optional[int] = None):
+        super().__init__(message)
+        self.status = status
 
 
 # Boot option names that load an installed OS. Vendors name entries freely, so this only adds
@@ -78,6 +83,81 @@ def is_os_entry(name: str, device_path: str) -> bool:
 
 MAX_PAGES = 64
 
+# Clearing a boot override: Target None with Enabled Disabled. Some BMCs (sushy-tools among them)
+# refuse a PATCH that sets Enabled alone; others refuse Target None, so a 4xx retries with Enabled
+# alone (CLEAR_OVERRIDE_ENABLED_ONLY).
+CLEAR_OVERRIDE = {"BootSourceOverrideEnabled": "Disabled", "BootSourceOverrideTarget": "None"}
+CLEAR_OVERRIDE_ENABLED_ONLY = {"BootSourceOverrideEnabled": "Disabled"}
+
+DEFAULT_PORTS = {"http": 80, "https": 443}
+
+
+def _norm_url(url: str) -> Optional[tuple]:
+    """A URL compared the way BMCs may echo it back: scheme and host in lower case, credentials
+    and a default port dropped, the path unquoted without a trailing slash. None for no URL,
+    and for a value that doesn't parse as one (for example "http://[broken/x.iso")."""
+    try:
+        parts = urlsplit(url.strip())
+    except ValueError:
+        return None
+    if not parts.scheme or not parts.hostname:
+        return None
+    scheme = parts.scheme.lower()
+    try:
+        port = parts.port
+    except ValueError:
+        return None
+    if port == DEFAULT_PORTS.get(scheme):
+        port = None
+    return scheme, parts.hostname.lower(), port, unquote(parts.path).rstrip("/") or "/", parts.query
+
+
+def _basename(name: str) -> str:
+    """The file name at the end of a URL or a path ("" for none). A value that doesn't parse as
+    a URL is read as a plain path, so this never raises."""
+    path = name.strip()
+    if "://" in path:
+        try:
+            path = urlsplit(path).path
+        except ValueError:
+            pass
+    return unquote(path).rstrip("/").rsplit("/", 1)[-1]
+
+
+def slot_shows(slot: dict, image: str) -> bool:
+    """Strict: whether a CD slot shows image's URL as its inserted media, exactly or after
+    normalising (_norm_url: case of scheme and host, credentials, default port, trailing slash).
+    A slot that names no usable URL (only an ImageName, a file name or path, a malformed URL)
+    never matches. Used where a match skips an insert: media with the same file name may be
+    stale (an earlier upload, another site's ISO) and would boot a stale answer file."""
+    if not slot.get("Inserted"):
+        return False
+    shown = str(slot.get("Image") or "")
+    if shown == image:
+        return True
+    want, got = _norm_url(image), _norm_url(shown)
+    return want is not None and got is not None and got == want
+
+
+def slot_shows_after_insert(slot: dict, image: str) -> bool:
+    """Whether a CD slot shows image, in a slot this run has just emptied and inserted image
+    into (or whose recorded install this run's insert started): slot_shows, or, when the slot
+    names no usable URL, an ImageName (or an Image that is only a file name or path) equal to
+    image's file name. Some BMCs echo only that. A different URL never matches."""
+    if slot_shows(slot, image):
+        return True
+    if not slot.get("Inserted"):
+        return False
+    shown = str(slot.get("Image") or "")
+    if _norm_url(shown) is not None:                 # a usable URL, and not ours
+        return False
+    name = _basename(image)
+    if not name:
+        return False
+    if shown:                                        # a file name, a path or a malformed URL
+        return _basename(shown) == name
+    return _basename(str(slot.get("ImageName") or "")) == name
+
 
 def _required_members(page: object) -> object:
     """A collection page's Members value; a page without one is unreadable, not empty."""
@@ -95,9 +175,11 @@ def _members(value: object) -> list:
 
 class Bmc:
     def __init__(self, address: str, username: str, password: str, trust: Trust, timeout: float = 30.0,
-                 task_timeout: float = 300.0, poll: float = 2.0):
+                 task_timeout: float = 300.0, poll: float = 2.0, attach_timeout: float = 60.0):
         self.task_timeout = task_timeout
+        self.attach_timeout = attach_timeout
         self.poll = poll
+        self.override_set = False      # this run set a boot override (boot_once_from_cd)
         url = address.split("+", 1)[1] if "+" in address else address
         parts = urlsplit(url)
         self.system_path = parts.path.rstrip("/")
@@ -114,7 +196,7 @@ class Bmc:
         except ProbeError as exc:
             raise RedfishError(str(exc)) from None
         if resp.status not in ok:
-            raise RedfishError(f"{self.client.where}: {method} {path} answered HTTP {resp.status}")
+            raise RedfishError(f"{self.client.where}: {method} {path} answered HTTP {resp.status}", resp.status)
         if resp.status == 202 and method != "GET":
             self._wait_task(method, path, resp.headers.get("location"))
         return resp
@@ -199,6 +281,7 @@ class Bmc:
             self._call("PATCH", path, {"Image": image, "Inserted": True, "WriteProtected": True})
 
     def boot_once_from_cd(self) -> None:
+        self.override_set = True       # even a failed PATCH may have taken effect
         self._call("PATCH", self.system_path, {"Boot": {
             "BootSourceOverrideTarget": "Cd",
             "BootSourceOverrideEnabled": "Once",
@@ -224,9 +307,10 @@ class Bmc:
                 "BootSourceOverrideEnabled": boot.get("BootSourceOverrideEnabled")}
 
     def attached(self, image: str) -> Dict[str, object]:
-        """state() plus whether image is the media in the CD slot. Reads only."""
+        """state() plus whether image is the media in the CD slot (slot_shows_after_insert: the
+        caller has a recorded install that this run's own insert started). Reads only."""
         _, slot = self.cd_slot()
-        return dict(self.state(), attached=bool(slot.get("Inserted")) and slot.get("Image") == image)
+        return dict(self.state(), attached=slot_shows_after_insert(slot, image))
 
     def members(self, path: str) -> list:
         """Every member of a collection, across all its pages (Members@odata.nextLink). Raises
@@ -285,24 +369,67 @@ class Bmc:
                 done.append("ejected the installer ISO")
         except RedfishError as exc:
             done.append(f"couldn't eject the installer ISO ({exc}); it will boot at the next power-on")
+        done.append(self._clear_override_line("the one-time boot override"))
+        return done
+
+    def clear_override(self) -> str:
+        """Clear the boot override: CLEAR_OVERRIDE, and when the BMC refuses that with a 4xx, once
+        more with Enabled alone. Returns which form the BMC took; raises when it took neither."""
         try:
-            self._call("PATCH", self.system_path, {"Boot": {"BootSourceOverrideEnabled": "Disabled"}})
-            done.append("cleared the one-time boot override")
+            self._call("PATCH", self.system_path, {"Boot": CLEAR_OVERRIDE})
+            return "Enabled Disabled, Target None"
         except RedfishError as exc:
-            done.append(f"couldn't clear the boot override ({exc})")
+            if exc.status is None or not 400 <= exc.status < 500:
+                raise
+        self._call("PATCH", self.system_path, {"Boot": CLEAR_OVERRIDE_ENABLED_ONLY})
+        return "Enabled Disabled (the BMC refused Target None)"
+
+    def _clear_override_line(self, what: str) -> str:
+        try:
+            return f"cleared {what} ({self.clear_override()})"
+        except RedfishError as exc:
+            return f"couldn't clear {what} ({exc})"
+
+    def undo_attach(self, path: str, slot: dict, image: str, clear_override: bool) -> List[str]:
+        """After an attach that failed or isn't followed by a boot: eject whatever the slot
+        shows (a late mount may land after the last read), clear the boot override only when
+        clear_override (this run set one), then read the slot once more and say whether image
+        is still there. Returns what happened; never raises."""
+        done = []
+        try:
+            self.eject(path, slot)
+            done.append(f"ejected {image}")
+        except RedfishError as exc:
+            done.append(f"eject answered {exc} (ignored: the slot may already be empty)")
+        if clear_override:
+            done.append(self._clear_override_line("the boot override"))
+        try:
+            _, again = self.cd_slot()
+            if slot_shows_after_insert(again, image):
+                done.append(f"{image} is STILL attached: eject it through the BMC before the server's next "
+                            "power-on, or it may boot the installer")
+            elif again.get("Inserted"):
+                done.append(f"the CD slot now shows {again.get('Image') or again.get('ImageName')}")
+            else:
+                done.append("the CD slot is empty")
+        except RedfishError as exc:
+            done.append(f"couldn't read the CD slot again ({exc}): check it through the BMC")
         return done
 
     def release(self, image: str, clear_override: bool) -> Tuple[List[str], List[str], Optional[str]]:
         """After an install: eject image if it is still in the CD slot and, when clear_override
         (DCiaB set it), clear a boot override that still points at Cd, so a fallback to CD never
         boots the installer again. Other media are left alone. Returns (done, failed, other):
-        other is the Image of media left in the slot because it isn't image, else None. Never raises."""
+        other is the Image of media left in the slot because it isn't image, else None. Never raises.
+
+        Uses slot_shows_after_insert: here a match only ejects, which is always safe, while a
+        miss would leave the installer attached on a BMC that echoes only a file name."""
         done: List[str] = []
         failed: List[str] = []
         other: Optional[str] = None
         try:
             path, slot = self.cd_slot()
-            if slot.get("Inserted") and slot.get("Image") == image:
+            if slot_shows_after_insert(slot, image):
                 self.eject(path, slot)
                 done.append(f"ejected {image}")
             elif slot.get("Inserted"):
@@ -314,27 +441,58 @@ class Bmc:
                 boot = self.system().get("Boot") or {}
                 if boot.get("BootSourceOverrideTarget") == "Cd" and \
                         boot.get("BootSourceOverrideEnabled") not in (None, "Disabled"):
-                    self._call("PATCH", self.system_path, {"Boot": {"BootSourceOverrideEnabled": "Disabled"}})
-                    done.append("cleared the boot override from Cd")
+                    done.append(f"cleared the boot override from Cd ({self.clear_override()})")
             except RedfishError as exc:
                 failed.append(f"couldn't clear the boot override from Cd ({exc})")
         return done, failed, other
 
     def prepare(self, image: str) -> List[str]:
-        """Attach image (ejecting anything else) and set a one-time boot from it. No reset."""
+        """Attach image (ejecting anything else) and set a one-time boot from it. No reset.
+        When the attach can't be confirmed or the boot override fails, the ISO is ejected (and an
+        override this run set is cleared) before the error is raised."""
         done = []
         path, slot = self.cd_slot()
-        if slot.get("Inserted") and slot.get("Image") == image:
+        if slot_shows(slot, image):                      # strict: a match skips the insert
             done.append(f"{image} already attached")
         else:
             if slot.get("Inserted"):
                 self.eject(path, slot)
                 done.append("ejected the attached media")
             self.insert(path, slot, image)
+            self._wait_attached(path, slot, image)
             done.append(f"attached {image}")
-        self.boot_once_from_cd()
+        try:
+            self.boot_once_from_cd()
+        except RedfishError as exc:
+            undone = "; ".join(self.undo_attach(path, slot, image, clear_override=True))
+            raise RedfishError(f"{exc} (setting the one-time boot from Cd); nothing was reset ({undone})",
+                               exc.status) from None
         done.append("one-time boot from Cd (UEFI)")
         return done
+
+    def _wait_attached(self, path: str, slot: dict, image: str) -> None:
+        """After an insert the BMC answered: wait (attach_timeout) until its CD slot shows image
+        (slot_shows_after_insert: this run just emptied the slot and inserted image, so a file-name
+        echo can only be ours). A BMC can accept InsertMedia and then fail to mount it (an URL it can't
+        reach). When the slot never shows it, or can't be read: eject regardless (a late mount
+        may land after the last read), clear a boot override only if this run set one, and raise,
+        so nothing is reset onto a missing installer."""
+        deadline = time.monotonic() + self.attach_timeout
+        while True:
+            try:
+                _, current = self.cd_slot()
+            except RedfishError as exc:
+                undone = "; ".join(self.undo_attach(path, slot, image, clear_override=self.override_set))
+                raise RedfishError(f"{exc} (reading the CD slot after attaching {image}); nothing was reset "
+                                   f"({undone})", exc.status) from None
+            if slot_shows_after_insert(current, image):
+                return
+            if time.monotonic() > deadline:
+                undone = "; ".join(self.undo_attach(path, slot, image, clear_override=self.override_set))
+                raise RedfishError(f"{self.client.where}: the BMC accepted {image}, but its CD slot doesn't show it "
+                                   f"after {self.attach_timeout:.0f}s (can the BMC reach that URL?); nothing was reset "
+                                   f"({undone})")
+            time.sleep(self.poll)
 
     def install_from(self, image: str) -> List[str]:
         """prepare(image), then reset. Returns what was done. Callers decide whether a reset is safe."""

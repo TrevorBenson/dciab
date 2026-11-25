@@ -1,6 +1,7 @@
 """dciab hypervisors: Proxmox VE answer files, the Redfish virtual-media driver (against a local
 fake BMC), and the CLI plan. Nothing here touches a real BMC or server."""
 
+import argparse
 import base64
 import copy
 import hashlib
@@ -293,7 +294,17 @@ class FakeBMC:
 
     def __init__(self, cert, media="manager", actions=True, power="On", inserted=None, boot_options=None,
                  reset_status=204, overrides=None, bios=None, secure_boot=None, drives=None, apply_times=True,
-                 volumes=None, patch_fail=()):
+                 volumes=None, patch_fail=(), insert_lag=0, slot_fails_after_insert=False, slot_view=None,
+                 eject_status=204, eject_mounts_late=False, refuse_target_none=False, fail_boot_once=False):
+        # insert_lag: GETs of the slot that still show the old media after an insert (-1: never shows it)
+        # slot_view: maps the slot as stored to the slot as the BMC reports it (how it echoes Image)
+        # eject_status: the EjectMedia action answers this; eject_mounts_late: an EjectMedia that
+        #   arrives while an insert is still pending is answered 204, and then the mount lands anyway
+        # refuse_target_none: a Boot PATCH with BootSourceOverrideTarget None answers 400
+        # fail_boot_once: the PATCH that sets the one-time boot from Cd takes effect, then answers 500
+        self.slot_view = slot_view
+        self.insert_lag, self.inserted_pending = insert_lag, None
+        self.slot_fails_after_insert, self.inserted_once = slot_fails_after_insert, False
         boot_options = DEFAULT_OPTS if boot_options is None else boot_options
         # Preparation (prepare.py): BIOS attributes, Secure Boot, drives; None means the BMC offers none.
         self.bios, self.pending, self.secure_boot = bios, {}, secure_boot
@@ -331,7 +342,12 @@ class FakeBMC:
             return {"VirtualMedia": {"@odata.id": coll}} if media == "manager" else {}
 
         def slot():
-            body = dict(fake.slot, MediaTypes=["CD", "DVD"])
+            if fake.inserted_pending is not None:
+                if fake.insert_lag == 0:
+                    fake.slot, fake.inserted_pending = fake.inserted_pending, None
+                elif fake.insert_lag > 0:
+                    fake.insert_lag -= 1
+            body = dict(fake.slot_view(dict(fake.slot)) if fake.slot_view else fake.slot, MediaTypes=["CD", "DVD"])
             if actions:
                 body["Actions"] = {"#VirtualMedia.InsertMedia": {"target": slot_path + "/Actions/VirtualMedia.InsertMedia"},
                                    "#VirtualMedia.EjectMedia": {"target": slot_path + "/Actions/VirtualMedia.EjectMedia"}}
@@ -380,6 +396,8 @@ class FakeBMC:
                     return self._send(401)
                 if isinstance(overrides.get(self.path), int):
                     return self._send(overrides[self.path])
+                if fake.slot_fails_after_insert and fake.inserted_once and self.path == slot_path:
+                    return self._send(500)
                 if self.path in overrides:
                     return self._send(200, overrides[self.path])
                 if self.path in gets:
@@ -392,9 +410,18 @@ class FakeBMC:
                 if actions and self.path == slot_path + "/Actions/VirtualMedia.InsertMedia":
                     if fake.slot["Inserted"]:
                         return self._send(409)   # like real BMCs: eject first
-                    fake.slot = {"Inserted": True, "Image": body["Image"]}
+                    fake.inserted_once = True
+                    if fake.insert_lag:
+                        fake.inserted_pending = {"Inserted": True, "Image": body["Image"]}
+                    else:
+                        fake.slot = {"Inserted": True, "Image": body["Image"]}
                 elif actions and self.path == slot_path + "/Actions/VirtualMedia.EjectMedia":
-                    fake.slot = {"Inserted": False, "Image": None}
+                    if eject_status != 204:
+                        return self._send(eject_status)
+                    if eject_mounts_late and fake.inserted_pending is not None:
+                        fake.slot, fake.inserted_pending = fake.inserted_pending, None
+                    else:
+                        fake.slot = {"Inserted": False, "Image": None}
                 elif self.path == SYS + "/Actions/ComputerSystem.Reset":
                     if reset_status != 204:
                         return self._send(reset_status)
@@ -409,7 +436,11 @@ class FakeBMC:
                 if self.path in patch_fail:
                     return self._send(500)
                 if self.path == SYS:
+                    if refuse_target_none and body["Boot"].get("BootSourceOverrideTarget") == "None":
+                        return self._send(400)
                     fake.boot = dict(fake.boot, **body["Boot"])
+                    if fail_boot_once and body["Boot"].get("BootSourceOverrideTarget") == "Cd":
+                        return self._send(500)
                 elif self.path == SYS + "/Bios/Settings" and fake.bios is not None:
                     fake.pending = dict(fake.pending, **body["Attributes"])
                 elif self.path == SYS + "/SecureBoot" and fake.secure_boot is not None:
@@ -469,6 +500,231 @@ def test_install_from_ejects_inserts_boots_and_restarts(fake_bmc, media, actions
     assert f.calls[-1] == ("POST", SYS + "/Actions/ComputerSystem.Reset", {"ResetType": "ForceRestart"})
     assert ("PATCH", SYS, {"Boot": {"BootSourceOverrideTarget": "Cd", "BootSourceOverrideEnabled": "Once",
                                     "BootSourceOverrideMode": "UEFI"}}) in f.calls
+
+
+def test_an_insert_the_slot_shows_late_is_waited_for(fake_bmc):
+    f = fake_bmc(insert_lag=3)
+    f.bmc.poll, f.bmc.attach_timeout = 0.01, 5
+    done = f.bmc.prepare(ISO)
+    assert f"attached {ISO}" in done and f.slot == {"Inserted": True, "Image": ISO}
+    assert f.bmc.state()["BootSourceOverrideTarget"] == "Cd"
+
+
+def test_an_insert_the_slot_never_shows_disarms_and_fails_before_any_boot_override(fake_bmc):
+    f = fake_bmc(insert_lag=-1, inserted="http://old/other.iso")
+    f.bmc.poll, f.bmc.attach_timeout = 0.01, 0.2
+    with pytest.raises(redfish.RedfishError, match="doesn't show it .* nothing was reset"):
+        f.bmc.install_from(ISO)
+    assert not any(c[1].endswith("ComputerSystem.Reset") for c in f.calls)
+    assert not any(c[0] == "PATCH" and c[1] == SYS and c[2]["Boot"].get("BootSourceOverrideTarget") == "Cd"
+                   for c in f.calls)
+    assert f.boot == {"BootSourceOverrideTarget": "None", "BootSourceOverrideEnabled": "Disabled"}
+
+
+def test_a_slot_that_cant_be_read_after_the_insert_ejects_and_fails(fake_bmc):
+    f = fake_bmc(slot_fails_after_insert=True)
+    f.boot = {"BootSourceOverrideTarget": "Cd", "BootSourceOverrideEnabled": "Once"}   # not set by this run
+    f.bmc.poll, f.bmc.attach_timeout = 0.01, 5
+    with pytest.raises(redfish.RedfishError, match="HTTP 500 .*reading the CD slot.*nothing was reset"):
+        f.bmc.install_from(ISO)
+    assert not any(c[1].endswith("ComputerSystem.Reset") for c in f.calls)
+    assert ("POST", "/redfish/v1/Managers/1/VirtualMedia/CD/Actions/VirtualMedia.EjectMedia", {}) in f.calls
+    # This run never set an override, so the one it found is left as it was (N4).
+    assert f.boot == {"BootSourceOverrideTarget": "Cd", "BootSourceOverrideEnabled": "Once"}
+    assert not any(c[0] == "PATCH" and c[1] == SYS for c in f.calls)
+
+
+SHOWN_AS = {
+    "exact": lambda s: s,
+    "upper-case scheme and host": lambda s: dict(s, Image=s["Image"].replace("http://", "HTTP://").replace(
+        "10.30.110.5", "10.30.110.5")),
+    "credentials and default port": lambda s: dict(s, Image=s["Image"].replace("http://", "http://user:pw@").replace(
+        "10.30.110.5/", "10.30.110.5:80/")),
+    "trailing slash": lambda s: dict(s, Image=s["Image"] + "/"),
+    "image name only": lambda s: dict(s, Image=None, ImageName="proxmox-ve_9.2-1.iso"),
+    "image as a file name": lambda s: dict(s, Image="proxmox-ve_9.2-1.iso"),
+    "image as a path": lambda s: dict(s, Image="/isos/proxmox-ve_9.2-1.iso"),
+}
+
+
+@pytest.mark.parametrize("form", list(SHOWN_AS), ids=list(SHOWN_AS))
+def test_a_slot_echoing_the_image_another_way_counts_as_attached(fake_bmc, form):
+    f = fake_bmc(slot_view=lambda s: SHOWN_AS[form](s) if s.get("Inserted") else s)
+    f.bmc.poll, f.bmc.attach_timeout = 0.01, 2
+    done = f.bmc.prepare(ISO)
+    assert f"attached {ISO}" in done and f.bmc.state()["BootSourceOverrideTarget"] == "Cd"
+    assert f.bmc.attached(ISO)["attached"] is True
+
+
+MISMATCHED = {
+    "another host": lambda s: dict(s, Image=s["Image"].replace("10.30.110.5", "10.30.110.6")),
+    "another file": lambda s: dict(s, Image=s["Image"].replace("9.2-1", "9.1-1")),
+    "another port": lambda s: dict(s, Image=s["Image"].replace("10.30.110.5/", "10.30.110.5:8080/")),
+    "another image name": lambda s: dict(s, Image=None, ImageName="other.iso"),
+    "no name at all": lambda s: dict(s, Image=None),
+}
+
+
+@pytest.mark.parametrize("form", list(MISMATCHED), ids=list(MISMATCHED))
+def test_a_slot_showing_another_image_keeps_waiting_then_fails(fake_bmc, form):
+    f = fake_bmc(slot_view=lambda s: MISMATCHED[form](s) if s.get("Inserted") else s)
+    f.bmc.poll, f.bmc.attach_timeout = 0.01, 0.2
+    with pytest.raises(redfish.RedfishError, match="doesn't show it"):
+        f.bmc.install_from(ISO)
+    assert not any(c[1].endswith("ComputerSystem.Reset") for c in f.calls)
+
+
+STALE_NAME = "proxmox-ve_9.2-1.iso"            # ISO's file name, served from somewhere else
+STALE_FORMS = {
+    # A slot naming no usable URL, but a file name equal to ours: maybe stale media (an earlier
+    # upload, another site's ISO). prepare() must not take it as attached (N6).
+    "image name only": lambda s: dict(s, Image=None, ImageName=STALE_NAME),
+    "image as a path": lambda s: dict(s, Image="/mnt/old/" + STALE_NAME),
+    "malformed url": lambda s: dict(s, Image="http:///elsewhere/" + STALE_NAME),
+}
+
+
+@pytest.mark.parametrize("form", list(STALE_FORMS), ids=list(STALE_FORMS))
+def test_prepare_replaces_same_named_media_it_cant_prove_is_ours(fake_bmc, form):
+    f = fake_bmc(inserted="http://old/elsewhere/" + STALE_NAME,
+                 slot_view=lambda s: STALE_FORMS[form](s) if s.get("Inserted") else s)
+    f.bmc.poll, f.bmc.attach_timeout = 0.01, 2
+    done = f.bmc.prepare(ISO)
+    assert done[:2] == ["ejected the attached media", f"attached {ISO}"]
+    inserts = [c for c in f.calls if c[1].endswith("VirtualMedia.InsertMedia")]
+    assert len(inserts) == 1 and inserts[0][2]["Image"] == ISO
+    assert f.slot["Image"] == ISO                    # ours now; the wait accepted the same echo
+    assert f.bmc.attached(ISO)["attached"] is True   # after this run's insert, the echo counts
+
+
+def test_slot_shows_is_strict_and_after_insert_adds_the_file_name():
+    strict, after = redfish.slot_shows, redfish.slot_shows_after_insert
+    name_only = {"Inserted": True, "Image": None, "ImageName": STALE_NAME}
+    path_only = {"Inserted": True, "Image": "/mnt/old/" + STALE_NAME}
+    malformed = {"Inserted": True, "Image": "http:///elsewhere/" + STALE_NAME}
+    other_host = {"Inserted": True, "Image": "http://10.30.110.6/isos/" + STALE_NAME}
+    for slot in (name_only, path_only, malformed):
+        assert not strict(slot, ISO) and after(slot, ISO)
+    assert not strict(other_host, ISO) and not after(other_host, ISO)   # a usable URL that isn't ours
+    assert not after(dict(name_only, ImageName="other.iso"), ISO)
+    assert not after(dict(name_only, Inserted=False), ISO)
+    assert strict({"Inserted": True, "Image": ISO.replace("http://", "HTTP://")}, ISO)
+
+
+def test_unparseable_slot_urls_never_raise():
+    bad = "http://[broken/" + STALE_NAME
+    assert redfish._norm_url(bad) is None and redfish._norm_url("http://[") is None
+    assert redfish._basename(bad) == STALE_NAME
+    assert not redfish.slot_shows({"Inserted": True, "Image": bad}, ISO)
+    assert redfish.slot_shows_after_insert({"Inserted": True, "Image": bad}, ISO)
+    assert not redfish.slot_shows_after_insert({"Inserted": True, "Image": "http://[broken/other.iso"}, ISO)
+
+
+def test_prepare_replaces_media_with_an_unparseable_url(fake_bmc):
+    f = fake_bmc(inserted="http://old/other.iso",
+                 slot_view=lambda s: dict(s, Image="http://[broken/old.iso") if s.get("Inserted")
+                 and s.get("Image") != ISO else s)
+    f.bmc.poll, f.bmc.attach_timeout = 0.01, 2
+    done = f.bmc.prepare(ISO)
+    assert done[:2] == ["ejected the attached media", f"attached {ISO}"]
+
+
+def test_an_unparseable_echo_after_insert_is_cleaned_up_without_a_reset(fake_bmc):
+    f = fake_bmc(slot_view=lambda s: dict(s, Image="http://[broken/other.iso") if s.get("Inserted") else s)
+    f.bmc.poll, f.bmc.attach_timeout = 0.01, 0.2
+    with pytest.raises(redfish.RedfishError, match="doesn't show it.*nothing was reset"):
+        f.bmc.install_from(ISO)
+    assert ("POST", "/redfish/v1/Managers/1/VirtualMedia/CD/Actions/VirtualMedia.EjectMedia", {}) in f.calls
+    assert f.slot["Inserted"] is False
+    assert not any(c[1].endswith("ComputerSystem.Reset") for c in f.calls)
+
+
+def test_release_ejects_media_echoed_by_file_name_only(fake_bmc):
+    # After an install a match only ejects (always safe); a miss would leave the installer attached.
+    f = fake_bmc(inserted=ISO, slot_view=lambda s: dict(s, Image=None, ImageName=STALE_NAME)
+                 if s.get("Inserted") else s)
+    done, failed, other = f.bmc.release(ISO, clear_override=False)
+    assert done == [f"ejected {ISO}"] and not failed and other is None
+    assert f.slot["Inserted"] is False
+
+
+def test_slot_shows_matches_only_the_same_image():
+    shows = redfish.slot_shows
+    assert shows({"Inserted": True, "Image": ISO}, ISO)
+    assert not shows({"Inserted": False, "Image": ISO}, ISO)
+    assert shows({"Inserted": True, "Image": "https://h/a.iso"}, "HTTPS://H:443/a.iso")
+    assert not shows({"Inserted": True, "Image": "https://h/a.iso"}, "http://h/a.iso")   # another scheme
+    assert not shows({"Inserted": True, "Image": "http://h/a.iso?x=1"}, "http://h/a.iso")  # another query
+    assert not shows({"Inserted": True, "Image": "", "ImageName": ""}, ISO)
+
+
+def test_a_mount_landing_after_the_deadline_is_ejected_and_reported(fake_bmc):
+    # The slot never shows the ISO in time; the BMC then mounts it anyway. The eject goes out
+    # regardless of what the slot showed, and the re-read says what is left (N2).
+    f = fake_bmc(insert_lag=-1)
+    f.bmc.poll, f.bmc.attach_timeout = 0.01, 0.2
+    with pytest.raises(redfish.RedfishError, match="doesn't show it") as exc:
+        f.bmc.install_from(ISO)
+    assert ("POST", "/redfish/v1/Managers/1/VirtualMedia/CD/Actions/VirtualMedia.EjectMedia", {}) in f.calls
+    assert "the CD slot is empty" in str(exc.value)
+    g = fake_bmc(insert_lag=-1, eject_mounts_late=True)
+    g.bmc.poll, g.bmc.attach_timeout = 0.01, 0.2
+    with pytest.raises(redfish.RedfishError, match="is STILL attached") as exc:
+        g.bmc.install_from(ISO)
+    assert not any(c[1].endswith("ComputerSystem.Reset") for c in g.calls)
+
+
+def test_an_eject_the_bmc_refuses_after_a_failed_attach_is_tolerated(fake_bmc):
+    f = fake_bmc(insert_lag=-1, eject_status=405)
+    f.bmc.poll, f.bmc.attach_timeout = 0.01, 0.2
+    with pytest.raises(redfish.RedfishError, match=r"eject answered .*HTTP 405 \(ignored") as exc:
+        f.bmc.install_from(ISO)
+    assert "nothing was reset" in str(exc.value)
+    assert not any(c[1].endswith("ComputerSystem.Reset") for c in f.calls)
+
+
+def test_a_failed_one_time_boot_ejects_and_clears_before_raising(fake_bmc):
+    f = fake_bmc(fail_boot_once=True)
+    f.bmc.poll, f.bmc.attach_timeout = 0.01, 2
+    with pytest.raises(redfish.RedfishError, match="setting the one-time boot from Cd.*nothing was reset"):
+        f.bmc.install_from(ISO)
+    assert not any(c[1].endswith("ComputerSystem.Reset") for c in f.calls)
+    assert f.slot["Inserted"] is False                                  # ejected (N3)
+    assert f.boot["BootSourceOverrideTarget"] == "None" and f.boot["BootSourceOverrideEnabled"] == "Disabled"
+
+
+def test_a_bmc_refusing_target_none_is_cleared_with_enabled_alone(fake_bmc):
+    f = fake_bmc(inserted=ISO, refuse_target_none=True)
+    f.bmc.boot_once_from_cd()
+    done = f.bmc.disarm()
+    assert "cleared the one-time boot override (Enabled Disabled (the BMC refused Target None))" in done
+    assert ("PATCH", SYS, {"Boot": {"BootSourceOverrideEnabled": "Disabled"}}) in f.calls
+    assert f.boot["BootSourceOverrideEnabled"] == "Disabled"
+    g = fake_bmc(inserted=ISO, refuse_target_none=True)
+    g.bmc.boot_once_from_cd()
+    done, failed, _ = g.bmc.release(ISO, clear_override=True)
+    assert failed == [] and any("the BMC refused Target None" in d for d in done)
+
+
+def test_a_server_error_clearing_the_override_is_not_retried(fake_bmc):
+    f = fake_bmc(inserted=ISO, patch_fail=(SYS,))
+    done = f.bmc.disarm()
+    assert any(d.startswith("couldn't clear the one-time boot override") and "HTTP 500" in d for d in done)
+    assert [c for c in f.calls if c[0] == "PATCH"] == [("PATCH", SYS, {"Boot": redfish.CLEAR_OVERRIDE})]
+
+
+def test_disarm_and_release_clear_the_override_with_target_none(fake_bmc):
+    f = fake_bmc(inserted=ISO)
+    f.bmc.boot_once_from_cd()
+    f.bmc.disarm()
+    assert ("PATCH", SYS, {"Boot": {"BootSourceOverrideEnabled": "Disabled", "BootSourceOverrideTarget": "None"}}) in f.calls
+    assert f.boot["BootSourceOverrideTarget"] == "None" and f.slot["Inserted"] is False
+    g = fake_bmc(inserted=ISO)
+    g.bmc.boot_once_from_cd()
+    done, failed, other = g.bmc.release(ISO, clear_override=True)
+    assert failed == [] and other is None and "cleared the boot override from Cd (Enabled Disabled, Target None)" in done
+    assert g.boot == {"BootSourceOverrideTarget": "None", "BootSourceOverrideEnabled": "Disabled",
+                      "BootSourceOverrideMode": "UEFI"}
 
 
 def test_powered_off_server_is_turned_on_and_same_iso_not_reinserted(fake_bmc):
@@ -779,6 +1035,15 @@ def test_failed_reset_disarms_and_holds(fake_bmc, tmp_path):
     assert guard(f2, tmp_path)[:3] == ([], ["pve01"], [])     # the rerun holds it
 
 
+def test_media_that_never_mounts_fails_the_host_without_a_reset_or_record(fake_bmc, tmp_path):
+    f = fake_bmc(power="Off", insert_lag=-1)
+    f.bmc.poll, f.bmc.attach_timeout = 0.01, 0.2
+    failed, held, _, out = guard(f, tmp_path, first_install=["pve01"])
+    assert failed == ["pve01"] and "can the BMC reach that URL?" in out
+    assert not any(c[1].endswith("ComputerSystem.Reset") for c in f.calls) and f.power == "Off"
+    assert cli.read_install(tmp_path / "installs", "pve01") is None
+
+
 def test_powered_off_install_in_progress_is_held_not_waited_for(fake_bmc, tmp_path):
     cli.write_install(tmp_path / "installs", "pve01", started="2026-11-22T10:00:00+00:00", iso=HOST_ISO,
                       outcome="in-progress")
@@ -1030,12 +1295,42 @@ def run_main(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(cli, "wait_for", lambda *a, **k: None)
     monkeypatch.setattr(cli, "post_install", lambda hosts, *a, **k: [])   # tested on its own below
 
-    def go(bmc_for):
-        monkeypatch.setattr(cli, "_bmc", lambda h, config_dir: bmc_for(h))
-        code = cli.main(["--root", str(ROOT), "--state", str(state), "--host", "pve01", str(cfg)])
+    def go(bmc_for, extra=()):
+        go.attach_timeouts = []
+
+        def fake_bmc_for(h, config_dir, attach_timeout=60.0):
+            go.attach_timeouts.append(attach_timeout)
+            return bmc_for(h)
+        monkeypatch.setattr(cli, "_bmc", fake_bmc_for)
+        code = cli.main(["--root", str(ROOT), "--state", str(state), "--host", "pve01", *extra, str(cfg)])
         out = capsys.readouterr()
         return code, out.out + out.err, cli.read_install(state / "installs", "pve01")
     return go
+
+
+def test_attach_timeout_reaches_each_bmc(fake_bmc, run_main):
+    f = fake_bmc(inserted=HOST_ISO)
+    code, _, _ = run_main(lambda h: f.bmc, extra=("--attach-timeout", "150"))
+    assert code == 0 and run_main.attach_timeouts and set(run_main.attach_timeouts) == {150.0}
+    code, _, _ = run_main(lambda h: f.bmc)
+    assert set(run_main.attach_timeouts) == {60.0}
+
+
+@pytest.mark.parametrize("value", ["0", "-5", "nan", "soon"])
+def test_attach_timeout_must_be_more_than_zero(value):
+    with pytest.raises(argparse.ArgumentTypeError):
+        cli._positive_seconds(value)
+    assert cli._positive_seconds("0.5") == 0.5
+
+
+def test_bmc_built_from_config_carries_the_attach_timeout(monkeypatch, tmp_path):
+    import dciab_validate.live as live
+    monkeypatch.setattr(live, "read_secret", lambda ref, d: "pw")
+    monkeypatch.setattr(live, "_redfish_trust", lambda bmc, d: Trust(fingerprint="00" * 32))
+    host = {"bmc": {"address": "redfish-virtualmedia+https://192.0.2.10/redfish/v1/Systems/1",
+                    "credentials": {"username": "u", "password": "x"}}}
+    assert cli._bmc(host, tmp_path, 90.0).attach_timeout == 90.0
+    assert cli._bmc(host, tmp_path).attach_timeout == 60.0
 
 
 def test_main_ejects_after_wait(fake_bmc, run_main):
