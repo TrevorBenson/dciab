@@ -315,6 +315,9 @@ def do_verify(dest: Path, key: Optional[Path], cosign: str, runner: Runner = ver
 
 # ---------------------------------------------------------------- storage
 
+DEFAULT_GRAPHROOT = "/var/lib/containers/storage"
+
+
 def dropin_text(graphroot: Path) -> str:
     if any(c in str(graphroot) for c in '"\\') or any(ord(c) < 0x20 or ord(c) == 0x7f for c in str(graphroot)):
         raise MediaError(f"{graphroot!r}: the work directory's path can't contain quotes, backslashes or "
@@ -327,9 +330,25 @@ def current_graphroot(runner: Runner = run) -> str:
     return runner(["podman", "info", "--format", "{{.Store.GraphRoot}}"]).stdout.strip()
 
 
+def same_filesystem(a: str, b: Path) -> bool:
+    """Whether path a and (the nearest existing parent of) b are on one filesystem."""
+    try:
+        return os.stat(a).st_dev == os.stat(nearest_existing(b)).st_dev
+    except OSError:
+        return False
+
+
+def storage_kept(graphroot: Path, current: str) -> bool:
+    """Whether podman's current graphroot can stay: it is graphroot, or it is already on the
+    work disk (graphroot's filesystem). On the appliance the whole root filesystem is the work
+    disk, so /var/lib/containers/storage stays where it is and nothing is moved or labelled."""
+    return os.path.realpath(current) == os.path.realpath(graphroot) or same_filesystem(current, graphroot.parent)
+
+
 def storage_change(graphroot: Path, runner: Runner = run, dropin: Path = STORAGE_DROPIN) -> Optional[str]:
-    """What the storage step would change, or None when podman already uses graphroot."""
-    if os.path.realpath(current_graphroot(runner)) == os.path.realpath(graphroot):
+    """What the storage step would change, or None when podman's storage is already on the
+    work disk."""
+    if storage_kept(graphroot, current_graphroot(runner)):
         return None
     if dropin.is_file() and dropin.read_text() == dropin_text(graphroot):
         return f"{dropin} is written but podman reports another graphroot; check /etc/containers/storage.conf"
@@ -338,7 +357,7 @@ def storage_change(graphroot: Path, runner: Runner = run, dropin: Path = STORAGE
 
 def set_storage(graphroot: Path, runner: Runner = run, dropin: Path = STORAGE_DROPIN) -> bool:
     before = current_graphroot(runner)
-    if os.path.realpath(before) == os.path.realpath(graphroot):
+    if storage_kept(graphroot, before):
         return False
     running = runner(["podman", "ps", "-q"]).stdout.split()
     if running:
@@ -348,13 +367,14 @@ def set_storage(graphroot: Path, runner: Runner = run, dropin: Path = STORAGE_DR
     graphroot.mkdir(parents=True, exist_ok=True)
     graphroot.chmod(0o700)
     if shutil.which("selinuxenabled") and subprocess.run(["selinuxenabled"]).returncode == 0:
-        # A new graphroot needs the same SELinux labels as /var/lib/containers.
+        # A new graphroot needs the labels of the default graphroot, /var/lib/containers/storage
+        # (container-selinux labels volumes/ and artifacts/ under it, not under its parent).
         if not shutil.which("semanage"):
             raise MediaError("SELinux is enabled but semanage is missing: install policycoreutils-python-utils, "
                              "then run again")
         listed = runner(["semanage", "fcontext", "-l", "-C"]).stdout
-        if f"{graphroot} = /var/lib/containers" not in listed:
-            runner(["semanage", "fcontext", "-a", "-e", "/var/lib/containers", str(graphroot)])
+        if f"{graphroot} = {DEFAULT_GRAPHROOT}" not in listed:
+            runner(["semanage", "fcontext", "-a", "-e", DEFAULT_GRAPHROOT, str(graphroot)])
         runner(["restorecon", "-R", str(graphroot)])
     dropin.parent.mkdir(parents=True, exist_ok=True)
     tmp = dropin.with_name(dropin.name + TMP_SUFFIX)
@@ -373,35 +393,54 @@ def set_storage(graphroot: Path, runner: Runner = run, dropin: Path = STORAGE_DR
 
 # ---------------------------------------------------------------- isos
 
-HASHES = ".dciab-sha256.json"
+HASHES = "iso-sha256.json"
+OLD_HASHES = ".dciab-sha256.json"           # where #234's first version kept it, inside the served folder
+
+
+def _cache_file(isos: Path) -> Path:
+    """The ISO hash cache: next to <work>/isos, not in it (dciab services serves that folder)."""
+    return isos.parent / ".cache" / HASHES
 
 
 def _recorded(isos: Path) -> Dict[str, dict]:
     try:
-        data = json.loads((isos / HASHES).read_text())
+        data = json.loads(_cache_file(isos).read_text())
         return data if isinstance(data, dict) else {}
     except (OSError, ValueError):
         return {}
 
 
+def _identity(st: os.stat_result) -> dict:
+    """What says the file is the one hashed: size and mtime, and its device, inode and ctime,
+    which utime can't set back, so a file replaced in place with the old size and mtime is
+    hashed again."""
+    return {"size": st.st_size, "mtime_ns": st.st_mtime_ns, "dev": st.st_dev, "ino": st.st_ino,
+            "ctime_ns": st.st_ctime_ns}
+
+
 def _record(isos: Path, name: str, path: Path, sha: str) -> None:
-    """Remember an ISO's sha256 with its size and mtime, so a rerun needn't hash 1.6 GB again."""
+    """Remember an ISO's sha256 with its identity, so a rerun needn't hash 1.6 GB again."""
     data = _recorded(isos)
-    st = path.stat()
-    data[name] = {"size": st.st_size, "mtime_ns": st.st_mtime_ns, "sha256": sha}
-    tmp = isos / (HASHES + TMP_SUFFIX)
+    data[name] = dict(_identity(path.stat()), sha256=sha)
+    cache = _cache_file(isos)
+    cache.parent.mkdir(parents=True, exist_ok=True)
+    tmp = cache.with_name(cache.name + TMP_SUFFIX)
     tmp.write_text(json.dumps(data, indent=1, sort_keys=True))
-    os.replace(tmp, isos / HASHES)
+    os.replace(tmp, cache)
+    old = isos / OLD_HASHES
+    if old.is_file() and not old.is_symlink():
+        old.unlink()
 
 
 def _sha_of(isos: Path, name: str, path: Path) -> str:
-    """path's sha256: the recorded one when size and mtime haven't changed, else hashed."""
+    """path's sha256: the recorded one when the file's identity hasn't changed, else hashed."""
     rec = _recorded(isos).get(name) or {}
     try:
         st = path.stat()
     except OSError:
         return ""
-    if rec.get("size") == st.st_size and rec.get("mtime_ns") == st.st_mtime_ns and rec.get("sha256"):
+    ident = _identity(st)
+    if rec.get("sha256") and all(rec.get(k) == v for k, v in ident.items()):
         return str(rec["sha256"])
     sha = verify_mod.sha256_file(path)
     _record(isos, name, path, sha)
@@ -515,6 +554,50 @@ def _holds_files(path: Path) -> bool:
     return path.is_dir() and not path.is_symlink() and any(path.iterdir())
 
 
+# Entries dciab's steps write at the top of a state folder. A folder a .dciab/state link
+# points at is moved only if it holds at least one of them, so a link to unrelated data is
+# never moved (or, across filesystems, deleted).
+STATE_MARKERS = frozenset({
+    "pki", "services", "registry", "kind", "isos", "host-isos", "installs", "answers", "backup",
+    "capi-backup", "bootstrap.kubeconfig", "mgmt.kubeconfig", "mgmt-values.yaml", "hypervisors.lock",
+    ".lock", "dciab-seed.lock", "proxmox", "host-isos.base-checked",
+})
+
+
+def _markers(path: Path) -> frozenset:
+    try:
+        return frozenset(e.name for e in os.scandir(path)) & STATE_MARKERS
+    except OSError:
+        return frozenset()
+
+
+def _looks_like_state(path: Path) -> bool:
+    return bool(_markers(path))
+
+
+def _moved_aside(source: Path) -> List[Path]:
+    """Folders an interrupted cross-filesystem move renamed aside (<source>.moved-<time>)."""
+    try:
+        return sorted(p for p in source.parent.iterdir() if p.name.startswith(source.name + ".moved-"))
+    except OSError:
+        return []
+
+
+def _both_detail(source: Path, new: Path) -> str:
+    """The refusal when both folders hold state, saying which one looks partial."""
+    a, b = _markers(source), _markers(new)
+    hint = ""
+    if a > b:
+        hint = f" {new} lacks {', '.join(sorted(a - b))}, which {source} has: it looks like the partial one."
+    elif b > a:
+        hint = f" {source} lacks {', '.join(sorted(b - a))}, which {new} has: it looks like the partial one."
+    aside = _moved_aside(source)
+    if aside:
+        hint += f" An interrupted move left {', '.join(map(str, aside))} (the source renamed aside): its copy in {new} is complete."
+    return (f"{source} and {new} both hold dciab state (CA, sealed passwords, kubeconfigs). dciab media "
+            f"won't merge them: keep the right one, move the other aside, and run again.{hint}")
+
+
 class StatePlan(NamedTuple):
     """What the state step does: action is None (nothing), 'refuse', 'move' or 'link'.
     source is the folder that holds the state to move: .dciab/state itself, or where a link
@@ -536,10 +619,25 @@ def state_plan(config: Path, work: Path) -> StatePlan:
             if _holds_files(new):
                 return StatePlan("link", None, f"relink {old} (to {target}, which holds no state) to {new}")
             return StatePlan(None, None, f"{old} links to {target}, which holds no state")
+        if os.path.ismount(target):
+            return StatePlan("refuse", target, f"{old} links to {target}, a mount point: dciab media won't move "
+                                               f"a mount. Copy its state to {new} yourself, or pass --state "
+                                               f"{target} to every step")
+        if not _looks_like_state(target):
+            return StatePlan("refuse", target, f"{old} links to {target}, which doesn't look like dciab state "
+                                               f"(none of pki/, services/, installs/, the kubeconfigs, ...): "
+                                               "dciab media won't move it. Remove or repoint the link and run again")
         source = target
     elif os.path.lexists(old):
-        if not _holds_files(old) or os.path.realpath(old) == new_real:
+        if os.path.realpath(old) == new_real:
             return StatePlan(None, None, f"{old} holds no state")
+        if not _holds_files(old):
+            if old.is_dir() and not old.is_symlink() and _holds_files(new):
+                return StatePlan("link", None, f"replace the empty folder {old} with a link to {new}")
+            return StatePlan(None, None, f"{old} holds no state")
+        if os.path.ismount(old):
+            return StatePlan("refuse", old, f"{old} is a mount point: dciab media won't move a mount. Copy "
+                                            f"its state to {new} yourself, or pass --state {old} to every step")
         source = old
     else:
         if _holds_files(new):
@@ -549,9 +647,7 @@ def state_plan(config: Path, work: Path) -> StatePlan:
         return StatePlan("refuse", source, f"{partial} is a partial copy left by an interrupted run (the state "
                                            f"in {source} is complete): remove {partial} and run again")
     if _holds_files(new):
-        return StatePlan("refuse", source, f"{source} and {new} both hold dciab state (CA, sealed passwords, "
-                                           "kubeconfigs). dciab media won't merge them: keep the right one, "
-                                           "move the other aside, and run again")
+        return StatePlan("refuse", source, _both_detail(source, new))
     via = f" (where {old} links)" if source != old else ""
     return StatePlan("move", source, f"move {source}{via} to {new}, and link {old} to it")
 
@@ -627,7 +723,16 @@ def _move_tree(source: Path, new: Path) -> None:
         os.fsync(fd)
     finally:
         os.close(fd)
-    shutil.rmtree(source)
+    # Rename the source aside first, so an interrupted or failed removal leaves a folder whose
+    # name says it was moved, not a half-deleted state folder under its old name.
+    import time
+    aside = source.with_name(f"{source.name}.moved-{time.strftime('%Y%m%dT%H%M%S')}")
+    os.rename(source, aside)
+    try:
+        shutil.rmtree(aside)
+    except OSError as exc:
+        raise MediaError(f"moved the state to {new}, but couldn't remove the old copy {aside} "
+                         f"({exc.strerror or exc}); remove it by hand") from None
 
 
 def _link(old: Path, new: Path) -> Optional[str]:
@@ -636,11 +741,57 @@ def _link(old: Path, new: Path) -> Optional[str]:
         old.parent.mkdir(parents=True, exist_ok=True)
         if old.is_symlink():
             old.unlink()
+        elif old.is_dir():
+            old.rmdir()                           # empty: state_plan only links over an empty folder
         os.symlink(str(new), str(old))
         return None
     except OSError as exc:
         return (f"couldn't link {old} to {new} ({exc.strerror or exc}): every dciab step needs "
                 f"--state {new}")
+
+
+# Locks the other steps hold while they run: dciab seed (/run/lock, or the state folder when
+# /run/lock isn't writable), dciab services, dciab hypervisors and dciab mgmt (in the state).
+HOST_STEP_LOCKS = (Path("/run/lock/dciab-seed.lock"), Path("/run/dciab-services.lock"))
+STATE_STEP_LOCKS = ("dciab-seed.lock", "hypervisors.lock", ".lock")
+
+
+class step_locks:
+    """Take every other step's lock without waiting, and hold them while the state moves, so no
+    step writes into the state mid-move. Refuses, naming the lock, when one is held."""
+
+    def __init__(self, state: Path, host_locks: Optional[Sequence[Path]] = None):
+        host_locks = HOST_STEP_LOCKS if host_locks is None else host_locks
+        # (path, create): a host lock is made if missing, so a step starting now waits on it; a
+        # state lock no step has made yet can't be held, so it's skipped.
+        self.paths = [(p, True) for p in host_locks if p.parent.is_dir()] + \
+                     [(state / n, False) for n in STATE_STEP_LOCKS]
+        self.fds: List[int] = []
+
+    def __enter__(self):
+        try:
+            for path, create in self.paths:
+                flags = os.O_RDWR | os.O_NOFOLLOW | (os.O_CREAT if create else 0)
+                try:
+                    fd = os.open(path, flags, 0o600)
+                except OSError:
+                    continue                      # missing, or not ours to open: nobody holds it here
+                self.fds.append(fd)
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    raise MediaError(f"another dciab step holds {path}; let it finish, then run dciab media "
+                                     "again, so the state doesn't move while it writes there") from None
+        except BaseException:
+            self.__exit__()
+            raise
+        return self
+
+    def __exit__(self, *_exc):
+        for fd in self.fds:
+            os.close(fd)
+        self.fds = []
+        return False
 
 
 def move_state(config: Path, work: Path, runner: Optional[Runner] = None) -> Optional[str]:
@@ -663,14 +814,15 @@ def move_state(config: Path, work: Path, runner: Optional[Runner] = None) -> Opt
         raise MediaError(f"{len(running)} containers are running and may use {plan.source}; stop them "
                          "(podman ps) and run dciab media again, so the state can move to the work disk")
     assert plan.source is not None
-    new.parent.mkdir(parents=True, exist_ok=True)
-    if new.is_dir() and not new.is_symlink():
-        new.rmdir()                               # empty, checked by state_plan
-    elif os.path.lexists(new):
-        raise MediaError(f"{new} exists and isn't a folder; remove it and run again")
-    _move_tree(plan.source, new)
-    new.chmod(0o700)
-    note = _link(old, new)
+    with step_locks(plan.source):
+        new.parent.mkdir(parents=True, exist_ok=True)
+        if new.is_dir() and not new.is_symlink():
+            new.rmdir()                           # empty, checked by state_plan
+        elif os.path.lexists(new):
+            raise MediaError(f"{new} exists and isn't a folder; remove it and run again")
+        _move_tree(plan.source, new)
+        new.chmod(0o700)
+        note = _link(old, new)
     moved = f"moved {plan.source} to {new}"
     return f"{moved}; {note}" if note else f"{moved} (left a link at {old})"
 
@@ -801,7 +953,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             say(f"target:  {plan.dest} ({free / GiB:.1f} GiB free on {work})")
             say(f"state:   {state_change(config, work) or 'unchanged: ' + str(work / 'state')}")
             say(f"copy:    {len(plan.to_copy)} of {len(plan.files)} files, {plan.copy_bytes} bytes")
-            say(f"storage: {change or 'unchanged: podman already uses ' + str(graphroot)}")
+            say(f"storage: {change or 'unchanged: root container storage is already on the work disk'}")
             say(f"isos:    {work / 'isos'}")
             say(f"preload: {preload.PRELOAD_DIR if (preload.PRELOAD_DIR / 'images.yaml').is_file() else 'none (not the appliance)'}")
             return 0
@@ -832,7 +984,8 @@ def main(argv: Optional[List[str]] = None) -> int:
                     say("  ok: signature and checksums match" if args.key else
                         "  ok: checksums match (signature not checked; pass --key)")
                 elif step == "storage":
-                    say(f"  {STORAGE_DROPIN}: graphroot {graphroot}" if set_storage(graphroot) else "  unchanged")
+                    say(f"  {STORAGE_DROPIN}: graphroot {graphroot}" if set_storage(graphroot)
+                        else "  unchanged (root's container storage is already on the work disk)")
                 elif step == "isos":
                     isos_from = args.isos_from or (USB_MOUNT / "isos")
                     pins = site_pins(doc, read_lock_pins(plan.dest))

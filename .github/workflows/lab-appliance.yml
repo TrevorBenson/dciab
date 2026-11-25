@@ -42,8 +42,17 @@ jobs:
           sudo podman run --rm --network none -e PYTHONPATH=/usr/share/dciab/lib "$tag" \
             python3 -m dciab_media.preload --check --full
           sudo podman run --rm --network none "$tag" systemctl is-enabled dciab-day0-images.service
-          sudo podman run --rm --network none "$tag" \
-            cat /etc/containers/storage.conf.d/50-dciab-media.conf | grep -q 'graphroot = "/var/lib/dciab/work/containers"'
+          # Root's default storage stays (the root filesystem is the work disk): no override ships.
+          if sudo podman run --rm --network none "$tag" test -e /etc/containers/storage.conf.d/50-dciab-media.conf; then
+            echo "the image ships a storage drop-in; root's default storage should stay" >&2; exit 1
+          fi
+          # The graphroot's SELinux labels in the image's own policy (what restorecon gives at boot).
+          labels="$(sudo podman run --rm --network none "$tag" \
+            matchpathcon /var/lib/containers/storage /var/lib/containers/storage/overlay /var/lib/containers/storage/volumes/x/_data)"
+          echo "$labels"
+          grep -q 'storage[[:space:]].*:container_var_lib_t:' <<<"$labels"
+          grep -q 'overlay[[:space:]].*:container_ro_file_t:' <<<"$labels"
+          grep -q '_data[[:space:]].*:container_file_t:' <<<"$labels"
           # The references the image lists must be exactly the ones bundle.lock pins (not a count).
           PYTHONPATH=lib python3 -c 'import yaml; from dciab_media.preload import day0_refs
           print("\n".join(sorted(day0_refs(yaml.safe_load(open("bundle.lock"))).values())))' > "$RUNNER_TEMP/want"

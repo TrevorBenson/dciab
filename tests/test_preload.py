@@ -173,22 +173,34 @@ def test_a_wrong_copy_that_is_another_known_image_is_left_under_its_own_names(tm
 SHIPPED = ROOT / "images" / "bootstrap-bootc" / "rootfs"
 
 
-def test_the_appliance_ships_the_storage_drop_in_media_would_write():
+def test_the_appliance_ships_no_storage_override():
+    """The appliance's root filesystem is the work disk, so root's default storage stays: no
+    drop-in, no tmpfiles entry, no SELinux equivalence in the image."""
     from dciab_media import cli
-    dropin = SHIPPED / str(cli.STORAGE_DROPIN).lstrip("/")
-    assert dropin.read_text() == cli.dropin_text(cli.WORK_DIR_APPLIANCE / "containers")
-    tmpfiles = (SHIPPED / "usr/lib/tmpfiles.d/dciab-work.conf").read_text()
-    assert f"d {cli.WORK_DIR_APPLIANCE / 'containers'} 0700" in tmpfiles
+    assert not (SHIPPED / str(cli.STORAGE_DROPIN).lstrip("/")).exists()
+    assert not (SHIPPED / "usr/lib/tmpfiles.d/dciab-work.conf").exists()
     containerfile = (ROOT / "images" / "bootstrap-bootc" / "Containerfile").read_text()
-    assert f"semanage fcontext -a -e /var/lib/containers {cli.WORK_DIR_APPLIANCE / 'containers'}" in containerfile
+    assert "semanage fcontext" not in containerfile
 
 
-def test_the_boot_unit_waits_for_media_and_loads_into_the_final_storage():
+def test_the_boot_unit_waits_for_media_and_is_bounded():
     from dciab_media import cli
     unit = (SHIPPED / "usr/lib/systemd/system/dciab-day0-images.service").read_text()
-    assert f"ConditionPathExists={cli.STORAGE_DROPIN}" in unit
     assert f"--lock {cli.HOST_LOCK}" in unit
-    assert f"RequiresMountsFor={cli.WORK_DIR_APPLIANCE}" in unit
+    assert "TimeoutStartSec=" in unit
+    assert "storage.conf.d" not in unit.split("[Service]")[0].split("ConditionPathExists=/usr/share")[1]
+
+
+def test_the_lock_isnt_followed_through_a_symlink(tmp_path, monkeypatch):
+    d = tmp_path / "images"
+    d.mkdir()
+    (d / "images.yaml").write_text("images: []\n")
+    target = tmp_path / "victim"
+    target.write_text("keep")
+    link = tmp_path / "lock"
+    link.symlink_to(target)
+    assert preload.main(["--dir", str(d), "--lock", str(link)]) == 1
+    assert target.read_text() == "keep"
 
 
 def _index_layout(tmp_path, corrupt_child=False):

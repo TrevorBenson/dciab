@@ -15,6 +15,7 @@ day0_refs() is the list build.sh copies in: every Day 0 image bundle.lock pins b
 """
 import argparse
 import json
+import os
 import re
 import subprocess
 import sys
@@ -225,7 +226,13 @@ def main(argv: Optional[List[str]] = None) -> int:
     if args.lock and not args.check:
         import fcntl
         args.lock.parent.mkdir(parents=True, exist_ok=True)
-        lock = open(args.lock, "a")
+        # O_NOFOLLOW, as dciab media opens it: /run/lock is world-writable, so a planted symlink
+        # mustn't make root create or lock another file.
+        try:
+            lock = os.fdopen(os.open(args.lock, os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW, 0o600), "w")
+        except OSError as exc:
+            say(f"can't open the lock {args.lock}: {exc.strerror or exc}")
+            return 1
         fcntl.flock(lock, fcntl.LOCK_EX)          # waits while dciab media runs
     try:
         if args.check:

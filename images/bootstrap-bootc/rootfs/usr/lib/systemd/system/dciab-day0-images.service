@@ -2,18 +2,18 @@
 Description=DCiaB: load the appliance's Day 0 images into root's container storage
 Documentation=file:///usr/share/dciab/lib/dciab_media/preload.py
 ConditionPathExists=/usr/share/dciab/day0-images/images.yaml
-# The image ships this drop-in, so root's storage is already the final one on the work disk
-# (/var/lib/dciab/work/containers): the images load once, where dciab services looks for them.
-ConditionPathExists=/etc/containers/storage.conf.d/50-dciab-media.conf
-RequiresMountsFor=/var/lib/dciab/work
-After=local-fs.target systemd-tmpfiles-setup.service
+# The appliance's root filesystem is the work disk, so root's default storage
+# (/var/lib/containers/storage) is the final one: the images load once, where dciab services
+# looks for them, and dciab media's storage step leaves it there.
+After=local-fs.target
 
 [Service]
 Type=oneshot
 RemainAfterExit=yes
 Environment=PYTHONPATH=/usr/share/dciab/lib
-# --lock: wait while a dciab media run holds its lock, so the two never load at once or
-# while the storage changes.
+# --lock: wait while a dciab media run holds its lock, so the two never load at once.
+# The timeout bounds that wait (and a stuck pull), so multi-user.target isn't held for long.
+TimeoutStartSec=15min
 ExecStart=/usr/bin/python3 -m dciab_media.preload --lock /run/lock/dciab-media.lock
 
 [Install]

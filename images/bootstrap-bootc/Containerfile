@@ -30,14 +30,11 @@ COPY images/bootstrap-bootc/rootfs/ /
 
 # The Day 0 images at their bundle.lock digests (an OCI layout and images.yaml, as in the
 # archive's payload), loaded into root's container storage by dciab-day0-images.service and by
-# dciab media's preload step. Files, not an additional image store: one under /usr breaks bootc
-# updates, and root's storage moves to the work disk.
+# dciab media's preload step: physically bound images, pre-pulled at build and copied into the
+# local storage at runtime. Not an additional image store in storage.conf: one under /usr breaks
+# bootc updates. The appliance's root filesystem is the work disk, so root's default storage
+# (/var/lib/containers/storage) is already where dciab media wants it.
 COPY images/bootstrap-bootc/build/day0-images/ /usr/share/dciab/day0-images/
-
-# Root's container storage is on the work disk from the first boot: the image ships the drop-in
-# dciab media would write for workDisk.disk (rootfs/etc/containers/storage.conf.d), tmpfiles.d
-# creates the folder, and this gives it /var/lib/containers' SELinux labels.
-RUN semanage fcontext -a -e /var/lib/containers /var/lib/dciab/work/containers
 
 # The base image's /usr/local is an absolute symlink to /var/usrlocal, which bootc's
 # `container lint` (runtime-deps, bootc 1.17) rejects ("a path led outside of the

@@ -1,4 +1,5 @@
 """dciab media follow-ups (#165): the state step, and pinned installer ISOs from the stick."""
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -52,6 +53,9 @@ def site(tmp_path, monkeypatch):
     monkeypatch.setattr(cli, "USB_MOUNT", tmp_path / "stick")
     from dciab_media import preload
     monkeypatch.setattr(preload, "PRELOAD_DIR", tmp_path / "no-preload")   # never a real podman pull
+    locks = tmp_path / "run-lock"
+    locks.mkdir()
+    monkeypatch.setattr(cli, "HOST_STEP_LOCKS", (locks / "dciab-seed.lock", locks / "dciab-services.lock"))
     return src, work, cfg
 
 
@@ -254,16 +258,16 @@ def test_an_operator_link_to_state_elsewhere_is_moved_not_ignored(site, tmp_path
 def test_a_link_to_state_elsewhere_with_state_on_the_work_disk_is_refused(site, tmp_path, capsys):
     src, work, cfg = site
     elsewhere = tmp_path / "my-state"
-    elsewhere.mkdir()
-    (elsewhere / "x").write_text("a")
-    (work / "state").mkdir()
-    (work / "state" / "y").write_text("b")
+    (elsewhere / "pki").mkdir(parents=True)
+    (elsewhere / "services").mkdir()
+    (work / "state" / "pki").mkdir(parents=True)
     legacy = cfg.parent / ".dciab" / "state"
     legacy.parent.mkdir(parents=True)
     legacy.symlink_to(elsewhere)
     assert cli.main(args(src, cfg)) == 1
     err = capsys.readouterr().err
     assert str(elsewhere) in err and str(work / "state") in err and "both hold dciab state" in err
+    assert f"{work / 'state'} lacks services" in err and "looks like the partial one" in err
 
 
 def test_a_missing_link_is_recreated(site, capsys):
@@ -300,14 +304,16 @@ def test_a_move_across_filesystems_copies_syncs_then_removes(site, monkeypatch):
 
     def rename(a, b):
         calls.append((str(a), str(b)))
-        if str(a) == str(old):
+        if str(a) == str(old) and str(b) == str(work / "state"):   # only the move onto the work disk
             raise OSError(errno.EXDEV, "Invalid cross-device link")
         return real_rename(a, b)
     monkeypatch.setattr(cli.os, "rename", rename)
     assert cli.main(args(src, cfg)) == 0
     assert (str(work / "state.partial"), str(work / "state")) in calls
+    aside = [b for a, b in calls if a == str(old) and ".moved-" in b]
+    assert aside, "the source is renamed aside before it's removed"
     assert (work / "state" / "pki" / "ca.crt").read_text() == "CA"
-    assert not (work / "state.partial").exists()
+    assert not (work / "state.partial").exists() and not Path(aside[0]).exists()
     assert old.is_symlink()
 
 
@@ -393,7 +399,87 @@ def test_a_placed_iso_isnt_hashed_again(tmp_path, monkeypatch):
     real = verify_mod.sha256_file
     monkeypatch.setattr(verify_mod, "sha256_file", lambda p: hashed.append(p) or real(p))
     assert cli.place_isos(archive, isos, stick, pins) == []
-    assert hashed == []                                               # size and mtime unchanged
+    assert hashed == []                                               # the same file, unchanged
+    assert not (isos / cli.OLD_HASHES).exists() and (tmp_path / ".cache" / cli.HASHES).is_file()
     (isos / "proxmox-ve_9.2-1.iso").write_bytes(b"changed")
+    with pytest.raises(cli.MediaError, match="doesn't match"):
+        cli.place_isos(archive, isos, stick, pins)
+
+
+# --- review fixes (re-review N1-N8) -----------------------------------------------------------
+
+def test_the_state_doesnt_move_while_another_step_holds_its_lock(site, capsys):
+    import fcntl
+    src, work, cfg = site
+    old = _old_state(cfg)
+    seed_lock = cli.HOST_STEP_LOCKS[0]
+    with open(seed_lock, "w") as held:
+        fcntl.flock(held, fcntl.LOCK_EX)
+        assert cli.main(args(src, cfg)) == 1
+    err = capsys.readouterr().err
+    assert f"another dciab step holds {seed_lock}" in err
+    assert (old / "pki" / "ca.crt").is_file() and not (work / "state").exists()
+
+
+def test_a_held_lock_inside_the_state_stops_the_move(site, capsys):
+    import fcntl
+    src, work, cfg = site
+    old = _old_state(cfg)
+    with open(old / ".lock", "w") as held:                               # dciab mgmt's lock
+        fcntl.flock(held, fcntl.LOCK_EX)
+        assert cli.main(args(src, cfg)) == 1
+    assert f"another dciab step holds {old / '.lock'}" in capsys.readouterr().err
+    assert (old / "pki" / "ca.crt").is_file()
+
+
+def test_a_link_to_something_that_isnt_state_is_refused(site, tmp_path, capsys):
+    src, work, cfg = site
+    notes = tmp_path / "notes"
+    (notes / "photos").mkdir(parents=True)
+    (notes / "notes.txt").write_text("mine")
+    legacy = cfg.parent / ".dciab" / "state"
+    legacy.parent.mkdir(parents=True)
+    legacy.symlink_to(notes)
+    assert cli.main(args(src, cfg)) == 1
+    assert "doesn't look like dciab state" in capsys.readouterr().err
+    assert (notes / "notes.txt").read_text() == "mine" and not (work / "state").exists()
+
+
+def test_a_link_to_a_mount_point_is_refused(site, tmp_path, monkeypatch, capsys):
+    src, work, cfg = site
+    mnt = tmp_path / "mnt"
+    (mnt / "pki").mkdir(parents=True)
+    legacy = cfg.parent / ".dciab" / "state"
+    legacy.parent.mkdir(parents=True)
+    legacy.symlink_to(mnt)
+    real = cli.os.path.ismount
+    monkeypatch.setattr(cli.os.path, "ismount", lambda p: str(p) == str(mnt) or real(p))
+    assert cli.main(args(src, cfg)) == 1
+    assert "a mount point" in capsys.readouterr().err
+    assert (mnt / "pki").is_dir()
+
+
+def test_an_empty_state_folder_is_replaced_by_the_link(site, capsys):
+    src, work, cfg = site
+    legacy = cfg.parent / ".dciab" / "state"
+    legacy.mkdir(parents=True)                                          # empty, real
+    (work / "state" / "pki").mkdir(parents=True)
+    assert "replace the empty folder" in cli.state_change(cfg, work)
+    assert cli.main(args(src, cfg)) == 0
+    assert legacy.is_symlink() and legacy.resolve() == (work / "state").resolve()
+
+
+def test_an_iso_replaced_with_the_same_size_and_mtime_is_hashed_again(tmp_path):
+    archive, isos = tmp_path / "a", tmp_path / "isos"
+    archive.mkdir()
+    stick = _stick_iso(tmp_path)
+    pins = {"proxmox-ve_9.2-1.iso": verify_mod.hashlib.sha256(ISO).hexdigest()}
+    cli.place_isos(archive, isos, stick, pins)
+    iso = isos / "proxmox-ve_9.2-1.iso"
+    st = iso.stat()
+    other = tmp_path / "other.iso"
+    other.write_bytes(bytes(len(ISO)))                                  # same size, other bytes
+    os.replace(other, iso)                                              # a new inode
+    os.utime(iso, ns=(st.st_atime_ns, st.st_mtime_ns))                  # the old mtime put back
     with pytest.raises(cli.MediaError, match="doesn't match"):
         cli.place_isos(archive, isos, stick, pins)
