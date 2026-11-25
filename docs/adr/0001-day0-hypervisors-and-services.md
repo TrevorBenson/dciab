@@ -66,7 +66,7 @@ They exist only until the platform's services take over, so they're chosen for s
 | NTP | chrony, in a DCiaB image (`images/day0-chrony/`) on Rocky Linux 10 minimal | Runs with `-x`: it serves time without setting the host clock, so it needs no `SYS_TIME` capability. One chronyd per DNS service IP, because chrony binds to one IPv4 address only |
 | HTTP | Caddy (official image) | Static file server with correct ranged reads, which BMCs use for virtual media; its access log shows each BMC fetching its ISO |
 
-Images are pinned by digest in `bundle.lock` (`day0.images`) and shipped in the archive. `dciab services` renders their configuration from `dciab.yaml` and runs them as one pod with host networking, from a generated Kubernetes-style manifest (`podman kube play --replace`); teardown is `podman kube down`. They run rootful, because they bind ports 53 and 123 on the site network.
+Images are pinned by digest in `bundle.lock` (`day0.images`) and shipped in the archive. `dciab services` renders their configuration from `dciab.yaml` and runs them as one pod with host networking, from a generated Kubernetes-style manifest (`podman kube play --replace`); teardown is `dciab services --down`, which undoes what the step recorded adding (amended at implementation: first planned as `podman kube down`). They run rootful, because they bind ports 53 and 123 on the site network.
 
 ### 6. The pivot services answer on the production service addresses
 

@@ -357,44 +357,10 @@ def remove_registry(recorded) -> None:
 
 
 def remove_services(state: Path) -> List[str]:
-    """Undo what the DNS-only `dciab services` listed in <state>/services/created.
-    Returns the lines it couldn't undo."""
-    listing = state / "services" / "created"
-    lines = [line.split() for line in listing.read_text().splitlines() if line.strip()] if listing.is_file() else []
-    left = []
-    firewalld = probe_cmd(["firewall-cmd", "--state"]).returncode == 0
-    for entry in lines:
-        kind, args = entry[0], entry[1:]
-        try:
-            if kind == "pod" and len(args) == 1:
-                if probe_cmd(["podman", "pod", "exists", args[0]]).returncode == 0:
-                    run(["podman", "pod", "rm", "-f", args[0]])
-                    say(f"remove: removed pod {args[0]}")
-            elif kind == "address" and len(args) == 2:
-                nic, cidr = args
-                have = probe_cmd(["ip", "-o", "-4", "addr", "show", "dev", nic]).stdout.split()
-                if cidr in have:
-                    run(["ip", "addr", "del", cidr, "dev", nic])
-                    say(f"remove: removed {cidr} from {nic}")
-            elif kind == "port" and len(args) == 2:
-                zone, port = args
-                if not firewalld:
-                    say(f"remove: firewalld isn't running; nothing to close for {port}")
-                elif probe_cmd(["firewall-cmd", f"--zone={zone}", f"--query-port={port}"]).returncode == 0:
-                    run(["firewall-cmd", f"--zone={zone}", f"--remove-port={port}"])
-                    say(f"remove: closed {port} in zone {zone} (runtime)")
-            else:
-                say(f"remove: {listing}: skipping a line it doesn't understand: {' '.join(entry)}")
-        except subprocess.CalledProcessError as exc:
-            say(f"remove: couldn't undo '{' '.join(entry)}': {(exc.stderr or '').strip() or exc.returncode}")
-            left.append(" ".join(entry))
-    if left:
-        pki.write_private(listing, "".join(f"{line}\n" for line in left))
-    else:
-        for name in ("created", "applied"):   # applied: the next dciab services starts the pod again
-            if (state / "services" / name).exists():
-                (state / "services" / name).unlink()
-    return left
+    """Undo what the DNS-only `dciab services` listed in <state>/services/created
+    (dciab_services.lifecycle.down). Returns the lines it couldn't undo."""
+    from dciab_services import lifecycle
+    return lifecycle.down(state / "services", lambda m: say(f"remove: {m}"))
 
 
 def leftovers(state: Path) -> List[tuple]:

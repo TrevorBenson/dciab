@@ -470,6 +470,8 @@ class FakeHost:
         elif cmd[0] == "firewall-cmd":
             if not self.firewalld:
                 rc = 252
+            elif cmd[1] == "--permanent":
+                rc = 1   # nothing permanent on this host
             elif cmd[1] != "--state":
                 zone, (op, port) = cmd[1].split("=")[1], cmd[2].lstrip("-").split("=")
                 if op == "query-port":

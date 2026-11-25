@@ -773,6 +773,37 @@ jobs:
           for ip in 10.30.110.53 10.30.110.54; do
             PYTHONPATH=lib python3 -c "import sys; from dciab_services import probe; s = probe.ntp(sys.argv[1]); print(sys.argv[1], 'stratum', s); sys.exit(0 if s and s < 16 else 1)" "$ip"
           done
+      - name: A changed config (new DNS service IP, forwarding for the site only), then --down
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import yaml
+          d = yaml.safe_load(open("/tmp/site/dciab.yaml"))
+          d["spec"]["network"]["dnsServiceIPs"][1] = "10.30.110.55"
+          d["spec"]["network"]["upstreamResolvers"] = ["8.8.8.8"]
+          d["spec"]["network"]["isolated"] = False
+          yaml.safe_dump(d, open("/tmp/site/dciab.yaml", "w"), sort_keys=False)
+          PY
+          out="$(sudo DCIAB_PVE_TOKEN=placeholder DCIAB_PVE_CSI_TOKEN=placeholder DCIAB_CHRONY_IMAGE="$DCIAB_CHRONY_IMAGE" ./dciab services /tmp/site/dciab.yaml)"
+          echo "$out"
+          grep -q "no longer wanted: address dciab0 10.30.110.54/24" <<<"$out"
+          addrs="$(ip -o -4 addr show dev dciab0 | awk '{print $4}' | sort | tr '\n' ' ')"
+          test "$addrs" = "10.30.110.5/24 10.30.110.53/24 10.30.110.55/24 " || { echo "addresses: $addrs"; exit 1; }
+          test "$(dig +short @10.30.110.55 registry.dc3.example.com)" = 10.30.110.5
+          # Forwarding: from the node network it is tried, from anywhere else refused.
+          sudo ip addr add 192.0.2.10/32 dev dciab0
+          if dig +time=5 -b 10.30.110.5 @10.30.110.53 example.org | grep -q 'status: REFUSED'; then
+            echo "a node-network client was refused forwarding"; exit 1
+          fi
+          dig -b 192.0.2.10 @10.30.110.53 example.org | grep -q 'status: REFUSED'
+          test "$(dig +short -b 192.0.2.10 @10.30.110.53 registry.dc3.example.com)" = 10.30.110.5   # the zone answers anyone
+          sudo ip addr del 192.0.2.10/32 dev dciab0
+          # --down: exactly what dciab services added, and a rerun changes nothing.
+          sudo ./dciab services /tmp/site/dciab.yaml --down
+          if sudo podman pod exists dciab-services; then echo "the pod is still there"; exit 1; fi
+          test "$(ip -o -4 addr show dev dciab0 | awk '{print $4}')" = 10.30.110.5/24
+          sudo test ! -e /tmp/site/.dciab/state/services/created
+          sudo ./dciab services /tmp/site/dciab.yaml --down | grep -q "lists nothing"
       - name: Pod logs
         if: failure()
         run: |

@@ -9,6 +9,8 @@ Actions:
           files whose content changed are rewritten
   check   readiness: DNS both ways and registry.<domain> on each service IP; HTTP and NTP
           when served
+  prune   undo the recorded addresses and firewalld ports this config no longer wants
+          (--nic: the bootstrap NIC's name; --zone: its firewalld zone, empty without firewalld)
 
 Sites without spec.hypervisors get DNS only (render.dns_only). With --payload, env also
 gives each image's name in the payload's OCI layout (IMAGE_LAYOUTS, same order as IMAGES).
@@ -27,9 +29,9 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 try:
-    from . import probe, render
+    from . import lifecycle, probe, render
 except ImportError:  # PyYAML missing: main() says what to install
-    probe = render = None  # type: ignore[assignment]
+    lifecycle = probe = render = None  # type: ignore[assignment]
 
 
 
@@ -167,14 +169,26 @@ def check(doc: dict, timeout: float = 60.0) -> List[str]:
             return failed
 
 
+def wanted(doc: dict, nic: str, zone: str) -> set:
+    """The record lines (lifecycle) this config would leave: its service IPs on the NIC and
+    its ports in the zone."""
+    net = render.network(doc)
+    out = {f"address {nic} {ip}/{net['prefix']}" for ip in net["serviceIPs"]}
+    if zone:
+        out |= {f"port {zone} {p}" for p in render.ports(doc)}
+    return out
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     ap = argparse.ArgumentParser(prog="dciab_services")
     ap.add_argument("--root", required=True)
     ap.add_argument("--state", required=True)
     ap.add_argument("--isos", help="installer ISOs to serve (default: workDisk.path/isos, else <state>/isos)")
     ap.add_argument("--payload", help="the archive's payload: images come from its OCI layout")
+    ap.add_argument("--nic", help="prune: the bootstrap interface's name")
+    ap.add_argument("--zone", default="", help="prune: its firewalld zone (empty: firewalld isn't running)")
     ap.add_argument("config")
-    ap.add_argument("action", choices=["env", "show", "write", "check"])
+    ap.add_argument("action", choices=["env", "show", "write", "check", "prune"])
     args = ap.parse_args(argv)
     try:
         import jsonschema  # noqa: F401
@@ -219,6 +233,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             "ISOS_DIR": str(paths.isos),
             "HOST_ISOS_DIR": str(paths.host_isos),
             "POD": render.POD,
+            "PORTS": " ".join(render.ports(doc)),
             "FINGERPRINT": render.fingerprint(files),
         }
         for k, v in env.items():
@@ -230,6 +245,14 @@ def main(argv: Optional[List[str]] = None) -> int:
     elif args.action == "write":
         for rel in write(files, paths.conf):
             print(f"wrote {paths.conf / rel}")
+    elif args.action == "prune":
+        if not args.nic:
+            print("dciab services: prune needs --nic", file=sys.stderr)
+            return 2
+        left = lifecycle.prune(paths.conf, wanted(doc, args.nic, args.zone))
+        if left:
+            print("dciab services: couldn't undo: " + "; ".join(left), file=sys.stderr)
+            return 1
     elif args.action == "check":
         failed = check(doc)
         for f in failed:

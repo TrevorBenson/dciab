@@ -3,6 +3,7 @@
 # servers (docs/adr/0001-day0-hypervisors-and-services.md); DNS only for the others.
 #
 #   dciab services <config> [--state DIR] [--isos DIR] [--payload DIR] [--until STEP] [--print]
+#   dciab services <config> --down [--state DIR]
 #
 # CoreDNS, chrony (only with spec.time.servedBy: dciab) and Caddy run as one podman pod with host
 # networking. CoreDNS and chrony answer only on network.dnsServiceIPs, Caddy only on
@@ -11,8 +12,9 @@
 # dciab seed runs this mode in its dns step. Steps, in order; each is safe to re-run:
 #   preflight   root, tools, the config is valid
 #   render      Corefile, zones, chrony.conf, Caddyfile and pod.yaml -> <state>/services (mode 600)
-#   address     network.dnsServiceIPs added to spec.bootstrap.interface (runtime, like ip addr add)
-#   firewall    runtime-only firewalld ports, when firewalld runs
+#   address     recorded addresses and ports this config no longer wants are removed (a changed
+#               config); network.dnsServiceIPs added to spec.bootstrap.interface
+#   firewall    firewalld ports for the pod, when firewalld runs
 #   images      the pinned images present: loaded from the payload's OCI layout when there is
 #               one, else pulled. DCiaB's chrony image is one of them (day0.images.chrony,
 #               built and published by CI); it is never built here
@@ -28,8 +30,9 @@
 # DCIAB_CHRONY_IMAGE names a chrony image already in local storage instead of the pinned one
 # (building and testing DCiaB); the step warns when it is set.
 # What it adds to the host (addresses, firewalld ports, the pod) is listed in
-# <state>/services/created. Teardown: dciab seed --remove for the DNS-only services seed ran;
-# otherwise podman kube down <state>/services/pod.yaml, and undo the listed addresses and ports.
+# <state>/services/created (dciab_services.lifecycle). --down undoes exactly that list and
+# nothing else, whatever the config says now (dciab seed --remove does the same for the
+# DNS-only services seed ran).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -38,7 +41,7 @@ STEPS=(preflight render address firewall images pod ready)
 die() { echo "dciab services: $*" >&2; exit 1; }
 usage() { sed -n '5p' "${BASH_SOURCE[0]}" | sed 's/^# *//' >&2; exit 2; }
 
-config="" state="" isos="" until="" print=0 payload="${DCIAB_PAYLOAD:-}"
+config="" state="" isos="" until="" print=0 down=0 payload="${DCIAB_PAYLOAD:-}"
 while (( $# )); do
   case "$1" in
     --state) state="${2:?}"; shift 2 ;;
@@ -46,6 +49,7 @@ while (( $# )); do
     --isos) isos="${2:?}"; shift 2 ;;
     --until) until="${2:?}"; shift 2 ;;
     --print) print=1; shift ;;
+    --down) down=1; shift ;;
     -*) echo "dciab services: unknown option '$1'" >&2; usage ;;
     *) [[ -z "$config" ]] || usage; config="$1"; shift ;;
   esac
@@ -61,6 +65,18 @@ if [[ -z "$state" ]]; then
   state="$(PYTHONPATH="$ROOT/lib" python3 -m dciab_state "${migrate[@]}" "$config")"
 fi
 state="$(realpath -m "$state")"
+export PYTHONPATH="$ROOT/lib${PYTHONPATH:+:$PYTHONPATH}"
+
+if (( down )); then
+  # Teardown needs no valid config: it undoes what <state>/services/created lists.
+  (( print )) && die "--down and --print don't go together"
+  [[ $EUID -eq 0 ]] || die "must run as root (try: sudo dciab services ... --down)"
+  exec 9>>/run/dciab-services.lock
+  flock -n 9 || die "another dciab services is running on this host"
+  echo "== services: down"
+  python3 -m dciab_services.lifecycle down "$state/services" 9>&-
+  exit $?
+fi
 if [[ -z "$payload" && -f "$ROOT/payload/images.yaml" ]]; then
   payload="$ROOT/payload"
 fi
@@ -69,7 +85,6 @@ if [[ -n "$payload" ]]; then
   payload="$(cd "$payload" && pwd)"
 fi
 
-export PYTHONPATH="$ROOT/lib${PYTHONPATH:+:$PYTHONPATH}"
 helper() {
   local args=(--root "$ROOT" --state "$state")
   [[ -n "$isos" ]] && args+=(--isos "$isos")
@@ -86,7 +101,7 @@ finish_if() { if [[ "$until" == "$1" ]]; then step_done; echo "dciab services: s
 
 # Read the plan: shell assignments from the helper, which validates the config.
 MODE="" INTERFACE="" PREFIX="" SERVICE_IPS="" BOOTSTRAP_ADDRESS="" NTP="" IMAGES=""
-IMAGE_LAYOUTS="" CHRONY_IMAGE="" CONF_DIR="" ISOS_DIR="" HOST_ISOS_DIR="" POD="" FINGERPRINT=""
+IMAGE_LAYOUTS="" CHRONY_IMAGE="" CONF_DIR="" ISOS_DIR="" HOST_ISOS_DIR="" POD="" PORTS="" FINGERPRINT=""
 plan="$(helper env)" || exit $?
 eval "$plan"
 dns_only() { [[ "$MODE" == dns ]]; }
@@ -169,7 +184,16 @@ if command -v selinuxenabled >/dev/null && selinuxenabled; then
 fi
 finish_if render
 
+firewalld_zone() {   # the bootstrap NIC's zone, or nothing when firewalld isn't running
+  if command -v firewall-cmd >/dev/null && firewall-cmd --state >/dev/null 2>&1; then
+    firewall-cmd --get-zone-of-interface="$1" 2>/dev/null || firewall-cmd --get-default-zone
+  fi
+}
+zone="$(firewalld_zone "$nic")"
+
 step address
+# A changed config: what was added for the old one and isn't wanted now goes first.
+helper prune --nic "$nic" --zone "$zone"
 for ip in $SERVICE_IPS; do
   if has_addr "$nic" "$ip"; then
     echo "$ip already on $nic"
@@ -182,11 +206,8 @@ done
 finish_if address
 
 step firewall
-if command -v firewall-cmd >/dev/null && firewall-cmd --state >/dev/null 2>&1; then
-  zone="$(firewall-cmd --get-zone-of-interface="$nic" 2>/dev/null || firewall-cmd --get-default-zone)"
-  ports=(53/udp 53/tcp)
-  dns_only || ports+=(80/tcp)
-  [[ "$NTP" == 1 ]] && ports+=(123/udp)
+if [[ -n "$zone" ]]; then
+  read -ra ports <<<"$PORTS"
   for p in "${ports[@]}"; do
     if ! firewall-cmd --zone="$zone" --query-port="$p" >/dev/null; then
       record port "$zone" "$p"
