@@ -8,10 +8,16 @@ on:
 permissions:
   contents: read
 
+# A newer push to a PR cancels its older run; runs on main (the post-merge proof) always finish.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   test:
     name: tests (Python ${{ matrix.python }})
     runs-on: ubuntu-24.04  # still offers Python 3.9; newer images dropped it
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
@@ -39,6 +45,7 @@ jobs:
   charts:
     name: charts (helm render + CRD checks)
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -180,7 +187,7 @@ jobs:
     # kind cluster. No VM or server is built: the example infrastructure doesn't exist.
     name: ClusterClass e2e (kind + CAPI, no infrastructure)
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -278,6 +285,7 @@ jobs:
     # Every image a site needs, then a small archive payload built from it (build/archive.py).
     name: archive image inventory
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -388,6 +396,7 @@ jobs:
     # manifests, the binaries), then seed DNS, the seed registry and kind built from it alone.
     name: dciab seed (DNS + Zot + kind from a payload)
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -545,6 +554,7 @@ jobs:
     # from the pinned installer ISO and an answer file rendered from examples/proxmox-bare.yaml.
     name: Proxmox VE per-host installer ISO
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: read
       packages: write
@@ -651,6 +661,7 @@ jobs:
     # it as day0.images.chrony and the archive ships it like the other images.
     name: Day 0 chrony image
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: read
       packages: write
@@ -699,6 +710,7 @@ jobs:
     # site; published on main once per recipe. bundle.lock pins it as images.backup.
     name: backup image
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: read
       packages: write
@@ -751,6 +763,7 @@ jobs:
     # A class revision freezes when a DCiaB GA release tag (vN.0.0) first contains it; alpha and beta tags freeze nothing (docs/VERSIONING.md).
     name: released ClusterClasses are unchanged
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
         with:
@@ -760,6 +773,7 @@ jobs:
   image-digests:
     name: bundle.lock image digests match the registry
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -773,6 +787,7 @@ jobs:
     # examples/proxmox-bare.yaml's bootstrap NIC (by MAC) and address.
     name: dciab services (rootful podman pod, DNS/NTP/HTTP)
     runs-on: ubuntu-24.04
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - name: Packages (firewalld stopped until the image build is done; its rules block the build's network)
@@ -982,6 +997,7 @@ jobs:
     # Mockup Server and public mockups, plus overlays for vendor behaviour (hack/redfish/README.md).
     name: Redfish mockups (DMTF Mockup Server)
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: read
     steps:
@@ -1003,6 +1019,7 @@ jobs:
 
   shellcheck:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - run: shellcheck dciab hack/e2e/run.sh hack/check_frozen_classes.sh images/node/build.sh lib/steps/mgmt.sh lib/steps/mgmt-pivot.sh lib/steps/services.sh lib/steps/capi-providers.sh lib/steps/storage-classes.sh lib/steps/block-storage.sh images/node-bootc/build.sh images/node-bootc/rootfs/usr/libexec/dciab/growroot images/bootstrap-bootc/build.sh images/usb/build.sh images/day0-chrony/build.sh images/backup/build.sh images/lab-runner/build.sh images/lab-runner/rootfs/usr/libexec/dciab-lab-runner/loop images/lab-runner/rootfs/usr/libexec/dciab-lab-runner/job-started.sh addons/cilium/install.sh addons/longhorn/install.sh addons/vsphere-cpi/install.sh addons/csi/install.sh addons/kubelet-csr-approver/install.sh hack/e2e/boot-node-image.sh hack/lab/runner-image-id.sh hack/lab/fetch-runner-disk.sh hack/lab/pve.sh hack/lab/check-token.sh hack/lab/template.sh hack/lab/cluster.sh hack/lab/mgmt.sh hack/e2e/hypervisors/setup.sh hack/media/rocky10-dropin.sh hack/media/preload-e2e.sh
@@ -1013,7 +1030,7 @@ jobs:
     # dciab_media.preload into a real podman.
     name: Day 0 image preload from the payload
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 10
     permissions:
       contents: read
     steps:
@@ -1037,7 +1054,7 @@ jobs:
     # this proves podman on Rocky Linux 10 (the appliance's OS) reads it (#165).
     name: media storage drop-in on Rocky Linux 10
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 10
     permissions:
       contents: read
     container:
@@ -1052,6 +1069,7 @@ jobs:
     # The validator must run on the bootstrap host with distro packages only.
     name: examples on Rocky Linux 10 (distro packages)
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     container: rockylinux/rockylinux:10
     steps:
       - uses: actions/checkout@v4
