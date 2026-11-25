@@ -855,22 +855,30 @@ jobs:
       - name: A service IP that disappears (NetworkManager reapplying the interface) comes back with a pod restart
         run: |
           set -euo pipefail
+          answers() {   # answers <server> <name> <want>: retried while the pod starts
+            local r=""; for _ in $(seq 1 20); do r="$(dig +short +time=1 +tries=1 @"$1" "$2" || true)"; [[ "$r" == "$3" ]] && return 0; sleep 1; done
+            echo "dig @$1 $2: got '$r', want '$3'"; return 1
+          }
           sudo ip addr del 10.30.110.53/24 dev dciab0
           sudo systemctl restart dciab-services.service
-          test "$(dig +short @10.30.110.53 pve01.dc3.example.com)" = 10.30.110.6
+          answers 10.30.110.53 pve01.dc3.example.com 10.30.110.6
       - name: A simulated reboot (units stopped, addresses gone, runtime firewall reset) comes back
         run: |
           set -euo pipefail
+          answers() {   # answers <server> <name> <want>: retried while the pod starts
+            local r=""; for _ in $(seq 1 20); do r="$(dig +short +time=1 +tries=1 @"$1" "$2" || true)"; [[ "$r" == "$3" ]] && return 0; sleep 1; done
+            echo "dig @$1 $2: got '$r', want '$3'"; return 1
+          }
           sudo systemctl stop dciab-services.service dciab-services-addresses.service
           if sudo podman pod exists dciab-services; then echo "the pod should stop with its unit"; exit 1; fi
           sudo ip addr del 10.30.110.53/24 dev dciab0
           sudo ip addr del 10.30.110.54/24 dev dciab0
           sudo firewall-cmd --reload   # runtime rules back to the permanent ones, as after a boot
           # What boot starts: multi-user.target wants both units; the pod's unit pulls in the addresses.
-          systemctl list-dependencies --plain multi-user.target | grep -q dciab-services.service
+          systemctl list-dependencies --plain multi-user.target | grep dciab-services.service >/dev/null
           sudo systemctl start dciab-services.service
-          test "$(dig +short @10.30.110.53 pve01.dc3.example.com)" = 10.30.110.6
-          test "$(dig +short @10.30.110.54 registry.dc3.example.com)" = 10.30.110.5
+          answers 10.30.110.53 pve01.dc3.example.com 10.30.110.6
+          answers 10.30.110.54 registry.dc3.example.com 10.30.110.5
           zone="$(sudo firewall-cmd --get-default-zone)"
           sudo firewall-cmd --zone="$zone" --query-port=53/udp >/dev/null
           out="$(sudo DCIAB_PVE_TOKEN=placeholder DCIAB_PVE_CSI_TOKEN=placeholder DCIAB_CHRONY_IMAGE="$DCIAB_CHRONY_IMAGE" ./dciab services /tmp/site/dciab.yaml)"
@@ -886,6 +894,10 @@ jobs:
           d["spec"]["network"]["dnsServiceIPs"][1] = "10.30.110.55"
           yaml.safe_dump(d, open("/tmp/site/dciab.yaml", "w"), sort_keys=False)
           PY
+          answers() {   # answers <server> <name> <want>: retried while the pod starts
+            local r=""; for _ in $(seq 1 20); do r="$(dig +short +time=1 +tries=1 @"$1" "$2" || true)"; [[ "$r" == "$3" ]] && return 0; sleep 1; done
+            echo "dig @$1 $2: got '$r', want '$3'"; return 1
+          }
           sudo DCIAB_PVE_TOKEN=placeholder DCIAB_PVE_CSI_TOKEN=placeholder DCIAB_CHRONY_IMAGE="$DCIAB_CHRONY_IMAGE" ./dciab services /tmp/site/dciab.yaml --until address
           # The live files and both units still describe the old IP (.54); only the stage has .55.
           for f in /etc/systemd/system/dciab-services-addresses.service /etc/containers/systemd/dciab-services.kube; do
@@ -897,7 +909,7 @@ jobs:
           sudo systemctl stop dciab-services.service dciab-services-addresses.service
           sudo ip addr del 10.30.110.54/24 dev dciab0
           sudo systemctl start dciab-services.service
-          test "$(dig +short @10.30.110.54 registry.dc3.example.com)" = 10.30.110.5
+          answers 10.30.110.54 registry.dc3.example.com 10.30.110.5
       - name: A changed config (new DNS service IP, forwarding for the site only), then --down
         run: |
           set -euo pipefail
