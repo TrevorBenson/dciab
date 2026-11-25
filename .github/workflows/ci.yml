@@ -498,6 +498,17 @@ jobs:
           sudo env "PATH=$bin:$PATH" "DCIAB_PVE_TOKEN=$DCIAB_PVE_TOKEN" "DCIAB_PVE_CSI_TOKEN=$DCIAB_PVE_CSI_TOKEN" ./dciab mgmt "$RUNNER_TEMP/site/dciab.yaml" \
             --state "$state" --payload "$RUNNER_TEMP/payload" --until cluster
           sudo grep -q "BEGIN CERTIFICATE" "$state/mgmt-values.yaml"   # seed's platform CA reaches the nodes
+          sudo "$bin/kubectl" --kubeconfig "$state/bootstrap.kubeconfig" -n cluster-mgmt get cluster mgmt
+      - name: dciab status (read-only) reports where the bootstrap stands
+        run: |
+          set -euo pipefail
+          out="$(sudo env "PATH=$RUNNER_TEMP/payload/bin:$PATH" ./dciab status "$RUNNER_TEMP/site/dciab.yaml" \
+            --state "$RUNNER_TEMP/state" || true)"
+          echo "$out"
+          for check in dns pki registry bootstrap; do
+            grep -Eq "^$check +ok " <<<"$out" || { echo "$check should be ok"; exit 1; }
+          done
+          grep -Eq "^mgmt +down .*not moved" <<<"$out"
       - name: With firewalld on, seed keeps 443 and DNS open, and the bootstrap cluster reaches the registry through it
         env:
           DCIAB_PVE_TOKEN: ci-not-a-secret
@@ -528,17 +539,6 @@ jobs:
               echo "$p is still open after --remove"; exit 1
             fi
           done
-          sudo "$bin/kubectl" --kubeconfig "$state/bootstrap.kubeconfig" -n cluster-mgmt get cluster mgmt
-      - name: dciab status (read-only) reports where the bootstrap stands
-        run: |
-          set -euo pipefail
-          out="$(sudo env "PATH=$RUNNER_TEMP/payload/bin:$PATH" ./dciab status "$RUNNER_TEMP/site/dciab.yaml" \
-            --state "$RUNNER_TEMP/state" || true)"
-          echo "$out"
-          for check in dns pki registry bootstrap; do
-            grep -Eq "^$check +ok " <<<"$out" || { echo "$check should be ok"; exit 1; }
-          done
-          grep -Eq "^mgmt +down .*not moved" <<<"$out"
 
   pve-assistant:
     # The image dciab hypervisors builds per-host Proxmox VE ISOs with, then a real host ISO
