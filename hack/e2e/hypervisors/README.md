@@ -14,9 +14,9 @@ none of this goes into the archive.
 `setup.sh MODE WORK` builds it; `run.py WORK` writes the site config (from
 `examples/proxmox-bare.yaml`), runs `dciab services`, then the scenarios, and writes
 `WORK/report.json`. The workflow runs three legs in parallel, each on its own runner from a blank
-VM (`DCIAB_LEG` picks the list in `run.py`'s `SCENARIOS`): `untagged-install` (first-install, rerun,
-lost-state, lost-state-host-off, recorded-host-off), `untagged-reinstall` (disk-refused,
-held-without-flag, first-install, reinstall) and `tagged`. Without `DCIAB_LEG`, `run.py` runs every
+VM (`DCIAB_LEG` picks the list in `run.py`'s `SCENARIOS`): `untagged-install` (disk-refused,
+held-without-flag, first-install, rerun, lost-state, lost-state-host-off, recorded-host-off),
+`untagged-reinstall` (first-install, reinstall) and `tagged`. Without `DCIAB_LEG`, `run.py` runs every
 scenario of the mode. Each leg writes a scenario table to the run summary, annotates a failure on the
 run page, and uploads the report, the logs, the VM's serial console and a screenshot.
 

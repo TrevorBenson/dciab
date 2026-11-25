@@ -412,8 +412,10 @@ def reboot(lab: Lab) -> dict:
 # runner from a blank VM, so every list that needs an installed host does its own first_install.
 # The untagged mode is split in two legs so its two installs run in parallel, not one after the other.
 SCENARIOS = {
-    "untagged-install": [first_install, rerun, lost_state, lost_state_host_off, recorded_host_off],
-    "untagged-reinstall": [disk_refused, held_without_flag, first_install, reinstall],
+    # The reinstall leg runs two installs back to back, so the quick pre-install checks run here.
+    "untagged-install": [disk_refused, held_without_flag, first_install, rerun, lost_state,
+                         lost_state_host_off, recorded_host_off],
+    "untagged-reinstall": [first_install, reinstall],
     "tagged": [port_is_tagged_only, held_without_flag, first_install, reboot],
 }
 # Running run.py by hand without DCIAB_LEG runs every scenario of the mode setup.sh set up.
