@@ -218,7 +218,8 @@ def _now() -> str:
 
 def media(hosts: List[dict], doc: dict, installs: Path, reinstall: List[str], bmc_for: Callable,
           probe: Callable[[str, int], bool] = installed_probe, log=print,
-          err=None, first_install: Tuple[str, ...] = ()) -> Tuple[List[str], List[str], List[str]]:
+          err=None, first_install: Tuple[str, ...] = (),
+          open_probe: Callable[[str, int], bool] = port_open) -> Tuple[List[str], List[str], List[str]]:
     """The media step. Returns (failed, held, live): hosts whose BMC calls failed; hosts left alone
     that need the operator (an install recorded, an OS already there, an install that can't be
     running, or no evidence either way without --first-install); and hosts reset with --reinstall
@@ -260,6 +261,12 @@ def media(hosts: List[dict], doc: dict, installs: Path, reinstall: List[str], bm
                     continue
                 if probe(addr, 22):
                     hold(name, f"no install recorded, but {addr}:22 answers: an OS is running there")
+                    continue
+                if open_probe(addr, 8006):
+                    # Not the Proxmox VE API's answer (a timeout, a 403 from pveproxy's ALLOW_FROM,
+                    # a 5xx, another service), but something listens there: an OS is running.
+                    hold(name, f"no install recorded, and {addr}:8006 is open though it doesn't answer as "
+                               "the Proxmox VE API: an OS is running there")
                     continue
                 bmc = bmc_for(h)
                 try:

@@ -30,25 +30,32 @@ OS_HINTS = ("proxmox", "uefi os", "windows boot manager", "rocky", "red hat", "r
 NETWORK_HINTS = ("pxe", "http boot", "httpv", "network", "ipv4", "ipv6")
 # Device path nodes of a network boot.
 NETWORK_PATH = ("mac(", "ipv4(", "ipv6(", "uri(")
+# Device path nodes of a local disk: a partition (HD), a legacy BIOS disk entry (BBS(HD...)), or a
+# whole disk on a storage bus with no partition node (some firmware lists only the disk).
+DISK_PATH = ("hd(", "bbs(hd", "sata(", "ata(", "scsi(", "sas(", "nvme(")
+# Names of legacy (BIOS) disk entries, which often have no device path at all.
+DISK_NAMES = ("hard drive", "hard disk")
 
 
 def is_os_entry(name: str, device_path: str) -> bool:
-    """Whether a UEFI boot option may load an installed OS, so the host must be held.
+    """Whether a boot option may load an installed OS, so the host must be held.
 
     Explicit OS evidence wins over any other word in the name: Proxmox VE, a name in OS_HINTS
-    (so "UEFI OS (Virtual Disk)" counts), or a device path into a disk partition (HD(...)), so
-    a USB-named entry on a partition, such as a bootable stick, counts too and holds the host.
-    Only unambiguous network entries are left out: a network name or network path nodes, with
-    no HD(...) in the path. Anything else (CD/DVD, shell, setup, an unnamed entry with no disk
-    path) doesn't count."""
+    (so "UEFI OS (Virtual Disk)" counts), a legacy disk entry ("Hard drive C:", BBS(HD,...)), or
+    a device path into a local disk: a partition (HD(...)), or a whole disk on a SATA, SCSI, SAS
+    or NVMe bus with no partition node. So a USB-named entry on a partition, such as a bootable
+    stick, counts too and holds the host. Only unambiguous network entries are left out: a
+    network name or network path nodes, with no disk node in the path. Anything else (CD/DVD,
+    shell, setup, an unnamed entry with no disk path) doesn't count."""
     lname, lpath = name.lower(), device_path.lower()
     text = f"{lname} {lpath}"
     if "proxmox" in text:
         return True
-    on_disk = "hd(" in lpath
-    if not on_disk and (any(n in lpath for n in NETWORK_PATH) or any(h in lname for h in NETWORK_HINTS)):
+    network = any(n in lpath for n in NETWORK_PATH)
+    on_disk = "hd(" in lpath or "bbs(hd" in lpath or (not network and any(n in lpath for n in DISK_PATH))
+    if not on_disk and (network or any(h in lname for h in NETWORK_HINTS)):
         return False
-    return on_disk or any(h in text for h in OS_HINTS)
+    return on_disk or any(h in text for h in OS_HINTS + DISK_NAMES)
 
 
 MAX_PAGES = 64
@@ -196,6 +203,27 @@ class Bmc:
         _, slot = self.cd_slot()
         return dict(self.state(), attached=bool(slot.get("Inserted")) and slot.get("Image") == image)
 
+    def members(self, path: str) -> list:
+        """Every member of a collection, across all its pages (Members@odata.nextLink). Raises
+        RedfishError when a page can't be read, Members isn't an array, or the pages don't end."""
+        try:
+            page = self.get(path)
+            members = page.get("Members")
+            if members is None:
+                return []
+            members = list(_members(members))
+            seen = {path}
+            while page.get("Members@odata.nextLink"):
+                link = page["Members@odata.nextLink"]
+                if link in seen or len(seen) > MAX_PAGES:
+                    raise RedfishError(f"{self.client.where}: the list at {path} doesn't end ({link})")
+                seen.add(link)
+                page = self.get(link)
+                members += _members(page.get("Members", []))
+            return members
+        except (TypeError, AttributeError) as exc:
+            raise RedfishError(f"{self.client.where}: the list at {path} makes no sense ({exc})") from None
+
     def os_boot_entries(self) -> Optional[List[str]]:
         """Names of UEFI boot options that may load an installed OS (is_os_entry); [] when the
         BMC lists options and none does. None when the BMC lists no boot options at all: no
@@ -209,20 +237,9 @@ class Bmc:
         if not coll:
             return None
         try:
-            page = self.get(coll["@odata.id"])
-            members = page.get("Members")
-            if members is None or members == []:
+            members = self.members(coll["@odata.id"])
+            if not members:
                 return None
-            members = list(_members(members))
-            # Follow every page: an OS entry on a later page must still hold the host.
-            seen = {coll["@odata.id"]}
-            while page.get("Members@odata.nextLink"):
-                link = page["Members@odata.nextLink"]
-                if link in seen or len(seen) > MAX_PAGES:
-                    raise RedfishError(f"{self.client.where}: the boot options list doesn't end ({link})")
-                seen.add(link)
-                page = self.get(link)
-                members += _members(page.get("Members", []))
             found = []
             for member in members:
                 opt = self.get(member["@odata.id"])

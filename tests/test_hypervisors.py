@@ -612,7 +612,7 @@ def test_assistant_image_needs_a_pin_unless_overridden(monkeypatch):
 
 # --- the reinstall guard (cli.media) -------------------------------------------------------
 
-def guard(f, tmp_path, reinstall=(), answers=False, ssh=None, first_install=()):
+def guard(f, tmp_path, reinstall=(), answers=False, ssh=None, first_install=(), port_8006=False):
     """Run the media step for pve01 against the fake BMC, with the Proxmox VE API (and port 22)
     answering or not."""
     doc = bare()
@@ -620,7 +620,8 @@ def guard(f, tmp_path, reinstall=(), answers=False, ssh=None, first_install=()):
     ssh = answers if ssh is None else ssh
     failed, held, live = cli.media([host(doc)], doc, tmp_path / "installs", list(reinstall), lambda h: f.bmc,
                                    probe=lambda a, p: ssh if p == 22 else answers, log=logs.append,
-                                   err=logs.append, first_install=tuple(first_install))
+                                   err=logs.append, first_install=tuple(first_install),
+                                   open_probe=lambda a, p: port_8006)
     return failed, held, live, "\n".join(logs)
 
 
@@ -1097,3 +1098,41 @@ def test_first_install_must_name_a_selected_host(tmp_path, monkeypatch, capsys):
     assert "--first-install pve01" in capsys.readouterr().err
     assert cli.main(["--root", str(ROOT), "--print", "--first-install", "pve01", str(cfg)]) == 0
     assert "--first-install: installed if nothing shows an existing install" in capsys.readouterr().out
+
+
+# --- review on #216: more OS evidence, and an open 8006 that isn't the Proxmox VE API ---------
+
+@pytest.mark.parametrize("name,path", [
+    ("Hard drive C:", ""),                                                  # legacy BIOS entry, no path
+    ("Hard Disk", ""),
+    ("Boot0003", "BBS(HD,P0: SAMSUNG MZ7L3480,0x0)"),                       # legacy BBS disk entry
+    ("", "PciRoot(0x0)/Pci(0x17,0x0)/Sata(0x0,0xFFFF,0x0)"),               # whole SATA disk, no HD()
+    ("Disk 1", "PciRoot(0x0)/Pci(0x1,0x0)/Scsi(0x0,0x0)"),
+    ("", "PciRoot(0x0)/Pci(0x1D,0x0)/Pci(0x0,0x0)/NVMe(0x1,00-00-00-00-00-00-00-00)"),
+    ("RAID", "PciRoot(0x0)/Pci(0x2,0x0)/SAS(0x5000C500A1B2C3D4,0x0,0x1,SAS,External,Expanded,0,0x0)"),
+])
+def test_legacy_and_whole_disk_entries_are_os_evidence(name, path):
+    assert redfish.is_os_entry(name, path)
+
+
+def test_network_entries_on_a_storage_bus_name_still_dont_count():
+    assert not redfish.is_os_entry("PXE IPv4 Intel", "PciRoot(0x0)/Pci(0x1C,0x0)/MAC(001122334455,0x1)/IPv4(0.0.0.0)")
+    assert not redfish.is_os_entry("UEFI PXE: NVMe-oF?", "PciRoot(0x0)/MAC(001122334455,0x1)/IPv6(::)")
+    assert not redfish.is_os_entry("Embedded UEFI Shell", "")
+
+
+def test_legacy_disk_entry_holds_a_host_without_a_record(fake_bmc, tmp_path):
+    f = fake_bmc(power="Off", boot_options=[{"Id": "0001", "DisplayName": "Hard drive C:"}])
+    failed, held, live, logs = guard(f, tmp_path)
+    assert held == ["pve01"] and "Hard drive C:" in logs
+    assert not [c for c in f.calls if c[0] in CHANGES]
+
+
+def test_open_8006_that_isnt_the_api_holds_even_with_first_install(fake_bmc, tmp_path):
+    f = fake_bmc(power="Off", boot_options=[])
+    failed, held, live, logs = guard(f, tmp_path, first_install=["pve01"], port_8006=True)
+    assert f.calls == []
+    assert held == ["pve01"] and "8006 is open" in logs
+    assert not [c for c in f.calls if c[0] in CHANGES]
+    # --reinstall still overrides it.
+    assert guard(fake_bmc(power="Off"), tmp_path, reinstall=["pve01"], port_8006=True)[1] == []
