@@ -44,7 +44,9 @@ from pathlib import Path
 from dciab_media.preload import PreloadError, load
 payload, refs = Path(sys.argv[1]), sys.argv[2:]
 try:
-    loaded, present = load(payload, {f"k{i}": r for i, r in enumerate(refs)})
+    loaded, present, missing = load(payload, {f"k{i}": r for i, r in enumerate(refs)})
+    if missing:
+        sys.exit(f"preload: the payload lacks {missing}")
 except PreloadError as exc:
     sys.exit(f"preload: {exc}")
 print(f"{len(loaded)} loaded, {len(present)} already")

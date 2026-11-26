@@ -279,9 +279,11 @@ def undo(entry: List[str], say: Say = _say, firewalld: Optional[bool] = None,
         _undo_address(args[0], args[1], say, journal)
     elif kind == "restore" and len(args) >= 2:
         nic, cidr, boot, options = _restore_parts(entry)
-        if boot != boot_id():
-            say(f"dropped '{' '.join(entry)}': written before this boot "
-                f"({'no boot ID' if boot is None else 'boot ' + boot}), so {cidr} isn't put back")
+        if boot in (None, "unknown") or boot != boot_id():
+            why = ("no boot ID" if boot is None else "the boot ID couldn't be read"
+                   if boot == "unknown" else "boot " + boot)
+            say(f"dropped '{' '.join(entry)}': not provably from this boot ({why}), "
+                f"so {cidr} isn't put back")
             return
         _restore(nic, cidr, options, say)
     elif kind == "port" and len(args) in (2, 3):
@@ -524,12 +526,12 @@ def down(conf: Path, say: Say = _say) -> List[str]:
         journal = _journal(conf, pending)
         doomed = {(e[1], e[2]) for e in entries if len(e) == 3 and e[0] == "address"}
         for entry in sorted(entries, key=lambda e: ORDER.get(e[0] if e else "", 9)):
-            if entry and entry[0] == "restore" and len(entry) >= 3 and (entry[1], entry[2]) in doomed:
-                say(f"dropped '{' '.join(entry)}': {entry[2]} is one of the addresses being removed")
-                continue
             if blocked and entry and entry[0] != "unit":
                 say(f"left '{' '.join(entry)}' alone: a unit above couldn't be stopped")
                 left.append(entry)
+                continue
+            if entry and entry[0] == "restore" and len(entry) >= 3 and (entry[1], entry[2]) in doomed:
+                say(f"dropped '{' '.join(entry)}': {entry[2]} is one of the addresses being removed")
                 continue
             try:
                 undo(entry, say, firewalld, journal)

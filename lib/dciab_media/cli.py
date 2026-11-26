@@ -47,8 +47,10 @@ from __future__ import annotations
 
 import argparse
 import fcntl
+import filecmp
 import json
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -577,6 +579,10 @@ STATE_MARKERS = frozenset({
 })
 
 
+# dciab services' own files in <state>/services (dciab_services.lifecycle RECORD and APPLIED).
+SERVICES_RECORD, SERVICES_APPLIED = "created", "applied"
+
+
 def _markers(path: Path) -> frozenset:
     try:
         return frozenset(e.name for e in os.scandir(path)) & STATE_MARKERS
@@ -584,15 +590,49 @@ def _markers(path: Path) -> frozenset:
         return frozenset()
 
 
+# The kinds dciab_services.lifecycle records, one per line ("<kind> <fields...>").
+SERVICES_KINDS = frozenset({"unit", "pod", "restore", "address", "port"})
+STATE_MARKER_TEXT = ("pki/ca.crt, a dciab kubeconfig (bootstrap.kubeconfig or mgmt.kubeconfig), an "
+                     "installs/<host>.json record, or dciab services' record in services/")
+
+
+def _services_record(path: Path) -> bool:
+    """services/created as dciab services writes it: every non-empty line starts with a kind
+    lifecycle records, and there is at least one."""
+    try:
+        if not path.is_file() or path.stat().st_size > 1 << 20:
+            return False
+        lines = [l.split() for l in path.read_text().splitlines() if l.strip()]
+    except (OSError, UnicodeDecodeError):
+        return False
+    return bool(lines) and all(l[0] in SERVICES_KINDS for l in lines)
+
+
+def _services_applied(path: Path) -> bool:
+    """services/applied as dciab services writes it: a single sha256 (render.fingerprint)."""
+    try:
+        if not path.is_file() or path.stat().st_size > 256:
+            return False
+        return re.fullmatch(r"[0-9a-f]{64}", path.read_text().strip()) is not None
+    except (OSError, UnicodeDecodeError):
+        return False
+
+
 def _looks_like_state(path: Path) -> bool:
     """Whether path holds something only dciab writes: the seed's CA (pki/ca.crt), a dciab
-    kubeconfig, or a hypervisor install record (installs/<host>.json). Generic names such as
+    kubeconfig, a hypervisor install record (installs/<host>.json), or dciab services' record
+    of what it added to the host (services/created with only lifecycle record lines, or
+    services/applied holding its sha256 fingerprint; a state folder holds these before seed or
+    hypervisors ever ran). Generic names such as
     backup/ or registry/ are not enough on their own: a link to unrelated data must never be
     moved (or, across filesystems, deleted)."""
     try:
         if (path / "pki" / "ca.crt").is_file():
             return True
         if any((path / n).is_file() for n in ("bootstrap.kubeconfig", "mgmt.kubeconfig")):
+            return True
+        if _services_record(path / "services" / SERVICES_RECORD) or \
+                _services_applied(path / "services" / SERVICES_APPLIED):
             return True
         installs = path / "installs"
         return installs.is_dir() and any(p.suffix == ".json" and p.is_file() for p in installs.iterdir())
@@ -608,11 +648,48 @@ def _moved_aside(source: Path) -> List[Path]:
         return []
 
 
-def _both_detail(source: Path, new: Path) -> str:
-    """The refusal when both folders hold state, saying which one looks partial."""
+def _same_tree(a: Path, b: Path) -> Optional[bool]:
+    """Whether two folders hold the same files with the same contents (links not followed).
+    Names and sizes are compared first; contents are then compared file by file, streamed
+    (filecmp, not read into memory) and stopping at the first difference, since state can
+    hold the seed registry's image data. None when it can't tell (a read error)."""
+    def listing(root: Path) -> Dict[str, int]:
+        out = {}
+        for dirpath, dirs, files in os.walk(root):
+            for name in files:
+                p = Path(dirpath) / name
+                out[str(p.relative_to(root))] = p.lstat().st_size
+        return out
+    try:
+        la, lb = listing(a), listing(b)
+        if la != lb:
+            return False
+        for rel in la:
+            fa, fb = a / rel, b / rel
+            if fa.is_symlink() or fb.is_symlink():
+                if not (fa.is_symlink() and fb.is_symlink() and os.readlink(fa) == os.readlink(fb)):
+                    return False
+                continue
+            if not filecmp.cmp(fa, fb, shallow=False):
+                return False
+        return True
+    except (OSError, MemoryError):
+        return None
+
+
+def _both_detail(source: Path, new: Path, compare: bool = False) -> str:
+    """The refusal when both folders hold state, saying which one looks partial, or (with
+    compare, only when the refusal is actually raised) that the two are identical: a move
+    interrupted after its copy was complete."""
     a, b = _markers(source), _markers(new)
     hint = ""
-    if a > b:
+    same = _same_tree(source, new) if compare and a == b else False
+    if same:
+        hint = (f" The two hold identical files: an interrupted move left a complete copy in {new}. "
+                f"Move {source} aside (or remove it) and run again.")
+    elif same is None:
+        hint = " (Couldn't compare the two folders' contents to tell whether they're identical.)"
+    elif a > b:
         hint = f" {new} lacks {', '.join(sorted(a - b))}, which {source} has: it looks like the partial one."
     elif b > a:
         hint = f" {source} lacks {', '.join(sorted(b - a))}, which {new} has: it looks like the partial one."
@@ -650,7 +727,7 @@ def state_plan(config: Path, work: Path) -> StatePlan:
                                                f"{target} to every step")
         if not _looks_like_state(target):
             return StatePlan("refuse", target, f"{old} links to {target}, which doesn't look like dciab state "
-                                               f"(none of pki/, services/, installs/, the kubeconfigs, ...): "
+                                               f"(none of {STATE_MARKER_TEXT}): "
                                                "dciab media won't move it. Remove or repoint the link and run again")
         source = target
     elif os.path.lexists(old):
@@ -708,6 +785,38 @@ def state_bytes(config: Path, work: Path) -> int:
     except OSError:
         return 0
     return tree_bytes(plan.source)
+
+
+def preload_bytes(plan: "Plan", work: Path, runner: Optional[Runner] = None) -> int:
+    """Room the preload step needs on the work disk: the Day 0 images root's container storage
+    doesn't hold yet. The storage step, which runs first, always leaves that storage on the
+    work disk's filesystem (it's there already, or it moves to <work>/containers), so they're
+    always counted; an image already loaded isn't, so a rerun with nothing to load needs no
+    room. Read from the source archive's payload, since the copy on the work disk doesn't
+    exist yet at the target step."""
+    payload = plan.source / "payload"
+    if not (payload / "images.yaml").is_file():
+        return 0
+    try:
+        refs = preload.lock_refs(payload)
+    except preload.PreloadError:
+        return 0
+    # Images already loaded are skipped only when the storage step keeps the current storage:
+    # if it moves storage to <work>/containers, preload loads every image again there.
+    try:
+        r = runner or run
+        if storage_kept(work / "containers", current_graphroot(r)):
+            todo = {k: ref for k, ref in refs.items() if not preload._exists(ref, r)}
+        else:
+            todo = dict(refs)
+    except (OSError, subprocess.CalledProcessError):
+        todo = dict(refs)                         # no podman to ask: count every image
+    if not todo:
+        return 0
+    try:
+        return preload.image_bytes(payload, todo)
+    except (OSError, preload.PreloadError):
+        return 0
 
 
 def _fsync_tree(path: Path) -> None:
@@ -825,6 +934,8 @@ def move_state(config: Path, work: Path, runner: Optional[Runner] = None) -> Opt
     if plan.action is None:
         return None
     if plan.action == "refuse":
+        if plan.source is not None and plan.detail == _both_detail(plan.source, new):
+            raise MediaError(_both_detail(plan.source, new, compare=True))
         raise MediaError(plan.detail)
     if plan.action == "link":
         note = _link(old, new)
@@ -999,9 +1110,10 @@ def main(argv: Optional[List[str]] = None) -> int:
             for step in STEPS:
                 say(f"==> {step}")
                 if step == "target":
-                    extra = state_bytes(config, work)
+                    extra = state_bytes(config, work) + preload_bytes(plan, work)
                     check_space(plan, work, extra=extra)
-                    say(f"  {work}: {plan.copy_bytes + extra} bytes to copy")
+                    say(f"  {work}: {plan.copy_bytes + extra} bytes to copy (the archive, any state to move, and the "
+                        "Day 0 images to load)")
                 elif step == "state":
                     moved = move_state(config, work)
                     say(f"  {moved}" if moved else f"  unchanged ({work / 'state'})")
@@ -1030,10 +1142,13 @@ def main(argv: Optional[List[str]] = None) -> int:
                     payload = plan.dest / "payload"
                     if (payload / "images.yaml").is_file():
                         try:
-                            loaded, present = preload.load(payload, preload.lock_refs(payload))
+                            loaded, present, missing = preload.load(payload, preload.lock_refs(payload))
                         except preload.PreloadError as exc:
                             raise MediaError(str(exc)) from None
                         say(f"  loaded {len(loaded)}, {len(present)} already there (from {payload})")
+                        for ref in missing:
+                            say(f"  warning: the payload lacks {ref}; dciab services and seed stop until the "
+                                f"archive is rebuilt with it (build/archive.py images)")
                     else:
                         say("  none (the archive carries no images)")
                 if step == args.until:

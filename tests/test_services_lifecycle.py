@@ -997,7 +997,8 @@ def test_prune_settles_restores_first_and_drops_one_for_an_address_it_removes(tm
     assert host.calls.index(adds[0]) < host.calls.index(dels[0])        # restores before removals
 
 
-@pytest.mark.parametrize("line", ["restore eth0 10.30.110.60/24", "restore eth0 10.30.110.60/24 boot=boot-0"])
+@pytest.mark.parametrize("line", ["restore eth0 10.30.110.60/24", "restore eth0 10.30.110.60/24 boot=boot-0",
+                                  "restore eth0 10.30.110.60/24 boot=unknown"])
 def test_a_restore_from_an_earlier_boot_is_dropped_not_replayed(tmp_path, host, line):
     host.addrs["eth0"].discard("10.30.110.60/24")
     conf = conf_with(tmp_path, [line])
@@ -1005,7 +1006,31 @@ def test_a_restore_from_an_earlier_boot_is_dropped_not_replayed(tmp_path, host, 
     assert lifecycle.down(conf, msgs.append) == []
     assert "10.30.110.60/24" not in host.addrs["eth0"]
     assert not (conf / "created").exists()
-    assert any("written before this boot" in m for m in msgs)
+    assert any("not provably from this boot" in m for m in msgs)
+
+
+def test_a_restore_written_when_the_boot_id_was_unreadable_is_dropped(tmp_path, host, monkeypatch):
+    """boot=unknown would otherwise match every later boot where the ID can't be read either."""
+    monkeypatch.setattr(lifecycle, "BOOT_ID", str(tmp_path / "no-such-boot-id"))
+    assert lifecycle.boot_id() == "unknown"
+    host.addrs["eth0"].discard("10.30.110.60/24")
+    conf = conf_with(tmp_path, ["restore eth0 10.30.110.60/24 boot=unknown"])
+    msgs = []
+    assert lifecycle.down(conf, msgs.append) == []
+    assert "10.30.110.60/24" not in host.addrs["eth0"]
+    assert any("the boot ID couldn't be read" in m for m in msgs)
+
+
+def test_a_blocked_teardown_keeps_the_restore_line_of_an_address_it_leaves(tmp_path, host):
+    """A unit that won't stop holds back the addresses; their restore lines stay with them."""
+    unit = tmp_path / "dciab-services.kube"
+    unit.write_text("[Kube]\n")
+    host.services = {"dciab-services.service"}
+    host.fail = {"systemctl stop dciab-services.service"}
+    restore = f"restore eth0 10.30.110.53/24 boot={BOOT}"
+    conf = conf_with(tmp_path, ["address eth0 10.30.110.53/24", restore, f"unit {unit}"])
+    left = lifecycle.down(conf, lambda m: None)
+    assert "address eth0 10.30.110.53/24" in left and restore in left
 
 
 def test_restore_keeps_noprefixroute_and_nodad(tmp_path, host, monkeypatch):

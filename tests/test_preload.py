@@ -102,6 +102,45 @@ def test_a_day0_image_the_payload_lacks_is_named(tmp_path):
         preload.day0_entries(d, {"coredns": refs[0], "caddy": missing})
 
 
+@pytest.mark.parametrize("spelling", ["caddy", "library/caddy", "docker.io/caddy",
+                                      "docker.io/library/caddy", "index.docker.io/caddy",
+                                      "index.docker.io/library/caddy"])
+def test_normalize_spells_out_every_docker_hub_form(spelling):
+    assert preload.normalize(spelling) == "docker.io/library/caddy"
+
+
+def test_normalize_leaves_other_registries_and_namespaces_alone():
+    assert preload.normalize("coredns/coredns") == "docker.io/coredns/coredns"
+    assert preload.normalize("docker.io/coredns/coredns") == "docker.io/coredns/coredns"
+    assert preload.normalize("ghcr.io/project-zot/zot") == "ghcr.io/project-zot/zot"
+    assert preload.normalize("localhost/dciab/x") == "localhost/dciab/x"
+
+
+def test_load_loads_what_the_payload_has_and_reports_what_it_lacks(tmp_path):
+    """A payload without one of the Day 0 images doesn't stop media: the rest load, the missing
+    one is reported, and the step that uses it falls back to the payload or a registry."""
+    d, refs = _layout(tmp_path, IMAGES[:1])
+    lacking = "docker.io/library/caddy:2.11.7@sha256:" + "d" * 64
+
+    class P(Podman):
+        def __call__(self, cmd):
+            r = super().__call__(cmd)
+            if list(cmd)[:2] == ["podman", "tag"]:
+                self.have.add(refs[0])
+            return r
+
+    p = P(digests={"id-coredns-1": _digest(refs[0])})
+    loaded, present, missing = preload.load(d, {"coredns": refs[0], "caddy": lacking}, p)
+    assert loaded == [refs[0]] and present == [] and missing == [lacking]
+
+
+def test_image_bytes_counts_the_day0_images_only(tmp_path):
+    d, refs = _layout(tmp_path, IMAGES)
+    want = sum(len(f"manifest of {repo}".encode()) for _n, repo, _t in IMAGES)
+    assert preload.image_bytes(d, R(refs)) == want                      # not kindest/node
+    assert preload.image_bytes(tmp_path / "no-payload", R(refs)) == 0
+
+
 def test_entries_refuse_unpinned(tmp_path):
     d = tmp_path / "x"
     d.mkdir()
@@ -161,7 +200,7 @@ def test_load_pulls_what_storage_lacks_and_names_it_as_pinned(tmp_path):
             return r
 
     p = P(have={refs[1]}, digests={"id-coredns-1": _digest(refs[0])})
-    loaded, present = preload.load(d, R(refs), p)
+    loaded, present, _missing = preload.load(d, R(refs), p)
     assert loaded == [refs[0]] and present == [refs[1]]
     assert ["podman", "pull", "-q", f"oci:{d / 'images'}:coredns-1"] in p.calls
     assert ["podman", "tag", "id-coredns-1", "docker.io/coredns/coredns:1.14.6"] in p.calls
@@ -249,7 +288,7 @@ def test_a_platform_manifest_of_the_pinned_index_is_accepted(tmp_path):
                 self.have.add(ref)
             return r
 
-    loaded, _ = preload.load(d, {"caddy": ref}, P(digests={"id-caddy-2": child}))
+    loaded, _, _ = preload.load(d, {"caddy": ref}, P(digests={"id-caddy-2": child}))
     assert loaded == [ref]
 
 
@@ -296,7 +335,7 @@ def test_main_waits_for_the_media_lock(tmp_path, monkeypatch):
                 seen.append("free")
             except OSError:
                 seen.append("held")
-        return [], refs
+        return [], refs, []
     monkeypatch.setattr(preload, "load", fake_load)
     assert preload.main(["--payload", str(d), "--lock", str(lock)]) == 0
     assert seen == ["held"]
@@ -355,10 +394,34 @@ def test_media_preload_step(tmp_path, monkeypatch, capsys):
     refs = ["docker.io/coredns/coredns:1@sha256:" + "a" * 64, "docker.io/library/caddy:2@sha256:" + "b" * 64]
     monkeypatch.setattr(preload, "lock_refs", lambda directory: R(refs))
     seen = []
-    monkeypatch.setattr(preload, "load", lambda directory, r: (seen.append((directory, r)) or (refs, [])))
+    monkeypatch.setattr(preload, "load", lambda directory, r: (seen.append((directory, r)) or (refs, [], [])))
     assert cli.main(args(src, cfg)) == 0
     assert seen == [(work / "dciab-1.2.3" / "payload", R(refs))]       # the copy on the work disk
     assert "loaded 2, 0 already there" in capsys.readouterr().out
+
+
+def test_media_preload_step_warns_about_a_missing_image_and_carries_on(tmp_path, monkeypatch, capsys):
+    """A payload without one Day 0 image: media still finishes and prints the next commands."""
+    sys.path.insert(0, str(ROOT / "tests"))
+    from dciab_media import cli
+    from test_media import args, make_archive, write_config
+
+    src = make_archive(tmp_path, extra={"payload/images.yaml": b"images: []\n"})
+    work = tmp_path / "work"
+    work.mkdir()
+    cfg = write_config(tmp_path, work)
+    monkeypatch.setattr(cli.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(cli, "HOST_LOCK", tmp_path / "lock" / "l")
+    monkeypatch.setattr(cli, "read_mounts", lambda: "/dev/sda1 / xfs rw 0 0\n")
+    monkeypatch.setattr(cli, "current_graphroot", lambda runner=None: str(work / "containers"))
+    refs = ["docker.io/coredns/coredns:1@sha256:" + "a" * 64]
+    gone = "docker.io/library/caddy:2@sha256:" + "d" * 64
+    monkeypatch.setattr(preload, "lock_refs", lambda directory: {"coredns": refs[0], "caddy": gone})
+    monkeypatch.setattr(preload, "load", lambda directory, r: (refs, [], [gone]))
+    assert cli.main(args(src, cfg)) == 0
+    out = capsys.readouterr().out
+    assert "loaded 1, 0 already there" in out and f"the payload lacks {gone}" in out
+    assert "Next, from the copy on the work disk:" in out
 
 
 def test_media_preload_does_nothing_without_an_image_payload(tmp_path, monkeypatch, capsys):

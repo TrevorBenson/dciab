@@ -269,6 +269,71 @@ def test_a_link_to_state_elsewhere_with_state_on_the_work_disk_is_refused(site, 
     assert f"{work / 'state'} lacks services" in err and "looks like the partial one" in err
 
 
+def test_two_identical_state_copies_are_named_as_identical(site, tmp_path, capsys):
+    """A move interrupted after its copy was complete leaves two identical folders: the refusal
+    says so, instead of giving no hint."""
+    src, work, cfg = site
+    elsewhere = tmp_path / "my-state"
+    for root in (elsewhere, work / "state"):
+        (root / "pki").mkdir(parents=True)
+        (root / "pki" / "ca.crt").write_text("CA")
+    legacy = cfg.parent / ".dciab" / "state"
+    legacy.parent.mkdir(parents=True)
+    legacy.symlink_to(elsewhere)
+    assert cli.main(args(src, cfg)) == 1
+    err = capsys.readouterr().err
+    assert "both hold dciab state" in err and "identical files" in err
+
+
+def test_same_tree_spots_a_difference_in_contents(tmp_path):
+    a, b = tmp_path / "a", tmp_path / "b"
+    for root, text in ((a, "one"), (b, "two")):
+        (root / "pki").mkdir(parents=True)
+        (root / "pki" / "ca.crt").write_text(text)
+    assert not cli._same_tree(a, b)
+    (b / "pki" / "ca.crt").write_text("one")
+    assert cli._same_tree(a, b)
+
+
+def test_same_tree_streams_and_says_when_it_cannot_tell(tmp_path, monkeypatch):
+    """Contents are compared with filecmp (streamed, not read into memory); a read error
+    means "can't tell", not "different"."""
+    a, b = tmp_path / "a", tmp_path / "b"
+    for root in (a, b):
+        (root / "registry").mkdir(parents=True)
+        (root / "registry" / "blob").write_bytes(b"x" * 4096)
+    monkeypatch.setattr(cli.Path, "read_bytes", lambda self: (_ for _ in ()).throw(AssertionError("read whole")))
+    assert cli._same_tree(a, b) is True
+
+    def boom(*a, **k):
+        raise MemoryError()
+    monkeypatch.setattr(cli.filecmp, "cmp", boom)
+    assert cli._same_tree(a, b) is None
+    assert "Couldn't compare" in cli._both_detail(a, b, compare=True)
+
+
+def test_trees_are_compared_only_when_the_refusal_is_raised(site, tmp_path, monkeypatch):
+    """state_bytes and state_change don't walk both trees' contents; move_state does, once,
+    when it refuses because both hold state."""
+    src, work, cfg = site
+    calls = []
+    real = cli._same_tree
+    monkeypatch.setattr(cli, "_same_tree", lambda a, b: calls.append(1) or real(a, b))
+    elsewhere = tmp_path / "old-state"
+    for root in (elsewhere, work / "state"):
+        (root / "pki").mkdir(parents=True)
+        (root / "pki" / "ca.crt").write_text("same")
+    legacy = cfg.parent / ".dciab" / "state"
+    legacy.parent.mkdir(parents=True)
+    legacy.symlink_to(elsewhere)
+    cli.state_bytes(cfg, work)
+    assert cli.state_change(cfg, work).startswith("refuse:")
+    assert calls == []
+    with pytest.raises(cli.MediaError, match="identical files"):
+        cli.move_state(cfg, work)
+    assert calls == [1]
+
+
 def test_a_missing_link_is_recreated(site, capsys):
     """The state moved but the link wasn't left (F2): a rerun puts it back."""
     src, work, cfg = site
@@ -346,6 +411,41 @@ def test_the_space_check_counts_state_copied_across_filesystems(site, monkeypatc
     assert cli.state_bytes(cfg, work) >= 5000
     monkeypatch.setattr(cli.os, "stat", real_stat)
     assert cli.state_bytes(cfg, work) == 0                              # same filesystem: a rename
+
+
+def test_preload_bytes_counts_images_not_yet_loaded(tmp_path, monkeypatch):
+    """The storage step always leaves root's storage on the work disk's filesystem, so the
+    preload copy is counted whatever filesystem the storage is on now; images already
+    loaded aren't, so a rerun with nothing to load needs no room (#242 review)."""
+    from dciab_media import preload
+    plan = cli.Plan(tmp_path / "src", tmp_path / "dest", {}, [], 0, 0)
+    (tmp_path / "src" / "payload").mkdir(parents=True)
+    assert cli.preload_bytes(plan, tmp_path) == 0                       # no image payload
+    (tmp_path / "src" / "payload" / "images.yaml").write_text("images: []\n")
+    refs = {"coredns": "r/coredns@sha256:1", "caddy": "r/caddy@sha256:2"}
+    monkeypatch.setattr(preload, "lock_refs", lambda d: refs)
+    asked = []
+    monkeypatch.setattr(preload, "image_bytes", lambda d, todo: asked.append(dict(todo)) or 100 * len(todo))
+    # Storage the storage step will move (another filesystem): every image is loaded again into
+    # <work>/containers, so images the old storage already holds are still counted.
+    monkeypatch.setattr(cli, "current_graphroot", lambda runner=None: "/elsewhere/storage")
+    monkeypatch.setattr(preload, "_exists", lambda ref, runner: True)
+    assert cli.preload_bytes(plan, tmp_path) == 200                     # storage moves: all counted
+    # Storage the storage step keeps (already on the work disk's filesystem).
+    kept = tmp_path / "storage"
+    kept.mkdir()
+    monkeypatch.setattr(cli, "current_graphroot", lambda runner=None: str(kept))
+    monkeypatch.setattr(preload, "_exists", lambda ref, runner: False)
+    assert cli.preload_bytes(plan, tmp_path) == 200
+    monkeypatch.setattr(preload, "_exists", lambda ref, runner: ref.startswith("r/caddy"))
+    assert cli.preload_bytes(plan, tmp_path) == 100 and asked[-1] == {"coredns": "r/coredns@sha256:1"}
+    monkeypatch.setattr(preload, "_exists", lambda ref, runner: True)
+    assert cli.preload_bytes(plan, tmp_path) == 0                       # all loaded: a rerun needs no room
+
+    def no_podman(ref, runner):
+        raise FileNotFoundError("podman")
+    monkeypatch.setattr(preload, "_exists", no_podman)
+    assert cli.preload_bytes(plan, tmp_path) == 200                     # can't ask: count them all
 
 
 def test_check_space_includes_the_extra(tmp_path):
@@ -581,13 +681,57 @@ def test_a_link_to_a_folder_with_only_generic_names_is_refused(site, tmp_path, c
     assert str(elsewhere) in capsys.readouterr().err
 
 
-@pytest.mark.parametrize("marker", ["pki/ca.crt", "mgmt.kubeconfig", "installs/pve01.json"])
-def test_looks_like_state_needs_a_dciab_specific_marker(tmp_path, marker):
+@pytest.mark.parametrize("marker,text", [
+    ("pki/ca.crt", "x"), ("mgmt.kubeconfig", "x"), ("installs/pve01.json", "x"),
+    ("services/created", "address eth0 10.30.110.53/24\nport public 53/udp runtime\n"),
+    ("services/applied", "0" * 64 + "\n"),
+])
+def test_looks_like_state_needs_a_dciab_specific_marker(tmp_path, marker, text):
     d = tmp_path / "s"
     for generic in ("backup", "registry", "kind", "isos", "services", "proxmox", "answers"):
         (d / generic).mkdir(parents=True, exist_ok=True)
     (d / ".lock").write_text("")
     assert not cli._looks_like_state(d)
     (d / marker).parent.mkdir(parents=True, exist_ok=True)
-    (d / marker).write_text("x")
+    (d / marker).write_text(text)
     assert cli._looks_like_state(d)
+
+
+@pytest.mark.parametrize("name,text", [
+    ("created", "x"), ("created", ""), ("created", "address eth0 10.0.0.1/24\nnotes about my day\n"),
+    ("applied", "x"), ("applied", "0" * 63), ("applied", "0" * 64 + " extra"),
+])
+def test_services_files_that_dont_look_like_dciab_s_are_not_state(tmp_path, name, text):
+    """services/created counts only with lifecycle record lines, services/applied only with
+    a sha256: a generic services/ folder holding other files named so isn't dciab state."""
+    d = tmp_path / "s"
+    (d / "services").mkdir(parents=True)
+    (d / "services" / name).write_text(text)
+    assert not cli._looks_like_state(d)
+
+
+def test_the_refusal_names_the_specific_markers(site, tmp_path, capsys):
+    src, work, cfg = site
+    elsewhere = tmp_path / "notes"
+    (elsewhere / "backup").mkdir(parents=True)
+    legacy = cfg.parent / ".dciab" / "state"
+    legacy.parent.mkdir(parents=True)
+    legacy.symlink_to(elsewhere)
+    (elsewhere / "backup" / "db.dump").write_text("mine")
+    assert cli.main(args(src, cfg)) == 1
+    assert cli.STATE_MARKER_TEXT in capsys.readouterr().err
+
+
+def test_a_link_to_a_services_only_state_folder_is_moved(site, tmp_path):
+    """State behind a link from a host where only dciab services ran (before seed or
+    hypervisors) is dciab state too: it moves instead of being refused (#238)."""
+    src, work, cfg = site
+    elsewhere = tmp_path / "services-only"
+    (elsewhere / "services").mkdir(parents=True)
+    (elsewhere / "services" / "created").write_text("address eth0 10.30.110.53/24\n")
+    legacy = cfg.parent / ".dciab" / "state"
+    legacy.parent.mkdir(parents=True)
+    legacy.symlink_to(elsewhere)
+    assert cli.main(args(src, cfg)) == 0
+    assert (work / "state" / "services" / "created").read_text().startswith("address eth0")
+    assert legacy.resolve() == (work / "state").resolve()
