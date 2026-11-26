@@ -361,3 +361,62 @@ def test_nodes_refuses_bad_pins(tmp_path):
 def test_lock_lists_the_node_disks():
     platforms = [p for p, *_ in archive.disk_list(archive.load_lock())]
     assert set(archive.REQUIRED_DISKS) <= set(platforms)
+
+
+def test_copy_tries_the_docker_hub_mirror_first_then_docker_hub(tmp_path, monkeypatch):
+    """CI sets DCIAB_MIRROR_DOCKER_IO: Docker Hub's anonymous pull limit failed hosted jobs."""
+    monkeypatch.setenv("DCIAB_MIRROR_DOCKER_IO", "mirror.gcr.io")
+    ok, calls = fake_oras()
+    attempts = []
+
+    def mirror_misses(cmd):
+        attempts.append(cmd[3])
+        if cmd[3].startswith("mirror.gcr.io/"):
+            raise subprocess.CalledProcessError(1, cmd)
+        return ok(cmd)
+    entries = [{"image": f"docker.io/coredns/coredns:1.14.6@{D1}", "digest": "pinned"}]
+    archive.copy_images(entries, tmp_path, runner=mirror_misses)
+    assert attempts == [f"mirror.gcr.io/coredns/coredns@{D1}", f"docker.io/coredns/coredns@{D1}"]
+
+
+def test_copy_uses_the_mirror_only_for_docker_hub(tmp_path, monkeypatch):
+    monkeypatch.setenv("DCIAB_MIRROR_DOCKER_IO", "mirror.gcr.io")
+    runner, calls = fake_oras()
+    archive.copy_images([{"image": f"registry.k8s.io/pause:3.10.2@{D1}", "digest": "pinned"}], tmp_path,
+                        runner=runner)
+    assert [c[3] for c in calls] == [f"registry.k8s.io/pause@{D1}"]
+    monkeypatch.delenv("DCIAB_MIRROR_DOCKER_IO")
+    assert archive.mirror_ref("docker.io/library/debian") is None
+
+
+def test_copy_with_a_mirror_still_gives_up_after_three_rounds(tmp_path, monkeypatch):
+    monkeypatch.setenv("DCIAB_MIRROR_DOCKER_IO", "mirror.gcr.io")
+    calls = []
+
+    def down(cmd):
+        calls.append(cmd)
+        raise subprocess.CalledProcessError(1, cmd)
+    with pytest.raises(subprocess.CalledProcessError):
+        archive.copy_images([{"image": f"docker.io/library/debian:13@{D1}", "digest": "pinned"}], tmp_path,
+                            runner=down)
+    assert len(calls) == 6
+
+
+def test_hosted_jobs_that_pull_from_docker_hub_use_the_mirror():
+    """Anonymous Docker Hub pulls from hosted runners hit its rate limit (toomanyrequests):
+    every hosted job that runs podman, oras or the archive build goes through the mirror,
+    right after its checkout."""
+    pulls = re.compile(r"\bpodman\b|\boras\b|build/archive\.py|dciab (services|seed)")
+    for name in ("ci.yml", "hypervisors-emulated.yml", "archive.yml"):
+        wf = yaml.safe_load((ROOT / ".github/workflows" / name).read_text())
+        for job_name, job in wf["jobs"].items():
+            if "self-hosted" in str(job.get("runs-on")):
+                continue
+            steps = job.get("steps", [])
+            text = yaml.safe_dump(steps)
+            if not pulls.search(text):
+                continue
+            uses = [s.get("uses", "") for s in steps]
+            assert "./.github/actions/dockerhub-mirror" in uses, f"{name}: {job_name} pulls without the mirror"
+            first = next(i for i, u in enumerate(uses) if u.startswith("actions/checkout@"))
+            assert uses[first + 1] == "./.github/actions/dockerhub-mirror", f"{name}: {job_name}"

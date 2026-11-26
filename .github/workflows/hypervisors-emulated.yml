@@ -65,6 +65,7 @@ jobs:
       DCIAB_LEG: ${{ matrix.leg }}
     steps:
       - uses: actions/checkout@v4
+      - uses: ./.github/actions/dockerhub-mirror
       - name: KVM, libvirt, OVMF
         run: |
           set -euo pipefail

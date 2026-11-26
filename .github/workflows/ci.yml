@@ -287,6 +287,7 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
+      - uses: ./.github/actions/dockerhub-mirror
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -400,6 +401,7 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
+      - uses: ./.github/actions/dockerhub-mirror
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -561,6 +563,7 @@ jobs:
       packages: write
     steps:
       - uses: actions/checkout@v4
+      - uses: ./.github/actions/dockerhub-mirror
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -668,6 +671,7 @@ jobs:
       packages: write
     steps:
       - uses: actions/checkout@v4
+      - uses: ./.github/actions/dockerhub-mirror
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -717,6 +721,7 @@ jobs:
       packages: write
     steps:
       - uses: actions/checkout@v4
+      - uses: ./.github/actions/dockerhub-mirror
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -791,6 +796,7 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
+      - uses: ./.github/actions/dockerhub-mirror
       - name: Packages (firewalld stopped until the image build is done; its rules block the build's network)
         run: |
           set -euo pipefail
@@ -1036,6 +1042,7 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@v4
+      - uses: ./.github/actions/dockerhub-mirror
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -1063,6 +1070,7 @@ jobs:
       options: --privileged
     steps:
       - uses: actions/checkout@v4
+      - uses: ./.github/actions/dockerhub-mirror
       - run: dnf -y install podman python3 python3-pyyaml
       - run: hack/media/rocky10-dropin.sh "$GITHUB_WORKSPACE"
 
