@@ -221,6 +221,13 @@ def expect(cond: bool, what: str) -> None:
 
 # -- scenarios -----------------------------------------------------------------------------------
 
+def needs_installed_host(scenario):
+    """Marks a scenario that runs on the host first_install installed. The tests check that
+    every leg running one of these runs first_install before it."""
+    scenario.needs_installed_host = True
+    return scenario
+
+
 def disk_refused(lab: Lab) -> dict:
     config = lab.write_site(lab.work / "site-wrong-serial", "NOT-ON-THIS-SERVER")
     r = lab.hv("--until", "media", "--first-install", lab.vm, "--isos", str(lab.state / "isos"), config=config)
@@ -290,6 +297,7 @@ def check_tagged_network(lab: Lab) -> dict:
     return {"vlanInterface": f"vmbr0.{vid}", "cidr": vlan_if.get("cidr"), "gateway": vlan_if.get("gateway")}
 
 
+@needs_installed_host
 def rerun(lab: Lab) -> dict:
     pid = lab.qemu_pid()
     r = lab.hv()
@@ -299,6 +307,7 @@ def rerun(lab: Lab) -> dict:
     return {"reset": False}
 
 
+@needs_installed_host
 def lost_state(lab: Lab) -> dict:
     rec = lab.state / "installs" / f"{lab.vm}.json"
     aside = lab.work / "install-record.json"
@@ -326,6 +335,7 @@ def power_on_installed(lab: Lab) -> None:
     lab.wait_api()
 
 
+@needs_installed_host
 def lost_state_host_off(lab: Lab) -> dict:
     """The risky case: no install record and the host off, so no API can answer. sushy-tools
     lists no boot options, so the host must be held until --first-install, nothing written."""
@@ -344,6 +354,7 @@ def lost_state_host_off(lab: Lab) -> dict:
     return {"held": True}
 
 
+@needs_installed_host
 def recorded_host_off(lab: Lab) -> dict:
     """An install recorded and the host off: held (the API doesn't answer), never reinstalled."""
     power_off(lab)
@@ -358,6 +369,7 @@ def recorded_host_off(lab: Lab) -> dict:
     return {"held": True}
 
 
+@needs_installed_host
 def reinstall(lab: Lab) -> dict:
     pid = lab.qemu_pid()
     started = time.time()
@@ -391,6 +403,7 @@ def port_is_tagged_only(lab: Lab) -> dict:
     return {"vlans": vlans}
 
 
+@needs_installed_host
 def reboot(lab: Lab) -> dict:
     pid = lab.qemu_pid()
     lab.watching.set()

@@ -58,7 +58,10 @@ def test_legs_cover_every_scenario_once_with_their_own_install():
         assert leg == mode or leg.startswith(mode + "-")
     untagged = [s for leg, mode in legs.items() if mode == "untagged" for s in table[leg]]
     assert sorted(set(untagged)) == sorted(set(full["untagged"]))
-    needs_install = {"rerun", "lost_state", "lost_state_host_off", "recorded_host_off", "reinstall", "reboot"}
+    # The scenarios run.py marks @needs_installed_host, so a new one is checked without editing this test.
+    needs_install = {n.name for n in tree.body if isinstance(n, ast.FunctionDef)
+                     and any(isinstance(d, ast.Name) and d.id == "needs_installed_host" for d in n.decorator_list)}
+    assert {"rerun", "reinstall", "reboot"} <= needs_install
     for leg, names in table.items():
         if needs_install & set(names):
             assert "first_install" in names and names.index("first_install") < min(

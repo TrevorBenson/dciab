@@ -129,19 +129,24 @@ jobs:
           except OSError:
               print("no report.json"); sys.exit(0)
           cell = lambda v: str(v).replace("|", "\\|").replace("\n", " ")
+          # Workflow-command escaping (not markdown): data, and properties such as title.
+          esc = lambda v: str(v).replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+          prop = lambda v: esc(v).replace(":", "%3A").replace(",", "%2C")
           print(f"### {r.get('leg', r['mode'])}: {'passed' if r['passed'] else 'FAILED'}\n")
           print("| Scenario | Result | Seconds | Failing assertion or details |\n| --- | --- | --- | --- |")
           for s in r["scenarios"]:
               mark = "pass" if s["result"] == "pass" else "**FAIL**"
               print(f"| {s['name']} | {mark} | {s.get('seconds', '')} | {cell(s.get('error') or json.dumps(s.get('details', {})))} |")
               if s["result"] != "pass":   # an annotation on the run page, no log reading needed
-                  print(f"::error title=emulated {r.get('leg', r['mode'])}: {s['name']}::{cell(s.get('error', ''))}", file=sys.stderr)
+                  print(f"::error title={prop('emulated ' + r.get('leg', r['mode']) + ': ' + s['name'])}::{esc(s.get('error', ''))}", file=sys.stderr)
           if r.get("error"):
               print(f"\n{cell(r['error'])}")
-              print(f"::error title=emulated {r.get('leg', r['mode'])}: setup::{cell(r['error'])}", file=sys.stderr)
+              print(f"::error title={prop('emulated ' + r.get('leg', r['mode']) + ': setup')}::{esc(r['error'])}", file=sys.stderr)
           PY
           # Workflow commands are read from the step's output: the annotations go there, the table to the summary.
           grep '^::error' "$RUNNER_TEMP/annotations" || true
+          # Anything else on stderr (a traceback from the report itself) still reaches the log.
+          grep -v '^::error' "$RUNNER_TEMP/annotations" >&2 || true
       - name: Diagnostics
         if: always()
         run: |
