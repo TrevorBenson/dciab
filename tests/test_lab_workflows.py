@@ -1,6 +1,7 @@
 """The lab CI workflows (.github/workflows/lab*.yml) and their scripts (hack/lab/)."""
 import re
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -117,9 +118,70 @@ def test_mgmt_run_is_also_the_token_only_end_to_end():
     order = ["hack/lab/mgmt.sh token", "hack/lab/mgmt.sh seed", "hack/lab/mgmt.sh rerun",
              "hack/lab/mgmt.sh denials", "hack/lab/mgmt.sh down"]
     assert [r for r in runs if r in order] == order
+    denials = next(s for s in steps if s.get("run") == "hack/lab/mgmt.sh denials")
+    assert denials["if"] == "${{ !cancelled() }}"  # the evidence matters most after a failure
     script = (ROOT / "hack/lab/mgmt.sh").read_text()
     down = script[script.index("\ndown() {"):]
     assert "\n  leftovers\n}" in down[:down.index("\n}\n") + 3]
     assert "--live --output json" in script
     # Only the CAPMOX token reaches dciab: the site config carries no other Proxmox credential.
     assert 'px["credentials"]["tokenID"] = os.environ["CAPMOX_TOKEN_ID"]' in script
+
+
+def _live_report(tmp_path, token, *, missing=None, broad=None, confirmed=True, other_error=False):
+    """A real `dciab validate --live --output json` report, built with live.Results."""
+    sys.path.insert(0, str(ROOT / "lib"))
+    from dciab_validate import findings, live
+    r = live.Results()
+    base = ("spec", "platform", "proxmox")
+    if missing:
+        r.error(base + ("credentials", "tokenID"), f"the token lacks {missing}", "grant it")
+    if broad:
+        r.warn(base + ("credentials", "tokenID"), f"the token can do more than DCiaB needs: {broad}", "remove it")
+    if confirmed and not missing:
+        r.note(f"token {token} has every privilege docs/PROXMOX.md lists")
+    if other_error:
+        r.error(("spec", "time", "servers"), "pool.ntp.org did not answer", "check NTP")
+    path = tmp_path / "live.json"
+    path.write_text(findings.render_json("dciab.yaml", r.findings, r.notes))
+    return path
+
+
+@pytest.mark.parametrize("case,ok", [
+    ({}, True),
+    ({"other_error": True}, True),            # unrelated live findings don't fail the token check
+    ({"missing": "VM.Allocate on /vms"}, False),
+    ({"broad": "Sys.Modify on /"}, False),
+    ({"confirmed": False}, False),            # the Proxmox check stopped before confirming
+])
+def test_token_findings_decides_on_the_token_alone(tmp_path, case, ok):
+    token = "capmox@pve!dciab"
+    report = _live_report(tmp_path, token, **case)
+    r = subprocess.run([sys.executable, str(ROOT / "hack/lab/token_findings.py"), str(report), token],
+                       capture_output=True, text=True)
+    assert (r.returncode == 0) is ok, r.stdout + r.stderr
+
+
+def test_token_findings_without_a_report_fails_clearly(tmp_path):
+    empty = tmp_path / "live.json"
+    empty.write_text("")
+    r = subprocess.run([sys.executable, str(ROOT / "hack/lab/token_findings.py"), str(empty), "t@pve!x"],
+                       capture_output=True, text=True)
+    assert r.returncode == 1 and "wrote no report" in r.stderr and "Traceback" not in r.stderr
+
+
+def test_denial_pattern_matches_proxmox_refusals_only(tmp_path):
+    script = (ROOT / "hack/lab/mgmt.sh").read_text()
+    pattern = re.search(r"^DENIAL='([^']+)'$", script, re.M).group(1)
+    hits = ['error: 403 Permission check failed (/vms/110, VM.Config.Disk)',
+            'unable to clone: 403 Forbidden',
+            'request failed: status code: 403']
+    misses = ['resourceVersion "403" changed', 'took 0.403s', 'Reconciling ProxmoxMachine mgmt-cp-403',
+              'machines.cluster.x-k8s.io is forbidden: User "x" cannot list']
+    for line in hits + misses:
+        found = subprocess.run(["grep", "-qiE", pattern], input=line, text=True).returncode == 0
+        assert found is (line in hits), line
+    # Thousands of matches are still found (no head/pipefail race).
+    log = tmp_path / "capmox.log"
+    log.write_text("403 Permission check failed (/vms/1, VM.Allocate)\n" * 5000)
+    assert subprocess.run(["bash", "-o", "pipefail", "-c", f"grep -qiE '{pattern}' {log}"]).returncode == 0

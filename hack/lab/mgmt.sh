@@ -111,21 +111,9 @@ PY
 # findings (NTP, DNS, address probes) are printed, but only the token's fail this step.
 token() {
   local out="$LAB_DIR/validate-live.json"
+  rm -f "$out"
   DCIAB_PVE_TOKEN="$CAPMOX_TOKEN_SECRET" "$ROOT/dciab" validate "$CONFIG" --live --output json > "$out" || true
-  python3 - "$out" "$CAPMOX_TOKEN_ID" <<'PY'
-import json, sys
-doc, token = json.load(open(sys.argv[1])), sys.argv[2]
-for f in doc["findings"]:
-    print(f"{f['severity']}: {f['path']}: {f['found']}")
-for n in doc["notes"]:
-    print(f"note: {n}")
-mine = [f for f in doc["findings"] if f["path"].endswith("proxmox.credentials.tokenID")]
-if mine:
-    sys.exit(f"lab: {len(mine)} finding(s) about token {token} (above): it must hold exactly docs/PROXMOX.md's privileges")
-if not any(n == f"token {token} has every privilege docs/PROXMOX.md lists" for n in doc["notes"]):
-    sys.exit(f"lab: validate --live never confirmed token {token}'s privileges (the live checks did not run; above)")
-print(f"token {token}: every privilege docs/PROXMOX.md lists, and nothing more")
-PY
+  python3 "$ROOT/hack/lab/token_findings.py" "$out" "$CAPMOX_TOKEN_ID"
 }
 
 seed() {
@@ -221,18 +209,31 @@ rerun() {
 }
 
 # Every Proxmox call CAPMOX made, on the bootstrap cluster before the move and on MGMT after
-# it, succeeded: a 403 or "permission check failed" names a privilege docs/PROXMOX.md lacks.
+# it, succeeded: Proxmox answers a missing privilege with HTTP 403 "Permission check failed
+# (<path>, <privilege>)". A cluster that was never built, or one without CAPMOX yet (an earlier
+# step failed), is skipped; a log that can't be read fails the check.
+DENIAL='permission check failed|403 forbidden|status code:? ?403'
 denials() {
-  local where log found=0
+  local where log checked=0 found=0
   for where in bootstrap mgmt; do
     log="$LAB_DIR/capmox-$where.log"
-    sk "$where" -n capmox-system logs deploy/capmox-controller-manager --all-containers --tail=-1 > "$log" 2>&1 || true
-    if grep -iE 'permission check failed|\b403\b' "$log" | head -20 | grep .; then
+    if ! sudo test -s "$STATE/$where.kubeconfig" \
+       || ! sk "$where" -n capmox-system get deploy/capmox-controller-manager >/dev/null 2>&1; then
+      echo "$where: no CAPMOX controller to check"; continue
+    fi
+    sk "$where" -n capmox-system logs deploy/capmox-controller-manager --all-containers --tail=-1 > "$log" \
+      || lab_die "can't read CAPMOX's logs on $where"
+    sk "$where" -n capmox-system logs deploy/capmox-controller-manager --all-containers --previous >> "$log" 2>/dev/null || true
+    checked=$((checked + 1))
+    if grep -qiE "$DENIAL" "$log"; then
+      echo "$where: $(grep -ciE "$DENIAL" "$log") permission failure line(s), the first 20:"
+      grep -iE "$DENIAL" "$log" | head -20 || true
       found=1
     fi
   done
   (( found == 0 )) || lab_die "CAPMOX hit Proxmox permission failures (above): a privilege is missing from docs/PROXMOX.md"
-  echo "CAPMOX's Proxmox calls: no permission failures"
+  (( checked > 0 )) || lab_die "no CAPMOX controller was found to check"
+  echo "CAPMOX's Proxmox calls: no permission failures ($checked cluster(s) checked)"
 }
 
 down() {

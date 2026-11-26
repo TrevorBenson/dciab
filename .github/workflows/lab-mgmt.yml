@@ -62,7 +62,10 @@ jobs:
         run: hack/lab/mgmt.sh checks
       - name: dciab mgmt again changes nothing
         run: hack/lab/mgmt.sh rerun
+      # Also after a failed step: a missing privilege usually makes mgmt or checks fail, and
+      # Clean up deletes the clusters whose logs hold the evidence.
       - name: No Proxmox permission failure in CAPMOX's logs
+        if: ${{ !cancelled() }}
         run: hack/lab/mgmt.sh denials
       # down ends with the leftovers check: no MGMT VM and no orphaned bootstrap ISO.
       - name: Clean up

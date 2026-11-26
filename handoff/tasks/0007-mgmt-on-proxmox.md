@@ -14,7 +14,7 @@ These steps now run as the lab workflow `lab-mgmt.yml` (`hack/lab/mgmt.sh`), wit
 
 1. With Trevor's go-ahead (it builds MGMT's VMs on `pve1`, and `lab-write` asks him to approve the job), dispatch `lab.yml` from `main` with `run: mgmt` and `template-name: rocky10-bootc-iscsi-kube-v1.36.6` (template 130, `LAB.md`). Leave `untaint-control-plane` off.
 2. Watch the run. If a step fails, collect its log and `hack/lab/mgmt.sh`'s files in `~/.dciab-ci/` on the lab runner if they are still there, and stop: the job's cleanup step removes MGMT and the bootstrap cluster.
-3. Report: the run's URL, pass or fail per workflow step with its duration, the `== mgmt:` step timings (`[NNNs]` prefixes), the move check's line, and anything the cleanup's leftovers check found. Write the report as Retry 1 says (the first attempt from #113's comments, then this run).
+3. Report: the run's URL, pass or fail per workflow step with its duration, the `== mgmt:` step timings (`[NNNs]` prefixes), the move check's line, and anything the cleanup's leftovers check found. A red Clean up can mean MGMT's VMs outlived the 15-minute wait after MGMT deleted its own Cluster, or a `user-data-*.iso` left by an earlier cancelled job (there is no janitor yet): say which, from the step's log. Write the report as Retry 1 says (the first attempt from #113's comments, then this run).
 
 The same run is task 0008's token-only end-to-end (its Retry section): report its token, denials and leftovers results there too.
 

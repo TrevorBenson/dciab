@@ -12,7 +12,8 @@ $ sudo ./dciab mgmt dciab.yaml --state <state> --until values
 Neither the build of MGMT nor the move needs an INFRA service, and none runs before MGMT exists. That follows from the tier rule ([ADR 0008](adr/0008-provider-pattern.md), decision 2): MGMT's creation and recovery may depend only on the site and the bootstrap host. After the move, MGMT's nodes still use what Day 0 set up:
 
 - **Images:** `registry.<domain>`, the seed registry on the bootstrap host (`dciab seed`).
-- **DNS and time:** `network.dnsServiceIPs` and `spec.time`, served by the Day 0 services on the bootstrap host ([SERVICES.md](SERVICES.md)) or by the site's own.
+- **DNS:** `network.dnsServiceIPs`, the Day 0 DNS on the bootstrap host ([SERVICES.md](SERVICES.md)).
+- **Time:** `spec.time`, from the bootstrap host's NTP or the site's own servers.
 - **Backups:** the site target, never INFRA's object store ([BACKUP.md](BACKUP.md)).
 - **Logins:** the site's IdP or the certificate kubeconfig, never Authentik ([IDENTITY.md](IDENTITY.md)).
 
