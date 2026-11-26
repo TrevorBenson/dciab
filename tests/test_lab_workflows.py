@@ -58,7 +58,8 @@ def test_cleanup_always_runs_and_nothing_interpolates_inputs_into_scripts():
 def test_token_check_action_wraps_the_script():
     action = yaml.safe_load((ROOT / ".github/actions/lab-pve/action.yml").read_text())
     assert action["runs"]["using"] == "composite"
-    assert action["runs"]["steps"][0]["run"] == "hack/lab/check-token.sh"
+    assert action["runs"]["steps"][-1]["run"] == "hack/lab/check-token.sh"
+    assert all("${{" not in step["run"] for step in action["runs"]["steps"])
     assert set(action["inputs"]) == {"url", "fingerprint", "token-id", "token-secret"}
 
 
@@ -201,3 +202,19 @@ def test_denials_keeps_capmox_logs_a_drain_would_lose_and_fails_on_lookup_errors
     assert '"$LAB_DIR"/capmox-*.log' in denials and 'lab_die "can\'t read' in denials
     seed = script[script.index("\nseed() {"):]
     assert 'rm -f "$LAB_DIR"/capmox-*.log' in seed[:seed.index("\n}\n")]
+
+
+def test_lab_yml_lets_the_reusable_workflows_read_lab_write_secrets():
+    """Without secrets: inherit, a called workflow's job deployed to lab-write gets the
+    environment's variables but empty secrets (lab runs 45745673160, 45751385186)."""
+    calls = [job for job in load("lab.yml")["jobs"].values() if "uses" in job]
+    assert len(calls) == 3
+    for job in calls:
+        assert job.get("secrets") == "inherit", job["uses"]
+
+
+def test_lab_pve_action_names_empty_inputs_before_running_the_check():
+    action = yaml.safe_load((ROOT / ".github/actions/lab-pve/action.yml").read_text())
+    steps = action["runs"]["steps"]
+    assert "::error::lab-pve: input" in steps[0]["run"]
+    assert steps[-1]["run"] == "hack/lab/check-token.sh"

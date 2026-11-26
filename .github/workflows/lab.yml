@@ -32,10 +32,15 @@ concurrency:
   group: dciab-lab
   cancel-in-progress: false
 
+# secrets: inherit is what lets the called workflows' jobs read lab-write's environment
+# secrets: without it the job deploys to lab-write and gets its variables, but every
+# secrets.* is empty (the first lab mgmt runs). The secrets still sit behind lab-write's
+# required reviewer; lab.yml itself runs in no environment.
 jobs:
   template:
     if: ${{ contains(fromJSON('["template","all"]'), inputs.run) }}
     uses: ./.github/workflows/lab-template.yml
+    secrets: inherit
     with:
       name: ${{ inputs.template-name }}
 
@@ -43,6 +48,7 @@ jobs:
     needs: [template]
     if: ${{ !cancelled() && needs.template.result != 'failure' && contains(fromJSON('["cluster","all"]'), inputs.run) }}
     uses: ./.github/workflows/lab-cluster.yml
+    secrets: inherit
     with:
       template-name: ${{ needs.template.outputs.template-name || inputs.template-name }}
 
@@ -50,6 +56,7 @@ jobs:
     needs: [template, cluster]
     if: ${{ !cancelled() && needs.template.result != 'failure' && needs.cluster.result != 'failure' && contains(fromJSON('["mgmt","all"]'), inputs.run) }}
     uses: ./.github/workflows/lab-mgmt.yml
+    secrets: inherit
     with:
       template-name: ${{ needs.template.outputs.template-name || inputs.template-name }}
       untaint-control-plane: ${{ inputs.untaint-control-plane }}
