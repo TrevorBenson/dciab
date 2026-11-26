@@ -577,6 +577,10 @@ STATE_MARKERS = frozenset({
 })
 
 
+# dciab services' own files in <state>/services (dciab_services.lifecycle RECORD and APPLIED).
+SERVICES_RECORD, SERVICES_APPLIED = "created", "applied"
+
+
 def _markers(path: Path) -> frozenset:
     try:
         return frozenset(e.name for e in os.scandir(path)) & STATE_MARKERS
@@ -586,13 +590,17 @@ def _markers(path: Path) -> frozenset:
 
 def _looks_like_state(path: Path) -> bool:
     """Whether path holds something only dciab writes: the seed's CA (pki/ca.crt), a dciab
-    kubeconfig, or a hypervisor install record (installs/<host>.json). Generic names such as
+    kubeconfig, a hypervisor install record (installs/<host>.json), or dciab services' record
+    of what it added to the host (services/created or services/applied, which a state folder
+    holds before seed or hypervisors ever ran). Generic names such as
     backup/ or registry/ are not enough on their own: a link to unrelated data must never be
     moved (or, across filesystems, deleted)."""
     try:
         if (path / "pki" / "ca.crt").is_file():
             return True
         if any((path / n).is_file() for n in ("bootstrap.kubeconfig", "mgmt.kubeconfig")):
+            return True
+        if any((path / "services" / n).is_file() for n in (SERVICES_RECORD, SERVICES_APPLIED)):
             return True
         installs = path / "installs"
         return installs.is_dir() and any(p.suffix == ".json" and p.is_file() for p in installs.iterdir())

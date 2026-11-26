@@ -632,7 +632,8 @@ def test_a_link_to_a_folder_with_only_generic_names_is_refused(site, tmp_path, c
     assert str(elsewhere) in capsys.readouterr().err
 
 
-@pytest.mark.parametrize("marker", ["pki/ca.crt", "mgmt.kubeconfig", "installs/pve01.json"])
+@pytest.mark.parametrize("marker", ["pki/ca.crt", "mgmt.kubeconfig", "installs/pve01.json",
+                                    "services/created", "services/applied"])
 def test_looks_like_state_needs_a_dciab_specific_marker(tmp_path, marker):
     d = tmp_path / "s"
     for generic in ("backup", "registry", "kind", "isos", "services", "proxmox", "answers"):
@@ -643,3 +644,17 @@ def test_looks_like_state_needs_a_dciab_specific_marker(tmp_path, marker):
     (d / marker).write_text("x")
     assert cli._looks_like_state(d)
 
+
+def test_a_link_to_a_services_only_state_folder_is_moved(site, tmp_path):
+    """State behind a link from a host where only dciab services ran (before seed or
+    hypervisors) is dciab state too: it moves instead of being refused (#238)."""
+    src, work, cfg = site
+    elsewhere = tmp_path / "services-only"
+    (elsewhere / "services").mkdir(parents=True)
+    (elsewhere / "services" / "created").write_text("address eth0 10.30.110.53/24\n")
+    legacy = cfg.parent / ".dciab" / "state"
+    legacy.parent.mkdir(parents=True)
+    legacy.symlink_to(elsewhere)
+    assert cli.main(args(src, cfg)) == 0
+    assert (work / "state" / "services" / "created").read_text().startswith("address eth0")
+    assert legacy.resolve() == (work / "state").resolve()
