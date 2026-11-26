@@ -2,17 +2,32 @@
 
 One run in order, on the bootstrap appliance, from bare servers to MGMT on Proxmox VE. Each step says how to check it worked before going on. Plan the site first ([PLAN.md](PLAN.md)); what is built today is in [ROADMAP.md](ROADMAP.md).
 
-On a Rocky Linux 10 host you provide, the commands are the same: use your config's path for `CFG`, and `spec.bootstrap.workDisk.path` for `WORK`. On a site whose hypervisors already exist, skip steps 4 and 5.
+- **A site whose Proxmox VE already runs** skips steps 4 to 6: it has its API token, fingerprint and node template from the start.
+- **A Rocky Linux 10 host you provide** skips step 2: unpack the archive, run `./dciab` from it instead of `dciab`, and set `CFG` to your config and `WORK` to `spec.bootstrap.workDisk.path`. Edit the config where it is. The rest is the same.
 
 ## 1. Prepare the USB stick and the config
 
-On any laptop, write the DCiaB USB image to a stick and open its `DCIAB` partition. Add `dciab.yaml` (start from [examples/proxmox-bare.yaml](../examples/proxmox-bare.yaml)), every file it references under `secrets/`, and the pinned installer ISO under `isos/`. A laptop with the archive unpacked and Python 3.12 (with `jsonschema` and `PyYAML`) can run `./dciab validate dciab.yaml` now: the offline checks need no network.
+On any laptop, write the DCiaB USB image to a stick and open its `DCIAB` partition. Add:
+
+- `dciab.yaml`, starting from [examples/proxmox-bare.yaml](../examples/proxmox-bare.yaml);
+- every file it references, under `secrets/` (the appliance copies only `dciab.yaml` and `secrets/`);
+- the pinned Proxmox VE installer ISO, under `isos/`.
+
+Two values of `spec.platform.proxmox` can't exist yet on a bare site: the CAPMOX API token, which `dciab hypervisors` creates in step 5, and the API certificate's fingerprint, which the installed host makes. Every step checks the config, so give placeholders until step 5:
+
+- `credentials.tokenSecret: {file: ./secrets/pve/token}`, with a file that holds any text. Use a file, not `{env: …}`: neither the appliance's boot-time check nor a `sudo` step sees your environment.
+- `tlsFingerprint`: any well-formed SHA-256 fingerprint.
+
+A laptop with the archive unpacked and Python 3.12 or later (with `jsonschema` and `PyYAML`) can run `./dciab validate dciab.yaml` now: the offline checks need no network.
 
 ## 2. Boot server zero and log in
 
-Boot one server on the node network from the stick, choose "install the bootstrap appliance" (it wipes `spec.bootstrap.workDisk.disk`), and boot it from its disk. At each boot it copies the config from the stick, prints `dciab validate`'s report on the console, configures `spec.bootstrap.interface` and creates a login for each `identity.initialAdmins` user. Then, from the laptop:
+Boot one server on the node network from the stick. With Secure Boot on, the first boot on each machine asks you to enroll Ventoy's key in MokManager at the console. Choose "install the bootstrap appliance" (it wipes `spec.bootstrap.workDisk.disk`), and boot the server from its disk.
+
+At each boot the appliance copies `dciab.yaml` and `secrets/` from the stick to `/var/lib/dciab/site` (root-only), prints `dciab validate`'s report on the console, configures `spec.bootstrap.interface`, and creates a login for each `identity.initialAdmins` user. Then, from the laptop, copy the release's public key over and log in:
 
 ```console
+$ scp cosign.pub <you>@<spec.bootstrap.address>:
 $ ssh <you>@<spec.bootstrap.address>
 ```
 
@@ -25,14 +40,17 @@ $ STATE=$WORK/state
 $ ISOS=$WORK/isos
 ```
 
+> [!NOTE]
+> **Changing the config on the appliance.** Edit `dciab.yaml` and `secrets/` on the stick, which the appliance mounts at `/var/mnt/dciab`, then run `sudo systemctl restart dciab-bootstrap-setup.service` (or reboot) to copy them in. An edit made only in `/var/lib/dciab/site` is replaced at the next boot with the stick plugged in.
+
 ## 3. Check the config against the site, and copy the archive
 
 ```console
-$ dciab validate $CFG --live
-$ sudo dciab media $CFG --key cosign.pub
+$ sudo dciab validate $CFG --live
+$ sudo dciab media $CFG --key ~/cosign.pub
 ```
 
-`--live` asks the BMCs, NTP and DNS servers whether the config fits them, and checks that the addresses DCiaB will use are free ([VALIDATE.md](VALIDATE.md)). `cosign.pub` is the release's public key, obtained separately from the archive ([RELEASING.md](RELEASING.md)). `media` copies the archive and ISOs to the work disk, verifies them, and loads the Day 0 images ([MEDIA.md](MEDIA.md)).
+`--live` asks the BMCs, NTP and DNS servers whether the config fits them, and checks that the addresses DCiaB will use are free ([VALIDATE.md](VALIDATE.md)). On a bare site its Proxmox API checks fail until step 5, because nothing is installed yet; everything else should pass. `cosign.pub` is the release's public key, obtained separately from the archive ([RELEASING.md](RELEASING.md)). `media` copies the archive and the ISOs to the work disk, verifies them, and loads the Day 0 images ([MEDIA.md](MEDIA.md)).
 
 **Check:** `media` ends by printing the next commands. From here on, run the copy it made:
 
@@ -64,9 +82,23 @@ Each host is installed through its BMC, then set up for CAPMOX through the Proxm
 > [!WARNING]
 > A host that shows any sign of an existing install is held, not wiped. `--reinstall <host>` overrides that and wipes it. Read [the reinstall guard](HYPERVISORS.md#the-reinstall-guard) before using it.
 
-**Check:** the run ends with each host installed (`wait`) and post-installed (`post`); `$STATE/installs/<host>.json` records it. When `platform.proxmox.url` names a freshly installed host, `post` stops once with the new API certificate's fingerprint: set `platform.proxmox.tlsFingerprint` to it and rerun. Put each host's CAPMOX token where `platform.proxmox.credentials.tokenSecret` points ([HYPERVISORS.md](HYPERVISORS.md#post-install)), then run `dciab validate $CFG --live` again to check it.
+**Check:** each host ends installed (`wait`) and post-installed (`post`); `$STATE/installs/<host>.json` records it. Then replace the placeholders, on the stick ([see the note](#2-boot-server-zero-and-log-in)), for the host `platform.proxmox.url` names:
 
-## 6. Seed registry and bootstrap cluster
+1. `post` stops once for that host, printing its new API certificate's fingerprint. Set `tlsFingerprint` to it, copy the config in, and rerun this step.
+2. Open that host's token into the token file, with the `age` from the archive's payload:
+   ```console
+   $ sudo ./payload/bin/age -d -i ~/alice.agekey $STATE/proxmox/<host>.token.age | sudo tee /var/mnt/dciab/secrets/pve/token >/dev/null
+   $ sudo systemctl restart dciab-bootstrap-setup.service
+   ```
+3. Run `sudo dciab validate $CFG --live` again: the Proxmox API checks now pass, except the node template's.
+
+## 6. The node template (bare servers only)
+
+`dciab mgmt` clones its nodes from the template `templateID` on `templateNode`, and a freshly installed host has none. DCiaB doesn't publish the template onto a host yet (node images in the archive, [ROADMAP.md](ROADMAP.md)): build it from the DCiaB node image recipe and import it at that ID on that node, without a Proxmox cloud-init drive (CAPMOX attaches its own).
+
+**Check:** `sudo dciab validate $CFG --live` passes with no Proxmox errors.
+
+## 7. Seed registry and bootstrap cluster
 
 ```console
 $ sudo ./dciab seed $CFG --state $STATE
@@ -76,7 +108,7 @@ The platform CA, the read-only seed registry, and the kind bootstrap cluster wit
 
 **Check:** `sudo ./dciab status $CFG --state $STATE` reports the CA, the registry certificate, the seed registry and the bootstrap cluster as ok.
 
-## 7. MGMT
+## 8. MGMT
 
 ```console
 $ sudo ./dciab mgmt $CFG --state $STATE

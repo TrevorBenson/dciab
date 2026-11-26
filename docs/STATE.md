@@ -18,7 +18,7 @@ The folder is mode 700 and owned by root once a root step has run. Under `sudo`,
 
 ## What's in it
 
-**Secret** means the file must not leave the bootstrap host unencrypted. A `.age` file is encrypted to `spec.bootstrap.recipients`; open it with `age -d -i <identity> <file>`.
+**Secret** means the file must not leave the bootstrap host unencrypted. A `.age` file is encrypted to `spec.bootstrap.recipients`; open it with `age -d -i <identity> <file>` (`age` is in the archive's `payload/bin/`).
 
 | Path | Written by | Secret | What it is |
 | --- | --- | --- | --- |
@@ -31,8 +31,8 @@ The folder is mode 700 and owned by root once a root step has run. Under `sudo`,
 | `bootstrap.kubeconfig` | `seed` | yes | Admin access to the bootstrap (kind) cluster |
 | `seed-created.json` | `seed` | no | What seed added to the host, for `dciab seed --remove` |
 | `services/` | `services` (and `seed`, DNS-only) | no | The rendered Day 0 configs, `pod.yaml`, and `created`: what the services added to the host, for `--down` ([SERVICES.md](SERVICES.md)) |
-| `isos/` | you, or `media` | no | Installer ISOs, when `--isos` isn't given and `workDisk` has no `path:` |
-| `answers/<host>.toml` | `hypervisors` | no | Each host's Proxmox VE answer file |
+| `isos/` | you | no | Installer ISOs, when `--isos` isn't given and `workDisk` has no `path:`. `dciab media` puts them in `<work>/isos` instead, which the steps get with `--isos` |
+| `answers/<host>.toml` | `hypervisors` | yes | Each host's Proxmox VE answer file, with the root password's hash |
 | `answers/<host>.root-password.age` | `hypervisors` | sealed | A host's generated root password (when `spec.hypervisors.rootPassword` isn't set) |
 | `answers/<host>.root-hash`, `.root-salt` | `hypervisors` | yes | The password's hash and salt, so reruns write the same answer file |
 | `host-isos/<host>.iso` | `hypervisors` | yes | Each host's installer ISO, with its answer file (and root password hash) inside |
@@ -46,4 +46,4 @@ The folder is mode 700 and owned by root once a root step has run. Under `sudo`,
 
 ## Before retiring the bootstrap host
 
-Keep a copy of at least `pki/`, `answers/*.age`, `proxmox/`, `backup/`, `installs/` and the kubeconfigs, encrypted or on media the site controls. With them, a new bootstrap host can renew the registry certificate under the same CA, reopen hosts' root passwords and tokens, and know which hosts DCiaB installed. The age identities of `spec.bootstrap.recipients` are kept separately, never in the state folder ([PLAN.md](PLAN.md#recipients-and-their-keys)).
+Keep a copy of at least `pki/`, `answers/*.age`, `proxmox/`, `backup/`, `installs/` and the kubeconfigs, encrypted or on media the site controls. With them, a new bootstrap host can renew the registry certificate under the same CA, reopen hosts' root passwords and tokens, and know which hosts DCiaB installed. The age identities of `spec.bootstrap.recipients` are kept separately, never in the state folder ([PLAN.md](PLAN.md#4-recipients-and-their-keys)).

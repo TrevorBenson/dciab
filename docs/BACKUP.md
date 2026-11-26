@@ -154,20 +154,20 @@ The first choice whenever MGMT's VMs still exist. It stops MGMT: Cluster API, an
 1. **Choose and check the snapshot.** Decrypt it, then `etcdutl snapshot status /dev/shm/etcd.db --write-out=table`. Anything created in MGMT after it was taken is lost: Machines created later are VMs that nothing manages any more. Note them, so you can delete them afterwards.
 2. **Stop the control plane on every control plane node.** Move the static pod manifests aside and wait for the containers to stop:
    ```console
-   # mkdir -p /root/held && mv /etc/kubernetes/manifests/{kube-apiserver,kube-controller-manager,kube-scheduler,etcd}.yaml /root/held/
-   # crictl ps | grep -E 'etcd|kube-apiserver'      # until empty
+   $ sudo mkdir -p /root/held && sudo mv /etc/kubernetes/manifests/{kube-apiserver,kube-controller-manager,kube-scheduler,etcd}.yaml /root/held/
+   $ sudo crictl ps | grep -E 'etcd|kube-apiserver'      # until empty
    ```
 3. **Restore every member.** Copy the snapshot to every control plane node. On each node, read `--name` and `--initial-advertise-peer-urls` from `/root/held/etcd.yaml`, then:
    ```console
-   # mv /var/lib/etcd /var/lib/etcd.before-restore
-   # etcdutl snapshot restore /dev/shm/etcd.db --data-dir /var/lib/etcd \
+   $ sudo mv /var/lib/etcd /var/lib/etcd.before-restore
+   $ sudo ./etcdutl snapshot restore /dev/shm/etcd.db --data-dir /var/lib/etcd \
        --name <this node's --name> \
        --initial-advertise-peer-urls https://<this node's IP>:2380 \
        --initial-cluster <node1>=https://<ip1>:2380,<node2>=https://<ip2>:2380,<node3>=https://<ip3>:2380 \
        --initial-cluster-token mgmt-restore-<date>
-   # restorecon -R /var/lib/etcd          # SELinux-enforcing nodes
+   $ sudo restorecon -R /var/lib/etcd          # SELinux-enforcing nodes
    ```
-   `etcdutl` is in the etcd image `bundle.lock` pins. Nodes don't carry it, so copy it out of the image on the bootstrap host (`podman create` the image, then `podman cp <container>:/usr/local/bin/etcdutl .`) and onto each node.
+   `etcdutl` is in the etcd image `bundle.lock` pins. Nodes don't carry it, so copy it out of the image on the bootstrap host (`podman create` the image, then `podman cp <container>:/usr/local/bin/etcdutl .`) and onto each node, into the folder you run it from.
 4. **Start etcd, then the rest.** Move `etcd.yaml` back on every node and wait for `etcdctl endpoint health --cluster` (with the client certificate in `/etc/kubernetes/pki/etcd`) to report every member healthy. Then move the other three manifests back, and `systemctl restart kubelet` on every node.
 5. **Check.** `kubectl get nodes`; `kubectl -n cluster-mgmt get cluster,machines`; `clusterctl describe cluster mgmt -n cluster-mgmt`. Delete the unmanaged VMs from step 1. Once all is well, remove `/var/lib/etcd.before-restore` and `/dev/shm/etcd.db`.
 

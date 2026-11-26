@@ -32,12 +32,12 @@ Before copying it checks the free space: what is left to copy, plus 5% of the ar
 
 Keep the stick in until `dciab media` has finished: the archive, the pinned installer ISOs and (off the appliance) the config come from it.
 
-When it's done it prints the next commands, run from the copy with their state on the work disk:
+When it's done it prints the next commands, run from the copy with their state on the work disk (run each as root):
 
-```console
-$ sudo <work>/dciab-<VERSION>/dciab services dciab.yaml --state <work>/state --isos <work>/isos
-$ sudo <work>/dciab-<VERSION>/dciab hypervisors dciab.yaml --state <work>/state --isos <work>/isos
-$ sudo <work>/dciab-<VERSION>/dciab seed dciab.yaml --state <work>/state
+```text
+<work>/dciab-<VERSION>/dciab services dciab.yaml --state <work>/state --isos <work>/isos   # sites with spec.hypervisors
+<work>/dciab-<VERSION>/dciab hypervisors dciab.yaml --state <work>/state --isos <work>/isos   # sites with spec.hypervisors
+<work>/dciab-<VERSION>/dciab seed dciab.yaml --state <work>/state
 ```
 
 ## Not yet

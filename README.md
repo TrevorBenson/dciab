@@ -39,7 +39,7 @@ The bootstrap host is temporary. Its DNS addresses move to MGMT on Day 1 and its
 
 ## The run at a glance
 
-Each step has a page with its options, what it does, and how to undo it. The bootstrap host is Rocky Linux 10: the DCiaB appliance on "server zero", or a host you provide ([PLAN.md](docs/PLAN.md#2-the-bootstrap-host)).
+Each step has a page with its options and what it does. The bootstrap host is Rocky Linux 10: the DCiaB appliance on "server zero", or a host you provide ([PLAN.md](docs/PLAN.md#2-the-bootstrap-host)).
 
 | # | Command | What it does | Stage |
 | --- | --- | --- | --- |

@@ -53,8 +53,7 @@ The state folder stays: it holds the platform CA, the registry's storage and the
 Seed records nothing for these hosts, so `--remove` only lists what is left. Remove it by hand, as root, then run `--remove --purge-state` if the state should go too:
 
 ```console
-$ sudo kubectl --kubeconfig <state>/bootstrap.kubeconfig get clusters.cluster.x-k8s.io -A
-# must list nothing; otherwise move MGMT off it with dciab mgmt first
+$ sudo kubectl --kubeconfig <state>/bootstrap.kubeconfig get clusters.cluster.x-k8s.io -A   # must list nothing; otherwise move MGMT off it with dciab mgmt first
 $ sudo KIND_EXPERIMENTAL_PROVIDER=podman kind delete cluster --name dciab-bootstrap
 $ sudo podman rm -f dciab-registry
 $ sudo podman kube down <state>/services/pod.yaml          # only a site without spec.hypervisors

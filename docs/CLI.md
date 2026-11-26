@@ -8,7 +8,7 @@ Steps that change the host run as root. Every step that keeps state takes `--sta
 
 | Command | Page |
 | --- | --- |
-| `dciab validate <config> [--output text\|json] [--live [--timeout SECONDS]]` | [VALIDATE.md](VALIDATE.md) |
+| `dciab validate <config> [--output text\|json] [--live [--timeout SECONDS]]` | [VALIDATE.md](VALIDATE.md). On the appliance, run it with `sudo`: the site copy of the config is root-only |
 | `dciab media <config> (--key PUB \| --checksums-only) [--source DIR] [--cosign BIN] [--isos-from DIR] [--until STEP] [--print]` | [MEDIA.md](MEDIA.md) |
 | `dciab services <config> [--state DIR] [--isos DIR] [--payload DIR] [--until STEP] [--print]`<br>`dciab services <config> --down [--state DIR] [--forget '<line>']` | [SERVICES.md](SERVICES.md) |
 | `dciab hypervisors <config> [--state DIR] [--isos DIR] [--iso FILE] [--host NAME ...] [--reinstall NAME ...] [--first-install NAME ...] [--age-identity FILE] [--timeout SECONDS] [--attach-timeout SECONDS] [--until STEP] [--print]` | [HYPERVISORS.md](HYPERVISORS.md) |
@@ -20,15 +20,15 @@ Steps that change the host run as root. Every step that keeps state takes `--sta
 
 ### `dciab status <config> [--state DIR] [--output text|json]`
 
-Where the bootstrap stands, read-only: the Day 0 pod, the platform CA and registry certificate, the seed registry, the bootstrap cluster, and where MGMT's Cluster lives. Run it as root; without root the container checks report unknown. Exit code `0` when every check that applies is ok, `1` otherwise.
+Where the bootstrap stands, read-only: the Day 0 pod, the platform CA and registry certificate, the seed registry, the bootstrap cluster, and where MGMT's Cluster lives. Run it as root: the state folder is root-only, and without root it can't read it. Exit code `0` when every check that applies is ok, `1` otherwise.
 
 ### `dciab cluster-values <config> <cluster> [--trust-bundle FILE] [-o FILE]`
 
 Prints a cluster's `capi-cluster` chart values, generated from the config: `mgmt`, `infra` or a workload cluster (`--list` names them). `-o FILE` writes them to a file (mode 600). With `pki.mode: generate-root`, pass `--trust-bundle <state>/pki/trust-bundle.pem` once `seed` has created the platform CA. `dciab mgmt` runs it for MGMT.
 
-### `dciab verify-archive (--key PUB | --checksums-only) [ARCHIVE]`
+### `dciab verify-archive (--key PUB | --checksums-only) [--cosign BIN] [ARCHIVE]`
 
-Checks an archive (this one by default, or a `dciab-<version>.tar` or its unpacked folder) against its signed `MANIFEST`: the signature, every listed file, and nothing unlisted added. `--checksums-only` skips the signature, for unsigned builds only. `dciab media` runs it on its copy; [RELEASING.md](RELEASING.md) shows how to check a downloaded release.
+Checks an archive (this one by default, or a `dciab-<version>.tar` or its unpacked folder) against its signed `MANIFEST`: the signature, every listed file, and nothing unlisted added. `--checksums-only` skips the signature, for unsigned builds only. `--cosign BIN` names the cosign binary (default: cosign on PATH, else the archive's `payload/bin/cosign`). `dciab media` runs it on its copy; [RELEASING.md](RELEASING.md) shows how to check a downloaded release.
 
 ### `dciab help`
 
@@ -38,4 +38,4 @@ Lists the commands and their main options.
 
 ## Exit codes
 
-`validate`, `media`, `hypervisors`, `seed` and `status` use the same codes: `0` done (or valid, or every check ok), `1` a step or check failed, `2` could not run (bad arguments, not root, a missing tool). The other steps exit non-zero on any failure.
+The Python commands (`validate`, `media`, `hypervisors`, `seed`, `status`, `verify-archive`, `cluster-values`) use the same codes: `0` done (valid, matching, every check ok), `1` a step or check failed, `2` could not run (bad arguments, an unreadable config). Run without root, `media` and `hypervisors` exit `2` and `seed` exits `1`. The shell steps (`services`, `mgmt`) exit non-zero on any failure.

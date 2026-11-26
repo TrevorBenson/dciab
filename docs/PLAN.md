@@ -26,15 +26,18 @@ Other operating systems can write the config and run `dciab validate`, but can't
 
 **Network, every site:**
 - switches configured: VLANs, trunks, MTU, gateways, and BGP peers when `loadBalancer.mode: bgp` (DCiaB never changes a switch);
-- the node network (`network.nodes`) with free addresses for the bootstrap host (`spec.bootstrap.address`), the two DNS service IPs (`network.dnsServiceIPs`), each cluster's API VIP and node IP range, and the load balancer pools. `dciab validate` checks that none overlap; `validate --live` checks that none already answer;
+- the node network (`network.nodes`) with free addresses for the bootstrap host (`spec.bootstrap.address`), the two DNS service IPs (`network.dnsServiceIPs`), each cluster's API VIP and node IP range, and the load balancer pools. `dciab validate` checks that none overlap; `validate --live` checks that the addresses other than the load balancer pools don't already answer;
 - upstream DNS resolvers (`network.upstreamResolvers`), or `network.isolated: true` for a site with no DNS of its own;
+- whether the bootstrap host's NIC (`spec.bootstrap.managementVLAN`) and the hypervisors' (`spec.hypervisors.managementVLAN`) reach the node network on an access port (`untagged`) or a trunk (`tagged`);
 - time: the site's NTP servers (`spec.time.servedBy: site`), or `servedBy: dciab` to have the bootstrap host serve it on the DNS service IPs. On an isolated site that serves its own clock, every certificate DCiaB issues carries the bootstrap host's time, so set that clock first.
+
+**Failure domains (`spec.failureDomains`):** the hosts, racks or rooms that fail independently, and which hypervisor nodes (or vSphere zones) each one is. With fewer than three, the site isn't highly available, and the config must say why (`notHighlyAvailable.reason`); `dciab validate` then warns on every run ([ADR 0010](adr/0010-failure-domains.md)).
 
 **Bare servers (`spec.hypervisors`):**
 - a route from the node network's gateway to the BMC networks and back, with HTTPS allowed from the bootstrap host to each BMC and HTTP from each BMC to the bootstrap host;
 - BMCs with their addresses and credentials already set, and licensed for virtual media (iDRAC Enterprise, iLO Advanced and the like);
 - each server's boot MAC and a way to pick its install disk (`rootDeviceHints`: a serial number or WWN is best);
-- the switch port mode for the management NIC: untagged or tagged ([HYPERVISORS.md](HYPERVISORS.md#the-management-vlan));
+- for a bare site, the CAPMOX token and the API certificate's fingerprint don't exist until the hosts are installed: the config carries placeholders until then ([QUICKSTART.md](QUICKSTART.md#1-prepare-the-usb-stick-and-the-config)), and a node template has to be put on the first host before `dciab mgmt`;
 - for ESXi: the installer ISO of the build in `bundle.lock` (DCiaB can't ship it), and for now an existing vCenter.
 
 **Existing hypervisors:**
@@ -64,7 +67,7 @@ $ age-keygen -o bob.agekey
 
 Secrets never go in the config. Each is a reference: `{file: ./secrets/...}` (relative to the config) or `{env: VARIABLE}`. Files must exist, not be empty, and not be readable by others; `dciab validate` checks all three. On the DCiaB USB, keep every referenced file under `secrets/`, because the appliance copies only `dciab.yaml` and `secrets/`.
 
-Steps that run under `sudo` drop environment variables, so `{env: VAR}` references need `sudo --preserve-env=VAR …`. File references avoid that.
+Steps that run under `sudo` drop environment variables, so `{env: VAR}` references need `sudo --preserve-env=VAR …`. On the appliance, use file references: its boot-time check can't see anyone's environment.
 
 ## 6. Installer ISOs
 

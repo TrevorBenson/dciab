@@ -6,10 +6,12 @@ What to do when a step stops, by symptom. Every step is safe to rerun once the c
 
 | Symptom | Cause | Fix |
 | --- | --- | --- |
-| A step refuses the config | `dciab validate` finds errors | Run `./dciab validate <config>`; each error names the field, what it found and the fix ([VALIDATE.md](VALIDATE.md)) |
+| A step refuses the config | `dciab validate` finds errors | Run `sudo ./dciab validate <config>`; each error names the field, what it found and the fix ([VALIDATE.md](VALIDATE.md)) |
 | A secret given as `{env: VAR}` is missing under `sudo` | `sudo` drops environment variables | `sudo --preserve-env=VAR …`, or use a `{file: …}` reference ([PLAN.md](PLAN.md#5-secrets)) |
+| On a bare site, every step refuses the config before the hypervisors exist | The CAPMOX token or the API fingerprint can't exist until `dciab hypervisors` runs | Give placeholders until then ([QUICKSTART.md](QUICKSTART.md#1-prepare-the-usb-stick-and-the-config)) |
+| A config edit on the appliance was lost | `/var/lib/dciab/site` is replaced from the stick at each boot | Edit the stick's copy ([QUICKSTART.md](QUICKSTART.md#2-boot-server-zero-and-log-in)) |
 | A step doesn't see what an earlier one did (no kubeconfig, no CA, "run seed first") | The steps ran with different state folders | Pass the same `--state` to every step; after `media`, `<work>/state` ([STATE.md](STATE.md)) |
-| `dciab status` reports container checks as unknown | It ran without root | `sudo ./dciab status …` |
+| `dciab status` fails with a permission error, or reports checks as missing or unknown | It ran without root, so it can't read the root-only state folder or see root's containers | `sudo ./dciab status …` |
 | Nodes can't pull images or resolve names; `kubeadm init` stalls | `network.upstreamResolvers` is empty, so nodes resolve only `network.domain`, and the image isn't in the seed registry | Add resolvers, or keep the site isolated and make sure the archive's payload holds every image ([SERVICES.md](SERVICES.md)) |
 
 ## `dciab validate --live`
