@@ -10,16 +10,17 @@ may_change: []
 
 ## Retry (2026-11-25): most of it runs in CI now
 
-`lab-mgmt.yml`, the workflow task 0007 now runs, gives `dciab` and CAPMOX only the capmox token (`capmox@pve!dciab`, `LAB.md`), and nothing in it uses SSH to `pve1`. It now also covers steps 1, 3 and 4 of this task:
-- **step 1:** `hack/lab/mgmt.sh token` runs `dciab validate --live` and fails on any finding about the token, missing privileges or more than `docs/PROXMOX.md` lists;
-- **step 3:** `hack/lab/mgmt.sh denials` fails on a `permission check failed` or 403 in CAPMOX's logs, on the bootstrap cluster and on MGMT;
-- **step 4:** the control plane replacement on MGMT creates, configures, starts, stops and deletes VMs and their bootstrap ISOs; the cleanup ends with a check that no `user-data-*.iso` is left for a VM that no longer exists.
+`lab-mgmt.yml`, the workflow task 0007 now runs, gives `dciab` and CAPMOX only the capmox token (`capmox@pve!dciab`, `LAB.md`), and nothing in it uses SSH to `pve1`. It now also covers steps 1 and 3 and part of step 4 of this task:
+- **step 1:** `hack/lab/mgmt.sh token` runs `dciab validate --live` and fails on any finding about the token: a missing privilege, or one `validate` refuses as too broad (`Permissions.Modify`, `Sys.Modify` and the like; other extras are not flagged, #253; step 5 below still covers them by hand);
+- **step 3:** `hack/lab/mgmt.sh denials` fails on a `permission check failed` or 403 in CAPMOX's logs, on the bootstrap cluster and on MGMT (MGMT's are saved before the replacement, whose drain can evict CAPMOX's pod);
+- **step 4, Machine deletion only:** the control plane replacement on MGMT creates, configures, starts, stops and deletes VMs and their bootstrap ISOs. The scale up and down is not in CI (#252). The cleanup ends with a check that no `user-data-*.iso` is left for a VM that no longer exists.
 
 So, once task 0007's CI run (its Retry 2) has finished:
 1. Report that run's results for the `token` and `denials` steps and the leftovers check.
 2. Ask Trevor whether any SSH login to `pve1` showed up during the run (`journalctl -u ssh` on `pve1`, his to read). Expected: none.
 3. Do steps 1's `pveum ... permissions` outputs, 2 (only the check, not a new template) and 5 by hand with Trevor, as written below: they need an administrator.
-4. Skip step 6: the workflow cleans up.
+4. Skip step 4's scale up and down: no lab workflow keeps a cluster up for it yet (#252).
+5. Skip step 6: the workflow cleans up.
 
 ## Goal
 

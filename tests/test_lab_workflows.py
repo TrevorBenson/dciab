@@ -185,3 +185,19 @@ def test_denial_pattern_matches_proxmox_refusals_only(tmp_path):
     log = tmp_path / "capmox.log"
     log.write_text("403 Permission check failed (/vms/1, VM.Allocate)\n" * 5000)
     assert subprocess.run(["bash", "-o", "pipefail", "-c", f"grep -qiE '{pattern}' {log}"]).returncode == 0
+
+
+def test_denials_keeps_capmox_logs_a_drain_would_lose_and_fails_on_lookup_errors():
+    script = (ROOT / "hack/lab/mgmt.sh").read_text()
+    checks = script[script.index("\nchecks() {"):]
+    checks = checks[:checks.index("\n}\n")]
+    # MGMT's CAPMOX logs are saved before the replacement deletes a Machine (its drain can evict the pod).
+    assert checks.index("save_capmox_logs mgmt") < checks.index("delete machine")
+    save = script[script.index("\nsave_capmox_logs() {"):]
+    save = save[:save.index("\n}\n")]
+    assert "--ignore-not-found" in save and "|| return 1" in save  # absent != lookup failed
+    denials = script[script.index("\ndenials() {"):]
+    denials = denials[:denials.index("\n}\n")]
+    assert '"$LAB_DIR"/capmox-*.log' in denials and 'lab_die "can\'t read' in denials
+    seed = script[script.index("\nseed() {"):]
+    assert 'rm -f "$LAB_DIR"/capmox-*.log' in seed[:seed.index("\n}\n")]

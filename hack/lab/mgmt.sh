@@ -3,8 +3,8 @@
 #
 #   hack/lab/mgmt.sh payload                    build the archive payload (cached by bundle.lock)
 #   hack/lab/mgmt.sh config TEMPLATE_NAME       write dciab.yaml for the lab and validate it
-#   hack/lab/mgmt.sh token                      validate --live: MGMT's token holds exactly docs/PROXMOX.md's
-#                                               privileges, nothing missing and nothing more (task 0008)
+#   hack/lab/mgmt.sh token                      validate --live: MGMT's token holds docs/PROXMOX.md's
+#                                               privileges and none it refuses as too broad (task 0008)
 #   hack/lab/mgmt.sh seed                       dciab seed (root), then again: nothing may change
 #   hack/lab/mgmt.sh mgmt                       dciab mgmt (root), each step line timed
 #   hack/lab/mgmt.sh checks                     MGMT manages itself, keeps no volumes and trusts the site's
@@ -118,6 +118,7 @@ token() {
 
 seed() {
   sudo mkdir -p "$STATE"
+  rm -f "$LAB_DIR"/capmox-*.log   # denials scans every saved CAPMOX log: none from an earlier run
   # shellcheck disable=SC2024
   rootenv "$ROOT/dciab" seed "$CONFIG" --payload "$PAYLOAD" --state "$STATE" 2>&1 | tee "$LAB_DIR/seed1.log"
   echo "== second run: nothing may change"
@@ -152,6 +153,8 @@ checks() {
   local machine start
   machine="$(sk mgmt -n cluster-mgmt get machines --no-headers | awk 'NR==1 {print $1}')"
   [[ -n "$machine" ]] || lab_die "MGMT holds no Machines"
+  # The drain can evict CAPMOX's pod, and its logs go with it: keep them for denials.
+  save_capmox_logs mgmt before-replacement || lab_die "can't read CAPMOX's logs on mgmt"
   start="$(date +%s)"; sk mgmt -n cluster-mgmt delete machine "$machine" --wait=false
   until [[ "$(sk mgmt -n cluster-mgmt get kcp -o jsonpath='{.items[0].status.readyReplicas}')" == 3 ]] \
      && ! sk mgmt -n cluster-mgmt get machine "$machine" >/dev/null 2>&1; do
@@ -211,28 +214,43 @@ rerun() {
 # Every Proxmox call CAPMOX made, on the bootstrap cluster before the move and on MGMT after
 # it, succeeded: Proxmox answers a missing privilege with HTTP 403 "Permission check failed
 # (<path>, <privilege>)". A cluster that was never built, or one without CAPMOX yet (an earlier
-# step failed), is skipped; a log that can't be read fails the check.
+# step failed), is skipped; a lookup or a log that fails fails the check. checks saves MGMT's
+# logs before it deletes a Machine (the drain can evict CAPMOX's pod), and denials scans those too.
 DENIAL='permission check failed|403 forbidden|status code:? ?403'
+
+# save_capmox_logs WHERE TAG: CAPMOX's current and previous container logs on WHERE, to
+# $LAB_DIR/capmox-WHERE-TAG.log. Returns 2 when WHERE has no kubeconfig or no CAPMOX
+# controller, 1 when the lookup or the log read fails.
+save_capmox_logs() {
+  local where=$1 log="$LAB_DIR/capmox-$1-$2.log" found
+  sudo test -s "$STATE/$where.kubeconfig" || return 2
+  found="$(sk "$where" -n capmox-system get deploy/capmox-controller-manager --ignore-not-found -o name)" || return 1
+  [[ -n "$found" ]] || return 2
+  sk "$where" -n capmox-system logs deploy/capmox-controller-manager --all-containers --tail=-1 > "$log" || return 1
+  # Only the container before this one; absent when it never restarted.
+  sk "$where" -n capmox-system logs deploy/capmox-controller-manager --all-containers --previous >> "$log" 2>/dev/null || true
+}
+
 denials() {
-  local where log checked=0 found=0
+  local where rc log checked=0 found=0
   for where in bootstrap mgmt; do
-    log="$LAB_DIR/capmox-$where.log"
-    if ! sudo test -s "$STATE/$where.kubeconfig" \
-       || ! sk "$where" -n capmox-system get deploy/capmox-controller-manager >/dev/null 2>&1; then
-      echo "$where: no CAPMOX controller to check"; continue
-    fi
-    sk "$where" -n capmox-system logs deploy/capmox-controller-manager --all-containers --tail=-1 > "$log" \
-      || lab_die "can't read CAPMOX's logs on $where"
-    sk "$where" -n capmox-system logs deploy/capmox-controller-manager --all-containers --previous >> "$log" 2>/dev/null || true
-    checked=$((checked + 1))
+    rc=0; save_capmox_logs "$where" final || rc=$?
+    case $rc in
+      0) checked=$((checked + 1)) ;;
+      2) echo "$where: no CAPMOX controller to check" ;;
+      *) lab_die "can't read CAPMOX's controller or logs on $where" ;;
+    esac
+  done
+  (( checked > 0 )) || lab_die "no CAPMOX controller was found to check"
+  for log in "$LAB_DIR"/capmox-*.log; do
+    [[ -e "$log" ]] || continue
     if grep -qiE "$DENIAL" "$log"; then
-      echo "$where: $(grep -ciE "$DENIAL" "$log") permission failure line(s), the first 20:"
+      echo "$(basename "$log"): $(grep -ciE "$DENIAL" "$log") permission failure line(s), the first 20:"
       grep -iE "$DENIAL" "$log" | head -20 || true
       found=1
     fi
   done
   (( found == 0 )) || lab_die "CAPMOX hit Proxmox permission failures (above): a privilege is missing from docs/PROXMOX.md"
-  (( checked > 0 )) || lab_die "no CAPMOX controller was found to check"
   echo "CAPMOX's Proxmox calls: no permission failures ($checked cluster(s) checked)"
 }
 
@@ -256,15 +274,23 @@ down() {
 # (local:iso/user-data-<vmid>.iso) with its machine, so none is left for a VM that no longer exists.
 leftovers() {
   export PVE_NODE; PVE_NODE="$(lab_get proxmox.node)"; pve_init
-  local vms isos orphans
+  local vms isos orphans start
   vms="$(pve GET "/cluster/resources?type=vm")"
   ! jq -e 'any(.[]; (.name // "") | startswith("mgmt-"))' <<<"$vms" >/dev/null \
     || lab_die "MGMT VMs are still on Proxmox: $(jq -r '[.[] | select((.name // "") | startswith("mgmt-")) | .vmid] | join(", ")' <<<"$vms")"
-  isos="$(pve GET "/nodes/$PVE_NODE/storage/local/content?content=iso")"
-  orphans="$(jq -r --argjson vms "$vms" '[$vms[].vmid | tostring] as $ids
-    | .[] | .volid | select(test("^local:iso/user-data-[0-9]+\\.iso$"))
-    | select((capture("user-data-(?<id>[0-9]+)").id) as $id | $ids | index($id) | not)' <<<"$isos")"
-  [[ -z "$orphans" ]] || lab_die "bootstrap ISOs left on local for VMs that no longer exist: $(tr '\n' ' ' <<<"$orphans")"
+  # CAPMOX may delete a VM before its ISO: give the ISO deletes 3 minutes to settle.
+  start="$(date +%s)"
+  while :; do
+    vms="$(pve GET "/cluster/resources?type=vm")"
+    isos="$(pve GET "/nodes/$PVE_NODE/storage/local/content?content=iso")"
+    orphans="$(jq -r --argjson vms "$vms" '[$vms[].vmid | tostring] as $ids
+      | .[] | .volid | select(test("^local:iso/user-data-[0-9]+\\.iso$"))
+      | select((capture("user-data-(?<id>[0-9]+)").id) as $id | $ids | index($id) | not)' <<<"$isos")"
+    [[ -n "$orphans" ]] || break
+    (( $(date +%s) - start < 180 )) \
+      || lab_die "bootstrap ISOs left on local for VMs that no longer exist: $(tr '\n' ' ' <<<"$orphans")"
+    sleep 10
+  done
   echo "no MGMT VMs and no orphaned user-data ISOs left"
 }
 

@@ -4,8 +4,8 @@
     python3 hack/lab/token_findings.py REPORT.json TOKEN_ID
 
 Prints every finding and note. Exits 1 when a finding is about the CAPMOX token
-(spec.platform.proxmox.credentials.tokenID: a missing privilege, or more than
-docs/PROXMOX.md lists), or when the live check never confirmed the token's privileges.
+(spec.platform.proxmox.credentials.tokenID: a missing privilege, or one validate refuses
+as too broad, such as Permissions.Modify or Sys.Modify), or when the live check never confirmed the token's privileges.
 Other live findings (NTP, DNS, address probes) are printed but don't fail it.
 """
 import json
@@ -23,7 +23,7 @@ def decide(doc: dict, token: str) -> list:
     """The reasons the check fails; empty when it passes."""
     mine = [f for f in doc.get("findings", []) if f.get("path") == TOKEN_PATH]
     if mine:
-        return [f"{len(mine)} finding(s) about token {token} (above): it must hold exactly docs/PROXMOX.md's privileges"]
+        return [f"{len(mine)} finding(s) about token {token} (above): it must hold docs/PROXMOX.md's privileges and none validate refuses as too broad"]
     if confirmed_note(token) not in doc.get("notes", []):
         return [f"validate --live never confirmed token {token}'s privileges (the Proxmox live check "
                 "didn't run or stopped early; see the findings and notes above)"]
@@ -46,7 +46,7 @@ def main(argv) -> int:
     for r in reasons:
         print(f"lab: {r}", file=sys.stderr)
     if not reasons:
-        print(f"token {token}: every privilege docs/PROXMOX.md lists, and nothing more")
+        print(f"token {token}: every privilege docs/PROXMOX.md lists, and none validate refuses as too broad")
     return 1 if reasons else 0
 
 
