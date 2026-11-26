@@ -13,6 +13,8 @@ FROM ${BASE_IMAGE}
 # bootc-image-builder itself runs as a container (nodeImages.bootc.bootcImageBuilder).
 # qemu-img, qemu-kvm, xorriso: disk images and installer ISOs. cloud-utils-growpart, xfsprogs: growroot. python3-pyyaml/jsonschema: dciab.
 # cloud-init, qemu-guest-agent: the VM gets its address, key and runner config at clone time.
+# bubblewrap: ostree runs bwrap to finalize the SELinux policy of a staged update; without it
+# `bootc upgrade` stages fine, then the reboot silently boots the old image.
 # libicu, krb5-libs, openssl-libs, zlib: the Actions runner (.NET) needs them.
 RUN dnf -y install \
       podman buildah skopeo container-selinux \
@@ -20,7 +22,7 @@ RUN dnf -y install \
       python3 python3-pyyaml python3-jsonschema \
       qemu-img qemu-kvm xorriso exfatprogs cloud-utils-growpart xfsprogs \
       NetworkManager firewalld openssh-server sudo cloud-init qemu-guest-agent \
-      iproute bind-utils procps-ng \
+      iproute bind-utils procps-ng bubblewrap \
       libicu krb5-libs openssl-libs zlib \
  && dnf clean all \
  && rm -rf /var/cache/dnf /var/log/dnf*

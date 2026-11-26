@@ -301,3 +301,15 @@ def test_runner_unit_is_not_ordered_after_cloud_final_from_multi_user():
     assert "After=network-online.target cloud-final.service" in unit
     assert "WantedBy=cloud-init.target" in unit
     assert "WantedBy=multi-user.target" not in unit
+
+
+def test_the_image_has_bubblewrap_so_a_staged_update_can_finalize():
+    """bootc upgrade stages, then ostree needs bwrap at shutdown to finalize the SELinux policy.
+    Without it the VM reboots into the old image with only a finalize-failure stamp in /boot."""
+    text = (ROOT / "images/lab-runner/Containerfile").read_text()
+    assert "bubblewrap" in text.split("dnf -y install", 1)[1].split("dnf clean", 1)[0]
+
+
+def test_old_payload_caches_are_pruned_so_the_disk_does_not_fill():
+    text = (ROOT / "hack/lab/mgmt.sh").read_text()
+    assert "! -name \"payload-$KEY\"" in text and "-exec rm -rf" in text
