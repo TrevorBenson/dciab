@@ -338,6 +338,17 @@ def test_require_built_refuses_a_missing_entry_or_block(tmp_path):
     assert calls == []
 
 
+def test_binaries_only_downloads_the_named_ones(tmp_path, monkeypatch):
+    got = []
+    monkeypatch.setattr(archive, "load_lock", lambda: {"x": 1})
+    monkeypatch.setattr(archive, "binary_list", lambda lock: [("cosign", "u1", "a" * 64, None),
+                                                             ("helm", "u2", "b" * 64, None)])
+    monkeypatch.setattr(archive, "fetch_binaries", lambda lock, out, print_sums=False, binaries=None: got.append(binaries))
+    assert archive.main(["binaries", "--out", str(tmp_path), "--only", "cosign"]) == 0
+    assert got == [[("cosign", "u1", "a" * 64, None)]]
+    assert archive.main(["binaries", "--out", str(tmp_path), "--only", "nope"]) == 1
+
+
 def test_nodes_refuses_bad_pins(tmp_path):
     good = hashlib.sha256(b"qcow2").hexdigest()
     for bad, msg in ((dict(ref="ghcr.io/x/disk:t", sha256=good), "not pinned by digest"),

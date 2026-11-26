@@ -1,15 +1,20 @@
 name: release
 
-# Cuts a DCiaB release from main (docs/RELEASING.md): checks VERSION is a release form and
-# its tag is new, builds the full payload, packages and signs the archive with the release
-# key, verifies it with the public key in keys/, then creates the GitHub release
-# "rNalphaM (vN.0.0-alpha.M)" (a pre-release for alpha and beta) with the archive, its sha256,
-# the public key and the MANIFEST as assets. The tag v$VERSION is created when the release
-# is published.
+# Cuts a DCiaB release from main (docs/RELEASING.md).
 #
-# Dispatch only, never on a push or a merge. dry_run (the default) does everything up to
-# publishing with a throwaway key, needs no secrets and publishes nothing. A real run waits
-# for the release Environment's reviewers.
+# - build: checks VERSION is a release form and its tag is new, builds the full payload and
+#   packages it UNSIGNED. It has no environment and no secrets on any run, so none of the build
+#   tooling (helm, oras, syft, kubeadm, the add-on renders) ever runs next to the release key.
+#   A dry run also signs a copy with a throwaway key, verifies it and splits it, to exercise
+#   everything the real path does.
+# - sign-and-publish (real runs only): the one job holding the release key, behind the release
+#   Environment's reviewers (one approval). It runs only this repository's own code and cosign
+#   (checked against bundle.lock): downloads the unsigned archive, signs SHA256SUMS and MANIFEST
+#   (package.py finalize), verifies the result against keys/dciab-release.pub, splits it under
+#   GitHub's 2 GiB asset limit and publishes "rNalphaM (vN.0.0-alpha.M)" (a pre-release for
+#   alpha and beta). The tag v$VERSION is created when the release is published.
+#
+# Dispatch only, never on a push or a merge. Every action is pinned by commit SHA.
 on:
   workflow_dispatch:
     inputs:
@@ -27,12 +32,9 @@ concurrency:
 
 jobs:
   build:
-    name: plan, build, sign, verify
+    name: plan, build, package (unsigned)
     runs-on: ubuntu-latest
     timeout-minutes: 120
-    # The release key's secrets live in the release Environment (protected by reviewers);
-    # a dry run uses an unprotected one and never reads them.
-    environment: ${{ inputs.dry_run && 'release-dry-run' || 'release' }}
     permissions:
       contents: read
     outputs:
@@ -42,15 +44,14 @@ jobs:
       archive: ${{ steps.plan.outputs.archive }}
       next: ${{ steps.plan.outputs.next }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-      - run: pip install pyyaml
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      - name: PyYAML (Ubuntu's signed package)
+        run: sudo apt-get install -y --no-install-recommends python3-yaml
       - name: Plan (VERSION, branch, tag)
         id: plan
         env:
           GH_TOKEN: ${{ github.token }}
+          DRY_RUN: ${{ inputs.dry_run }}
         run: |
           set -euo pipefail
           tags=()
@@ -58,74 +59,63 @@ jobs:
             gh api --paginate "repos/$GITHUB_REPOSITORY/git/matching-refs/tags/v" --jq '.[].ref | sub("^refs/tags/"; "")')
           python3 build/release.py plan --ref "$GITHUB_REF" "${tags[@]}" --github-output "$GITHUB_OUTPUT" | tee "$RUNNER_TEMP/plan.txt"
           {
-            echo "### Release plan (dry run: ${{ inputs.dry_run }})"
+            echo "### Release plan (dry run: $DRY_RUN)"
             echo '```'
             cat "$RUNNER_TEMP/plan.txt"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
-      - name: Release key present (real runs)
+      - name: Release public key present (real runs)
         if: ${{ !inputs.dry_run }}
-        env:
-          KEY: ${{ secrets.DCIAB_RELEASE_COSIGN_KEY }}
+        run: |
+          [[ -f keys/dciab-release.pub ]] || { echo "::error::keys/dciab-release.pub is missing (docs/RELEASING.md)"; exit 1; }
+      - name: Build tools from bundle.lock (helm and the rest, each checked)
         run: |
           set -euo pipefail
-          [[ -f keys/dciab-release.pub ]] || { echo "::error::keys/dciab-release.pub is missing (docs/RELEASING.md)"; exit 1; }
-          [[ -n "$KEY" ]] || { echo "::error::the release Environment has no DCIAB_RELEASE_COSIGN_KEY secret"; exit 1; }
-      - name: Read helm's version from bundle.lock
-        id: lock
-        run: echo "helm=$(python3 -c 'import yaml;print(yaml.safe_load(open("bundle.lock"))["tools"]["helm"])')" >> "$GITHUB_OUTPUT"
-      - uses: azure/setup-helm@v4
-        with:
-          version: ${{ steps.lock.outputs.helm }}
+          python3 build/archive.py binaries --out "$RUNNER_TEMP/tools"
+          echo "$RUNNER_TEMP/tools/bin" >> "$GITHUB_PATH"
       - name: Payload
         run: |
           set -euo pipefail
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc   # room for every platform of every image
           build/payload.sh "$RUNNER_TEMP/payload" "$RUNNER_TEMP/images.yaml"
-      - name: Package and sign
-        env:
-          DRY_RUN: ${{ inputs.dry_run }}
-          RELEASE_KEY: ${{ !inputs.dry_run && secrets.DCIAB_RELEASE_COSIGN_KEY || '' }}
-          RELEASE_KEY_PASSWORD: ${{ !inputs.dry_run && secrets.DCIAB_RELEASE_COSIGN_PASSWORD || '' }}
-        run: |
-          set -euo pipefail
-          payload="$RUNNER_TEMP/payload" cosign="$RUNNER_TEMP/payload/bin/cosign" keys="$RUNNER_TEMP/keys"
-          mkdir -p "$keys" && chmod 700 "$keys"
-          if [[ "$DRY_RUN" == true ]]; then
-            COSIGN_PASSWORD="$(openssl rand -hex 16)"; export COSIGN_PASSWORD
-            (cd "$keys" && "$cosign" generate-key-pair)
-          else
-            umask 077
-            printf '%s\n' "$RELEASE_KEY" > "$keys/cosign.key"
-            COSIGN_PASSWORD="$RELEASE_KEY_PASSWORD"; export COSIGN_PASSWORD
-            cp keys/dciab-release.pub "$keys/cosign.pub"
-          fi
-          python3 build/package.py package --payload "$payload" --out "$RUNNER_TEMP/dist" \
-            --signing-key "$keys/cosign.key" --cosign "$cosign"
-          rm -f "$keys/cosign.key"
-          rm -rf "$payload/images"   # room on the runner; the tar holds them now
-      - name: Verify the archive with the public key
+      - name: Package (unsigned)
         env:
           ARCHIVE: ${{ steps.plan.outputs.archive }}
         run: |
           set -euo pipefail
-          dist="$RUNNER_TEMP/dist"
-          [[ -f "$dist/$ARCHIVE" ]] || { echo "::error::package.py wrote no $ARCHIVE"; ls -l "$dist"; exit 1; }
-          ./dciab verify-archive --key "$RUNNER_TEMP/keys/cosign.pub" --cosign "$RUNNER_TEMP/payload/bin/cosign" "$dist/$ARCHIVE"
+          python3 build/package.py package --payload "$RUNNER_TEMP/payload" --out "$RUNNER_TEMP/unsigned"
+          cp "$RUNNER_TEMP/payload/bin/cosign" "$RUNNER_TEMP/cosign"   # for the dry-run checks below
+          rm -rf "$RUNNER_TEMP/payload"   # room on the runner; the tar holds it now
+          [[ -f "$RUNNER_TEMP/unsigned/$ARCHIVE" ]] || { echo "::error::package.py wrote no $ARCHIVE"; exit 1; }
+          ./dciab verify-archive --checksums-only "$RUNNER_TEMP/unsigned/$ARCHIVE"
+      - name: Dry run - sign with a throwaway key, verify, split
+        if: ${{ inputs.dry_run }}
+        env:
+          ARCHIVE: ${{ steps.plan.outputs.archive }}
+        run: |
+          set -euo pipefail
+          keys="$RUNNER_TEMP/keys" dist="$RUNNER_TEMP/dist"
+          mkdir -p "$keys" && chmod 700 "$keys"
+          COSIGN_PASSWORD="$(openssl rand -hex 16)"; export COSIGN_PASSWORD
+          (cd "$keys" && "$RUNNER_TEMP/cosign" generate-key-pair)
+          python3 build/package.py finalize "$RUNNER_TEMP/unsigned/$ARCHIVE" --out "$dist" \
+            --signing-key "$keys/cosign.key" --cosign "$RUNNER_TEMP/cosign"
+          ./dciab verify-archive --key "$keys/cosign.pub" --cosign "$RUNNER_TEMP/cosign" "$dist/$ARCHIVE"
           tar -xOf "$dist/$ARCHIVE" "${ARCHIVE%.tar}/MANIFEST" > "$dist/MANIFEST"
-          cp "$RUNNER_TEMP/keys/cosign.pub" "$dist/cosign.pub"
+          cp "$keys/cosign.pub" "$dist/cosign.pub"
           python3 build/release.py assets "$dist" "$ARCHIVE" | tee "$RUNNER_TEMP/assets.txt"
-          { echo "### Assets"; echo '```'; cat "$RUNNER_TEMP/assets.txt"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
-      - name: Hand the assets to the publish job (real runs)
+          { echo "### Assets (dry run)"; echo '```'; cat "$RUNNER_TEMP/assets.txt"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      - name: Hand the unsigned archive to the signing job (real runs)
         if: ${{ !inputs.dry_run }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4.6.2
         with:
-          name: release-assets
-          path: ${{ runner.temp }}/dist/release/
+          name: unsigned-archive
+          path: ${{ runner.temp }}/unsigned/${{ steps.plan.outputs.archive }}
           retention-days: 3
+          if-no-files-found: error
 
-  publish:
-    name: publish the GitHub release
+  sign-and-publish:
+    name: sign, verify, publish the GitHub release
     needs: build
     if: ${{ !inputs.dry_run }}
     runs-on: ubuntu-latest
@@ -134,10 +124,40 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      - name: PyYAML (Ubuntu's signed package)
+        run: sudo apt-get install -y --no-install-recommends python3-yaml
+      - name: cosign from bundle.lock (checked)
+        run: python3 build/archive.py binaries --out "$RUNNER_TEMP/tools" --only cosign
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093  # v4.3.0
         with:
-          name: release-assets
-          path: assets
+          name: unsigned-archive
+          path: ${{ runner.temp }}/unsigned
+      - name: Sign (the only step that reads the release key)
+        env:
+          ARCHIVE: ${{ needs.build.outputs.archive }}
+          RELEASE_KEY: ${{ secrets.DCIAB_RELEASE_COSIGN_KEY }}
+          COSIGN_PASSWORD: ${{ secrets.DCIAB_RELEASE_COSIGN_PASSWORD }}
+        run: |
+          set -euo pipefail
+          [[ -n "$RELEASE_KEY" ]] || { echo "::error::the release Environment has no DCIAB_RELEASE_COSIGN_KEY secret"; exit 1; }
+          keys="$RUNNER_TEMP/keys"
+          mkdir -p "$keys" && chmod 700 "$keys"
+          (umask 077 && printf '%s\n' "$RELEASE_KEY" > "$keys/cosign.key")
+          trap 'rm -f "$keys/cosign.key"' EXIT
+          python3 build/package.py finalize "$RUNNER_TEMP/unsigned/$ARCHIVE" --out "$RUNNER_TEMP/dist" \
+            --signing-key "$keys/cosign.key" --cosign "$RUNNER_TEMP/tools/bin/cosign"
+      - name: Verify against keys/dciab-release.pub, gather the assets
+        env:
+          ARCHIVE: ${{ needs.build.outputs.archive }}
+        run: |
+          set -euo pipefail
+          dist="$RUNNER_TEMP/dist"
+          ./dciab verify-archive --key keys/dciab-release.pub --cosign "$RUNNER_TEMP/tools/bin/cosign" "$dist/$ARCHIVE"
+          tar -xOf "$dist/$ARCHIVE" "${ARCHIVE%.tar}/MANIFEST" > "$dist/MANIFEST"
+          cp keys/dciab-release.pub "$dist/cosign.pub"
+          python3 build/release.py assets "$dist" "$ARCHIVE" | tee "$RUNNER_TEMP/assets.txt"
+          { echo "### Assets"; echo '```'; cat "$RUNNER_TEMP/assets.txt"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
       - name: Create the release (draft), upload the assets, publish
         env:
           GH_TOKEN: ${{ github.token }}
@@ -145,25 +165,27 @@ jobs:
           TITLE: ${{ needs.build.outputs.title }}
           PRERELEASE: ${{ needs.build.outputs.prerelease }}
           NEXT: ${{ needs.build.outputs.next }}
+          ARCHIVE: ${{ needs.build.outputs.archive }}
         run: |
           set -euo pipefail
-          notes="$RUNNER_TEMP/notes.md"
-          {
-            echo "DCiaB $TITLE."
-            echo
-            echo "Check it offline with the release key, also attached as cosign.pub (docs/RELEASING.md):"
-            echo
-            echo '```'
-            if ls assets/*.part-* >/dev/null 2>&1; then
-              echo "cat dciab-*.tar.part-* > \"\$(basename dciab-*.tar.part-00 .part-00)\"   # the archive is split under GitHub's 2 GiB limit"
-            fi
-            echo "sha256sum -c dciab-*.tar.sha256"
-            echo "./dciab verify-archive --key cosign.pub dciab-*.tar"
-            echo '```'
-          } > "$notes"
-          flags=(--draft --title "$TITLE" --notes-file "$notes" --target "$GITHUB_SHA" --repo "$GITHUB_REPOSITORY")
+          assets="$RUNNER_TEMP/dist/release"
+          # The tag must still be new: if it appeared since the plan, gh would attach the release
+          # to it and ignore --target.
+          if gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG" >/dev/null 2>&1; then
+            echo "::error::tag $TAG exists now; it didn't when the build planned the release"; exit 1
+          fi
+          split=false
+          ls "$assets"/*.part-* >/dev/null 2>&1 && split=true
+          python3 build/release.py notes --title "$TITLE" --tag "$TAG" --archive "$ARCHIVE" \
+            --repo "$GITHUB_REPOSITORY" --key keys/dciab-release.pub --split "$split" > "$RUNNER_TEMP/notes.md"
+          flags=(--draft --title "$TITLE" --notes-file "$RUNNER_TEMP/notes.md" --target "$GITHUB_SHA" --repo "$GITHUB_REPOSITORY")
           [[ "$PRERELEASE" == true ]] && flags+=(--prerelease)
           gh release create "$TAG" "${flags[@]}"
-          gh release upload "$TAG" assets/* --repo "$GITHUB_REPOSITORY"
+          gh release upload "$TAG" "$assets"/* --repo "$GITHUB_REPOSITORY"
           gh release edit "$TAG" --draft=false --repo "$GITHUB_REPOSITORY"
+          # The published tag must point at the commit that was built.
+          got="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$TAG" --jq .object.sha)"
+          if [[ "$got" != "$GITHUB_SHA" ]]; then
+            echo "::error::tag $TAG points at $got, not the built commit $GITHUB_SHA; delete the release and the tag"; exit 1
+          fi
           echo "Published $TITLE. Next: a PR moving VERSION to $NEXT (docs/RELEASING.md)." >> "$GITHUB_STEP_SUMMARY"

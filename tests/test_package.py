@@ -475,3 +475,32 @@ def test_dciab_entrypoint_verifies_an_archive(tree):
     res = subprocess.run([str(ROOT / "dciab"), "verify-archive", "--checksums-only", str(path)],
                          capture_output=True, text=True)
     assert res.returncode == 0, res.stderr
+
+
+def test_finalize_signs_an_unsigned_archive_like_package_does(tree, monkeypatch):
+    """Releases build unsigned and sign in a separate job (finalize): with a deterministic
+    signer the result is byte-identical to signing at package time, and it verifies."""
+    monkeypatch.setenv("COSIGN_PASSWORD", "")
+    key = tree / "cosign.key"
+    key.write_text("k")
+    direct = build(tree, "direct", signing_key=key, runner=fake_cosign())
+    unsigned = build(tree, "unsigned")
+    calls = []
+    signed = package.finalize(unsigned, tree / "signed", key, "/x/cosign", runner=fake_cosign(calls))
+    assert [Path(c[-1]).name for c in calls if c[1] == "sign-blob"] == ["SHA256SUMS", "MANIFEST"]
+    assert signed.read_bytes() == direct.read_bytes()
+    pub = tree / "cosign.pub"
+    pub.write_text("p")
+    assert verify.verify(signed, pub, runner=fake_cosign()) == []
+
+
+def test_finalize_refuses_a_signed_archive_and_its_own_input(tree, monkeypatch):
+    monkeypatch.setenv("COSIGN_PASSWORD", "")
+    key = tree / "cosign.key"
+    key.write_text("k")
+    signed = build(tree, "s", signing_key=key, runner=fake_cosign())
+    with pytest.raises(archive.ArchiveError, match="signed already"):
+        package.finalize(signed, tree / "again", key, runner=fake_cosign())
+    unsigned = build(tree, "u")
+    with pytest.raises(archive.ArchiveError, match="another folder"):
+        package.finalize(unsigned, unsigned.parent, key, runner=fake_cosign())

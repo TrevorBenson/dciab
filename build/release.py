@@ -4,6 +4,7 @@
     python3 build/release.py plan [--version V] [--ref REF] [--existing-tag TAG ...] [--github-output FILE]
     python3 build/release.py next [--version V] [--stage alpha|beta|ga]
     python3 build/release.py assets DIST ARCHIVE
+    python3 build/release.py notes --title T --tag TAG --archive A --repo R --key PUB [--split true|false]
 
 - plan: checks that VERSION is a release form (N.0.0-alpha.M, N.0.0-beta.M or N.0.0), that the
   run is on main, and that the tag doesn't exist yet; prints the tag, the release name
@@ -122,6 +123,42 @@ def assets(dist: Path, archive: str, limit: int = ASSET_LIMIT, part: int = PART)
     return sorted(out.iterdir())
 
 
+def key_fingerprint(key: Path) -> str:
+    """sha256 of the public key file's bytes, as printed in the notes and docs/RELEASING.md."""
+    return hashlib.sha256(key.read_bytes()).hexdigest()
+
+
+def notes(title: str, tag: str, archive: str, repo: str, key: Path, split: bool) -> str:
+    """The release notes: how to join, check and verify the archive with a trusted key and a
+    trusted verifier (not the copies inside the archive or attached next to it)."""
+    prefix = archive[:-len(".tar")] if archive.endswith(".tar") else archive
+    key_url = f"https://github.com/{repo}/blob/{tag}/keys/dciab-release.pub"
+    lines = [
+        f"DCiaB {title}.",
+        "",
+        f"Signed with the DCiaB release key: [`keys/dciab-release.pub` at {tag}]({key_url}), "
+        f"sha256 `{key_fingerprint(key)}`. The `cosign.pub` attached here is the same file; "
+        "check its sha256 against that before trusting it. Verify with cosign on your PATH and a "
+        "verifier you trust (docs/RELEASING.md), not the `dciab` inside the archive:",
+        "",
+        "```",
+    ]
+    if split:
+        lines.append(f"cat {archive}.part-* > {archive}   # split under GitHub's 2 GiB asset limit")
+    lines += [
+        f"sha256sum -c {archive}.sha256",
+        f"tar -xf {archive} {prefix}/MANIFEST {prefix}/MANIFEST.sig",
+        f"cosign verify-blob --key cosign.pub --insecure-ignore-tlog=true \\",
+        f"  --signature {prefix}/MANIFEST.sig {prefix}/MANIFEST",
+        f"tar -xf {archive} && (cd {prefix} && sha256sum -c --quiet MANIFEST)",
+        "```",
+        "",
+        f"Or, from a checkout of {tag}: `./dciab verify-archive --key keys/dciab-release.pub {archive}`.",
+        "",
+    ]
+    return "\n".join(lines)
+
+
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -136,7 +173,17 @@ def main(argv=None) -> int:
     a = sub.add_parser("assets")
     a.add_argument("dist", type=Path)
     a.add_argument("archive")
+    nt = sub.add_parser("notes")
+    nt.add_argument("--title", required=True)
+    nt.add_argument("--tag", required=True)
+    nt.add_argument("--archive", required=True)
+    nt.add_argument("--repo", required=True)
+    nt.add_argument("--key", type=Path, required=True)
+    nt.add_argument("--split", choices=["true", "false"], default="false")
     args = p.parse_args(argv)
+    if args.cmd == "notes":
+        print(notes(args.title, args.tag, args.archive, args.repo, args.key, args.split == "true"), end="")
+        return 0
     if args.cmd == "assets":
         try:
             for path in assets(args.dist, args.archive):

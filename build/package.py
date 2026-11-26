@@ -5,6 +5,7 @@
     python3 build/package.py sboms   --payload DIR --syft BIN
     python3 build/package.py package --payload DIR --out DIR [--signing-key KEY] [--cosign BIN]
                                      [--source-date-epoch N] [--zstd]
+    python3 build/package.py finalize ARCHIVE --out DIR --signing-key KEY [--cosign BIN]
     python3 build/package.py verify  ARCHIVE (--key PUB | --checksums-only) [--cosign BIN]
 
 - tools: downloads the build-only tools (syft) into DIR/tools, each checked against
@@ -23,6 +24,8 @@
   tar byte for byte. Signatures are the exception: cosign's ECDSA signatures differ on
   every run. --zstd compresses it to .tar.zst (images are compressed already, so it
   saves little).
+- finalize: signs an archive `package` wrote without --signing-key, giving the same result as
+  signing at package time. Releases use it so the job holding the key runs no build tooling.
 - verify: dciab verify-archive, run from the build tree.
 
 The payload must be complete and match its SHA256SUMS (archive.py sums); package refuses
@@ -485,6 +488,80 @@ def package(payload: Path, out: Path, mtime: int, signing_key: Optional[Path] = 
     return dest
 
 
+SUMS_SIG = "payload/SHA256SUMS.sig"
+
+
+def finalize(archive_path: Path, out: Path, signing_key: Path, cosign: str = "cosign",
+             runner: Runner = archive.run) -> Path:
+    """Sign an unsigned archive written by `package` (without --signing-key): sign
+    payload/SHA256SUMS, add its signature to MANIFEST, sign MANIFEST, and write out/<same
+    name> with payload/SHA256SUMS.sig and MANIFEST.sig inserted at their sorted positions.
+    The rest of the tar is copied entry for entry (same headers, same order), streaming, so
+    the job holding the key runs no build tooling and needs no room for an unpacked payload.
+    The result is what `package --signing-key` writes for the same inputs."""
+    if archive_path.suffix != ".tar":
+        raise ArchiveError(f"{archive_path}: finalize takes the uncompressed .tar")
+    prefix = archive_path.name[:-len(".tar")]
+    sums_name, manifest_name = f"{prefix}/payload/SHA256SUMS", f"{prefix}/{MANIFEST}"
+    out.mkdir(parents=True, exist_ok=True)
+    dest = out / archive_path.name
+    if dest.resolve() == archive_path.resolve():
+        raise ArchiveError("finalize writes a new file: give --out another folder")
+    with tempfile.TemporaryDirectory(dir=out, prefix=".finalize-") as tmp_dir:
+        tmp = Path(tmp_dir)
+        sums, manifest = tmp / "SHA256SUMS", tmp / MANIFEST
+        found = set()
+        with tarfile.open(archive_path, mode="r:") as tar:
+            for m in tar:
+                if m.name in (f"{prefix}/{SUMS_SIG}", f"{prefix}/{SIGNATURE}"):
+                    raise ArchiveError(f"{archive_path} is signed already ({m.name})")
+                if m.name in (sums_name, manifest_name) and m.isfile():
+                    data = tar.extractfile(m).read()
+                    (sums if m.name == sums_name else manifest).write_bytes(data)
+                    found.add(m.name)
+        for need in (sums_name, manifest_name):
+            if need not in found:
+                raise ArchiveError(f"{archive_path} has no {need}")
+        hashes = verify_mod.parse_manifest(manifest.read_text())
+        if hashes.get("payload/SHA256SUMS") != sha256_file(sums):
+            raise ArchiveError(f"{archive_path}: MANIFEST doesn't match payload/SHA256SUMS")
+        sums_sig, sig = tmp / "SHA256SUMS.sig", tmp / SIGNATURE
+        sign_blob(sums, signing_key, sums_sig, cosign, runner)
+        hashes[SUMS_SIG] = sha256_file(sums_sig)
+        manifest.write_text(manifest_text(hashes))
+        sign_blob(manifest, signing_key, sig, cosign, runner)
+        inserts = {f"{prefix}/{SUMS_SIG}": sums_sig, f"{prefix}/{SIGNATURE}": sig}
+        tmp_dest = dest.with_name(f".{dest.name}.tmp")
+        with tarfile.open(archive_path, mode="r:") as src, tmp_dest.open("wb") as raw, \
+                tarfile.open(fileobj=raw, mode="w", format=tarfile.GNU_FORMAT) as tar:
+            mtime = None
+            pending = sorted(inserts)
+
+            def flush_before(name: Optional[str]) -> None:
+                while pending and (name is None or pending[0] < name):
+                    n = pending.pop(0)
+                    p = inserts[n]
+                    with p.open("rb") as f:
+                        tar.addfile(tar_info(n, mtime, p.stat().st_size), f)
+
+            for m in src:
+                if mtime is None:
+                    mtime = m.mtime
+                flush_before(m.name)
+                if m.name == manifest_name:
+                    info = tar_info(m.name, m.mtime, manifest.stat().st_size)
+                    with manifest.open("rb") as f:
+                        tar.addfile(info, f)
+                elif m.isfile():
+                    tar.addfile(m, src.extractfile(m))
+                else:
+                    tar.addfile(m)
+            flush_before(None)
+        os.replace(tmp_dest, dest)
+    print(f"signed {dest} {dest.stat().st_size} bytes, sha256 {sha256_file(dest)}")
+    return dest
+
+
 # ---------------------------------------------------------------- main
 
 def main(argv=None) -> int:
@@ -507,6 +584,11 @@ def main(argv=None) -> int:
     k.add_argument("--source-date-epoch", type=int, help="date of every entry (default: SOURCE_DATE_EPOCH, "
                                                          "else the last commit)")
     k.add_argument("--zstd", action="store_true", help="compress to .tar.zst")
+    f = sub.add_parser("finalize", help="sign an unsigned DIR/dciab-<VERSION>.tar into --out")
+    f.add_argument("archive", type=Path)
+    f.add_argument("--out", type=Path, required=True)
+    f.add_argument("--signing-key", type=Path, required=True, help="cosign private key; password in COSIGN_PASSWORD")
+    f.add_argument("--cosign", default="cosign")
     sub.add_parser("verify", help="dciab verify-archive (see its --help)")
     args = p.parse_args(argv)
 
@@ -522,6 +604,10 @@ def main(argv=None) -> int:
                 raise ArchiveError(f"{args.signing_key}: no such signing key")
             package(args.payload, args.out, source_date_epoch(args.source_date_epoch),
                     args.signing_key, args.cosign, args.zstd)
+        elif args.cmd == "finalize":
+            if not args.signing_key.is_file():
+                raise ArchiveError(f"{args.signing_key}: no such signing key")
+            finalize(args.archive, args.out, args.signing_key, args.cosign)
     except (ArchiveError, subprocess.CalledProcessError) as exc:
         detail = getattr(exc, "stderr", "") or ""
         print(f"package: {exc}{(': ' + detail.strip()) if detail else ''}", file=sys.stderr)

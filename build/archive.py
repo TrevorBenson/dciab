@@ -471,6 +471,8 @@ def main(argv=None) -> int:
     b = sub.add_parser("binaries", help="download pinned binaries into DIR/bin")
     b.add_argument("--out", type=Path, required=True)
     b.add_argument("--print-sums", action="store_true", help="print each download's sha256 instead of checking")
+    b.add_argument("--only", action="append", default=[], metavar="NAME",
+                   help="download only this binary (repeatable), e.g. the release job's cosign")
     n = sub.add_parser("nodes", help="pull the pinned node disks into DIR/nodes")
     n.add_argument("--out", type=Path, required=True)
     n.add_argument("--oras", default="oras", help="the oras binary (archive.py binaries puts one in DIR/bin)")
@@ -501,7 +503,14 @@ def main(argv=None) -> int:
         elif args.cmd == "providers":
             copy_providers(args.manifests, args.out)
         elif args.cmd == "binaries":
-            fetch_binaries(load_lock(), args.out, print_sums=args.print_sums)
+            lock = load_lock()
+            chosen = None
+            if args.only:
+                chosen = [b for b in binary_list(lock) if b[0] in args.only]
+                unknown = sorted(set(args.only) - {b[0] for b in chosen})
+                if unknown:
+                    raise ArchiveError(f"--only: no such binary: {', '.join(unknown)}")
+            fetch_binaries(lock, args.out, print_sums=args.print_sums, binaries=chosen)
         elif args.cmd == "nodes":
             pull_nodes(load_lock(), args.out, oras=args.oras, require_built=args.require_built)
         elif args.cmd == "sums":
