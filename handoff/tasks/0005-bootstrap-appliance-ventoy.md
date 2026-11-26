@@ -57,7 +57,7 @@ An earlier version of this task booted the appliance as a Ventoy vDisk. The part
      - his key in `identity.initialAdmins`
      - `bootstrap.workDisk.disk: {serialNumber: dciab-work}`: step 5 gives the VM's target disk that serial
    - dummy files for every secret the config references
-   - the Rocky 10 ISO from `nodeImages.rocky10` in `isos/`, if it fits
+   - a Rocky Linux 10 ISO in `isos/`, if one is at hand and fits (`bundle.lock` no longer pins one: its pin went with the image-builder recipe, #172)
 
    Keep the rest coherent enough that `dciab validate` passes, and record anything you changed. Do all of this on the image file before step 5 imports it, because the imported volume is a copy.
 5. **Install server zero.**
