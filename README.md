@@ -69,7 +69,7 @@ The design and its trade-offs are in [ADR 0001](docs/adr/0001-day0-hypervisors-a
 
 ## Validating a config
 
-Needs Python 3.9+ with `jsonschema` and `PyYAML` (on Rocky Linux: `dnf install python3-jsonschema python3-pyyaml`).
+Needs Python 3.12+ (Rocky Linux 10's `python3`) with `jsonschema` and `PyYAML` (on Rocky Linux: `dnf install python3-jsonschema python3-pyyaml`).
 
 ```console
 $ cp examples/vsphere.yaml dciab.yaml   # edit every value for your site
