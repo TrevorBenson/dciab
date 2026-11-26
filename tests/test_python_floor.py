@@ -1,6 +1,7 @@
 """DCiaB's minimum Python is Rocky Linux 10's python3 (3.12): the bootstrap host's OS (ADR 0002).
 The launcher, the README and CI all state the same floor."""
 import re
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -31,8 +32,11 @@ def test_the_launcher_refuses_an_older_python3(tmp_path):
 
 @pytest.mark.skipif(sys.version_info < FLOOR, reason="needs a python3 at the floor")
 def test_the_launcher_accepts_a_python3_at_the_floor(tmp_path):
-    # This interpreter, as python3: the launcher must get past its check to validate.
-    (tmp_path / "python3").symlink_to(sys.executable)
+    # This interpreter, as python3: the launcher must get past its check to validate. A wrapper,
+    # not a symlink, so a virtual environment's interpreter still finds its pyvenv.cfg.
+    wrapper = tmp_path / "python3"
+    wrapper.write_text(f'#!/bin/sh\nexec {shlex.quote(sys.executable)} "$@"\n')
+    wrapper.chmod(0o755)
     r = _launch(f"{tmp_path}:/usr/bin:/bin")
     assert REFUSAL not in r.stderr
     assert "nonexistent" in r.stderr + r.stdout   # validate ran and reported the missing file
@@ -73,6 +77,6 @@ def test_ci_tests_no_python_below_the_floor():
     versions = list(_ci_python_versions())
     assert versions, "no setup-python step found"
     for name, v in versions:
-        m = re.fullmatch(r"(\d+)\.(\d+)(?:\.\d+)?", v)
+        m = re.fullmatch(r"(\d+)\.(\d+)(?:\.(?:\d+|x))?", v)   # 3.12, 3.12.4, 3.12.x
         assert m, f"{name}: {v!r} isn't an X.Y python-version"
         assert (int(m[1]), int(m[2])) >= FLOOR, f"{name} tests Python {v}, below {FLOOR_TEXT}"
