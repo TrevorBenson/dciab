@@ -67,10 +67,16 @@ def split_ref(ref: str) -> Tuple[str, str, str]:
 
 
 def normalize(repo: str) -> str:
-    """docker.io's short forms spelled out, as images.yaml and bundle.lock may differ."""
+    """docker.io's short forms spelled out, as images.yaml and bundle.lock may differ:
+    caddy, library/caddy, docker.io/caddy and index.docker.io/library/caddy are all
+    docker.io/library/caddy."""
+    if repo.startswith("index.docker.io/"):
+        repo = "docker.io/" + repo[len("index.docker.io/"):]
     if "/" not in repo:
         return "docker.io/library/" + repo
-    first = repo.split("/", 1)[0]
+    first, rest = repo.split("/", 1)
+    if first == "docker.io":
+        return repo if "/" in rest else "docker.io/library/" + rest
     if "." in first or ":" in first or first == "localhost":
         return repo
     return "docker.io/" + repo
@@ -93,9 +99,9 @@ def entries(directory: Path) -> List[dict]:
     return out
 
 
-def day0_entries(directory: Path, refs: Dict[str, str]) -> List[dict]:
-    """The payload's images.yaml entries for refs (bundle.lock references), each with the
-    pinned reference to tag it with. Raises PreloadError naming any the payload lacks."""
+def day0_match(directory: Path, refs: Dict[str, str]) -> Tuple[List[dict], List[str]]:
+    """(the payload's images.yaml entries for refs, each with the pinned reference to tag it
+    with; the refs the payload lacks)."""
     listed = entries(directory)
     out, missing = [], []
     for ref in refs.values():
@@ -106,6 +112,12 @@ def day0_entries(directory: Path, refs: Dict[str, str]) -> List[dict]:
             out.append({"image": ref, "name": found[0]["name"]})
         else:
             missing.append(ref)
+    return out, missing
+
+
+def day0_entries(directory: Path, refs: Dict[str, str]) -> List[dict]:
+    """day0_match, raising PreloadError naming any the payload lacks."""
+    out, missing = day0_match(directory, refs)
     if missing:
         raise PreloadError(f"{directory / 'images.yaml'} lacks these Day 0 images: " + ", ".join(missing)
                            + " (an archive built without them: rebuild it with build/archive.py images)")
@@ -183,6 +195,34 @@ def check(directory: Path, refs: Dict[str, str], full: bool = False) -> List[str
     return problems
 
 
+def image_bytes(directory: Path, refs: Dict[str, str]) -> int:
+    """An upper bound on what loading refs from the payload adds to container storage: the size
+    of every blob each Day 0 image reaches in the layout (all platforms, so it over-counts a
+    multi-arch image). 0 when the payload has no images.yaml or can't be read."""
+    if not (directory / "images.yaml").is_file():
+        return 0
+    try:
+        found, _missing = day0_match(directory, refs)
+    except PreloadError:
+        return 0
+    total, seen = 0, set()
+    todo = [split_ref(e["image"])[2] for e in found]
+    while todo:
+        d = todo.pop()
+        if d in seen:
+            continue
+        seen.add(d)
+        blob = _blob(directory, d)
+        if not blob.is_file():
+            continue
+        total += blob.stat().st_size
+        try:
+            todo.extend(c["digest"] for c in _children(directory, d))
+        except (OSError, ValueError, KeyError, PreloadError):
+            pass
+    return total
+
+
 def _exists(ref: str, runner: Runner) -> bool:
     try:
         runner(["podman", "image", "exists", ref])
@@ -208,12 +248,15 @@ def _remove_if_ours(image_id: str, layout_name: str, runner: Runner) -> bool:
         return False
 
 
-def load(directory: Path, refs: Dict[str, str], runner: Optional[Runner] = None) -> Tuple[List[str], List[str]]:
+def load(directory: Path, refs: Dict[str, str],
+         runner: Optional[Runner] = None) -> Tuple[List[str], List[str], List[str]]:
     """Load each of refs root's storage lacks from the payload at directory. Returns (loaded,
-    already there)."""
+    already there, not in the payload). An image the payload lacks isn't an error here: the
+    steps that use it load it from the payload or a registry themselves."""
     runner = runner or run
     loaded, present = [], []
-    for e in day0_entries(directory, refs):
+    found, missing = day0_match(directory, refs)
+    for e in found:
         ref = e["image"]
         if _exists(ref, runner):
             present.append(ref)
@@ -239,7 +282,7 @@ def load(directory: Path, refs: Dict[str, str], runner: Optional[Runner] = None)
         if not _exists(ref, runner):
             raise PreloadError(f"{ref}: the payload's copy ({e['name']}) doesn't match the pinned digest")
         loaded.append(ref)
-    return loaded, present
+    return loaded, present, missing
 
 
 def lock_refs(directory: Path) -> Dict[str, str]:
@@ -285,7 +328,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             if not problems:
                 say(f"ok: {len(refs)} Day 0 images at their pinned digests")
             return 1 if problems else 0
-        loaded, present = load(args.payload, refs)
+        loaded, present, missing = load(args.payload, refs)
     except PreloadError as exc:
         say(str(exc))
         return 1
@@ -298,6 +341,8 @@ def main(argv: Optional[List[str]] = None) -> int:
             lock.close()
     for ref in loaded:
         say(f"loaded {ref}")
+    for ref in missing:
+        say(f"warning: the payload lacks {ref}; the step that uses it loads it from the payload or a registry")
     say(f"{len(loaded)} loaded, {len(present)} already in root's container storage")
     return 0
 

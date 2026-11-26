@@ -269,6 +269,32 @@ def test_a_link_to_state_elsewhere_with_state_on_the_work_disk_is_refused(site, 
     assert f"{work / 'state'} lacks services" in err and "looks like the partial one" in err
 
 
+def test_two_identical_state_copies_are_named_as_identical(site, tmp_path, capsys):
+    """A move interrupted after its copy was complete leaves two identical folders: the refusal
+    says so, instead of giving no hint."""
+    src, work, cfg = site
+    elsewhere = tmp_path / "my-state"
+    for root in (elsewhere, work / "state"):
+        (root / "pki").mkdir(parents=True)
+        (root / "pki" / "ca.crt").write_text("CA")
+    legacy = cfg.parent / ".dciab" / "state"
+    legacy.parent.mkdir(parents=True)
+    legacy.symlink_to(elsewhere)
+    assert cli.main(args(src, cfg)) == 1
+    err = capsys.readouterr().err
+    assert "both hold dciab state" in err and "identical files" in err
+
+
+def test_same_tree_spots_a_difference_in_contents(tmp_path):
+    a, b = tmp_path / "a", tmp_path / "b"
+    for root, text in ((a, "one"), (b, "two")):
+        (root / "pki").mkdir(parents=True)
+        (root / "pki" / "ca.crt").write_text(text)
+    assert not cli._same_tree(a, b)
+    (b / "pki" / "ca.crt").write_text("one")
+    assert cli._same_tree(a, b)
+
+
 def test_a_missing_link_is_recreated(site, capsys):
     """The state moved but the link wasn't left (F2): a rerun puts it back."""
     src, work, cfg = site
@@ -346,6 +372,31 @@ def test_the_space_check_counts_state_copied_across_filesystems(site, monkeypatc
     assert cli.state_bytes(cfg, work) >= 5000
     monkeypatch.setattr(cli.os, "stat", real_stat)
     assert cli.state_bytes(cfg, work) == 0                              # same filesystem: a rename
+
+
+def test_preload_bytes_counts_only_when_storage_is_on_the_work_disk(tmp_path, monkeypatch):
+    from dciab_media import preload
+    plan = cli.Plan(tmp_path / "src", tmp_path / "dest", {}, [], 0, 0)
+    (tmp_path / "src" / "payload").mkdir(parents=True)
+    assert cli.preload_bytes(plan, tmp_path) == 0                       # no image payload
+    (tmp_path / "src" / "payload" / "images.yaml").write_text("images: []\n")
+    monkeypatch.setattr(preload, "lock_refs", lambda d: {})
+    monkeypatch.setattr(preload, "image_bytes", lambda d, refs: 1234)
+    monkeypatch.setattr(cli, "current_graphroot", lambda runner=None: str(tmp_path / "containers"))
+    assert cli.preload_bytes(plan, tmp_path) == 1234                    # same filesystem
+    real_stat = cli.os.stat
+
+    class St:
+        def __init__(self, st, dev):
+            self._st, self.st_dev = st, dev
+
+        def __getattr__(self, k):
+            return getattr(self._st, k)
+    monkeypatch.setattr(cli.os, "stat", lambda p, *a, **k: St(real_stat(p, *a, **k),
+                                                                  1 if "containers" in str(p) else 2))
+    monkeypatch.setattr(cli, "nearest_existing", lambda p: p if "containers" not in str(p) else tmp_path / "containers")
+    (tmp_path / "containers").mkdir()
+    assert cli.preload_bytes(plan, tmp_path) == 0                       # storage on another filesystem
 
 
 def test_check_space_includes_the_extra(tmp_path):
@@ -591,3 +642,4 @@ def test_looks_like_state_needs_a_dciab_specific_marker(tmp_path, marker):
     (d / marker).parent.mkdir(parents=True, exist_ok=True)
     (d / marker).write_text("x")
     assert cli._looks_like_state(d)
+

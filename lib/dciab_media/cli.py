@@ -608,11 +608,42 @@ def _moved_aside(source: Path) -> List[Path]:
         return []
 
 
+def _same_tree(a: Path, b: Path) -> bool:
+    """Whether two folders hold the same files with the same contents (links not followed)."""
+    def listing(root: Path) -> Dict[str, int]:
+        out = {}
+        for dirpath, dirs, files in os.walk(root):
+            for name in files:
+                p = Path(dirpath) / name
+                out[str(p.relative_to(root))] = p.lstat().st_size
+        return out
+    try:
+        la, lb = listing(a), listing(b)
+        if la != lb:
+            return False
+        for rel in la:
+            fa, fb = a / rel, b / rel
+            if fa.is_symlink() or fb.is_symlink():
+                if not (fa.is_symlink() and fb.is_symlink() and os.readlink(fa) == os.readlink(fb)):
+                    return False
+                continue
+            if verify_mod.hashlib.sha256(fa.read_bytes()).digest() != \
+                    verify_mod.hashlib.sha256(fb.read_bytes()).digest():
+                return False
+        return True
+    except OSError:
+        return False
+
+
 def _both_detail(source: Path, new: Path) -> str:
-    """The refusal when both folders hold state, saying which one looks partial."""
+    """The refusal when both folders hold state, saying which one looks partial, or that the
+    two are identical (a move interrupted after its copy was complete)."""
     a, b = _markers(source), _markers(new)
     hint = ""
-    if a > b:
+    if a == b and _same_tree(source, new):
+        hint = (f" The two hold identical files: an interrupted move left a complete copy in {new}. "
+                f"Move {source} aside (or remove it) and run again.")
+    elif a > b:
         hint = f" {new} lacks {', '.join(sorted(a - b))}, which {source} has: it looks like the partial one."
     elif b > a:
         hint = f" {source} lacks {', '.join(sorted(b - a))}, which {new} has: it looks like the partial one."
@@ -708,6 +739,22 @@ def state_bytes(config: Path, work: Path) -> int:
     except OSError:
         return 0
     return tree_bytes(plan.source)
+
+
+def preload_bytes(plan: "Plan", work: Path) -> int:
+    """Room the preload step needs: the Day 0 images it loads into root's container storage,
+    counted only when that storage is on the work disk's filesystem. Read from the source
+    archive's payload, since the copy on the work disk doesn't exist yet at the target step."""
+    payload = plan.source / "payload"
+    if not (payload / "images.yaml").is_file():
+        return 0
+    try:
+        graphroot = Path(current_graphroot())
+        if os.stat(nearest_existing(graphroot)).st_dev != os.stat(nearest_existing(work)).st_dev:
+            return 0
+        return preload.image_bytes(payload, preload.lock_refs(payload))
+    except (OSError, subprocess.CalledProcessError, preload.PreloadError):
+        return 0
 
 
 def _fsync_tree(path: Path) -> None:
@@ -999,7 +1046,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             for step in STEPS:
                 say(f"==> {step}")
                 if step == "target":
-                    extra = state_bytes(config, work)
+                    extra = state_bytes(config, work) + preload_bytes(plan, work)
                     check_space(plan, work, extra=extra)
                     say(f"  {work}: {plan.copy_bytes + extra} bytes to copy")
                 elif step == "state":
@@ -1030,10 +1077,14 @@ def main(argv: Optional[List[str]] = None) -> int:
                     payload = plan.dest / "payload"
                     if (payload / "images.yaml").is_file():
                         try:
-                            loaded, present = preload.load(payload, preload.lock_refs(payload))
+                            loaded, present, missing = preload.load(payload, preload.lock_refs(payload))
                         except preload.PreloadError as exc:
                             raise MediaError(str(exc)) from None
                         say(f"  loaded {len(loaded)}, {len(present)} already there (from {payload})")
+                        for ref in missing:
+                            say(f"  warning: the payload lacks {ref}; the step that uses it will load it "
+                                f"from the payload or a registry (rebuild the archive with build/archive.py "
+                                f"images to include it)")
                     else:
                         say("  none (the archive carries no images)")
                 if step == args.until:
