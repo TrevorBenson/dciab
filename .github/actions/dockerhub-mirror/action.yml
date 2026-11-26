@@ -15,9 +15,13 @@ runs:
     - shell: bash
       env:
         MIRROR: ${{ inputs.mirror }}
+      # Root in a job container (media-dropin-rocky10's Rocky image) has no sudo.
+      # mirror-by-digest-only: tag lookups (archive.py digests, pin checks) stay on Docker Hub,
+      # so a tag the mirror cached before it moved can't print a stale digest.
       run: |
-        sudo mkdir -p /etc/containers/registries.conf.d
-        printf '[[registry]]\nprefix = "docker.io"\nlocation = "docker.io"\n\n[[registry.mirror]]\nlocation = "%s"\n' "$MIRROR" \
-          | sudo tee /etc/containers/registries.conf.d/00-dciab-dockerhub-mirror.conf >/dev/null
+        SUDO=; [ "$(id -u)" = 0 ] || SUDO=sudo
+        $SUDO mkdir -p /etc/containers/registries.conf.d
+        printf '[[registry]]\nprefix = "docker.io"\nlocation = "docker.io"\n\n[[registry.mirror]]\nlocation = "%s"\npull-from-mirror = "digest-only"\n' "$MIRROR" \
+          | $SUDO tee /etc/containers/registries.conf.d/00-dciab-dockerhub-mirror.conf >/dev/null
         echo "DCIAB_MIRROR_DOCKER_IO=$MIRROR" >> "$GITHUB_ENV"
         echo "docker.io pulls go through $MIRROR first"

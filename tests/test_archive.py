@@ -420,3 +420,9 @@ def test_hosted_jobs_that_pull_from_docker_hub_use_the_mirror():
             assert "./.github/actions/dockerhub-mirror" in uses, f"{name}: {job_name} pulls without the mirror"
             first = next(i for i, u in enumerate(uses) if u.startswith("actions/checkout@"))
             assert uses[first + 1] == "./.github/actions/dockerhub-mirror", f"{name}: {job_name}"
+
+
+def test_dockerhub_mirror_action_works_as_root_and_keeps_tags_on_docker_hub():
+    run = yaml.safe_load((ROOT / ".github/actions/dockerhub-mirror/action.yml").read_text())["runs"]["steps"][0]["run"]
+    assert '[ "$(id -u)" = 0 ] || SUDO=sudo' in run and "\nsudo " not in "\n" + run  # Rocky job container: root, no sudo
+    assert 'pull-from-mirror = \\"digest-only\\"' in run or 'pull-from-mirror = "digest-only"' in run
