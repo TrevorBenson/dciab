@@ -311,9 +311,9 @@ labRunner:
   actionsRunner:
     version: "2.338.0"
     sha256: "af4b794c1bc41d73d40535e3fe092a39f9679cd8d965954c2aca25a05ca41d32"   # of actions-runner-linux-x64-<version>.tar.gz
-  # Published by .github/workflows/lab-runner-image.yml (tag 0.1.0-e6d2bd7c); pin a newer tag's digests after its publish.
-  image: ghcr.io/trevorbenson/dciab-lab-runner@sha256:082f4f4baca828c45e764d4c8d140c52609f61d4a2632423602e8c568b5764c0
-  disk: ghcr.io/trevorbenson/dciab-lab-runner-disk@sha256:c2dc4152602f037be74fa9496355292e4c86cdd28385cc9d4ab71305a835fe1f
+  # Published by .github/workflows/lab-runner-image.yml (tag 1.0.0-alpha.1-553d4e1c); pin a newer tag's digests after its publish.
+  image: ghcr.io/trevorbenson/dciab-lab-runner@sha256:f4d62d68e938708adb46acb47c5da710e5233bdb67a6f148d155dc96d194142a
+  disk: ghcr.io/trevorbenson/dciab-lab-runner-disk@sha256:7b7fe4bd21ae255fb8bbbe6e42d8701822782d177dfefd2e8c108431137c8f78
 
 # Test tooling for dciab hypervisors, never in the archive: Redfish emulators the CI drives the
 # real Redfish code against (hack/redfish/README.md). Fetched by hack/redfish/fetch.py.
