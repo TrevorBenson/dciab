@@ -1,11 +1,40 @@
 # `dciab mgmt`
 
-Builds MGMT from the bootstrap (kind) cluster that `dciab seed` made, then moves Cluster API into MGMT so MGMT manages itself. The steps and options are in `lib/steps/mgmt.sh`'s header. Each step is safe to re-run, and each prints `== mgmt: <step> done in Ns`.
+Builds MGMT from the bootstrap (kind) cluster that `dciab seed` made, then moves Cluster API into MGMT so MGMT manages itself. Each step is safe to re-run, and each prints `== mgmt: <step> done in Ns`.
 
 ```console
 $ sudo ./dciab mgmt dciab.yaml --state <state>
 $ sudo ./dciab mgmt dciab.yaml --state <state> --until values
 ```
+
+It runs as the state folder's owner (root, after `dciab seed`), with the payload's tools (clusterctl, kubectl, helm) first in PATH.
+
+| Option | Default | Meaning |
+| --- | --- | --- |
+| `--state DIR` | `.dciab/state` next to the config; `/var/lib/dciab/work/state` on the appliance | The state folder `dciab seed` used ([STATE.md](STATE.md)) |
+| `--bootstrap-kubeconfig FILE` | `<state>/bootstrap.kubeconfig` | The bootstrap cluster `dciab seed` made |
+| `--trust-bundle FILE` | `<state>/pki/trust-bundle.pem` | What MGMT's nodes trust: the platform CA |
+| `--payload DIR` | the archive's `payload/` when it exists | Every chart and manifest comes from it instead of the internet |
+| `--until STEP` | | Stop after this step |
+
+Nodes get `DCIAB_NODE_WAIT_MINUTES` to register (default 20; 45 on vSphere, where each control plane node joins only after the cloud provider has initialized the one before).
+
+## Steps
+
+| Step | What it does |
+| --- | --- |
+| `preflight` | Tools present; the bootstrap cluster has Cluster API, the providers and the ClusterClasses (`dciab seed` installs them) |
+| `values` | `dciab cluster-values` for `mgmt`, into `<state>/mgmt-values.yaml` |
+| `cluster` | The platform credentials Secret and the `capi-cluster` release `mgmt` in namespace `cluster-mgmt`, on the bootstrap cluster |
+| `control-plane` | Waits for the first control plane node; saves `<state>/mgmt.kubeconfig` |
+| `cpi` | vSphere only: the vSphere cloud provider ([addons/vsphere-cpi](../addons/vsphere-cpi/README.md)), which the vSphere class's kubelets wait for. Other platforms skip it |
+| `cilium` | Cilium ([addons/cilium](../addons/cilium/README.md)); waits until every node is Ready. Then kubelet-csr-approver, for the kubelets' serving certificates |
+| `providers` | cert-manager, Cluster API and the providers on MGMT |
+| `move` | An encrypted export of the bootstrap cluster's Cluster API state to the backup site target, then `clusterctl move` of `cluster-mgmt` to MGMT, then a check that nothing is left behind ([below](#the-move)) |
+| `adopt` | MGMT's Helm releases take over the moved objects; then one export of MGMT's Cluster API state |
+| `identity` | The platform roles on MGMT, for each site issuer MGMT trusts ([below](#logins-on-mgmt), [IDENTITY.md](IDENTITY.md)) |
+| `storage` | Nothing, unless `spec.storage.block.overrides.mgmt` asks for block storage ([below](#mgmt-keeps-no-volumes)) |
+| `backups` | MGMT's backup jobs: etcd snapshots and Cluster API exports to the site target ([BACKUP.md](BACKUP.md)) |
 
 ## What MGMT needs from INFRA: nothing
 

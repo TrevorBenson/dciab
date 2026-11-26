@@ -3,7 +3,7 @@
 `dciab media` is the first step on the bootstrap host ([ADR 0002](adr/0002-bootstrap-appliance-on-ventoy.md) §5). It copies the archive from the USB stick to `spec.bootstrap.workDisk`, checks the copy, and moves the bootstrap's heavy state there. Every later step then runs from the copy, and the stick is free.
 
 ```console
-# ./dciab media dciab.yaml (--key cosign.pub | --checksums-only) [--source DIR] [--cosign BIN] [--isos-from DIR] [--until STEP] [--print]
+$ sudo ./dciab media dciab.yaml (--key cosign.pub | --checksums-only) [--source DIR] [--cosign BIN] [--isos-from DIR] [--until STEP] [--print]
 ```
 
 It runs as root; `--print` shows the plan (source, target, bytes to copy, state move, storage change) and changes nothing. Steps: `target`, `state`, `copy`, `verify`, `storage`, `isos`, `preload`. Each one is safe to rerun, and a finished run changes nothing. A lock stops two runs at once on the host.
@@ -35,9 +35,9 @@ Keep the stick in until `dciab media` has finished: the archive, the pinned inst
 When it's done it prints the next commands, run from the copy with their state on the work disk:
 
 ```console
-# <work>/dciab-<VERSION>/dciab services dciab.yaml --state <work>/state --isos <work>/isos
-# <work>/dciab-<VERSION>/dciab hypervisors dciab.yaml --state <work>/state --isos <work>/isos
-# <work>/dciab-<VERSION>/dciab seed dciab.yaml --state <work>/state
+$ sudo <work>/dciab-<VERSION>/dciab services dciab.yaml --state <work>/state --isos <work>/isos
+$ sudo <work>/dciab-<VERSION>/dciab hypervisors dciab.yaml --state <work>/state --isos <work>/isos
+$ sudo <work>/dciab-<VERSION>/dciab seed dciab.yaml --state <work>/state
 ```
 
 ## Not yet

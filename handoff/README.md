@@ -17,6 +17,7 @@ handoff/
   tasks/NNNN-<slug>.md      one task per file, written by the planner
   reports/NNNN-<slug>.md    one report per task, written by the runner
   reports/NNNN-<slug>/      optional small attachments (trimmed logs, command output)
+  ci-review/                reviews of the CI pipeline: baseline timings, findings, recommendations
 ```
 
 Task numbers are four digits and never reused. The report uses the same `NNNN-<slug>` name as its task.

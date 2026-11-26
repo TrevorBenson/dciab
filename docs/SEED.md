@@ -8,7 +8,7 @@
 - **The bootstrap cluster.** kind (`dciab-bootstrap`, on rootful podman). Its containerd pulls from every upstream registry through the seed registry, and trusts the platform CA. It runs cert-manager, Cluster API, the providers and the ClusterClasses, installed from the payload's manifests.
 
 ```console
-# ./dciab seed dciab.yaml [--payload DIR] [--state DIR] [--age-identity FILE] [--force-new-ca] [--until STEP]
+$ sudo ./dciab seed dciab.yaml [--payload DIR] [--state DIR] [--age-identity FILE] [--force-new-ca] [--until STEP]
 ```
 
 It runs as root. Steps: `preflight`, `pki`, `dns`, `registry`, `kind`, `providers`. Each one is safe to rerun, and a finished run changes nothing: the `classes` Helm release, for example, is upgraded only when the chart renders something other than what is deployed. Each step starts with `== seed: <step>` and ends with `== seed: <step> done in <N>s`. `dciab services`, run on its own, prints the same lines for its steps. Then run `dciab mgmt` with the same `--state`: it picks up `<state>/bootstrap.kubeconfig` and `<state>/pki/trust-bundle.pem` by itself, and takes Cilium's chart and the provider manifests from the payload. `--payload` defaults to the archive's own `payload/`.
@@ -29,7 +29,7 @@ With `generate-root`, seed won't create a new root CA when the state shows one w
 ## Undoing a seed
 
 ```console
-# ./dciab seed dciab.yaml --remove [--state DIR] [--force] [--purge-state]
+$ sudo ./dciab seed dciab.yaml --remove [--state DIR] [--force] [--purge-state]
 ```
 
 `--remove` undoes what seed changed on the host, so a test host or CI runner can be reused:
@@ -53,13 +53,13 @@ The state folder stays: it holds the platform CA, the registry's storage and the
 Seed records nothing for these hosts, so `--remove` only lists what is left. Remove it by hand, as root, then run `--remove --purge-state` if the state should go too:
 
 ```console
-# kubectl --kubeconfig <state>/bootstrap.kubeconfig get clusters.cluster.x-k8s.io -A
-#   (must list nothing; otherwise move MGMT off it with dciab mgmt first)
-# KIND_EXPERIMENTAL_PROVIDER=podman kind delete cluster --name dciab-bootstrap
-# podman rm -f dciab-registry
-# podman kube down <state>/services/pod.yaml          # only a site without spec.hypervisors
-# ip addr del <dns-service-ip>/<prefix> dev <nic>     # each network.dnsServiceIPs entry, unless the host had it before
-# firewall-cmd --zone=<zone> --remove-port=53/udp     # and 53/tcp (123/udp, 80/tcp with full services), unless open before
+$ sudo kubectl --kubeconfig <state>/bootstrap.kubeconfig get clusters.cluster.x-k8s.io -A
+# must list nothing; otherwise move MGMT off it with dciab mgmt first
+$ sudo KIND_EXPERIMENTAL_PROVIDER=podman kind delete cluster --name dciab-bootstrap
+$ sudo podman rm -f dciab-registry
+$ sudo podman kube down <state>/services/pod.yaml          # only a site without spec.hypervisors
+$ sudo ip addr del <dns-service-ip>/<prefix> dev <nic>     # each network.dnsServiceIPs entry, unless the host had it before
+$ sudo firewall-cmd --zone=<zone> --remove-port=53/udp     # and 53/tcp (123/udp, 80/tcp with full services), unless open before
 ```
 
 `firewall-cmd --get-zone-of-interface=<nic>` names the zone. The ports are open at runtime and permanently, so close each with `--permanent` too (`firewall-cmd --permanent --zone=<zone> --remove-port=<port>`), and remove the units seed and services installed: `systemctl stop dciab-registry.service dciab-services.service dciab-services-addresses.service`, then delete `/etc/containers/systemd/dciab-registry.container`, `/etc/containers/systemd/dciab-services.kube` and `/etc/systemd/system/dciab-services-addresses.service`, and run `systemctl daemon-reload`.
@@ -72,8 +72,8 @@ A rerun of `dciab seed` tries first: when the cluster's node container is stoppe
 
 - **Before `dciab mgmt` has created anything in it** (it holds only Cluster API and its providers): delete the stopped cluster and run seed again, which builds it afresh and installs the providers; the CA, the registry and DNS are unchanged.
   ```console
-  # KIND_EXPERIMENTAL_PROVIDER=podman kind delete cluster --name dciab-bootstrap
-  # dciab seed <config> --payload <payload>
+  $ sudo KIND_EXPERIMENTAL_PROVIDER=podman kind delete cluster --name dciab-bootstrap
+  $ sudo ./dciab seed <config> --payload <payload>
   ```
 - **After `dciab mgmt` has started building MGMT, and before it has moved Cluster API**: don't delete it, it holds MGMT's Cluster objects. Start the node container (`podman start dciab-bootstrap-control-plane`), check the API answers (`kubectl --kubeconfig <state>/bootstrap.kubeconfig get nodes`), then rerun `dciab mgmt`. kind doesn't support restarting a cluster under podman, so if the API doesn't come back, stop and recover MGMT's objects from the kind node's etcd before going further.
 - **After `dciab mgmt` has moved Cluster API**: nothing to do; the bootstrap cluster isn't needed any more.

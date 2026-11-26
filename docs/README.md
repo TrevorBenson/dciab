@@ -56,7 +56,6 @@ People who change DCiaB: its code, charts, classes and docs. Read the decision r
 | [CONFIG.md](CONFIG.md) | Generated from `schema/dciab.schema.json` by `hack/gen_config_docs.py`; CI fails when they differ, or when a schema key has no description |
 | [Charts: capi-cluster](../charts/capi-cluster/README.md), [capi-clusterclasses](../charts/capi-clusterclasses/README.md) | One cluster's topology, and the ClusterClasses |
 | [Add-ons](../addons/) | Cilium, Longhorn, the CSI drivers, the vSphere cloud provider and kubelet-csr-approver, each with a README |
-| CI review (2026-11-25): [baseline](ci-review/baseline.md), [findings](ci-review/findings.md), [recommendations](ci-review/recommendations.md) | Where PR feedback time goes, and a ranked plan to cut it and watch it |
 
 ### Decision records
 
@@ -75,11 +74,6 @@ People who change DCiaB: its code, charts, classes and docs. Read the decision r
 
 Each ADR's own Status line is the authority, with its amendments.
 
-## Agents
+## Working in the repository
 
-DCiaB is built by two agents, a planner that writes the code and docs and a runner that runs tasks against real infrastructure. These pages are in the DCiaB repository; the archive doesn't ship them.
-
-| Page | What it covers |
-| --- | --- |
-| [CLAUDE.md](../CLAUDE.md) | The rules for any change: branches, frozen class revisions, `bundle.lock`, product docs versus lab notes, tests in CI |
-| [handoff/README.md](../handoff/README.md) | How the planner and the runner hand work over: tasks, reports, and each one's rules |
+How DCiaB itself is developed and tested (the development setup, CI, and the agents that build it) is in the source repository's [CONTRIBUTING.md](https://github.com/TrevorBenson/dciab/blob/main/CONTRIBUTING.md). The archive doesn't ship it.
