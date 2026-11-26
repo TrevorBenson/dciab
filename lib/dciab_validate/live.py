@@ -16,6 +16,7 @@ from pathlib import Path as FsPath
 from typing import Callable, List, Optional, Tuple
 from urllib.parse import quote, urlsplit
 
+import dciab_backup as bk
 from dciab_storage import tier_block
 
 from . import netutil as nu
@@ -457,11 +458,14 @@ def dns_names(spec: dict) -> List[str]:
         names.append(plat["vsphere"]["server"])
     else:
         names.append(urlsplit(plat["proxmox"]["url"]).hostname or "")
+    # Backup targets: spec.backup's site and off-site copy, and any Longhorn backupTarget
+    # (the old form, or an INFRA/workload tier's own). Each one is optional.
+    targets = [(bk.site_target(spec) or {}).get("url"), (bk.offsite(spec) or {}).get("url")]
     for tier in ("mgmt", "infra", "workload"):
         block = tier_block(spec, tier)
         if block and block["provider"] == "longhorn":
-            target = block["settings"]["backupTarget"]
-            names.append(target.split("://", 1)[1].split("@", 1)[-1].split(":", 1)[0].split("/", 1)[0])
+            targets.append((block.get("settings") or {}).get("backupTarget"))
+    names.extend(_target_host(t) for t in targets if t)
     names.extend(spec["time"].get("servers", []))
     names.extend(spec["time"].get("upstream", []))
     out = []
@@ -470,6 +474,11 @@ def dns_names(spec: dict) -> List[str]:
             continue
         out.append(n)
     return out
+
+
+def _target_host(url: str) -> str:
+    """The host of s3://<bucket>@<endpoint>[:port][/path] or nfs://<server>:/<export>."""
+    return url.split("://", 1)[1].split("@", 1)[-1].split(":", 1)[0].split("/", 1)[0]
 
 
 def _is_ip(text: str) -> bool:

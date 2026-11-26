@@ -933,3 +933,22 @@ def test_proxmox_doc_matches_the_csi_grants():
         assert row in doc, f"docs/PROXMOX.md is out of date for {g.role}"
     for p in ("VM.Allocate", "VM.PowerMgmt", "VM.Clone"):
         assert all(p not in g.privileges for g in csi_grants({"storage": "x"}))
+
+
+def test_dns_names_take_backup_hosts_from_spec_backup_and_tolerate_longhorn_without_a_target():
+    """The first lab run crashed here: Longhorn settings without backupTarget (the new form keeps
+    the site target in spec.backup) raised KeyError in validate --live."""
+    spec = copy.deepcopy(load_example("proxmox")["spec"])
+    spec["storage"]["block"] = {"provider": "longhorn", "longhorn": {}}
+    spec["backup"]["targets"] = {"site": {"url": "s3://dciab@s3.site.example.org/backups"},
+                                 "offsite": {"mode": "copy", "url": "nfs://nas.dr.example.org:/dciab"}}
+    names = live.dns_names(spec)
+    assert "s3.site.example.org" in names and "nas.dr.example.org" in names
+    assert live.tasks(spec, Path("examples"), 1)
+
+
+def test_dns_names_still_read_a_tier_longhorn_backup_target():
+    spec = copy.deepcopy(load_example("proxmox")["spec"])
+    spec["storage"]["block"] = {"provider": "longhorn",
+                                "longhorn": {"backupTarget": "s3://lh@minio.tier.example.org:9000/x"}}
+    assert "minio.tier.example.org" in live.dns_names(spec)
