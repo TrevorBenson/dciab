@@ -688,7 +688,7 @@ def _both_detail(source: Path, new: Path, compare: bool = False) -> str:
         hint = (f" The two hold identical files: an interrupted move left a complete copy in {new}. "
                 f"Move {source} aside (or remove it) and run again.")
     elif same is None:
-        hint = f" (Couldn't compare the two folders' contents to tell whether they're identical.)"
+        hint = " (Couldn't compare the two folders' contents to tell whether they're identical.)"
     elif a > b:
         hint = f" {new} lacks {', '.join(sorted(a - b))}, which {source} has: it looks like the partial one."
     elif b > a:
@@ -801,9 +801,15 @@ def preload_bytes(plan: "Plan", work: Path, runner: Optional[Runner] = None) -> 
         refs = preload.lock_refs(payload)
     except preload.PreloadError:
         return 0
+    # Images already loaded are skipped only when the storage step keeps the current storage:
+    # if it moves storage to <work>/containers, preload loads every image again there.
     try:
-        todo = {k: ref for k, ref in refs.items() if not preload._exists(ref, runner or run)}
-    except (OSError, FileNotFoundError):
+        r = runner or run
+        if storage_kept(work / "containers", current_graphroot(r)):
+            todo = {k: ref for k, ref in refs.items() if not preload._exists(ref, r)}
+        else:
+            todo = dict(refs)
+    except (OSError, subprocess.CalledProcessError):
         todo = dict(refs)                         # no podman to ask: count every image
     if not todo:
         return 0

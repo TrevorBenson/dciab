@@ -426,9 +426,17 @@ def test_preload_bytes_counts_images_not_yet_loaded(tmp_path, monkeypatch):
     monkeypatch.setattr(preload, "lock_refs", lambda d: refs)
     asked = []
     monkeypatch.setattr(preload, "image_bytes", lambda d, todo: asked.append(dict(todo)) or 100 * len(todo))
+    # Storage the storage step will move (another filesystem): every image is loaded again into
+    # <work>/containers, so images the old storage already holds are still counted.
     monkeypatch.setattr(cli, "current_graphroot", lambda runner=None: "/elsewhere/storage")
+    monkeypatch.setattr(preload, "_exists", lambda ref, runner: True)
+    assert cli.preload_bytes(plan, tmp_path) == 200                     # storage moves: all counted
+    # Storage the storage step keeps (already on the work disk's filesystem).
+    kept = tmp_path / "storage"
+    kept.mkdir()
+    monkeypatch.setattr(cli, "current_graphroot", lambda runner=None: str(kept))
     monkeypatch.setattr(preload, "_exists", lambda ref, runner: False)
-    assert cli.preload_bytes(plan, tmp_path) == 200                     # storage elsewhere: still counted
+    assert cli.preload_bytes(plan, tmp_path) == 200
     monkeypatch.setattr(preload, "_exists", lambda ref, runner: ref.startswith("r/caddy"))
     assert cli.preload_bytes(plan, tmp_path) == 100 and asked[-1] == {"coredns": "r/coredns@sha256:1"}
     monkeypatch.setattr(preload, "_exists", lambda ref, runner: True)
