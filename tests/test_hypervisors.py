@@ -10,7 +10,6 @@ import os
 import shutil
 import ssl
 import subprocess
-import sys
 import threading
 from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -67,7 +66,6 @@ def test_answer_file_golden():
     assert answer.render(doc, host(doc), "$6$fake$pve01") == GOLDEN
 
 
-@pytest.mark.skipif(sys.version_info < (3, 11), reason="tomllib is in Python 3.11+")
 def test_answer_file_is_valid_toml():
     import tomllib
     doc = bare()
@@ -2150,7 +2148,6 @@ def test_tagged_answer_file_runs_the_hook_from_the_iso_before_networking():
     assert text == GOLDEN + '\n[first-boot]\nsource = "from-iso"\nordering = "before-network"\n'
 
 
-@pytest.mark.skipif(sys.version_info < (3, 11), reason="tomllib is in Python 3.11+")
 def test_tagged_answer_file_is_valid_toml():
     import tomllib
     doc = tagged_doc()

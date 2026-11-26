@@ -16,18 +16,16 @@ concurrency:
 
 jobs:
   test:
-    name: tests (Python ${{ matrix.python }})
-    runs-on: ubuntu-24.04  # still offers Python 3.9; newer images dropped it
+    # Python 3.12 is the floor: Rocky Linux 10's python3 (the bootstrap host's OS, ADR 0002).
+    # The rocky10 job below also runs the validator on that distro's own Python.
+    name: tests (Python 3.12)
+    runs-on: ubuntu-latest
     timeout-minutes: 15
-    strategy:
-      fail-fast: false
-      matrix:
-        python: ["3.9", "3.12"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: ${{ matrix.python }}
+          python-version: "3.12"
       - run: pip install -r requirements-dev.txt
       - uses: actions/cache@v4
         with:

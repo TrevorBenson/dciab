@@ -50,8 +50,8 @@ require_python() {
     echo "dciab: python3 is required (Rocky Linux ships it as the python3 package)" >&2
     exit 2
   fi
-  if ! python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 9) else 1)'; then
-    echo "dciab: python3 3.9 or newer is required" >&2
+  if ! python3 -c 'import sys; sys.exit(0 if sys.version_info >= (3, 12) else 1)'; then
+    echo "dciab: python3 3.12 or newer is required (Rocky Linux 10's python3)" >&2
     exit 2
   fi
 }

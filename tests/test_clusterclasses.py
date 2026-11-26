@@ -400,7 +400,6 @@ def test_audit_policy_is_the_same_in_every_class():
 
 def test_e2e_verifier_accepts_the_class_audit_settings():
     """hack/e2e/verify.py checks the same audit settings the classes set."""
-    pytest.importorskip("tomllib")  # verify.py runs on Python 3.11+
     verify = _load_path("e2e_verify", ROOT / "hack" / "e2e" / "verify.py")
     assert verify.AUDIT_ARGS == AUDIT_ARGS
     for f in _installed_class_files():
