@@ -204,11 +204,13 @@ def test_denials_keeps_capmox_logs_a_drain_would_lose_and_fails_on_lookup_errors
     assert 'rm -f "$LAB_DIR"/capmox-*.log' in seed[:seed.index("\n}\n")]
 
 
-def test_lab_secrets_come_from_the_environment_not_the_caller():
-    """handoff/LAB.md: the tokens are lab-write environment secrets. A reusable workflow's job
-    that declares environment: lab-write gets them; lab.yml passes none (no repository copies)."""
-    for job in load("lab.yml")["jobs"].values():
-        assert "secrets" not in job, "lab.yml passes secrets; they belong in the lab-write environment"
+def test_lab_yml_lets_the_reusable_workflows_read_lab_write_secrets():
+    """Without secrets: inherit, a called workflow's job deployed to lab-write gets the
+    environment's variables but empty secrets (lab runs 45745673160, 45751385186)."""
+    calls = [job for job in load("lab.yml")["jobs"].values() if "uses" in job]
+    assert len(calls) == 3
+    for job in calls:
+        assert job.get("secrets") == "inherit", job["uses"]
 
 
 def test_lab_pve_action_names_empty_inputs_before_running_the_check():

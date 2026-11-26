@@ -16,8 +16,9 @@ inputs:
 runs:
   using: composite
   steps:
-    # An empty input here means the secret or variable isn't in the job's environment (lab-write
-    # or lab-read, handoff/LAB.md) under that exact name; say so, rather than pve.sh's "not set".
+    # An empty input means the secret or variable didn't reach the job: missing from its
+    # environment (lab-write or lab-read, handoff/LAB.md) under that exact name, or, in a
+    # reusable workflow, a caller without secrets: inherit. Say so, not pve.sh's "not set".
     - shell: bash
       env:
         HAVE_URL: ${{ inputs.url != '' }}
@@ -32,7 +33,7 @@ runs:
         [[ "$HAVE_SECRET" == true ]] || missing+=("token-secret")
         if (( ${#missing[@]} )); then
           for m in "${missing[@]}"; do
-            echo "::error::lab-pve: input $m is empty. Check that it is saved as an environment secret (or, for url and fingerprint, an environment or repository variable) of this job's environment, under the exact name the workflow reads."
+            echo "::error::lab-pve: input $m is empty. Check that it is an environment secret (url and fingerprint: a variable) of this job's environment under the exact name the workflow reads, and, if this is a reusable workflow, that its caller sets secrets: inherit."
           done
           exit 1
         fi
