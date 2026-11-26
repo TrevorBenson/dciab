@@ -117,8 +117,9 @@ leaves: dciab_archive, dciab_identity, dciab_state
   be stale. The 3.9 leg is the slower unit leg (88 vs 77 s, measured) but off the critical
   path, so dropping it saves one job slot, no wall time. **Decided (Trevor, 2026-11-25):**
   the minimum is EL10's Python, 3.12. #256 raises the launcher and README floor and drops
-  the 3.9 leg, which makes an emulated-lab push 19 jobs. 3.13 would speed up pure-Python code a little; the critical paths don't run
-  pure-Python hot loops, so the gain is ≈0 s (assumed).
+  the 3.9 leg (merged), which makes an emulated-lab push 19 jobs. 3.13 would speed up
+  pure-Python code a little; the critical paths don't run pure-Python hot loops, so the gain
+  is ≈0 s (assumed).
 - **`uv`:** not used. Installs are `pip install` of 2–4 small packages: 2–8 s p50 per job
   (measured), 23 `pip install`/`setup-python` lines in ci.yml. `uv` with a cache would cut each
   to ≈1–2 s (assumed from typical uv vs pip ratios), so about **3–6 s per job and ≈2–3 s on
@@ -173,7 +174,7 @@ Mojo speed changes. No further assessment is warranted.
 - **Concurrency:** `cancel-in-progress` for superseded PR runs is in place in `ci.yml` and the
   emulated workflow (#240). Nothing to add.
 - **Deprecation, not speed:** every job warns that `actions/checkout@v4` and
-  `actions/setup-python@v5` (and, in the emulated legs, `actions/cache/restore@v4` and `actions/upload-artifact@v4`) target Node.js 20, now forced onto Node 24.
+  `actions/setup-python@v5` (and `actions/cache@v4`, `cache/restore@v4`, `cache/save@v4` and `upload-artifact@v4`) target Node.js 20, now forced onto Node 24.
 
 ## Data I couldn't get
 
