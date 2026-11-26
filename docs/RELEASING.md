@@ -24,14 +24,14 @@ cat dciab-1.0.0-alpha.1.tar.part-* > dciab-1.0.0-alpha.1.tar     # only if the r
 ./dciab verify-archive --key keys/dciab-release.pub dciab-1.0.0-alpha.1.tar
 ```
 
-With cosign alone, all four checks are needed. The last one matters: MANIFEST only covers the files it lists, so a file added to a tampered download (a cached `.pyc`, say) would pass the first three.
+With cosign alone (in bash, chained so any failure stops it), all four checks are needed. The last one matters: MANIFEST only covers the files it lists, so a file added to a tampered download (a cached `.pyc`, say) would pass the first three.
 
-```sh
-tar -xf dciab-1.0.0-alpha.1.tar dciab-1.0.0-alpha.1/MANIFEST dciab-1.0.0-alpha.1/MANIFEST.sig
+```bash
+tar -xf dciab-1.0.0-alpha.1.tar dciab-1.0.0-alpha.1/MANIFEST dciab-1.0.0-alpha.1/MANIFEST.sig &&
 cosign verify-blob --key cosign.pub --insecure-ignore-tlog=true \
-  --signature dciab-1.0.0-alpha.1/MANIFEST.sig dciab-1.0.0-alpha.1/MANIFEST
-tar -xf dciab-1.0.0-alpha.1.tar && cd dciab-1.0.0-alpha.1 && sha256sum -c --quiet MANIFEST
-find . ! -type d ! -name MANIFEST ! -name MANIFEST.sig | sed 's|^\./||' | sort \
+  --signature dciab-1.0.0-alpha.1/MANIFEST.sig dciab-1.0.0-alpha.1/MANIFEST &&
+tar -xf dciab-1.0.0-alpha.1.tar && cd dciab-1.0.0-alpha.1 && sha256sum -c --quiet MANIFEST &&
+find . ! -type d ! -path ./MANIFEST ! -path ./MANIFEST.sig | sed 's|^\./||' | sort \
   | diff - <(cut -c67- MANIFEST | sort) && echo 'nothing unlisted'
 ```
 

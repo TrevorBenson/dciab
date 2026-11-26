@@ -152,16 +152,16 @@ def notes(title: str, tag: str, archive: str, repo: str, key: Path, split: bool)
         f"./dciab verify-archive --key keys/dciab-release.pub {archive}",
         "```",
         "",
-        "With cosign alone (all four checks are needed; the last one rejects files MANIFEST "
-        "doesn't list):",
+        "With cosign alone, in bash (all four checks are needed, chained so any failure stops "
+        "it; the last one rejects files MANIFEST doesn't list):",
         "",
         "```",
-        f"tar -xf {archive} {prefix}/MANIFEST {prefix}/MANIFEST.sig",
+        f"tar -xf {archive} {prefix}/MANIFEST {prefix}/MANIFEST.sig &&",
         "cosign verify-blob --key cosign.pub --insecure-ignore-tlog=true \\",
-        f"  --signature {prefix}/MANIFEST.sig {prefix}/MANIFEST",
-        f"tar -xf {archive} && cd {prefix} && sha256sum -c --quiet MANIFEST",
-        "find . ! -type d ! -name MANIFEST ! -name MANIFEST.sig | sed 's|^\\./||' | sort \\",
-        "  | diff - <(cut -c67- MANIFEST | sort) && echo 'nothing unlisted'",
+        f"  --signature {prefix}/MANIFEST.sig {prefix}/MANIFEST &&",
+        f"tar -xf {archive} && cd {prefix} && sha256sum -c --quiet MANIFEST &&",
+        "find . ! -type d ! -path ./MANIFEST ! -path ./MANIFEST.sig | sed 's|^\\./||' | sort \\",
+        "  | diff - <(cut -c67- MANIFEST | sort) && echo 'nothing unlisted'   # bash",
         "```",
         "",
     ]
