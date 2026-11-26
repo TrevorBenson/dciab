@@ -56,9 +56,17 @@ jobs:
           set -euo pipefail
           owner="${GITHUB_REPOSITORY_OWNER,,}"
           image="ghcr.io/$owner/dciab-node:$TAG" disk="ghcr.io/$owner/dciab-node-disk:$TAG-proxmox"
-          if skopeo inspect --raw "docker://$image" >/dev/null 2>&1 && oras manifest fetch "$disk" >/dev/null 2>&1; then
+          have_image=false have_disk=false
+          skopeo inspect --raw "docker://$image" >/dev/null 2>&1 && have_image=true
+          oras manifest fetch "$disk" >/dev/null 2>&1 && have_disk=true
+          if [[ "$have_image" == true && "$have_disk" == true ]]; then
             echo "skip=true" >> "$GITHUB_OUTPUT"
             echo "Already published: $TAG (nothing to build)" >> "$GITHUB_STEP_SUMMARY"
+          elif [[ "$have_image" == true || "$have_disk" == true ]]; then
+            # bootc builds aren't reproducible: publishing the missing half from a new build
+            # would pair an image and a disk from different builds under one tag.
+            echo "::error::$TAG is half published (image: $have_image, disk: $have_disk). Delete the published half from GHCR, then re-run."
+            exit 1
           else
             echo "skip=false" >> "$GITHUB_OUTPUT"
           fi
@@ -86,24 +94,19 @@ jobs:
           disk="ghcr.io/$owner/dciab-node-disk:$TAG-proxmox"
           echo "$GH_TOKEN" | sudo podman login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
           echo "$GH_TOKEN" | oras login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
-          # Each artifact is checked on its own, so a run that stopped after the image still
-          # pushes the disk; a published tag is never overwritten (bundle.lock pins its digest).
-          if skopeo inspect --raw "docker://$image" >/dev/null 2>&1; then
-            image_digest="$(skopeo inspect --format '{{.Digest}}' "docker://$image")"
-          else
-            sudo podman push --digestfile "$RUNNER_TEMP/image.digest" "localhost/dciab-node:$K8S" "docker://$image"
-            image_digest="$(cat "$RUNNER_TEMP/image.digest")"
+          # Neither half existed when the run started (the "Already published?" step fails a
+          # half-published tag); refuse if one appeared since, rather than pair two builds.
+          if skopeo inspect --raw "docker://$image" >/dev/null 2>&1 || oras manifest fetch "$disk" >/dev/null 2>&1; then
+            echo "::error::$TAG appeared on GHCR during this run; not publishing over it"; exit 1
           fi
+          sudo podman push --digestfile "$RUNNER_TEMP/image.digest" "localhost/dciab-node:$K8S" "docker://$image"
+          image_digest="$(cat "$RUNNER_TEMP/image.digest")"
           out=images/node-bootc/output/qcow2
           sha="$(cut -d' ' -f1 "$out/disk.qcow2.sha256sum")"
-          if oras manifest fetch "$disk" >/dev/null 2>&1; then
-            disk_digest="$(oras manifest fetch --descriptor "$disk" | python3 -c 'import json,sys;print(json.load(sys.stdin)["digest"])')"
-          else
-            (cd "$out" && oras push --artifact-type application/vnd.dciab.node.disk \
-              --annotation "io.dciab.disk.sha256=$sha" \
-              "$disk" disk.qcow2:application/x-qemu-disk disk.qcow2.sha256sum:text/plain) | tee "$RUNNER_TEMP/disk.out"
-            disk_digest="$(sed -n 's/^Digest: //p' "$RUNNER_TEMP/disk.out")"
-          fi
+          (cd "$out" && oras push --artifact-type application/vnd.dciab.node.disk \
+            --annotation "io.dciab.disk.sha256=$sha" \
+            "$disk" disk.qcow2:application/x-qemu-disk disk.qcow2.sha256sum:text/plain) | tee "$RUNNER_TEMP/disk.out"
+          disk_digest="$(sed -n 's/^Digest: //p' "$RUNNER_TEMP/disk.out")"
           {
             echo "### Published $TAG"
             echo "Pin in bundle.lock:"
