@@ -477,7 +477,8 @@ def dns_names(spec: dict) -> List[str]:
 
 
 def _target_host(url: str) -> str:
-    """The host of s3://<bucket>@<endpoint>[:port][/path] or nfs://<server>:/<export>."""
+    """The host of s3://<bucket>@<endpoint>[:port][/path] or nfs://<server>:/<export>.
+    Assumes the URL passed validate's S3/NFS patterns (live checks run only after them)."""
     return url.split("://", 1)[1].split("@", 1)[-1].split(":", 1)[0].split("/", 1)[0]
 
 

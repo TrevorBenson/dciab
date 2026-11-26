@@ -952,3 +952,14 @@ def test_dns_names_still_read_a_tier_longhorn_backup_target():
     spec["storage"]["block"] = {"provider": "longhorn",
                                 "longhorn": {"backupTarget": "s3://lh@minio.tier.example.org:9000/x"}}
     assert "minio.tier.example.org" in live.dns_names(spec)
+
+
+@pytest.mark.parametrize("target", [None, "s3://lh@minio.legacy.example.org/b"])
+def test_dns_names_in_the_old_form_without_spec_backup(target):
+    spec = copy.deepcopy(load_example("proxmox")["spec"])
+    del spec["backup"]
+    spec["storage"]["block"] = {"provider": "longhorn",
+                                "longhorn": {"backupTarget": target} if target else {}}
+    names = live.dns_names(spec)
+    assert ("minio.legacy.example.org" in names) is bool(target)
+    assert names.count("minio.legacy.example.org") <= 1
