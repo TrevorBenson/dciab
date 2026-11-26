@@ -138,22 +138,31 @@ def notes(title: str, tag: str, archive: str, repo: str, key: Path, split: bool)
         "",
         f"Signed with the DCiaB release key: [`keys/dciab-release.pub` at {tag}]({key_url}), "
         f"sha256 `{key_fingerprint(key)}`. The `cosign.pub` attached here is the same file; "
-        "check its sha256 against that before trusting it. Verify with cosign on your PATH and a "
-        "verifier you trust (docs/RELEASING.md), not the `dciab` inside the archive:",
+        "check its sha256 against that before trusting it. Verify with a verifier you trust "
+        "(docs/RELEASING.md), never the `dciab` inside the archive.",
+        "",
+        f"From a checkout of {tag} (checks the signature, every listed file, and that nothing "
+        "unlisted was added):",
         "",
         "```",
     ]
     if split:
         lines.append(f"cat {archive}.part-* > {archive}   # split under GitHub's 2 GiB asset limit")
     lines += [
-        f"sha256sum -c {archive}.sha256",
-        f"tar -xf {archive} {prefix}/MANIFEST {prefix}/MANIFEST.sig",
-        f"cosign verify-blob --key cosign.pub --insecure-ignore-tlog=true \\",
-        f"  --signature {prefix}/MANIFEST.sig {prefix}/MANIFEST",
-        f"tar -xf {archive} && (cd {prefix} && sha256sum -c --quiet MANIFEST)",
+        f"./dciab verify-archive --key keys/dciab-release.pub {archive}",
         "```",
         "",
-        f"Or, from a checkout of {tag}: `./dciab verify-archive --key keys/dciab-release.pub {archive}`.",
+        "With cosign alone (all four checks are needed; the last one rejects files MANIFEST "
+        "doesn't list):",
+        "",
+        "```",
+        f"tar -xf {archive} {prefix}/MANIFEST {prefix}/MANIFEST.sig",
+        "cosign verify-blob --key cosign.pub --insecure-ignore-tlog=true \\",
+        f"  --signature {prefix}/MANIFEST.sig {prefix}/MANIFEST",
+        f"tar -xf {archive} && cd {prefix} && sha256sum -c --quiet MANIFEST",
+        "find . ! -type d ! -name MANIFEST ! -name MANIFEST.sig | sed 's|^\\./||' | sort \\",
+        "  | diff - <(cut -c67- MANIFEST | sort) && echo 'nothing unlisted'",
+        "```",
         "",
     ]
     return "\n".join(lines)

@@ -17,16 +17,25 @@ A site checks an archive offline with a key and a verifier it trusts, never the 
 - **The key:** `keys/dciab-release.pub` at the release's tag. The release notes print its sha256 fingerprint; the attached `cosign.pub` is the same file, so check its sha256 against the fingerprint before using it.
 - **The verifier:** cosign on the PATH (any recent release), or `dciab` from a checkout of the tag.
 
+From a checkout of the tag (the recommended check: the signature, every listed file, and nothing unlisted added):
+
 ```sh
 cat dciab-1.0.0-alpha.1.tar.part-* > dciab-1.0.0-alpha.1.tar     # only if the release has pieces
-sha256sum -c dciab-1.0.0-alpha.1.tar.sha256
+./dciab verify-archive --key keys/dciab-release.pub dciab-1.0.0-alpha.1.tar
+```
+
+With cosign alone, all four checks are needed. The last one matters: MANIFEST only covers the files it lists, so a file added to a tampered download (a cached `.pyc`, say) would pass the first three.
+
+```sh
 tar -xf dciab-1.0.0-alpha.1.tar dciab-1.0.0-alpha.1/MANIFEST dciab-1.0.0-alpha.1/MANIFEST.sig
 cosign verify-blob --key cosign.pub --insecure-ignore-tlog=true \
   --signature dciab-1.0.0-alpha.1/MANIFEST.sig dciab-1.0.0-alpha.1/MANIFEST
-tar -xf dciab-1.0.0-alpha.1.tar && (cd dciab-1.0.0-alpha.1 && sha256sum -c --quiet MANIFEST)
+tar -xf dciab-1.0.0-alpha.1.tar && cd dciab-1.0.0-alpha.1 && sha256sum -c --quiet MANIFEST
+find . ! -type d ! -name MANIFEST ! -name MANIFEST.sig | sed 's|^\./||' | sort \
+  | diff - <(cut -c67- MANIFEST | sort) && echo 'nothing unlisted'
 ```
 
-Or, from a checkout of the tag: `./dciab verify-archive --key keys/dciab-release.pub dciab-1.0.0-alpha.1.tar`. The archive is signed without a transparency-log entry (it is built for offline sites), hence `--insecure-ignore-tlog`.
+The `.sha256` asset isn't signed; it only catches a damaged download. The archive is signed without a transparency-log entry (it is built for offline sites), hence `--insecure-ignore-tlog`.
 
 ## The release key
 

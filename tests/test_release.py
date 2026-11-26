@@ -205,5 +205,8 @@ def test_notes_point_at_the_key_at_the_tag_with_its_fingerprint(tmp_path):
     assert fp in text
     assert "cat dciab-1.0.0-alpha.1.tar.part-* > dciab-1.0.0-alpha.1.tar" in text
     assert "cosign verify-blob --key" in text
+    # The trusted verifier is the primary path, and the cosign-only path also rejects unlisted files.
+    assert text.index("./dciab verify-archive") < text.index("cosign verify-blob")
+    assert "cut -c67- MANIFEST" in text and "nothing unlisted" in text
     whole = release.notes("DCiaB r1alpha1", "r1alpha1", "dciab-1.0.0-alpha.1.tar", "o/dciab", key, split=False)
     assert ".part-" not in whole
