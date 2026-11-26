@@ -43,7 +43,9 @@ podman build --pull=missing -t "$tag" \
 if [[ "${print_pins:-false}" == true || -z "$keyring_sha" || -z "$version" || "$base" != *@sha256:* ]]; then
   got_version="$(podman run --rm --entrypoint dpkg-query "$tag" -W -f '${Version}' proxmox-auto-install-assistant)"
   got_sha="$(podman run --rm --entrypoint sha256sum "$tag" /usr/share/keyrings/proxmox-archive-keyring.gpg | cut -d' ' -f1)"
-  got_base="$(podman image inspect --format '{{.Digest}}' "$base")"
+  # The digest hack/check_image_digests.py compares: the sha256 of the raw manifest (an index for
+  # a multi-arch tag), not podman's per-platform digest.
+  got_base="sha256:$(skopeo inspect --raw "docker://${base%@*}" | sha256sum | cut -d' ' -f1)"
   echo "pins to record in bundle.lock pveAssistant: version: \"$got_version\"  keyringSHA256: \"$got_sha\"  baseImage: \"${base%@*}@$got_base\"" >&2
 fi
 echo "$tag"
