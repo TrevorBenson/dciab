@@ -10,6 +10,15 @@ on:
         description: Name of the node template to clone (look it up; VMIDs change)
         type: string
         required: true
+    secrets:
+      PVE_TOKEN_ID:
+        required: false
+      PVE_TOKEN_SECRET:
+        required: false
+      CAPMOX_TOKEN_ID:
+        required: false
+      CAPMOX_TOKEN_SECRET:
+        required: false
 
 permissions:
   contents: read

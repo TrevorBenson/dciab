@@ -11,6 +11,11 @@ on:
         description: Template name; default dciab-node-<commit>
         type: string
         default: ""
+    secrets:
+      PVE_TOKEN_ID:
+        required: false
+      PVE_TOKEN_SECRET:
+        required: false
     outputs:
       template-name:
         description: The published template's name (look it up by name; VMIDs change)
