@@ -360,6 +360,8 @@ jobs:
             --only registry.k8s.io/pause --only ghcr.io/kube-vip/kube-vip
           python3 build/archive.py charts --out "$out"
           python3 build/archive.py providers --out "$out" --manifests "$(python3 hack/fetch_crds.py)"
+          # Node disks: pulled and checked when bundle.lock pins them; skipped (noted) until then.
+          python3 build/archive.py nodes --out "$out" --oras "$out/bin/oras"
           python3 build/package.py tools --out "$RUNNER_TEMP/build"
           python3 build/package.py sboms --payload "$out" --syft "$RUNNER_TEMP/build/tools/syft"
           python3 build/archive.py sums --out "$out"
@@ -1023,7 +1025,7 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
-      - run: shellcheck dciab hack/e2e/run.sh hack/check_frozen_classes.sh images/node/build.sh lib/steps/mgmt.sh lib/steps/mgmt-pivot.sh lib/steps/services.sh lib/steps/capi-providers.sh lib/steps/storage-classes.sh lib/steps/block-storage.sh images/node-bootc/build.sh images/node-bootc/rootfs/usr/libexec/dciab/growroot images/bootstrap-bootc/build.sh images/usb/build.sh images/day0-chrony/build.sh images/backup/build.sh images/lab-runner/build.sh images/lab-runner/rootfs/usr/libexec/dciab-lab-runner/loop images/lab-runner/rootfs/usr/libexec/dciab-lab-runner/job-started.sh addons/cilium/install.sh addons/longhorn/install.sh addons/vsphere-cpi/install.sh addons/csi/install.sh addons/kubelet-csr-approver/install.sh hack/e2e/boot-node-image.sh hack/lab/runner-image-id.sh hack/lab/fetch-runner-disk.sh hack/lab/pve.sh hack/lab/check-token.sh hack/lab/template.sh hack/lab/cluster.sh hack/lab/mgmt.sh hack/e2e/hypervisors/setup.sh hack/media/rocky10-dropin.sh hack/media/preload-e2e.sh
+      - run: shellcheck dciab hack/e2e/run.sh hack/check_frozen_classes.sh images/node/build.sh lib/steps/mgmt.sh lib/steps/mgmt-pivot.sh lib/steps/services.sh lib/steps/capi-providers.sh lib/steps/storage-classes.sh lib/steps/block-storage.sh images/node-bootc/build.sh images/node-bootc/rootfs/usr/libexec/dciab/growroot images/bootstrap-bootc/build.sh images/usb/build.sh images/day0-chrony/build.sh images/backup/build.sh images/lab-runner/build.sh images/lab-runner/rootfs/usr/libexec/dciab-lab-runner/loop images/lab-runner/rootfs/usr/libexec/dciab-lab-runner/job-started.sh addons/cilium/install.sh addons/longhorn/install.sh addons/vsphere-cpi/install.sh addons/csi/install.sh addons/kubelet-csr-approver/install.sh hack/e2e/boot-node-image.sh hack/lab/runner-image-id.sh hack/lab/fetch-runner-disk.sh hack/lab/pve.sh hack/lab/check-token.sh hack/lab/template.sh hack/lab/node-image-id.sh build/payload.sh hack/lab/cluster.sh hack/lab/mgmt.sh hack/e2e/hypervisors/setup.sh hack/media/rocky10-dropin.sh hack/media/preload-e2e.sh
 
   day0-preload:
     # dciab media's preload step loads the Day 0 images once from the archive's payload (#181).
@@ -1074,7 +1076,8 @@ jobs:
     container: rockylinux/rockylinux:10
     steps:
       - uses: actions/checkout@v4
-      - run: dnf -y install python3 python3-jsonschema python3-pyyaml
+      # openssl: validate checks an imported intermediate CA with it (and only notes a skip without it).
+      - run: dnf -y install python3 python3-jsonschema python3-pyyaml openssl
       - name: Validate every example with placeholder secrets
         env:
           DCIAB_PVE_TOKEN: placeholder
@@ -1084,12 +1087,22 @@ jobs:
           for example in examples/*.yaml; do
             work="$(mktemp -d)"
             cp "$example" "$work/"
-            for s in vsphere.pw longhorn-s3.env backup-site.env backup-offsite.env pki/intermediate.crt pki/intermediate.key pki/chain.pem \
+            for s in vsphere.pw longhorn-s3.env backup-site.env backup-offsite.env pki/intermediate.key pki/chain.pem \
                      bmc/ca.pem bmc/r760-01 bmc/r760-02 bmc/r760-03 bmc/r760-04 bmc/r760-05 bmc/r760-06 bmc/r760-07 \
                      hv/root bmc/pve01 bmc/pve02 bmc/pve03; do
               mkdir -p "$(dirname "$work/secrets/$s")"
               echo placeholder > "$work/secrets/$s"
               chmod 600 "$work/secrets/$s"
             done
-            ./dciab validate "$work/$(basename "$example")"
+            # validate reads the imported intermediate, so it must be a real CA certificate.
+            openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -keyout /dev/null -subj /CN=dciab-ci \
+              -days 3650 -addext basicConstraints=critical,CA:TRUE -addext keyUsage=critical,keyCertSign,cRLSign \
+              -out "$work/secrets/pki/intermediate.crt" 2>/dev/null
+            chmod 600 "$work/secrets/pki/intermediate.crt"
+            out="$(./dciab validate "$work/$(basename "$example")" 2>&1)" || { echo "$out"; exit 1; }
+            echo "$out"
+            if grep -q "mode: import-intermediate" "$example" && grep -q "openssl is not installed" <<<"$out"; then
+              echo "::error::$example: validate skipped the imported intermediate check (no openssl)"
+              exit 1
+            fi
           done

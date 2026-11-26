@@ -1,0 +1,125 @@
+name: lab node image
+
+# Builds the node image (images/node-bootc, the vm variant) on the self-hosted lab runner and
+# publishes it to GHCR, once per tag: the bootc image, and its Proxmox VE disk (qcow2) as an
+# OCI artifact the archive build pulls (build/archive.py nodes). A hosted Ubuntu runner can't
+# build the image's Rocky bootc base, so this runs on the lab runner, like lab-runner-image.yml.
+#
+# The job-started hook refuses pull requests and other branches: this runs on a push to main
+# or a dispatch of main. A change to the recipe is checked before merging by building it
+# locally (images/node-bootc/build.sh) and by node-image-boot.yml / lab-template.yml.
+#
+# The tag is <kubernetes version>-<id> (hack/lab/node-image-id.sh): it changes when the image
+# would. After the first publish of a tag, pin what the job summary prints in bundle.lock
+# (nodeImages.published.image and .disks.proxmox), and make the packages public so the archive
+# build can pull them without a login.
+on:
+  push:
+    branches: [main]
+    paths:
+      - images/node-bootc/**
+      - hack/lab/node-image-id.sh
+      - bundle.lock
+      - .github/workflows/lab-node-image.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# One lab, one set of fixed addresses, shared with hand runs: the lab concurrency group.
+concurrency:
+  group: dciab-lab
+  cancel-in-progress: false
+
+jobs:
+  image:
+    name: node image and Proxmox VE disk
+    runs-on: [self-hosted, dciab-lab]
+    timeout-minutes: 75
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4
+      - name: Tag
+        id: tag
+        run: |
+          set -euo pipefail
+          echo "tag=$(hack/lab/node-image-id.sh)" >> "$GITHUB_OUTPUT"
+          echo "k8s=$(python3 -c 'import yaml;print(yaml.safe_load(open("bundle.lock"))["kubernetes"]["version"])')" >> "$GITHUB_OUTPUT"
+          df -h /
+      - name: Already published?
+        id: published
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          set -euo pipefail
+          owner="${GITHUB_REPOSITORY_OWNER,,}"
+          image="ghcr.io/$owner/dciab-node:$TAG" disk="ghcr.io/$owner/dciab-node-disk:$TAG-proxmox"
+          have_image=false have_disk=false
+          skopeo inspect --raw "docker://$image" >/dev/null 2>&1 && have_image=true
+          oras manifest fetch "$disk" >/dev/null 2>&1 && have_disk=true
+          if [[ "$have_image" == true && "$have_disk" == true ]]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "Already published: $TAG (nothing to build)" >> "$GITHUB_STEP_SUMMARY"
+          elif [[ "$have_image" == true || "$have_disk" == true ]]; then
+            # bootc builds aren't reproducible: publishing the missing half from a new build
+            # would pair an image and a disk from different builds under one tag.
+            echo "::error::$TAG is half published (image: $have_image, disk: $have_disk). Delete the published half from GHCR, then re-run."
+            exit 1
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Node image and qcow2 disk
+        if: steps.published.outputs.skip != 'true'
+        run: sudo images/node-bootc/build.sh --type qcow2
+      - name: What was built
+        if: steps.published.outputs.skip != 'true'
+        run: |
+          set -euo pipefail
+          out=images/node-bootc/output/qcow2
+          sudo chown -R "$(id -u):$(id -g)" images/node-bootc/output
+          qemu-img info "$out/disk.qcow2" | sed -n '1,6p'
+          cat "$out/disk.qcow2.sha256sum"
+      - name: Publish (main only; each tag once)
+        if: steps.published.outputs.skip != 'true' && github.ref == 'refs/heads/main'
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+          K8S: ${{ steps.tag.outputs.k8s }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          owner="${GITHUB_REPOSITORY_OWNER,,}"
+          image="ghcr.io/$owner/dciab-node:$TAG"
+          disk="ghcr.io/$owner/dciab-node-disk:$TAG-proxmox"
+          echo "$GH_TOKEN" | sudo podman login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          echo "$GH_TOKEN" | oras login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+          # Neither half existed when the run started (the "Already published?" step fails a
+          # half-published tag); refuse if one appeared since, rather than pair two builds.
+          if skopeo inspect --raw "docker://$image" >/dev/null 2>&1 || oras manifest fetch "$disk" >/dev/null 2>&1; then
+            echo "::error::$TAG appeared on GHCR during this run; not publishing over it"; exit 1
+          fi
+          sudo podman push --digestfile "$RUNNER_TEMP/image.digest" "localhost/dciab-node:$K8S" "docker://$image"
+          image_digest="$(cat "$RUNNER_TEMP/image.digest")"
+          out=images/node-bootc/output/qcow2
+          sha="$(cut -d' ' -f1 "$out/disk.qcow2.sha256sum")"
+          (cd "$out" && oras push --artifact-type application/vnd.dciab.node.disk \
+            --annotation "io.dciab.disk.sha256=$sha" \
+            "$disk" disk.qcow2:application/x-qemu-disk disk.qcow2.sha256sum:text/plain) | tee "$RUNNER_TEMP/disk.out"
+          disk_digest="$(sed -n 's/^Digest: //p' "$RUNNER_TEMP/disk.out")"
+          {
+            echo "### Published $TAG"
+            echo "Pin in bundle.lock:"
+            echo '```yaml'
+            echo "  published:"
+            echo "    image: \"$image@$image_digest\""
+            echo "    disks:"
+            echo "      proxmox: {ref: \"$disk@$disk_digest\", file: disk.qcow2, sha256: \"$sha\"}"
+            echo '```'
+            echo "Then make the dciab-node and dciab-node-disk packages public (GitHub package settings)."
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Clean up
+        if: always()
+        run: |
+          sudo rm -rf images/node-bootc/output images/node-bootc/build || true
+          sudo podman image prune -f >/dev/null || true

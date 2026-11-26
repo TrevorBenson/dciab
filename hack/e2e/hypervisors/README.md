@@ -20,6 +20,11 @@ held-without-flag, first-install, rerun, lost-state, lost-state-host-off, record
 scenario of the mode. Each leg writes a scenario table to the run summary, annotates a failure on the
 run page, and uploads the report, the logs, the VM's serial console and a screenshot.
 
+In CI, `reinstall` runs on a freshly installed host (its leg's own first-install). Run by hand without
+`DCIAB_LEG`, it runs after `recorded-host-off`, on a host powered back on through Redfish with its install
+record restored; that combined path is only covered there. Scenarios that need an installed host are marked
+`@needs_installed_host` in `run.py`, and the tests check every leg runs first-install before them.
+
 ## Scenarios
 
 | Mode | Scenario | Proves |

@@ -66,8 +66,20 @@ def unpublished(lock: dict) -> List[str]:
     return out
 
 
+# bundle.lock sections whose pinned references the site never pulls: test tooling, build-time
+# bases DCiaB's own images are made from, and node disks (OCI artifacts that archive.py nodes
+# copies into payload/nodes/, not container images).
+NOT_SHIPPED = ("labRunner", "pveAssistant.baseImage", "nodeImages.published.disks")
+
+
+def shipped(path: str) -> bool:
+    return not any(path == p or path.startswith(p + ".") or path.startswith(p + "[") for p in NOT_SHIPPED)
+
+
 def pinned_in_lock(node, path: str = "") -> Iterable[tuple]:
     """(image, bundle.lock path) for every digest-pinned image reference in the lock."""
+    if path and not shipped(path):
+        return
     if isinstance(node, dict):
         for k, v in node.items():
             yield from pinned_in_lock(v, f"{path}.{k}" if path else str(k))

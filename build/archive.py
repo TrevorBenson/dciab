@@ -6,6 +6,7 @@
     python3 build/archive.py charts   --out DIR [--print-digests]
     python3 build/archive.py providers --out DIR --manifests FOLDER
     python3 build/archive.py binaries --out DIR
+    python3 build/archive.py nodes    --out DIR [--oras PATH] [--require-built]
     python3 build/archive.py sums     --out DIR
 
 - digests: for each image the inventory lists without a digest, resolves its tag at the
@@ -20,6 +21,9 @@
   hack/fetch_crds.py downloaded and checked (its output folder) into DIR/providers.
 - binaries: downloads kind, kubectl, helm, clusterctl, oras and cosign into DIR/bin and checks
   each against bundle.lock.
+- nodes: pulls each node disk bundle.lock pins (nodeImages.published.disks) into
+  DIR/nodes/<platform>/ and checks its sha256; DIR/nodes/nodes.yaml lists them. A disk not
+  published yet is skipped with a note; --require-built refuses a missing Proxmox disk.
 - sums: writes DIR/SHA256SUMS for every file in DIR. Signing will sign this file.
 
 Every step is safe to rerun: what is already there and correct is kept. Needs network
@@ -368,6 +372,70 @@ def fetch_binaries(lock: dict, out: Path, fetch: Callable[[str, Path], None] = d
     return lines
 
 
+# ---------------------------------------------------------------- node disks
+
+# Platforms a full archive can't ship without (--require-built). vSphere and Metal3 disks
+# join once their lanes build them.
+REQUIRED_DISKS = ("proxmox",)
+DISK_FILE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
+
+
+def disk_list(lock: dict) -> List[tuple]:
+    """(platform, ref, file, sha256) for every node disk entry in bundle.lock."""
+    disks = (((lock.get("nodeImages") or {}).get("published") or {}).get("disks") or {})
+    out = []
+    for platform, entry in disks.items():
+        entry = entry or {}
+        out.append((platform, entry.get("ref") or "", entry.get("file") or "", entry.get("sha256") or ""))
+    return out
+
+
+def pull_nodes(lock: dict, out: Path, runner: Runner = run, oras: str = "oras",
+               require_built: bool = False) -> List[dict]:
+    """Pull every pinned node disk into DIR/nodes/<platform>/ and check it against bundle.lock."""
+    disks = disk_list(lock)
+    refs = {p: ref for p, ref, _f, _s in disks}
+    # Every required disk must be listed and pinned: a missing key or a missing block counts.
+    missing = [p for p in REQUIRED_DISKS if not refs.get(p)]
+    if require_built and missing:
+        raise ArchiveError(f"nodeImages.published.disks.{', '.join(missing)}: not published and pinned yet "
+                           "(lab-node-image.yml publishes them on main; pin the digests it prints)")
+    dest = staging(out, "nodes")
+    record = []
+    for platform, ref, file, want in disks:
+        if not ref:
+            print(f"nodes {platform}: not published yet, skipped")
+            continue
+        if not DIGEST.search(ref.partition("@")[2]):
+            raise ArchiveError(f"nodeImages.published.disks.{platform}.ref: {ref} is not pinned by digest")
+        if not DISK_FILE.fullmatch(file):
+            raise ArchiveError(f"nodeImages.published.disks.{platform}.file: {file!r} is not a plain file name")
+        if not SHA256.fullmatch(want):
+            raise ArchiveError(f"nodeImages.published.disks.{platform}.sha256: pin the disk's sha256 (64 hex)")
+        folder = dest / platform
+        folder.mkdir()
+        runner([oras, "pull", "--output", str(folder), ref])
+        disk = folder / file
+        if not disk.is_file() or disk.is_symlink():
+            raise ArchiveError(f"{ref}: the artifact has no {file}")
+        got = sha256_file(disk)
+        if got != want:
+            raise ArchiveError(f"{ref}: {file} has sha256 {got}, bundle.lock says {want}")
+        # Metal3 and the template step check <disk>.sha256sum next to the disk.
+        (folder / f"{file}.sha256sum").write_text(f"{got}  {file}\n")
+        for extra in folder.iterdir():
+            if extra.name not in (file, f"{file}.sha256sum"):
+                if extra.is_dir() and not extra.is_symlink():
+                    shutil.rmtree(extra)
+                else:
+                    extra.unlink()
+        record.append({"platform": platform, "file": f"nodes/{platform}/{file}", "sha256": got, "ref": ref})
+        print(f"nodes {platform} {file} {got}")
+    (dest / "nodes.yaml").write_text(yaml.safe_dump({"disks": record}, sort_keys=False))
+    replace_dir(dest, out / "nodes")  # all verified, or the old set stays
+    return record
+
+
 # ---------------------------------------------------------------- sums
 
 def write_sums(out: Path) -> Path:
@@ -403,6 +471,13 @@ def main(argv=None) -> int:
     b = sub.add_parser("binaries", help="download pinned binaries into DIR/bin")
     b.add_argument("--out", type=Path, required=True)
     b.add_argument("--print-sums", action="store_true", help="print each download's sha256 instead of checking")
+    b.add_argument("--only", action="append", default=[], metavar="NAME",
+                   help="download only this binary (repeatable), e.g. the release job's cosign")
+    n = sub.add_parser("nodes", help="pull the pinned node disks into DIR/nodes")
+    n.add_argument("--out", type=Path, required=True)
+    n.add_argument("--oras", default="oras", help="the oras binary (archive.py binaries puts one in DIR/bin)")
+    n.add_argument("--require-built", action="store_true",
+                   help="refuse while a required node disk isn't published and pinned (the full archive)")
     s = sub.add_parser("sums", help="write DIR/SHA256SUMS")
     s.add_argument("--out", type=Path, required=True)
     args = p.parse_args(argv)
@@ -428,7 +503,16 @@ def main(argv=None) -> int:
         elif args.cmd == "providers":
             copy_providers(args.manifests, args.out)
         elif args.cmd == "binaries":
-            fetch_binaries(load_lock(), args.out, print_sums=args.print_sums)
+            lock = load_lock()
+            chosen = None
+            if args.only:
+                chosen = [b for b in binary_list(lock) if b[0] in args.only]
+                unknown = sorted(set(args.only) - {b[0] for b in chosen})
+                if unknown:
+                    raise ArchiveError(f"--only: no such binary: {', '.join(unknown)}")
+            fetch_binaries(lock, args.out, print_sums=args.print_sums, binaries=chosen)
+        elif args.cmd == "nodes":
+            pull_nodes(load_lock(), args.out, oras=args.oras, require_built=args.require_built)
         elif args.cmd == "sums":
             write_sums(args.out)
     except (ArchiveError, subprocess.CalledProcessError) as exc:
