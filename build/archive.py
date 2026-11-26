@@ -121,6 +121,20 @@ def split_ref(ref: str):
     return name, None, digest or None
 
 
+DOCKER_IO_MIRROR_ENV = "DCIAB_MIRROR_DOCKER_IO"
+
+
+def mirror_ref(repo: str) -> Optional[str]:
+    """repo on the Docker Hub mirror named by $DCIAB_MIRROR_DOCKER_IO (a host such as
+    mirror.gcr.io), or None when it isn't set or repo isn't on Docker Hub. Images are
+    pinned by digest, so a mirror can only serve the same bytes."""
+    host = os.environ.get(DOCKER_IO_MIRROR_ENV, "").strip().rstrip("/")
+    for hub in ("docker.io/", "index.docker.io/", "registry-1.docker.io/"):
+        if host and repo.startswith(hub):
+            return host + "/" + repo[len(hub):]
+    return None
+
+
 def layout_name(ref: str) -> str:
     """The image's tag in the OCI layout: its repository, tag and digest start, as one valid tag.
 
@@ -203,13 +217,22 @@ def copy_images(entries: List[dict], out: Path, only: Optional[List[str]] = None
             # manifests name, so the layout must hold that exact index and every image in
             # it. oras copies the graph as is; skopeo can't write a Docker manifest list
             # into an OCI layout without converting it, which changes the digest.
+            # A Docker Hub mirror, when set, is tried first on each attempt (CI's shared
+            # addresses hit Docker Hub's anonymous pull limit); Docker Hub is the fallback.
+            # The digest check below holds either way.
+            sources = [s for s in (mirror_ref(repo), repo) if s]
+            copied = False
             for attempt in range(3):
-                try:
-                    runner([oras, "cp", "--to-oci-layout", f"{repo}@{digest}", f"{layout}:{name}"])
+                for source in sources:
+                    try:
+                        runner([oras, "cp", "--to-oci-layout", f"{source}@{digest}", f"{layout}:{name}"])
+                        copied = True
+                        break
+                    except subprocess.CalledProcessError:
+                        if attempt == 2 and source == sources[-1]:
+                            raise
+                if copied:
                     break
-                except subprocess.CalledProcessError:
-                    if attempt == 2:
-                        raise
             got = layout_digests(layout).get(name)
             if got != digest:
                 raise ArchiveError(f"{ref}: the layout holds {got} under {name}, not {digest}")
