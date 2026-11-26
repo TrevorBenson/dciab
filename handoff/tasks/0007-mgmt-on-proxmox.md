@@ -8,6 +8,16 @@ report: handoff/reports/0007-mgmt-on-proxmox.md
 may_change: []
 ---
 
+## Retry 2 (2026-11-25): run it in CI
+
+These steps now run as the lab workflow `lab-mgmt.yml` (`hack/lab/mgmt.sh`), with the fixes listed under Retry 1 and the `r1` classes writing only CRI-O's mirror file (#172). Don't run them by hand. Instead:
+
+1. With Trevor's go-ahead (it builds MGMT's VMs on `pve1`, and `lab-write` asks him to approve the job), dispatch `lab.yml` from `main` with `run: mgmt` and `template-name: rocky10-bootc-iscsi-kube-v1.36.6` (template 130, `LAB.md`). Leave `untaint-control-plane` off.
+2. Watch the run. If a step fails, collect its log and `hack/lab/mgmt.sh`'s files in `~/.dciab-ci/` on the lab runner if they are still there, and stop: the job's cleanup step removes MGMT and the bootstrap cluster.
+3. Report: the run's URL, pass or fail per workflow step with its duration, the `== mgmt:` step timings (`[NNNs]` prefixes), the move check's line, and anything the cleanup's leftovers check found. Write the report as Retry 1 says (the first attempt from #113's comments, then this run).
+
+The same run is task 0008's token-only end-to-end (its Retry section): report its token, denials and leftovers results there too.
+
 ## Retry (2026-11-23)
 
 The first run (findings on issue #113) built MGMT but stopped at the move: `clusterctl move` ran without `--namespace` and moved nothing, `dciab mgmt` reported success, and `adopt` created a second, empty Cluster on MGMT. Before that, cert-manager couldn't schedule on MGMT's control plane. What changed:

@@ -5,6 +5,10 @@ name: lab mgmt
 # itself and keeps no volumes (ADR 0008, decision 4a: no StorageClass, PVC or storage driver),
 # that its API server loads the AuthenticationConfiguration with a site OIDC issuer and the
 # platform roles are bound to its prefixed groups (ADR 0008, decision 3), a replacement on MGMT, and a re-run that must change nothing. It always cleans up.
+# MGMT's token (CAPMOX_TOKEN_*) is the only credential dciab and CAPMOX get, so the run is also
+# task 0008's token-only end-to-end: validate --live confirms the token holds exactly
+# docs/PROXMOX.md's privileges, CAPMOX's logs show no permission failure, and no bootstrap ISO
+# is left once MGMT is gone.
 # The caller sets the concurrency group.
 on:
   workflow_call:
@@ -48,6 +52,8 @@ jobs:
         env:
           TEMPLATE_NAME: ${{ inputs.template-name }}
         run: hack/lab/mgmt.sh config "$TEMPLATE_NAME"
+      - name: MGMT's token holds exactly docs/PROXMOX.md's privileges (validate --live)
+        run: hack/lab/mgmt.sh token
       - name: dciab seed, twice
         run: hack/lab/mgmt.sh seed
       - name: dciab mgmt
@@ -56,6 +62,9 @@ jobs:
         run: hack/lab/mgmt.sh checks
       - name: dciab mgmt again changes nothing
         run: hack/lab/mgmt.sh rerun
+      - name: No Proxmox permission failure in CAPMOX's logs
+        run: hack/lab/mgmt.sh denials
+      # down ends with the leftovers check: no MGMT VM and no orphaned bootstrap ISO.
       - name: Clean up
         if: always()
         run: hack/lab/mgmt.sh down

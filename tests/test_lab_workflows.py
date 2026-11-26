@@ -107,3 +107,19 @@ def test_the_lab_network_file_has_what_the_scripts_read():
     out = subprocess.run(["bash", "-c", ". hack/lab/pve.sh; lab_get network.gateway; lab_get vmid.test.first"],
                          cwd=ROOT, capture_output=True, text=True, check=True).stdout.split()
     assert out == [n["network"]["gateway"], str(n["vmid"]["test"]["first"])]
+
+
+def test_mgmt_run_is_also_the_token_only_end_to_end():
+    """Task 0008 (#212): MGMT's token is the only credential, checked live before seed,
+    CAPMOX's logs checked for permission failures, and nothing left behind after cleanup."""
+    steps = load("lab-mgmt.yml")["jobs"]["mgmt"]["steps"]
+    runs = [s.get("run", "") for s in steps]
+    order = ["hack/lab/mgmt.sh token", "hack/lab/mgmt.sh seed", "hack/lab/mgmt.sh rerun",
+             "hack/lab/mgmt.sh denials", "hack/lab/mgmt.sh down"]
+    assert [r for r in runs if r in order] == order
+    script = (ROOT / "hack/lab/mgmt.sh").read_text()
+    down = script[script.index("\ndown() {"):]
+    assert "\n  leftovers\n}" in down[:down.index("\n}\n") + 3]
+    assert "--live --output json" in script
+    # Only the CAPMOX token reaches dciab: the site config carries no other Proxmox credential.
+    assert 'px["credentials"]["tokenID"] = os.environ["CAPMOX_TOKEN_ID"]' in script
