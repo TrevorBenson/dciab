@@ -394,7 +394,9 @@ def pull_nodes(lock: dict, out: Path, runner: Runner = run, oras: str = "oras",
                require_built: bool = False) -> List[dict]:
     """Pull every pinned node disk into DIR/nodes/<platform>/ and check it against bundle.lock."""
     disks = disk_list(lock)
-    missing = [p for p, ref, _f, _s in disks if not ref and p in REQUIRED_DISKS]
+    refs = {p: ref for p, ref, _f, _s in disks}
+    # Every required disk must be listed and pinned: a missing key or a missing block counts.
+    missing = [p for p in REQUIRED_DISKS if not refs.get(p)]
     if require_built and missing:
         raise ArchiveError(f"nodeImages.published.disks.{', '.join(missing)}: not published and pinned yet "
                            "(lab-node-image.yml publishes them on main; pin the digests it prints)")

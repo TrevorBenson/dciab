@@ -327,6 +327,17 @@ def test_nodes_skips_unpublished_unless_required(tmp_path, capsys):
         archive.pull_nodes(node_lock(), tmp_path, runner=runner, require_built=True)
 
 
+def test_require_built_refuses_a_missing_entry_or_block(tmp_path):
+    """A required disk missing from bundle.lock (renamed key, dropped block) counts as missing,
+    not as nothing to check (#245 review)."""
+    runner, calls = fake_pull()
+    no_proxmox = {"nodeImages": {"published": {"disks": {"metal3": {"ref": "", "file": "disk.raw", "sha256": ""}}}}}
+    for lock in (no_proxmox, {"nodeImages": {}}, {}):
+        with pytest.raises(archive.ArchiveError, match="proxmox: not published"):
+            archive.pull_nodes(lock, tmp_path, runner=runner, require_built=True)
+    assert calls == []
+
+
 def test_nodes_refuses_bad_pins(tmp_path):
     good = hashlib.sha256(b"qcow2").hexdigest()
     for bad, msg in ((dict(ref="ghcr.io/x/disk:t", sha256=good), "not pinned by digest"),
