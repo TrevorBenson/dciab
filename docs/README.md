@@ -32,6 +32,7 @@ People who change DCiaB: its code, charts, classes and docs. Read the decision r
 | [CONFIG.md](CONFIG.md) | Generated from `schema/dciab.schema.json` by `hack/gen_config_docs.py`; CI fails when they differ, or when a schema key has no description |
 | [Charts: capi-cluster](../charts/capi-cluster/README.md), [capi-clusterclasses](../charts/capi-clusterclasses/README.md) | One cluster's topology, and the ClusterClasses |
 | [Add-ons](../addons/) | Cilium, Longhorn, the CSI drivers, the vSphere cloud provider and kubelet-csr-approver, each with a README |
+| CI review (2026-11-25): [baseline](ci-review/baseline.md), [findings](ci-review/findings.md), [recommendations](ci-review/recommendations.md) | Where PR feedback time goes, and a ranked plan to cut it and watch it |
 
 ### Decision records
 
