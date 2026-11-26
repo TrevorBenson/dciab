@@ -201,3 +201,17 @@ def test_denials_keeps_capmox_logs_a_drain_would_lose_and_fails_on_lookup_errors
     assert '"$LAB_DIR"/capmox-*.log' in denials and 'lab_die "can\'t read' in denials
     seed = script[script.index("\nseed() {"):]
     assert 'rm -f "$LAB_DIR"/capmox-*.log' in seed[:seed.index("\n}\n")]
+
+
+def test_called_workflows_declare_the_secrets_their_environment_provides():
+    """Run 45756644843: the jobs named an environment, yet every secret was empty, because the
+    called workflows declared no `workflow_call.secrets` and lab.yml passed none. Declared names
+    (with `secrets: inherit`) let the job's environment secrets through."""
+    for name in ("template", "cluster", "mgmt"):
+        wf = yaml.safe_load((WF / f"lab-{name}.yml").read_text())
+        declared = set(wf[True]["workflow_call"].get("secrets", {}))
+        used = set(re.findall(r"secrets\.([A-Z_]+)", (WF / f"lab-{name}.yml").read_text()))
+        assert used <= declared, (name, used - declared)
+    entry = yaml.safe_load((WF / "lab.yml").read_text())
+    for job in entry["jobs"].values():
+        assert job["secrets"] == "inherit"

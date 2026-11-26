@@ -21,6 +21,15 @@ on:
         description: Remove the control plane NoSchedule taint after Cilium (workaround for issue 112)
         type: boolean
         default: false
+    secrets:
+      PVE_TOKEN_ID:
+        required: false
+      PVE_TOKEN_SECRET:
+        required: false
+      CAPMOX_TOKEN_ID:
+        required: false
+      CAPMOX_TOKEN_SECRET:
+        required: false
 
 permissions:
   contents: read
