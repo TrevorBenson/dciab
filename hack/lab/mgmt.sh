@@ -38,6 +38,9 @@ rootenv() { sudo --preserve-env=DCIAB_PVE_TOKEN env "PATH=$PAYLOAD/bin:$PATH" "$
 sk() { sudo kubectl --kubeconfig "$STATE/$1.kubeconfig" "${@:2}"; }
 
 payload() {
+  # One payload per bundle.lock hash is ~13G; the lab runner's disk is 100G. Keep only this hash
+  # (jobs share the dciab-lab concurrency group, so nothing else is using an older one).
+  find "$CACHE" -maxdepth 1 -name 'payload-*' ! -name "payload-$KEY" -exec rm -rf {} + 2>/dev/null || true
   [[ ! -e "$PAYLOAD/.complete" ]] || { echo "payload $KEY cached ($(du -sh "$PAYLOAD" | cut -f1))"; return 0; }
   sudo install -d -o "$(id -u)" -g "$(id -g)" "$CACHE"; rm -rf "${PAYLOAD:?}"
   cd "$ROOT"
