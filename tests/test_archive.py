@@ -406,14 +406,15 @@ def test_hosted_jobs_that_pull_from_docker_hub_use_the_mirror():
     """Anonymous Docker Hub pulls from hosted runners hit its rate limit (toomanyrequests):
     every hosted job that runs podman, oras or the archive build goes through the mirror,
     right after its checkout."""
-    pulls = re.compile(r"\bpodman\b|\boras\b|build/archive\.py|dciab (services|seed)")
-    for name in ("ci.yml", "hypervisors-emulated.yml", "archive.yml"):
+    pulls = re.compile(r"\bpodman\b|\boras\b|build/archive\.py(?! binaries)|build/payload\.sh|dciab (services|seed)")
+    for name in ("ci.yml", "hypervisors-emulated.yml", "archive.yml", "release.yml"):
         wf = yaml.safe_load((ROOT / ".github/workflows" / name).read_text())
         for job_name, job in wf["jobs"].items():
             if "self-hosted" in str(job.get("runs-on")):
                 continue
             steps = job.get("steps", [])
-            text = yaml.safe_dump(steps)
+            # A step that only lints scripts (shellcheck build/payload.sh …) pulls nothing.
+            text = yaml.safe_dump([st for st in steps if not str(st.get("run", "")).lstrip().startswith("shellcheck")])
             if not pulls.search(text):
                 continue
             uses = [s.get("uses", "") for s in steps]
@@ -426,3 +427,20 @@ def test_dockerhub_mirror_action_works_as_root_and_keeps_tags_on_docker_hub():
     run = yaml.safe_load((ROOT / ".github/actions/dockerhub-mirror/action.yml").read_text())["runs"]["steps"][0]["run"]
     assert '[ "$(id -u)" = 0 ] || SUDO=sudo' in run and "\nsudo " not in "\n" + run  # Rocky job container: root, no sudo
     assert 'pull-from-mirror = \\"digest-only\\"' in run or 'pull-from-mirror = "digest-only"' in run
+    assert "$SUDO mkdir -p /etc/containers/registries.conf.d" in run and "| $SUDO tee /etc/containers/" in run
+
+
+def test_mirror_survives_sudo_env_in_hosted_jobs():
+    """sudo env drops the caller's environment: a step that runs the archive copy under it
+    must pass DCIAB_MIRROR_DOCKER_IO on (the Day 0 preload job didn't)."""
+    text = (ROOT / ".github/workflows/ci.yml").read_text()
+    for line in text.splitlines():
+        if "sudo env" in line and "preload-e2e.sh" in line:
+            assert '"DCIAB_MIRROR_DOCKER_IO=$DCIAB_MIRROR_DOCKER_IO"' in line
+
+
+def test_mirror_ref_knows_docker_hub_aliases(monkeypatch):
+    monkeypatch.setenv("DCIAB_MIRROR_DOCKER_IO", "mirror.gcr.io")
+    for hub in ("docker.io", "index.docker.io", "registry-1.docker.io"):
+        assert archive.mirror_ref(f"{hub}/library/debian") == "mirror.gcr.io/library/debian"
+    assert archive.mirror_ref("ghcr.io/x/y") is None

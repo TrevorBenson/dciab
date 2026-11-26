@@ -129,9 +129,10 @@ def mirror_ref(repo: str) -> Optional[str]:
     mirror.gcr.io), or None when it isn't set or repo isn't on Docker Hub. Images are
     pinned by digest, so a mirror can only serve the same bytes."""
     host = os.environ.get(DOCKER_IO_MIRROR_ENV, "").strip().rstrip("/")
-    if not host or not repo.startswith("docker.io/"):
-        return None
-    return host + "/" + repo[len("docker.io/"):]
+    for hub in ("docker.io/", "index.docker.io/", "registry-1.docker.io/"):
+        if host and repo.startswith(hub):
+            return host + "/" + repo[len(hub):]
+    return None
 
 
 def layout_name(ref: str) -> str:

@@ -45,6 +45,7 @@ jobs:
       next: ${{ steps.plan.outputs.next }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
+      - uses: ./.github/actions/dockerhub-mirror
       - name: PyYAML (Ubuntu's signed package)
         run: sudo apt-get install -y --no-install-recommends python3-yaml
       - name: Plan (VERSION, branch, tag)

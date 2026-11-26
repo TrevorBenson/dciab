@@ -1055,7 +1055,7 @@ jobs:
           echo "$sha  $RUNNER_TEMP/oras.tgz" | sha256sum -c -
           tar -xzf "$RUNNER_TEMP/oras.tgz" -C "$RUNNER_TEMP" oras
       - name: Preload into root's podman
-        run: sudo env "PATH=$PATH" hack/media/preload-e2e.sh "$RUNNER_TEMP/oras"
+        run: sudo env "PATH=$PATH" "DCIAB_MIRROR_DOCKER_IO=$DCIAB_MIRROR_DOCKER_IO" hack/media/preload-e2e.sh "$RUNNER_TEMP/oras"
 
   media-dropin-rocky10:
     # dciab media's storage step moves root's podman storage with a storage.conf.d drop-in;

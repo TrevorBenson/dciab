@@ -181,7 +181,8 @@ def test_every_action_is_pinned_by_sha(wf):
     import re
     for name, job in wf["jobs"].items():
         for step in job["steps"]:
-            if "uses" in step:
+            # The repository's own actions run from the same commit; others are pinned by SHA.
+            if "uses" in step and not step["uses"].startswith("./.github/actions/"):
                 assert re.fullmatch(r"[\w.-]+/[\w.-]+@[0-9a-f]{40}", step["uses"]), (name, step["uses"])
     text = WORKFLOW.read_text()
     assert "pip install" not in text and "setup-helm" not in text
