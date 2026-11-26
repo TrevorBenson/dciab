@@ -251,8 +251,9 @@ def _remove_if_ours(image_id: str, layout_name: str, runner: Runner) -> bool:
 def load(directory: Path, refs: Dict[str, str],
          runner: Optional[Runner] = None) -> Tuple[List[str], List[str], List[str]]:
     """Load each of refs root's storage lacks from the payload at directory. Returns (loaded,
-    already there, not in the payload). An image the payload lacks isn't an error here: the
-    steps that use it load it from the payload or a registry themselves."""
+    already there, not in the payload). An image the payload lacks isn't an error here (the rest
+    still load), but dciab services and seed stop until the archive is rebuilt with it
+    (build/archive.py images): while a payload exists they don't fall back to a registry."""
     runner = runner or run
     loaded, present = [], []
     found, missing = day0_match(directory, refs)
@@ -342,7 +343,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     for ref in loaded:
         say(f"loaded {ref}")
     for ref in missing:
-        say(f"warning: the payload lacks {ref}; the step that uses it loads it from the payload or a registry")
+        say(f"warning: the payload lacks {ref}; dciab services and seed stop until the archive is rebuilt "
+            "with it (build/archive.py images)")
     say(f"{len(loaded)} loaded, {len(present)} already in root's container storage")
     return 0
 
