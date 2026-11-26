@@ -113,10 +113,8 @@ class Verifier:
         ca = files.get("/etc/pki/ca-trust/source/anchors/dciab-platform-ca.crt", "")
         self.expect_true(f"{where}: platform CA file holds the trust bundle",
                          nodes["trustBundle"].strip() in ca)
-        for upstream in nodes["mirroredRegistries"]:
-            hosts = files.get(f"/etc/containerd/certs.d/{upstream}/hosts.toml", "")
-            self.expect_true(f"{where}: {upstream} mirrors through {nodes['registryMirror']}",
-                             f'https://{nodes["registryMirror"]}/v2/{upstream}' in hosts)
+        stale = sorted(p for p in files if p.startswith("/etc/containerd/"))
+        self.expect(f"{where}: no containerd files (nodes run CRI-O)", stale, [])
         registries = files.get("/etc/containers/registries.conf.d/50-dciab-mirror.conf", "")
         try:
             entries = tomllib.loads(registries).get("registry", [])

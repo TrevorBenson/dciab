@@ -112,8 +112,8 @@ spec:
             pattern: '^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$'
           description: >-
             Upstream registries (such as docker.io; no port) that nodes pull through registryMirror.
-            Each one gets a containerd hosts.toml and a CRI-O mirror entry. A list, so a
-            new upstream needs no new class revision.
+            Each one gets a CRI-O mirror entry. A list, so a new upstream needs no new
+            class revision.
     - name: podSecurityExemptNamespaces
       required: true
       schema:
@@ -396,16 +396,6 @@ spec:
                     permissions: "0644"
                     content: |
                     {{- .trustBundle | nindent 6 }}
-                  {{- range .mirroredRegistries }}
-                  - path: /etc/containerd/certs.d/{{ . }}/hosts.toml
-                    owner: root:root
-                    permissions: "0644"
-                    content: |
-                      server = "https://{{ if eq . "docker.io" }}registry-1.docker.io{{ else }}{{ . }}{{ end }}"
-                      [host."https://{{ $.registryMirror }}/v2/{{ . }}"]
-                        capabilities = ["pull", "resolve"]
-                        override_path = true
-                  {{- end }}
                   - path: /etc/containers/registries.conf.d/50-dciab-mirror.conf
                     owner: root:root
                     permissions: "0644"
@@ -446,16 +436,6 @@ spec:
                     permissions: "0644"
                     content: |
                     {{- .trustBundle | nindent 6 }}
-                  {{- range .mirroredRegistries }}
-                  - path: /etc/containerd/certs.d/{{ . }}/hosts.toml
-                    owner: root:root
-                    permissions: "0644"
-                    content: |
-                      server = "https://{{ if eq . "docker.io" }}registry-1.docker.io{{ else }}{{ . }}{{ end }}"
-                      [host."https://{{ $.registryMirror }}/v2/{{ . }}"]
-                        capabilities = ["pull", "resolve"]
-                        override_path = true
-                  {{- end }}
                   - path: /etc/containers/registries.conf.d/50-dciab-mirror.conf
                     owner: root:root
                     permissions: "0644"

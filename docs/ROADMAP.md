@@ -35,12 +35,12 @@ Moving clusters between platforms (vSphere to Proxmox VE or back) joins `r1` onl
 
 ### Node images and the first cluster
 
-- [x] Node template recipe: image-builder with a Rocky 10 Proxmox target (`images/node/`)
+- [x] Node image recipe: Rocky 10 in image mode (bootc) with CRI-O (`images/node-bootc/`); the first recipe, image-builder with containerd, is removed
 - [x] First Proxmox template built and verified
 - [x] Cilium install for any cluster (`addons/cilium`), with kube-proxy replaced
 - [x] Real-cluster spike on Proxmox from the template (a 3+1 cluster on the bootc template with Cilium, node replacement without `/readyz` failures)
 - [ ] Node images in the archive: the Proxmox VE disk is built, published and pulled into the payload (`archive.py nodes`), pending its first publish and pin; vSphere and Metal3 disks with their lanes
-- [ ] Remove the image-builder recipe and the classes' containerd mirror files, now that a cluster passes on the bootc template (see Decisions)
+- [x] Remove the image-builder recipe and the classes' containerd mirror files, now that a cluster passes on the bootc template (see Decisions)
 
 ### Bootstrap appliance and USB
 
@@ -173,5 +173,5 @@ Two pieces exist: `dciab cluster-values` already gives each cluster its JWT issu
 
 ## Decisions
 
-- **Node image recipe: image mode (bootc) with CRI-O is the choice.** It builds and boots on Proxmox VE with SELinux enforcing, and a cluster has passed on the bootc template. The image-builder recipe and the classes' containerd mirror files are removed next (open item under `r1alpha`).
-- **CRI-O instead of containerd.** It comes with the bootc recipe, which installs CRI-O. The `r1` classes already write CRI-O's mirror files next to containerd's, and kubeadm finds the only runtime socket on its own. What's left is removing the containerd files and the image-builder recipe.
+- **Node image recipe: image mode (bootc) with CRI-O is the choice.** It builds and boots on Proxmox VE with SELinux enforcing, and a cluster has passed on the bootc template. The image-builder recipe and the classes' containerd mirror files are removed.
+- **CRI-O instead of containerd.** It comes with the bootc recipe, which installs CRI-O. The `r1` classes write only CRI-O's mirror file, and kubeadm finds the only runtime socket on its own.

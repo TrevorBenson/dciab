@@ -626,7 +626,9 @@ def test_installed_classes_mirror_registries_from_a_variable():
         node_base = _patch(cc, "nodeBase")
         for d in node_base["definitions"]:
             text = d["jsonPatches"][0]["valueFrom"]["template"]
-            assert text.count("range .mirroredRegistries") == 2, f.name
+            assert text.count("range .mirroredRegistries") == 1, f.name
+            assert "/etc/containers/registries.conf.d/50-dciab-mirror.conf" in text, f.name
+            assert "/etc/containerd/" not in text, f"{f.name}: nodes run CRI-O, no containerd files"
             for registry in ("quay.io", "ghcr.io", "registry.k8s.io"):
                 assert registry not in text, f"{f.name}: {registry} is hard-coded"
         var = next(v for v in cc["spec"]["variables"] if v["name"] == "mirroredRegistries")

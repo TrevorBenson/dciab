@@ -1,6 +1,5 @@
-"""Handoff tasks and reports follow handoff/README.md, and node image pins are well formed."""
+"""Handoff tasks and reports follow handoff/README.md."""
 
-import json
 import re
 from pathlib import Path
 
@@ -67,28 +66,3 @@ def test_attachments_stay_small():
         if folder.is_dir():
             total = sum(p.stat().st_size for p in folder.rglob("*") if p.is_file())
             assert total < 200_000, f"{folder.name}: attachments total {total} bytes, over 200 KB"
-
-
-def test_node_image_pins_are_empty_or_well_formed():
-    lock = yaml.safe_load((ROOT / "bundle.lock").read_text())
-    ib, rocky = lock["nodeImages"]["imageBuilder"], lock["nodeImages"]["rocky10"]
-    assert ib["image"].endswith(":" + ib["version"])
-    assert ib["digest"] == "" or re.fullmatch(r"sha256:[0-9a-f]{64}", ib["digest"])
-    assert rocky["isoSHA256"] == "" or re.fullmatch(r"[0-9a-f]{64}", rocky["isoSHA256"])
-    url = rocky["isoURL"]
-    assert url == "" or re.fullmatch(r"https://\S+/10\.\d+/isos/x86_64/Rocky-10\.\d+-x86_64-minimal\.iso", url), \
-        "isoURL must be a versioned Rocky 10.N minimal ISO"
-
-
-def test_node_image_overlay_parses():
-    var_file = ROOT / "images/node/overlay/packer/proxmox/rockylinux-10.json"
-    variables = json.loads(var_file.read_text())
-    assert variables["distro_version"] == "10" and variables["build_name"] == "rockylinux-10"
-    containerfile = (ROOT / "images/node/Containerfile").read_text()
-    for patch in (ROOT / "images/node/patches").glob("*.py"):
-        assert re.search(rf"^RUN python3 \S*{re.escape(patch.name)} ", containerfile, re.M), \
-            f"{patch.name} is not run in the Containerfile"
-    build = (ROOT / "images/node/build.sh").read_text()
-    assert '"disk_format": env.get("DCIAB_DISK_FORMAT") or "raw"' in build, "raw must stay the default disk format"
-    ks = ROOT / "images/node/overlay/packer/proxmox/linux/rockylinux/http/10/ks.cfg.tmpl"
-    assert "$SSH_PASSWORD" in ks.read_text()
