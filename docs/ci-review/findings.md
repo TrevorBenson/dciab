@@ -105,9 +105,10 @@ leaves: dciab_archive, dciab_identity, dciab_state
   the two `rockylinux:10` jobs use the distro's 3.12. The 3.9 leg exists because the
   README (line 72) and the `dciab` launcher (lines 53–54) promise Python 3.9+. ADR 0002 says a
   Linux-laptop bootstrap host must run Rocky Linux 10 (Python 3.12), so the 3.9 promise may
-  be stale. That's a product decision, not a CI one. The 3.9 leg is the slower unit leg
-  (88 vs 77 s, measured) but off the critical path, so dropping it saves one job slot, no
-  wall time. 3.13 would speed up pure-Python code a little; the critical paths don't run
+  be stale. The 3.9 leg is the slower unit leg (88 vs 77 s, measured) but off the critical
+  path, so dropping it saves one job slot, no wall time. **Decided (Trevor, 2026-11-25):**
+  the minimum is EL10's Python, 3.12. #256 raises the launcher and README floor and drops
+  the 3.9 leg. 3.13 would speed up pure-Python code a little; the critical paths don't run
   pure-Python hot loops, so the gain is ≈0 s (assumed).
 - **`uv`:** not used. Installs are `pip install` of 2–4 small packages: 2–8 s p50 per job
   (measured), 21 `pip install`/`setup-python` lines in ci.yml. `uv` with a cache would cut each
