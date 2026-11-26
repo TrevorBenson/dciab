@@ -87,6 +87,7 @@ def run_live(cmd, **kw) -> None:
 
 CREATED = "seed-created.json"
 SEED_TOKEN_LABEL = "dciab.io/seed-token"
+RUN_LOCK_DIR = Path("/run/lock")   # the host-wide lock directory (tests point it at a temp folder)
 SERVICES_POD = "dciab-services"   # dciab_services.render.POD
 
 
@@ -651,7 +652,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     state.chmod(0o700)
     # One seed per host: the registry container and the kind cluster have fixed names.
     # O_NOFOLLOW: a planted symlink can't make root truncate another file.
-    lock_dir = Path("/run/lock") if os.access("/run/lock", os.W_OK) else state
+    lock_dir = RUN_LOCK_DIR if os.access(RUN_LOCK_DIR, os.W_OK) else state
     try:
         fd = os.open(lock_dir / "dciab-seed.lock", os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW, 0o600)
         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)

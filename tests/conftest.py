@@ -14,6 +14,18 @@ sys.path.insert(0, str(ROOT / "lib"))
 
 from dciab_validate import cli  # noqa: E402
 
+@pytest.fixture(autouse=True)
+def _private_host_locks(tmp_path_factory, monkeypatch):
+    """Host-wide lock files (/run/dciab-services.lock, /run/lock/dciab-seed.lock) go to a folder of
+    this test's own, so tests running in parallel (pytest -n) never contend for them. Tests that
+    exercise a lock set their own path on top of this."""
+    locks = tmp_path_factory.mktemp("host-locks")
+    monkeypatch.setenv("DCIAB_SERVICES_LOCK", str(locks / "dciab-services.lock"))
+    monkeypatch.delenv("DCIAB_SERVICES_LOCKED", raising=False)
+    from dciab_seed import cli as seed_cli
+    monkeypatch.setattr(seed_cli, "RUN_LOCK_DIR", locks)
+
+
 SECRET_FILES = [
     "vsphere.pw", "longhorn-s3.env", "backup-site.env", "backup-offsite.env",
     "pki/intermediate.crt", "pki/intermediate.key", "pki/chain.pem",

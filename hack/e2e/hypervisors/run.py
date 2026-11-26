@@ -408,18 +408,34 @@ def reboot(lab: Lab) -> dict:
     return {"vmbr0": net}
 
 
+# One list per CI leg (DCIAB_LEG, hypervisors-emulated.yml's matrix). Each leg runs on its own
+# runner from a blank VM, so every list that needs an installed host does its own first_install.
+# The untagged mode is split in two legs so its two installs run in parallel, not one after the other.
 SCENARIOS = {
-    "untagged": [disk_refused, held_without_flag, first_install, rerun, lost_state, lost_state_host_off,
-                 recorded_host_off, reinstall],
+    # The reinstall leg runs two installs back to back, so the quick pre-install checks run here.
+    "untagged-install": [disk_refused, held_without_flag, first_install, rerun, lost_state,
+                         lost_state_host_off, recorded_host_off],
+    "untagged-reinstall": [first_install, reinstall],
     "tagged": [port_is_tagged_only, held_without_flag, first_install, reboot],
 }
+# Running run.py by hand without DCIAB_LEG runs every scenario of the mode setup.sh set up.
+SCENARIOS["untagged"] = [disk_refused, held_without_flag, first_install, rerun, lost_state,
+                         lost_state_host_off, recorded_host_off, reinstall]
+
+
+def leg_of(lab: "Lab") -> str:
+    leg = os.environ.get("DCIAB_LEG") or lab.mode
+    if leg not in SCENARIOS or not (leg == lab.mode or leg.startswith(lab.mode + "-")):
+        raise Failed(f"leg {leg!r} doesn't fit mode {lab.mode!r} (known legs: {', '.join(sorted(SCENARIOS))})")
+    return leg
 
 
 def main(argv: list[str]) -> int:
     lab = Lab(Path(argv[0]).resolve())
-    report = {"mode": lab.mode, "scenarios": [], "passed": False}
+    report = {"mode": lab.mode, "leg": os.environ.get("DCIAB_LEG") or lab.mode, "scenarios": [], "passed": False}
     threading.Thread(target=lab.watcher, daemon=True).start()
     try:
+        leg = leg_of(lab)
         lab.config = lab.write_site(lab.site, lab.env["DISK_SERIAL"])  # type: ignore[attr-defined]
         # The installer ISO dciab services serves and dciab hypervisors builds each host's ISO from.
         isos = lab.state / "isos"
@@ -430,7 +446,7 @@ def main(argv: list[str]) -> int:
         r = lab.dciab("services", str(lab.config), timeout=900)
         if r.returncode != 0:
             raise Failed(f"dciab services exited {r.returncode}")
-        for scenario in SCENARIOS[lab.mode]:
+        for scenario in SCENARIOS[leg]:
             name = scenario.__name__.replace("_", "-")
             t0 = time.time()
             entry = {"name": name}
@@ -448,7 +464,7 @@ def main(argv: list[str]) -> int:
                 entry["seconds"] = round(time.time() - t0)
                 lab.note(f"{entry['result'].upper()} {name} ({entry['seconds']} s)")
         report["passed"] = bool(report["scenarios"]) and all(s["result"] == "pass" for s in report["scenarios"]) \
-            and len(report["scenarios"]) == len(SCENARIOS[lab.mode])
+            and len(report["scenarios"]) == len(SCENARIOS[leg])
     except Failed as exc:
         report["error"] = str(exc)
         lab.note(f"FAIL setup: {exc}")

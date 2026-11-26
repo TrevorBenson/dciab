@@ -483,7 +483,11 @@ def test_ntp_big_offset_is_a_warning(udp, monkeypatch):
     srv = udp(ntp_reply(skew=30.0))
     monkeypatch.setattr(probes, "NTP_PORT", srv.port)
     [f] = live.check_ntp(("spec", "network", "ntpServers", 0), "127.0.0.1", 2).findings
-    assert f.severity == "warning" and "+30." in f.found
+    # The fake server stamps its own clock: the measured offset is 30 s minus half the round trip,
+    # which a loaded machine (pytest -n) can stretch past a millisecond, so compare numerically.
+    import re
+    m = re.search(r"is ([+-][0-9.]+)s from", f.found)
+    assert f.severity == "warning" and m and abs(float(m.group(1)) - 30.0) < 1.0, f.found
 
 
 @pytest.mark.parametrize("kwargs,text", [({"stratum": 0}, "kiss-o'-death"), ({"stratum": 16}, "not synchronized"),

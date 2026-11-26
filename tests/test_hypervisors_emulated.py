@@ -21,7 +21,48 @@ def test_runs_on_hosted_runners_only():
     for job in wf["jobs"].values():
         assert job["runs-on"] == "ubuntu-24.04"
         assert "timeout-minutes" in job
-    assert set(wf["jobs"]["emulated"]["strategy"]["matrix"]["mode"]) == {"untagged", "tagged"}
+    legs = wf["jobs"]["emulated"]["strategy"]["matrix"]["include"]
+    assert {leg["mode"] for leg in legs} == {"untagged", "tagged"}
+
+
+def test_only_pr_runs_share_a_concurrency_group():
+    """A PR's newer push cancels its older run; every other run (main, a dispatch) gets its own
+    group, so post-merge runs never queue behind or cancel each other. Same rule in ci.yml."""
+    for path in (WF, ROOT / ".github" / "workflows" / "ci.yml"):
+        conc = yaml.safe_load(path.read_text())["concurrency"]
+        assert "github.event_name == 'pull_request' && github.ref || github.run_id" in conc["group"], path
+        assert conc["cancel-in-progress"] == "${{ github.event_name == 'pull_request' }}", path
+
+
+def test_each_leg_uploads_its_own_artifact():
+    steps = yaml.safe_load(WF.read_text())["jobs"]["emulated"]["steps"]
+    names = [s["with"]["name"] for s in steps if str(s.get("uses", "")).startswith("actions/upload-artifact")]
+    assert names and all("matrix.leg" in n for n in names)
+
+
+def test_legs_cover_every_scenario_once_with_their_own_install():
+    """The untagged mode runs as two parallel legs: together they run every scenario of the full
+    untagged list, and each leg that needs an installed host installs it itself."""
+    import ast
+    wf = yaml.safe_load(WF.read_text())
+    legs = {leg["leg"]: leg["mode"] for leg in wf["jobs"]["emulated"]["strategy"]["matrix"]["include"]}
+    tree = ast.parse((HERE / "run.py").read_text())
+    table, full = {}, {}
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and isinstance(node.targets[0], ast.Name) and node.targets[0].id == "SCENARIOS":
+            table = {k.value: [e.id for e in v.elts] for k, v in zip(node.value.keys, node.value.values)}
+        if isinstance(node, ast.Assign) and isinstance(node.targets[0], ast.Subscript):
+            full[node.targets[0].slice.value] = [e.id for e in node.value.elts]
+    assert set(legs) <= set(table), "a CI leg has no scenario list in run.py"
+    for leg, mode in legs.items():
+        assert leg == mode or leg.startswith(mode + "-")
+    untagged = [s for leg, mode in legs.items() if mode == "untagged" for s in table[leg]]
+    assert sorted(set(untagged)) == sorted(set(full["untagged"]))
+    needs_install = {"rerun", "lost_state", "lost_state_host_off", "recorded_host_off", "reinstall", "reboot"}
+    for leg, names in table.items():
+        if needs_install & set(names):
+            assert "first_install" in names and names.index("first_install") < min(
+                names.index(n) for n in needs_install & set(names)), leg
 
 
 def test_sushy_tools_is_pinned_with_its_checksum():

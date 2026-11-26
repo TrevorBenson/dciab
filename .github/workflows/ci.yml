@@ -8,10 +8,17 @@ on:
 permissions:
   contents: read
 
+# A newer push to a PR cancels its older run. Every other run (main, the post-merge proof) gets a
+# group of its own, so main runs never queue behind or cancel each other.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   test:
     name: tests (Python ${{ matrix.python }})
     runs-on: ubuntu-24.04  # still offers Python 3.9; newer images dropped it
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
@@ -28,7 +35,7 @@ jobs:
           key: crds-${{ hashFiles('bundle.lock') }}
       - name: Fetch the CRDs pinned in bundle.lock
         run: python hack/fetch_crds.py
-      - run: python -m pytest -v
+      - run: python -m pytest -n auto -v
       - name: Schema is valid JSON Schema 2020-12
         run: python -c "import json; from jsonschema import Draft202012Validator as V; V.check_schema(json.load(open('schema/dciab.schema.json')))"
       - name: docs/CONFIG.md matches the schema, and every schema key has a description
@@ -39,6 +46,7 @@ jobs:
   charts:
     name: charts (helm render + CRD checks)
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -180,7 +188,7 @@ jobs:
     # kind cluster. No VM or server is built: the example infrastructure doesn't exist.
     name: ClusterClass e2e (kind + CAPI, no infrastructure)
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -278,6 +286,7 @@ jobs:
     # Every image a site needs, then a small archive payload built from it (build/archive.py).
     name: archive image inventory
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -388,6 +397,7 @@ jobs:
     # manifests, the binaries), then seed DNS, the seed registry and kind built from it alone.
     name: dciab seed (DNS + Zot + kind from a payload)
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -461,21 +471,21 @@ jobs:
           # Nobody can push: the registry is read-only.
           if sudo "$RUNNER_TEMP/payload/bin/oras" push --ca-file "$state/pki/trust-bundle.pem" \
                10.30.110.5/ci/test:1 /etc/hostname 2>/dev/null; then
-            echo "pushing to the seed registry should fail"; exit 1
+            echo "::error::pushing to the seed registry should fail"; exit 1
           fi
           sudo env "PATH=$PATH" "DCIAB_PVE_TOKEN=$DCIAB_PVE_TOKEN" "DCIAB_PVE_CSI_TOKEN=$DCIAB_PVE_CSI_TOKEN" ./dciab seed "$RUNNER_TEMP/site/dciab.yaml" \
             --payload "$RUNNER_TEMP/payload" --state "$RUNNER_TEMP/state" --until kind | tee "$RUNNER_TEMP/rerun.txt"
           grep -q "pki: unchanged" "$RUNNER_TEMP/rerun.txt"
           grep -q "dns: pod dciab-services already runs this config" "$RUNNER_TEMP/rerun.txt"
-          if grep -E "^dns: (wrote|added|opened|loaded) " "$RUNNER_TEMP/rerun.txt"; then echo "the dns rerun changed something"; exit 1; fi
+          if grep -E "^dns: (wrote|added|opened|loaded) " "$RUNNER_TEMP/rerun.txt"; then echo "::error::the dns rerun changed something"; exit 1; fi
           grep -q "registry: already serving" "$RUNNER_TEMP/rerun.txt"
           grep -q "kind: cluster dciab-bootstrap exists" "$RUNNER_TEMP/rerun.txt"
       - name: The seed registry and the DNS-only pod run as systemd units (back after a reboot)
         run: |
           set -euo pipefail
           for unit in dciab-registry.service dciab-services.service dciab-services-addresses.service; do
-            systemctl is-active --quiet "$unit" || { systemctl status "$unit" --no-pager || true; exit 1; }
-            systemctl show -p WantedBy "$unit" | grep -q multi-user.target || { echo "$unit isn't started at boot"; exit 1; }
+            systemctl is-active --quiet "$unit" || { echo "::error::$unit isn't active"; systemctl status "$unit" --no-pager || true; exit 1; }
+            systemctl show -p WantedBy "$unit" | grep -q multi-user.target || { echo "::error::$unit isn't started at boot"; exit 1; }
           done
           # systemd brings the registry back on its own (Restart=always), and a restart keeps serving.
           sudo podman kill dciab-registry >/dev/null
@@ -484,7 +494,7 @@ jobs:
             [[ "$code" == 200 ]] && break
             sleep 2
           done
-          test "$code" = 200 || { journalctl -u dciab-registry.service --no-pager | tail -40; exit 1; }
+          test "$code" = 200 || { echo "::error::the registry answered '$code' after systemd restarted it"; journalctl -u dciab-registry.service --no-pager | tail -40; exit 1; }
           test "$(dig +short @10.30.110.53 registry.dc3.example.com)" = 10.30.110.5
       - name: dciab mgmt from seed's outputs, offline from the payload (up to the Cluster)
         env:
@@ -506,7 +516,7 @@ jobs:
             --state "$RUNNER_TEMP/state" || true)"
           echo "$out"
           for check in dns pki registry bootstrap; do
-            grep -Eq "^$check +ok " <<<"$out" || { echo "$check should be ok"; exit 1; }
+            grep -Eq "^$check +ok " <<<"$out" || { echo "::error::$check should be ok"; exit 1; }
           done
           grep -Eq "^mgmt +down .*not moved" <<<"$out"
       - name: With firewalld on, seed keeps 443 and DNS open, and the bootstrap cluster reaches the registry through it
@@ -523,8 +533,8 @@ jobs:
             --payload "$RUNNER_TEMP/payload" --state "$RUNNER_TEMP/state" --until registry | tee "$RUNNER_TEMP/fw.txt"
           zone="$(sudo firewall-cmd --get-zone-of-interface=dciab0)"
           for p in 443/tcp 53/udp 53/tcp; do
-            sudo firewall-cmd --zone="$zone" --query-port="$p" >/dev/null || { echo "$p isn't open"; exit 1; }
-            sudo firewall-cmd --permanent --zone="$zone" --query-port="$p" >/dev/null || { echo "$p isn't permanent"; exit 1; }
+            sudo firewall-cmd --zone="$zone" --query-port="$p" >/dev/null || { echo "::error::$p isn't open"; exit 1; }
+            sudo firewall-cmd --permanent --zone="$zone" --query-port="$p" >/dev/null || { echo "::error::$p isn't permanent"; exit 1; }
           done
           sudo grep -q '"permanent"' "$RUNNER_TEMP/state/seed-created.json"
           # From inside the kind node (a podman network, filtered by firewalld like any client).
@@ -536,7 +546,7 @@ jobs:
           for p in 443/tcp 53/udp 53/tcp; do
             if sudo firewall-cmd --zone="$zone" --query-port="$p" >/dev/null \
                || sudo firewall-cmd --permanent --zone="$zone" --query-port="$p" >/dev/null; then
-              echo "$p is still open after --remove"; exit 1
+              echo "::error::$p is still open after --remove"; exit 1
             fi
           done
 
@@ -545,6 +555,7 @@ jobs:
     # from the pinned installer ISO and an answer file rendered from examples/proxmox-bare.yaml.
     name: Proxmox VE per-host installer ISO
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: read
       packages: write
@@ -651,6 +662,7 @@ jobs:
     # it as day0.images.chrony and the archive ships it like the other images.
     name: Day 0 chrony image
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: read
       packages: write
@@ -699,6 +711,7 @@ jobs:
     # site; published on main once per recipe. bundle.lock pins it as images.backup.
     name: backup image
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: read
       packages: write
@@ -751,6 +764,7 @@ jobs:
     # A class revision freezes when a DCiaB GA release tag (vN.0.0) first contains it; alpha and beta tags freeze nothing (docs/VERSIONING.md).
     name: released ClusterClasses are unchanged
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
         with:
@@ -760,6 +774,7 @@ jobs:
   image-digests:
     name: bundle.lock image digests match the registry
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -773,6 +788,7 @@ jobs:
     # examples/proxmox-bare.yaml's bootstrap NIC (by MAC) and address.
     name: dciab services (rootful podman pod, DNS/NTP/HTTP)
     runs-on: ubuntu-24.04
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - name: Packages (firewalld stopped until the image build is done; its rules block the build's network)
@@ -815,7 +831,7 @@ jobs:
           out="$(sudo DCIAB_PVE_TOKEN=placeholder DCIAB_PVE_CSI_TOKEN=placeholder DCIAB_CHRONY_IMAGE="$DCIAB_CHRONY_IMAGE" ./dciab services /tmp/site/dciab.yaml)"
           echo "$out"
           grep -q "already runs this config" <<<"$out"
-          if grep -E "^(wrote|added|opened) " <<<"$out"; then echo "the rerun changed something"; exit 1; fi
+          if grep -E "^(wrote|added|opened) " <<<"$out"; then echo "::error::the rerun changed something"; exit 1; fi
       - name: DNS both ways, refusal outside the zones, ranged HTTP, NTP
         run: |
           set -euo pipefail
@@ -838,12 +854,12 @@ jobs:
           test "$(systemctl is-enabled dciab-services-addresses.service)" = enabled
           systemctl is-active --quiet dciab-services.service
           for unit in dciab-services.service dciab-services-addresses.service; do
-            systemctl show -p WantedBy "$unit" | grep -q multi-user.target || { echo "$unit isn't started at boot"; exit 1; }
+            systemctl show -p WantedBy "$unit" | grep -q multi-user.target || { echo "::error::$unit isn't started at boot"; exit 1; }
           done
           zone="$(sudo firewall-cmd --get-default-zone)"
           for p in 53/udp 53/tcp 80/tcp 123/udp; do
             sudo firewall-cmd --zone="$zone" --query-port="$p" >/dev/null
-            sudo firewall-cmd --permanent --zone="$zone" --query-port="$p" >/dev/null || { echo "$p isn't permanent"; exit 1; }
+            sudo firewall-cmd --permanent --zone="$zone" --query-port="$p" >/dev/null || { echo "::error::$p isn't permanent"; exit 1; }
           done
           # Each scope DCiaB opened is recorded on its own line.
           sudo grep -qx "port $zone 53/udp runtime" /tmp/site/.dciab/state/services/created
@@ -870,7 +886,7 @@ jobs:
             echo "dig @$1 $2: got '$r', want '$3'"; return 1
           }
           sudo systemctl stop dciab-services.service dciab-services-addresses.service
-          if sudo podman pod exists dciab-services; then echo "the pod should stop with its unit"; exit 1; fi
+          if sudo podman pod exists dciab-services; then echo "::error::the pod should stop with its unit"; exit 1; fi
           sudo ip addr del 10.30.110.53/24 dev dciab0
           sudo ip addr del 10.30.110.54/24 dev dciab0
           sudo firewall-cmd --reload   # runtime rules back to the permanent ones, as after a boot
@@ -884,7 +900,7 @@ jobs:
           out="$(sudo DCIAB_PVE_TOKEN=placeholder DCIAB_PVE_CSI_TOKEN=placeholder DCIAB_CHRONY_IMAGE="$DCIAB_CHRONY_IMAGE" ./dciab services /tmp/site/dciab.yaml)"
           echo "$out"
           grep -q "already runs this config" <<<"$out"
-          if grep -E "^(wrote|added|opened) " <<<"$out"; then echo "the rerun after the reboot changed something"; exit 1; fi
+          if grep -E "^(wrote|added|opened) " <<<"$out"; then echo "::error::the rerun after the reboot changed something"; exit 1; fi
       - name: A rerun while firewalld is stopped leaves the firewall ports alone
         run: |
           set -euo pipefail
@@ -893,15 +909,15 @@ jobs:
           out="$(sudo DCIAB_PVE_TOKEN=placeholder DCIAB_PVE_CSI_TOKEN=placeholder DCIAB_CHRONY_IMAGE="$DCIAB_CHRONY_IMAGE" ./dciab services /tmp/site/dciab.yaml 2>&1)"
           echo "$out"
           grep -q "firewall ports weren't checked" <<<"$out"
-          if grep -E "closed |no longer wanted: port" <<<"$out"; then echo "a port was closed with firewalld stopped"; exit 1; fi
+          if grep -E "closed |no longer wanted: port" <<<"$out"; then echo "::error::a port was closed with firewalld stopped"; exit 1; fi
           # An unchanged config is a no-op even with firewalld stopped: the note isn't a change.
           grep -q "already runs this config" <<<"$out"
-          if grep -q "started pod" <<<"$out"; then echo "the pod was restarted for an unchanged config"; exit 1; fi
+          if grep -q "started pod" <<<"$out"; then echo "::error::the pod was restarted for an unchanged config"; exit 1; fi
           sudo grep -qx "port $zone 53/udp permanent" /tmp/site/.dciab/state/services/created
           sudo systemctl start firewalld
           for p in 53/udp 53/tcp 80/tcp 123/udp; do
-            sudo firewall-cmd --zone="$zone" --query-port="$p" >/dev/null || { echo "$p closed at runtime"; exit 1; }
-            sudo firewall-cmd --permanent --zone="$zone" --query-port="$p" >/dev/null || { echo "$p no longer permanent"; exit 1; }
+            sudo firewall-cmd --zone="$zone" --query-port="$p" >/dev/null || { echo "::error::$p closed at runtime"; exit 1; }
+            sudo firewall-cmd --permanent --zone="$zone" --query-port="$p" >/dev/null || { echo "::error::$p no longer permanent"; exit 1; }
           done
       - name: A changed config stopped before the pod step leaves the old config whole, across a reboot
         run: |
@@ -943,30 +959,30 @@ jobs:
           echo "$out"
           grep -q "no longer wanted: address dciab0 10.30.110.54/24" <<<"$out"
           addrs="$(ip -o -4 addr show dev dciab0 | awk '{print $4}' | sort | tr '\n' ' ')"
-          test "$addrs" = "10.30.110.5/24 10.30.110.53/24 10.30.110.55/24 " || { echo "addresses: $addrs"; exit 1; }
+          test "$addrs" = "10.30.110.5/24 10.30.110.53/24 10.30.110.55/24 " || { echo "::error::addresses: $addrs"; exit 1; }
           test "$(dig +short @10.30.110.55 registry.dc3.example.com)" = 10.30.110.5
           # Forwarding: from the node network it is tried, from anywhere else refused.
           sudo ip addr add 192.0.2.10/32 dev dciab0
           if dig +time=5 -b 10.30.110.5 @10.30.110.53 example.org | grep -q 'status: REFUSED'; then
-            echo "a node-network client was refused forwarding"; exit 1
+            echo "::error::a node-network client was refused forwarding"; exit 1
           fi
           dig -b 192.0.2.10 @10.30.110.53 example.org | grep -q 'status: REFUSED'
           test "$(dig +short -b 192.0.2.10 @10.30.110.53 registry.dc3.example.com)" = 10.30.110.5   # the zone answers anyone
           sudo ip addr del 192.0.2.10/32 dev dciab0
           # --down: exactly what dciab services added, and a rerun changes nothing.
           sudo ./dciab services /tmp/site/dciab.yaml --down
-          if sudo podman pod exists dciab-services; then echo "the pod is still there"; exit 1; fi
+          if sudo podman pod exists dciab-services; then echo "::error::the pod is still there"; exit 1; fi
           test "$(ip -o -4 addr show dev dciab0 | awk '{print $4}')" = 10.30.110.5/24
           sudo test ! -e /tmp/site/.dciab/state/services/created
           for f in /etc/systemd/system/dciab-services-addresses.service /etc/containers/systemd/dciab-services.kube; do
-            if test -e "$f"; then echo "$f is still there"; exit 1; fi
+            if test -e "$f"; then echo "::error::$f is still there"; exit 1; fi
           done
-          if systemctl is-enabled dciab-services-addresses.service 2>/dev/null; then echo "still enabled"; exit 1; fi
+          if systemctl is-enabled dciab-services-addresses.service 2>/dev/null; then echo "::error::still enabled"; exit 1; fi
           zone="$(sudo firewall-cmd --get-default-zone)"
           for p in 53/udp 53/tcp 80/tcp 123/udp; do
             if sudo firewall-cmd --zone="$zone" --query-port="$p" >/dev/null \
                || sudo firewall-cmd --permanent --zone="$zone" --query-port="$p" >/dev/null; then
-              echo "$p is still open"; exit 1
+              echo "::error::$p is still open"; exit 1
             fi
           done
           sudo ./dciab services /tmp/site/dciab.yaml --down | grep -q "lists nothing"
@@ -982,6 +998,7 @@ jobs:
     # Mockup Server and public mockups, plus overlays for vendor behaviour (hack/redfish/README.md).
     name: Redfish mockups (DMTF Mockup Server)
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: read
     steps:
@@ -1003,6 +1020,7 @@ jobs:
 
   shellcheck:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - run: shellcheck dciab hack/e2e/run.sh hack/check_frozen_classes.sh images/node/build.sh lib/steps/mgmt.sh lib/steps/mgmt-pivot.sh lib/steps/services.sh lib/steps/capi-providers.sh lib/steps/storage-classes.sh lib/steps/block-storage.sh images/node-bootc/build.sh images/node-bootc/rootfs/usr/libexec/dciab/growroot images/bootstrap-bootc/build.sh images/usb/build.sh images/day0-chrony/build.sh images/backup/build.sh images/lab-runner/build.sh images/lab-runner/rootfs/usr/libexec/dciab-lab-runner/loop images/lab-runner/rootfs/usr/libexec/dciab-lab-runner/job-started.sh addons/cilium/install.sh addons/longhorn/install.sh addons/vsphere-cpi/install.sh addons/csi/install.sh addons/kubelet-csr-approver/install.sh hack/e2e/boot-node-image.sh hack/lab/runner-image-id.sh hack/lab/fetch-runner-disk.sh hack/lab/pve.sh hack/lab/check-token.sh hack/lab/template.sh hack/lab/cluster.sh hack/lab/mgmt.sh hack/e2e/hypervisors/setup.sh hack/media/rocky10-dropin.sh hack/media/preload-e2e.sh
@@ -1013,7 +1031,7 @@ jobs:
     # dciab_media.preload into a real podman.
     name: Day 0 image preload from the payload
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 10
     permissions:
       contents: read
     steps:
@@ -1037,7 +1055,7 @@ jobs:
     # this proves podman on Rocky Linux 10 (the appliance's OS) reads it (#165).
     name: media storage drop-in on Rocky Linux 10
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 10
     permissions:
       contents: read
     container:
@@ -1052,6 +1070,7 @@ jobs:
     # The validator must run on the bootstrap host with distro packages only.
     name: examples on Rocky Linux 10 (distro packages)
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     container: rockylinux/rockylinux:10
     steps:
       - uses: actions/checkout@v4
