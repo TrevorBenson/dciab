@@ -15,7 +15,8 @@ left for later ("not done here"). Nothing #240 shipped is proposed again.
    the seed job). With it (52% of PR pushes, measured), ≈10 min p50 and ≈15 min p95
    (measured, set by the `untagged-reinstall` leg). The second shape is where the minutes are.
 2. **Overlapping PRs now queue at GitHub Free's 20 concurrent jobs.** A push that runs the
-   emulated lab is 17 `ci.yml` jobs + 3 legs = exactly 20, after #240 added the third leg.
+   emulated lab was 17 `ci.yml` jobs + 3 legs = exactly 20 after #240 added the third leg
+   (19 since #256 dropped the 3.9 leg).
    Any other run active at the same time waits. After #240, 20% of jobs queued > 20 s
    (4% before), and every one of them was created while another PR's run was active
    (measured). Queue p95 is now 65 s (emulated legs) and 81 s (`ci.yml` jobs). The lever
