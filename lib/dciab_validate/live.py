@@ -479,7 +479,11 @@ def dns_names(spec: dict) -> List[str]:
 def _target_host(url: str) -> str:
     """The host of s3://<bucket>@<endpoint>[:port][/path] or nfs://<server>:/<export>.
     Assumes the URL passed validate's S3/NFS patterns (live checks run only after them)."""
-    return url.split("://", 1)[1].split("@", 1)[-1].split(":", 1)[0].split("/", 1)[0]
+    scheme, rest = url.split("://", 1)
+    if scheme == "nfs":
+        return rest.split(":", 1)[0].split("/", 1)[0]       # the export path may hold "@"
+    authority = rest.split("/", 1)[0]                        # so may an S3 path
+    return authority.rsplit("@", 1)[-1].split(":", 1)[0]
 
 
 def _is_ip(text: str) -> bool:

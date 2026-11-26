@@ -963,3 +963,13 @@ def test_dns_names_in_the_old_form_without_spec_backup(target):
     names = live.dns_names(spec)
     assert ("minio.legacy.example.org" in names) is bool(target)
     assert names.count("minio.legacy.example.org") <= 1
+
+
+@pytest.mark.parametrize("url,host", [
+    ("nfs://nas.dr.example.org:/exports/team@archive", "nas.dr.example.org"),
+    ("nfs://192.168.186.1:/exports/longhorn", "192.168.186.1"),
+    ("s3://bucket@s3.example.org:9000/a@b/c", "s3.example.org"),
+    ("s3://bucket@s3.example.org", "s3.example.org"),
+])
+def test_target_host_ignores_at_signs_in_paths(url, host):
+    assert live._target_host(url) == host
