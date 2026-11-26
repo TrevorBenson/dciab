@@ -110,8 +110,11 @@ def test_unpublished_built_images_block_the_full_archive(capsys):
 
 
 def test_full_archive_requires_the_built_images():
-    workflow = (ROOT / ".github" / "workflows" / "archive.yml").read_text()
-    assert "build/inventory.py" in workflow and "--require-built" in workflow
+    payload = (ROOT / "build" / "payload.sh").read_text()
+    assert "build/inventory.py" in payload and "--require-built" in payload
+    assert "nodes" in payload and payload.count("--require-built") >= 2
+    for name in ("archive.yml", "release.yml"):
+        assert "build/payload.sh" in (ROOT / ".github" / "workflows" / name).read_text(), name
 
 
 def test_test_tooling_build_bases_and_node_disks_are_not_shipped():

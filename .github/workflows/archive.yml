@@ -30,47 +30,11 @@ jobs:
       - uses: azure/setup-helm@v4
         with:
           version: ${{ steps.lock.outputs.helm }}
-      - name: kubeadm (checksum from dl.k8s.io; used only to list images)
-        env:
-          K8S: ${{ steps.lock.outputs.k8s }}
-        run: |
-          set -euo pipefail
-          [[ "$K8S" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "bad kubernetes.version: $K8S" >&2; exit 1; }
-          cd "$RUNNER_TEMP"
-          curl -fsSL --connect-timeout 20 --max-time 300 -O "https://dl.k8s.io/release/$K8S/bin/linux/amd64/kubeadm"
-          echo "$(curl -fsSL --connect-timeout 20 --max-time 60 "https://dl.k8s.io/release/$K8S/bin/linux/amd64/kubeadm.sha256")  kubeadm" | sha256sum -c -
-          chmod +x kubeadm
       - name: Payload
-        env:
-          K8S: ${{ steps.lock.outputs.k8s }}
         run: |
           set -euo pipefail
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc   # room for every platform of every image
-          crds="$(python3 hack/fetch_crds.py)"
-          addons/cilium/install.sh charts/capi-cluster/ci/proxmox-values.yaml --template > "$RUNNER_TEMP/cilium.yaml"
-          addons/longhorn/install.sh examples/metal3-cluster.yaml --template --cluster metal01 > "$RUNNER_TEMP/longhorn.yaml"
-          addons/longhorn/install.sh examples/metal3-cluster.yaml --images --cluster metal01 > "$RUNNER_TEMP/longhorn-images.txt"
-          addons/vsphere-cpi/install.sh examples/vsphere.yaml --template > "$RUNNER_TEMP/vsphere-cpi.yaml"
-          mapfile -t longhorn < "$RUNNER_TEMP/longhorn-images.txt"
-          (( ${#longhorn[@]} > 0 )) || { echo "no Longhorn images listed" >&2; exit 1; }
-          "$RUNNER_TEMP/kubeadm" config images list --kubernetes-version "$K8S" > "$RUNNER_TEMP/kubeadm.txt"
-          args=(--manifests "$crds" --extra "$RUNNER_TEMP/cilium.yaml" --extra "$RUNNER_TEMP/longhorn.yaml"
-                --extra "$RUNNER_TEMP/vsphere-cpi.yaml"
-                --kubeadm-images "$RUNNER_TEMP/kubeadm.txt")
-          for ref in "${longhorn[@]}"; do args+=(--image "$ref=longhorn chart values"); done
-          # --require-built: the images DCiaB builds itself (the chrony image, ...) must be published and pinned.
-          python3 build/inventory.py "${args[@]}" --require-built --format yaml > images.yaml
-          out="$RUNNER_TEMP/payload"
-          python3 build/archive.py binaries --out "$out"
-          python3 build/archive.py images --inventory images.yaml --out "$out" --oras "$out/bin/oras"
-          python3 build/archive.py charts --out "$out"
-          python3 build/archive.py providers --out "$out" --manifests "$crds"
-          # --require-built: the Proxmox node disk must be published and pinned (lab-node-image.yml).
-          python3 build/archive.py nodes --out "$out" --oras "$out/bin/oras" --require-built
-          python3 build/package.py tools --out "$RUNNER_TEMP/build"
-          python3 build/package.py sboms --payload "$out" --syft "$RUNNER_TEMP/build/tools/syft"
-          python3 build/archive.py sums --out "$out"
-          du -sh "$out"/* "$out"
+          build/payload.sh "$RUNNER_TEMP/payload" images.yaml
       - name: Package, sign with a throwaway key, verify
         run: |
           set -euo pipefail

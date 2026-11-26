@@ -109,11 +109,12 @@ def test_the_chart_is_pinned_and_in_the_archive():
     assert "vsphere-cpi" in names
 
 
-@pytest.mark.parametrize("workflow", ["ci.yml", "archive.yml"])
-def test_the_image_inventory_takes_the_rendered_cpi(workflow):
-    text = (ROOT / ".github" / "workflows" / workflow).read_text()
+@pytest.mark.parametrize("path,work", [(".github/workflows/ci.yml", "$RUNNER_TEMP"),
+                                       ("build/payload.sh", "$work")])
+def test_the_image_inventory_takes_the_rendered_cpi(path, work):
+    text = (ROOT / path).read_text()
     assert "addons/vsphere-cpi/install.sh examples/vsphere.yaml --template" in text
-    assert '--extra "$RUNNER_TEMP/vsphere-cpi.yaml"' in text
+    assert f'--extra "{work}/vsphere-cpi.yaml"' in text
 
 
 def test_mgmt_installs_the_cpi_before_anything_that_schedules():
