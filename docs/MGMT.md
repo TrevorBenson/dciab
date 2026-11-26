@@ -7,6 +7,18 @@ $ sudo ./dciab mgmt dciab.yaml --state <state>
 $ sudo ./dciab mgmt dciab.yaml --state <state> --until values
 ```
 
+## What MGMT needs from INFRA: nothing
+
+Neither the build of MGMT nor the move needs an INFRA service, and none runs before MGMT exists. That follows from the tier rule ([ADR 0008](adr/0008-provider-pattern.md), decision 2): MGMT's creation and recovery may depend only on the site and the bootstrap host. After the move, MGMT's nodes still use what Day 0 set up:
+
+- **Images:** `registry.<domain>`, the seed registry on the bootstrap host (`dciab seed`).
+- **DNS:** `network.dnsServiceIPs`, the Day 0 DNS on the bootstrap host ([SERVICES.md](SERVICES.md)).
+- **Time:** `spec.time`, from the bootstrap host's NTP or the site's own servers.
+- **Backups:** the site target, never INFRA's object store ([BACKUP.md](BACKUP.md)).
+- **Logins:** the site's IdP or the certificate kubeconfig, never Authentik ([IDENTITY.md](IDENTITY.md)).
+
+So the bootstrap host stays up after `dciab mgmt` until Day 1 moves these services to MGMT, INFRA or the site (`r1beta`, [ROADMAP.md](ROADMAP.md)). `dciab infra` builds INFRA in `r1beta`.
+
 ## Clusters without workers
 
 When MGMT has no worker nodes (`workerPools: []`), its control plane nodes run its workloads: cert-manager, the Cluster API controllers, and Longhorn when `overrides.mgmt` gives MGMT block storage. Their nodes then carry no `node-role.kubernetes.io/control-plane:NoSchedule` taint. See [charts/capi-cluster](../charts/capi-cluster/README.md#clusters-without-workers).

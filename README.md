@@ -128,7 +128,6 @@ charts/
 hack/                    fetch_crds.py, check_manifests.py (CRD-based checks), render_components.py
   e2e/                   ClusterClass end-to-end test on kind (run.sh, verify.py)
 images/node-bootc/        node image (chosen): Rocky 10 bootc + CRI-O, disks via bootc-image-builder
-images/node/              older node template recipe (image-builder, containerd)
 images/day0-chrony/      Day 0 NTP server image
 images/bootstrap-bootc/  bootstrap appliance ("server zero"), under evaluation
 images/usb/              the DCiaB USB (Ventoy) image, under evaluation

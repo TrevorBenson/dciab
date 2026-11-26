@@ -8,7 +8,7 @@ The checkboxes on this page are the source of truth for what exists. GitHub issu
 
 | Stage | Scope | Gate |
 | --- | --- | --- |
-| `r1alpha`: Day 0 | Config schema and `validate`; archive build pipeline; the bootstrap appliance, USB and `media`; Day 0 services on the bootstrap host (DNS, NTP, HTTP, and DHCP where a site needs it), each used only when the site doesn't provide its own; hypervisors installed over Redfish, deployed to directly; `seed` (seed registry, kind); `mgmt` (MGMT built and Cluster API moved into it); the minimal INFRA services Day 0 or the pivot need; unit tests for all of it. **Proxmox VE required, vSphere best-effort** (a parallel lane once an ESXi lab is available) | On Proxmox VE, from bare servers installed over Redfish or from an existing Proxmox VE: `services`, `hypervisors`, `seed` and `mgmt` run offline from the archive, and MGMT builds and pivots; a cluster from the Proxmox class survives node replacement; re-running any step changes nothing; unit tests and the hosted CI jobs pass |
+| `r1alpha`: Day 0 | Config schema and `validate`; archive build pipeline; the bootstrap appliance, USB and `media`; Day 0 services on the bootstrap host (DNS, NTP, HTTP, and DHCP where a site needs it), each used only when the site doesn't provide its own; hypervisors installed over Redfish, deployed to directly; `seed` (seed registry, kind); `mgmt` (MGMT built and Cluster API moved into it); the minimal INFRA services Day 0 or the pivot need (none: [MGMT.md](MGMT.md#what-mgmt-needs-from-infra-nothing)); unit tests for all of it. **Proxmox VE required, vSphere best-effort** (a parallel lane once an ESXi lab is available) | On Proxmox VE, from bare servers installed over Redfish or from an existing Proxmox VE: `services`, `hypervisors`, `seed` and `mgmt` run offline from the archive, and MGMT builds and pivots; a cluster from the Proxmox class survives node replacement; re-running any step changes nothing; unit tests and the hosted CI jobs pass |
 | `r1beta`: Day 1 | Day 0's DNS, NTP, DHCP and Redfish dependencies pivot to production services, on MGMT and INFRA or provided by the site; hypervisors joined to their manager (Proxmox Datacenter Manager or vCenter); Metal3; Proxmox VE clustering and shared storage; like-for-like moves from hypervisors DCiaB installed to the site's own (vSphere to vSphere, Proxmox VE to Proxmox VE); `infra` and `platform`, with tested Argo CD app-of-apps Helm templates for INFRA and for Cluster API tenant clusters; identity and platform TLS on INFRA; OpenVox enrollment of hosts; workload clusters; `finalize`. **vSphere required** | End to end on the lab, on Proxmox VE and vSphere: DNS, NTP and DHCP answer from MGMT, INFRA or the site with the bootstrap host unplugged; a bare-metal host provisions over Redfish virtual media; on Proxmox VE, MGMT and INFRA run on more than one clustered host; `platform` from a clean MGMT ends with every application Synced and the nightly drift job clean; a workload cluster from each class; one like-for-like move per platform; a full run on nested virtualization, with step timings recorded |
 | `r1`: Day 2 | Persistent storage and backups complete; upgrades, rollback and importing a new archive; Kubernetes upgrades and class revision moves; observability; reboot, cold start and failure handling; `verify`; the operator documentation | Every class survives a Kubernetes upgrade and a move to a new class revision; restore drills and a full-site cold start pass; failure injection and an air-gapped rehearsal; an engineer who didn't build it completes a run from the README alone |
 
@@ -35,12 +35,12 @@ Moving clusters between platforms (vSphere to Proxmox VE or back) joins `r1` onl
 
 ### Node images and the first cluster
 
-- [x] Node template recipe: image-builder with a Rocky 10 Proxmox target (`images/node/`)
+- [x] Node image recipe: Rocky 10 in image mode (bootc) with CRI-O (`images/node-bootc/`); the first recipe, image-builder with containerd, is removed
 - [x] First Proxmox template built and verified
 - [x] Cilium install for any cluster (`addons/cilium`), with kube-proxy replaced
 - [x] Real-cluster spike on Proxmox from the template (a 3+1 cluster on the bootc template with Cilium, node replacement without `/readyz` failures)
 - [ ] Node images in the archive: the Proxmox VE disk is built, published and pulled into the payload (`archive.py nodes`), pending its first publish and pin; vSphere and Metal3 disks with their lanes
-- [ ] Remove the image-builder recipe and the classes' containerd mirror files, now that a cluster passes on the bootc template (see Decisions)
+- [x] Remove the image-builder recipe and the classes' containerd mirror files, now that a cluster passes on the bootc template (see Decisions)
 
 ### Bootstrap appliance and USB
 
@@ -76,7 +76,7 @@ Decided in [ADR 0001](adr/0001-day0-hypervisors-and-services.md).
 
 - [x] `dciab status`: read-only report of the Day 0 pod (full, or DNS-only from seed, with its DNS answer checked), the platform CA and registry certificate, the seed registry, the bootstrap cluster and where MGMT's Cluster lives
 - [x] `dciab seed`: platform CA (generated with its key age-encrypted, or imported), read-only Zot loaded from the payload, kind pulling through it, providers and ClusterClasses from the payload, DNS for `registry.<domain>`; `--remove` undoes it on the host ([SEED.md](SEED.md))
-- [ ] Minimal INFRA for Day 0: settle which INFRA services, if any, Day 0 or the pivot need ahead of `r1beta`'s full `dciab infra`, and build them
+- [x] Minimal INFRA for Day 0: none. Neither Day 0 nor the pivot needs an INFRA service: MGMT may depend only on the site and the bootstrap host (ADR 0008, decision 2), which keeps serving its images and DNS (and time, unless the site serves it) until `r1beta` ([MGMT.md](MGMT.md#what-mgmt-needs-from-infra-nothing))
 - [ ] `dciab mgmt`: builds MGMT, installs Cilium and the providers, and moves Cluster API into MGMT; picks up `dciab seed`'s kubeconfig and trust bundle and runs offline from the payload (CI runs seed then mgmt up to the Cluster; not yet proven on real infrastructure). On vSphere, the cloud provider (CPI) is installed before Cilium (`addons/vsphere-cpi`, the `cpi` step)
 
 ### vSphere lane (best-effort in `r1alpha`, required in `r1beta`)
@@ -173,5 +173,5 @@ Two pieces exist: `dciab cluster-values` already gives each cluster its JWT issu
 
 ## Decisions
 
-- **Node image recipe: image mode (bootc) with CRI-O is the choice.** It builds and boots on Proxmox VE with SELinux enforcing, and a cluster has passed on the bootc template. The image-builder recipe and the classes' containerd mirror files are removed next (open item under `r1alpha`).
-- **CRI-O instead of containerd.** It comes with the bootc recipe, which installs CRI-O. The `r1` classes already write CRI-O's mirror files next to containerd's, and kubeadm finds the only runtime socket on its own. What's left is removing the containerd files and the image-builder recipe.
+- **Node image recipe: image mode (bootc) with CRI-O is the choice.** It builds and boots on Proxmox VE with SELinux enforcing, and a cluster has passed on the bootc template. The image-builder recipe and the classes' containerd mirror files are removed.
+- **CRI-O instead of containerd.** It comes with the bootc recipe, which installs CRI-O. The `r1` classes write only CRI-O's mirror file, and kubeadm finds the only runtime socket on its own.

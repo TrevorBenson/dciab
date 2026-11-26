@@ -3,16 +3,23 @@
 #
 #   hack/lab/mgmt.sh payload                    build the archive payload (cached by bundle.lock)
 #   hack/lab/mgmt.sh config TEMPLATE_NAME       write dciab.yaml for the lab and validate it
+#   hack/lab/mgmt.sh token                      validate --live: MGMT's token holds docs/PROXMOX.md's
+#                                               privileges and none it refuses as too broad (task 0008)
 #   hack/lab/mgmt.sh seed                       dciab seed (root), then again: nothing may change
 #   hack/lab/mgmt.sh mgmt                       dciab mgmt (root), each step line timed
 #   hack/lab/mgmt.sh checks                     MGMT manages itself, keeps no volumes and trusts the site's
 #                                               OIDC issuer with the platform roles; replace a control plane Machine
 #   hack/lab/mgmt.sh rerun                      dciab mgmt again: no step changes, no Machine rolls
-#   hack/lab/mgmt.sh down                       delete MGMT, the bootstrap cluster and what seed added
+#   hack/lab/mgmt.sh denials                    no Proxmox permission failure in CAPMOX's logs (task 0008)
+#   hack/lab/mgmt.sh down                       delete MGMT, the bootstrap cluster and what seed added, then
+#                                               leftovers
+#   hack/lab/mgmt.sh leftovers                  no MGMT VM and no orphaned user-data ISO left on Proxmox
 #
 # Environment: PVE_* (hack/lab/pve.sh), CAPMOX_TOKEN_ID/CAPMOX_TOKEN_SECRET (MGMT's token),
-# handoff/lab/network.yaml. UNTAINT_CONTROL_PLANE=1 removes the control plane NoSchedule taint
-# on MGMT after Cilium, the workaround for issue #112 (off by default, so CI shows the failure).
+# handoff/lab/network.yaml. MGMT's token is the only credential dciab and CAPMOX get, and
+# nothing here uses SSH to a Proxmox host: the run is task 0008's token-only end-to-end.
+# UNTAINT_CONTROL_PLANE=1 removes the control plane NoSchedule taint on MGMT after Cilium,
+# the workaround for issue #112 (off by default, so CI shows the failure).
 # Root work runs through sudo with state in /root/.dciab/ci-state, which the lab runner
 # removes with its other per-job state.
 set -euo pipefail
@@ -99,8 +106,19 @@ PY
   DCIAB_PVE_TOKEN="$CAPMOX_TOKEN_SECRET" "$ROOT/dciab" validate "$CONFIG"
 }
 
+# MGMT's token, checked live as dciab validate --live does for a site: every privilege
+# docs/PROXMOX.md lists and nothing that could change permissions or the hosts. Other live
+# findings (NTP, DNS, address probes) are printed, but only the token's fail this step.
+token() {
+  local out="$LAB_DIR/validate-live.json"
+  rm -f "$out"
+  DCIAB_PVE_TOKEN="$CAPMOX_TOKEN_SECRET" "$ROOT/dciab" validate "$CONFIG" --live --output json > "$out" || true
+  python3 "$ROOT/hack/lab/token_findings.py" "$out" "$CAPMOX_TOKEN_ID"
+}
+
 seed() {
   sudo mkdir -p "$STATE"
+  rm -f "$LAB_DIR"/capmox-*.log   # denials scans every saved CAPMOX log: none from an earlier run
   # shellcheck disable=SC2024
   rootenv "$ROOT/dciab" seed "$CONFIG" --payload "$PAYLOAD" --state "$STATE" 2>&1 | tee "$LAB_DIR/seed1.log"
   echo "== second run: nothing may change"
@@ -135,6 +153,8 @@ checks() {
   local machine start
   machine="$(sk mgmt -n cluster-mgmt get machines --no-headers | awk 'NR==1 {print $1}')"
   [[ -n "$machine" ]] || lab_die "MGMT holds no Machines"
+  # The drain can evict CAPMOX's pod, and its logs go with it: keep them for denials.
+  save_capmox_logs mgmt before-replacement || lab_die "can't read CAPMOX's logs on mgmt"
   start="$(date +%s)"; sk mgmt -n cluster-mgmt delete machine "$machine" --wait=false
   until [[ "$(sk mgmt -n cluster-mgmt get kcp -o jsonpath='{.items[0].status.readyReplicas}')" == 3 ]] \
      && ! sk mgmt -n cluster-mgmt get machine "$machine" >/dev/null 2>&1; do
@@ -191,6 +211,49 @@ rerun() {
   grep -q "already moved" "$LAB_DIR/mgmt2.log" || lab_die "the re-run did not report 'already moved'"
 }
 
+# Every Proxmox call CAPMOX made, on the bootstrap cluster before the move and on MGMT after
+# it, succeeded: Proxmox answers a missing privilege with HTTP 403 "Permission check failed
+# (<path>, <privilege>)". A cluster that was never built, or one without CAPMOX yet (an earlier
+# step failed), is skipped; a lookup or a log that fails fails the check. checks saves MGMT's
+# logs before it deletes a Machine (the drain can evict CAPMOX's pod), and denials scans those too.
+DENIAL='permission check failed|403 forbidden|status code:? ?403'
+
+# save_capmox_logs WHERE TAG: CAPMOX's current and previous container logs on WHERE, to
+# $LAB_DIR/capmox-WHERE-TAG.log. Returns 2 when WHERE has no kubeconfig or no CAPMOX
+# controller, 1 when the lookup or the log read fails.
+save_capmox_logs() {
+  local where=$1 log="$LAB_DIR/capmox-$1-$2.log" found
+  sudo test -s "$STATE/$where.kubeconfig" || return 2
+  found="$(sk "$where" -n capmox-system get deploy/capmox-controller-manager --ignore-not-found -o name)" || return 1
+  [[ -n "$found" ]] || return 2
+  sk "$where" -n capmox-system logs deploy/capmox-controller-manager --all-containers --tail=-1 > "$log" || return 1
+  # Only the container before this one; absent when it never restarted.
+  sk "$where" -n capmox-system logs deploy/capmox-controller-manager --all-containers --previous >> "$log" 2>/dev/null || true
+}
+
+denials() {
+  local where rc log checked=0 found=0
+  for where in bootstrap mgmt; do
+    rc=0; save_capmox_logs "$where" final || rc=$?
+    case $rc in
+      0) checked=$((checked + 1)) ;;
+      2) echo "$where: no CAPMOX controller to check" ;;
+      *) lab_die "can't read CAPMOX's controller or logs on $where" ;;
+    esac
+  done
+  (( checked > 0 )) || lab_die "no CAPMOX controller was found to check"
+  for log in "$LAB_DIR"/capmox-*.log; do
+    [[ -e "$log" ]] || continue
+    if grep -qiE "$DENIAL" "$log"; then
+      echo "$(basename "$log"): $(grep -ciE "$DENIAL" "$log") permission failure line(s), the first 20:"
+      grep -iE "$DENIAL" "$log" | head -20 || true
+      found=1
+    fi
+  done
+  (( found == 0 )) || lab_die "CAPMOX hit Proxmox permission failures (above): a privilege is missing from docs/PROXMOX.md"
+  echo "CAPMOX's Proxmox calls: no permission failures ($checked cluster(s) checked)"
+}
+
 down() {
   export PVE_NODE; PVE_NODE="$(lab_get proxmox.node)"
   if sk mgmt -n cluster-mgmt get cluster mgmt >/dev/null 2>&1; then sk mgmt -n cluster-mgmt delete cluster mgmt --wait=false
@@ -204,10 +267,35 @@ down() {
   for p in $(sudo podman pod ps --format '{{.Name}}' | grep -E '^dciab' || true); do sudo podman pod rm -f "$p"; done
   for a in $(lab_get site.dnsServiceIPs | jq -r '.[]'); do sudo ip addr del "$a/$(lab_get network.prefix)" dev "$(ip -4 route get "$(lab_get network.gateway)" | sed -n 's/.* dev \([^ ]*\).*/\1/p' | head -1)" 2>/dev/null || true; done
   sudo firewall-cmd --reload || true
+  leftovers
+}
+
+# After down: MGMT's VMs are gone and CAPMOX deleted every bootstrap ISO it uploaded
+# (local:iso/user-data-<vmid>.iso) with its machine, so none is left for a VM that no longer exists.
+leftovers() {
+  export PVE_NODE; PVE_NODE="$(lab_get proxmox.node)"; pve_init
+  local vms isos orphans start
+  vms="$(pve GET "/cluster/resources?type=vm")"
+  ! jq -e 'any(.[]; (.name // "") | startswith("mgmt-"))' <<<"$vms" >/dev/null \
+    || lab_die "MGMT VMs are still on Proxmox: $(jq -r '[.[] | select((.name // "") | startswith("mgmt-")) | .vmid] | join(", ")' <<<"$vms")"
+  # CAPMOX may delete a VM before its ISO: give the ISO deletes 3 minutes to settle.
+  start="$(date +%s)"
+  while :; do
+    vms="$(pve GET "/cluster/resources?type=vm")"
+    isos="$(pve GET "/nodes/$PVE_NODE/storage/local/content?content=iso")"
+    orphans="$(jq -r --argjson vms "$vms" '[$vms[].vmid | tostring] as $ids
+      | .[] | .volid | select(test("^local:iso/user-data-[0-9]+\\.iso$"))
+      | select((capture("user-data-(?<id>[0-9]+)").id) as $id | $ids | index($id) | not)' <<<"$isos")"
+    [[ -n "$orphans" ]] || break
+    (( $(date +%s) - start < 180 )) \
+      || lab_die "bootstrap ISOs left on local for VMs that no longer exist: $(tr '\n' ' ' <<<"$orphans")"
+    sleep 10
+  done
+  echo "no MGMT VMs and no orphaned user-data ISOs left"
 }
 
 case "${1:-}" in
-  payload) payload ;; config) shift; config "$@" ;; seed) seed ;; mgmt) mgmt ;; checks) checks ;;
-  rerun) rerun ;; down) down ;;
-  *) sed -n '2,12p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2; exit 2 ;;
+  payload) payload ;; config) shift; config "$@" ;; token) token ;; seed) seed ;; mgmt) mgmt ;;
+  checks) checks ;; rerun) rerun ;; denials) denials ;; down) down ;; leftovers) leftovers ;;
+  *) sed -n '2,16p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2; exit 2 ;;
 esac

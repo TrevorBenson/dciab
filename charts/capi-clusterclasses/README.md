@@ -36,9 +36,7 @@ To really delete a revision:
 
 - **No kube-proxy**: kubeadm skips its kube-proxy addon. Cilium replaces it and is installed after the control plane is up ([addons/cilium](../../addons/cilium/README.md)); nodes stay `NotReady` until then.
 - **API VIP**: a kube-vip static pod in ARP mode on the control plane nodes (`apiVIP` variable).
-- **Registry mirror**: for every upstream registry in `mirroredRegistries` (from `bundle.lock`), nodes pull through `https://<registryMirror>/v2/<upstream>/`. The list is a variable, so a new upstream needs no new class revision; changing it rolls the nodes. The classes write the configuration for both runtimes, so either kind of node image works:
-  - **containerd:** `hosts.toml` files with `override_path`. The template's containerd must use `config_path = "/etc/containerd/certs.d"`.
-  - **CRI-O:** `/etc/containers/registries.conf.d/50-dciab-mirror.conf`, with mirror location `<registryMirror>/<upstream>`.
+- **Registry mirror**: for every upstream registry in `mirroredRegistries` (from `bundle.lock`), nodes pull through `https://<registryMirror>/v2/<upstream>/`. The list is a variable, so a new upstream needs no new class revision; changing it rolls the nodes. Nodes run CRI-O (the node image, [images/node-bootc](../../images/node-bootc/README.md)): the classes write `/etc/containers/registries.conf.d/50-dciab-mirror.conf`, with mirror location `<registryMirror>/<upstream>`.
 - **Trust**: the platform CA (`trustBundle`) in the node trust store, applied before kubeadm runs.
 - **Time**: NTP servers (`ntpServers`).
 - **Break-glass user**: `dciab` with the given SSH keys (`sshAuthorizedKeys`).

@@ -94,25 +94,15 @@ images:
 
 # Upstream registries nodes pull through the site registry (registry.<domain>/v2/<upstream>/).
 # dciab cluster-values passes them to the mirroredRegistries ClusterClass variable, which
-# gives each one a containerd and a CRI-O mirror entry, so adding a registry here needs no
-# new class revision (it does roll the nodes). Every image a node pulls must come from one
+# gives each one a CRI-O mirror entry, so adding a registry here needs no new class
+# revision (it does roll the nodes). Every image a node pulls must come from one
 # of them; tests/test_clusterclasses.py checks the images pinned in this file.
 mirroredRegistries: [docker.io, quay.io, ghcr.io, registry.k8s.io]
 
-# Node images: VM templates cluster nodes are cloned from, built with Kubernetes
-# image-builder (images/node/README.md). Built artifacts are never committed.
+# Node images: built from the image mode (bootc) recipe, images/node-bootc/README.md, and
+# turned into the disks and templates cluster nodes boot from. Built artifacts are never
+# committed.
 nodeImages:
-  imageBuilder:
-    version: v0.1.55
-    # Pinned by digest; images/node/build.sh refuses to run without it.
-    image: registry.k8s.io/scl-image-builder/cluster-node-image-builder-amd64:v0.1.55
-    digest: "sha256:03051205c79c5c7d5ce3693b5ff3841fed6938f7e126137815bb7d70c1646dfe"
-  rocky10:
-    # Rocky Linux 10 minimal ISO: a versioned URL (10.N, not "10") and its sha256 from the
-    # CHECKSUM file beside it.
-    isoURL: "https://download.rockylinux.org/pub/rocky/10.3/isos/x86_64/Rocky-10.3-x86_64-minimal.iso"
-    isoSHA256: "878a3f92281d3eb91ca9d1a195794d47b5bce4e02a85f351c606709e98481cc4"
-  # Image mode (bootc) recipe, under evaluation: images/node-bootc/README.md.
   bootc:
     # Rocky Linux 10 bootc base from the RESF SIG/Containers recipe, at a pinned commit.
     sigRecipe:

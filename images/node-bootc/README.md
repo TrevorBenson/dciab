@@ -1,6 +1,6 @@
 # Node images in image mode (bootc)
 
-DCiaB's node image recipe. A node is an OCI image built from a Containerfile, then turned into disk images. It replaces the image-builder recipe in [`images/node/`](../node/README.md), which stays until a cluster passes on a bootc template. It was chosen because:
+DCiaB's node image recipe. A node is an OCI image built from a Containerfile, then turned into disk images. It replaced DCiaB's first recipe (Kubernetes image-builder with containerd), removed once a cluster passed on a bootc template. It was chosen because:
 
 - **CRI-O.** It's the preferred runtime (see the roadmap backlog). image-builder's playbook always installs containerd and pre-pulls images through it, so switching runtimes there means working against the tool.
 - **OCI-native.** The node image is a container image. It can be mirrored into the site registry like any other image, and the same image yields Proxmox/Ironic raw, qcow2 and vSphere vmdk disks.
@@ -48,7 +48,7 @@ Needs root: the base recipe composes the OS with nested containers (`--cap-add=a
 - `/usr` and `/opt` are read-only; `/etc` and `/var` are writable.
   - CNI plugins that install themselves at boot (Cilium) write to `/opt/cni/bin`, so the image points that at `/var/lib/cni/bin`, and CRI-O looks there.
   - kubelet's FlexVolume directory moves to `/var/lib/kubelet/volumeplugins`.
-- The ClusterClasses write registry mirror files for both containerd and CRI-O; CRI-O reads `/etc/containers/registries.conf.d`.
+- The ClusterClasses write the registry mirror file for CRI-O, which reads `/etc/containers/registries.conf.d`.
 - **Publishing on Proxmox: no cloud-init drive on the template.** CAPMOX attaches its own NoCloud ISO (`ide0`) to each clone. A Proxmox cloud-init drive on the template (`--ide2 <storage>:cloudinit`) is a second NoCloud source that wins, so the node never gets its address or kubeadm data.
 - **Guest agent: `guest-exec` allowed.** CAPMOX reads `cloud-init status` through the guest agent (`guest-exec`, `guest-exec-status`). Rocky's `/etc/sysconfig/qemu-ga` allow-list omits them, so the image adds them. The agent can't limit which commands guest-exec runs, so anyone with Proxmox API access to a node VM can run commands in it as root; limit Proxmox API access accordingly.
 - **Guest agent: SELinux module.** The agent runs in SELinux's `virt_qemu_ga_t` domain, which Rocky 10's policy stops from running `cloud-init` (`Permission denied`) and from reading its state under `/var/lib/cloud` (without that, `cloud-init status` wrongly says `not started`). The image loads `rootfs/usr/share/dciab/selinux/dciab-qemu-ga.cil`, a narrow allow-list for exactly those accesses (read, execute, search; no writes), and stays Enforcing. Check a template with `qm guest exec <clone> -- cloud-init status`: it should print `status: done`. Note that CAPMOX treats a non-zero exit code as failed, and `cloud-init status` exits 2 for `degraded done`.

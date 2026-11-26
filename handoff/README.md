@@ -90,7 +90,7 @@ date: 2026-11-20
 
 ## Product docs vs. test context
 
-DCiaB's docs (`README.md`, `docs/`, and component READMEs such as `images/node/README.md`) describe the product for any site and any build environment. They state facts and requirements, not the settings one lab happened to need. Keep everything about our testing under `handoff/`:
+DCiaB's docs (`README.md`, `docs/`, and component READMEs such as `images/node-bootc/README.md`) describe the product for any site and any build environment. They state facts and requirements, not the settings one lab happened to need. Keep everything about our testing under `handoff/`:
 - lab facts go in `LAB.md`
 - run-specific steps and settings go in the task files
 - results go in reports
