@@ -1,9 +1,10 @@
-# CI findings (2026-11-25)
+# CI findings (2026-11-25 Pacific; data to 2026-11-26 02:00 UTC)
 
 Answers to the review's questions, with evidence. Timings come from
-[baseline.md](baseline.md); file references are to `main` at `6705aef`. Every number is
-labelled **measured** (from the Actions API or a job log), **local** (measured on this
-review's 2-vCPU VM), **extrapolated** or **assumed**.
+[baseline.md](baseline.md). File and line references are to commit `6705aef`; `main` has
+moved since, so `ci.yml` lines there sit about two lower. Every number is labelled
+**measured** (from the Actions API or a job log), **local** (measured on a 2-vCPU Linux VM),
+**extrapolated** or **assumed**.
 
 Re-raised from #240: only the reinstall leg's pre-installed disk, which #240 explicitly
 left for later ("not done here"). Nothing #240 shipped is proposed again.
@@ -13,12 +14,15 @@ left for later ("not done here"). Nothing #240 shipped is proposed again.
 1. **PR feedback has two shapes.** Without the emulated lab, ≈3.2 min p50 (measured, set by
    the seed job). With it (52% of PR pushes, measured), ≈10 min p50 and ≈15 min p95
    (measured, set by the `untagged-reinstall` leg). The second shape is where the minutes are.
-2. **#240 pushed one PR push past GitHub Free's 20 concurrent jobs.** 18 `ci.yml` jobs + 3
-   emulated legs = 21. After #240, 20% of jobs queued > 20 s, against 4% before, and the
-   count of running jobs never exceeded 20 (measured). Job queue p95 is now 45–116 s.
+2. **Overlapping PRs now queue at GitHub Free's 20 concurrent jobs.** A push that runs the
+   emulated lab is 17 `ci.yml` jobs + 3 legs = exactly 20, after #240 added the third leg.
+   Any other run active at the same time waits. After #240, 20% of jobs queued > 20 s
+   (4% before), and every one of them was created while another PR's run was active
+   (measured). Queue p95 is now 65 s (emulated legs) and 81 s (`ci.yml` jobs). The lever
+   is total runner time per push, not one push's job count.
 3. **Most of the critical path is the e2e work itself**: 71% of the seed job, 80% of the
    reinstall leg (measured). The real levers are fewer sequential installs, caching what's
-   pinned by digest, and fewer jobs. Interpreter speed, `uv` and Mojo barely matter here.
+   pinned by digest, and less runner time per push. Interpreter speed, `uv` and Mojo barely matter here.
 
 ## Q1. Image and layer caching
 
@@ -40,8 +44,8 @@ left for later ("not done here"). Nothing #240 shipped is proposed again.
   the recipe changed. That's cheaper than adding a layer cache.
 - **Layer ordering**: the images are small single-purpose recipes (a base, `dnf install`, a
   copy). Ordering isn't the problem; cold starts are.
-- **Duplicated build time per run** (extrapolated from the p50s): chrony 3 extra builds ×
-  ≈10 s, pve-assistant 3 extra × ≈16 s ≈ **80 s of runner time** per emulated-triggering push.
+- **Duplicated build time per run** (extrapolated from the p50s): chrony 4 extra builds ×
+  ≈10 s, pve-assistant 3 extra × ≈16 s ≈ **90 s of runner time** per emulated-triggering push.
   On the critical path: **29 s** in the reinstall leg (measured step, both images).
 
 **The biggest pull is not an image build:** the seed job's "Payload" step pulls 1.7 GB of
@@ -69,6 +73,7 @@ dciab_services → hypervisors, seed, validate
 dciab_hypervisors → seed, services, state, validate                    (cycle with services)
 dciab_seed     → services, state                                       (cycle with services)
 dciab_media → archive, bootstrap_host, state;  dciab_status → services, state
+dciab_bootstrap_host → state, validate
 leaves: dciab_archive, dciab_identity, dciab_state
 ```
 
@@ -95,9 +100,13 @@ leaves: dciab_archive, dciab_identity, dciab_state
   imports: `services → hypervisors` is one helper (`dciab_hypervisors.iso.bmc_ip`,
   lib/dciab_services/render.py:202); `services → seed` is the payload lookup
   (`dciab_seed.plan`, lib/dciab_services/cli.py:111, 296); `storage → backup` is
-  `class_selector` (lib/dciab_storage/__init__.py:142). Moving those into a small shared
-  module (or `dciab_state`) breaks both cycles. Assumed S–M (under a day each, with tests).
-  Not worth it for CI time alone; worth it if test selection is ever wanted.
+  `class_selector` (lib/dciab_storage/__init__.py:142). Moving the first two into a small
+  shared module (or `dciab_state`) breaks the services cycle. The validate cycle needs more:
+  besides `storage → backup`, `dciab_validate/checks.py:23` imports `dciab_cluster.values`
+  while `dciab_cluster/cli.py:36–38` imports `dciab_validate`. That is a CLI layer calling
+  validation, so a module-level split (the cluster CLI outside the package `validate`
+  imports) breaks it. Assumed S–M per cycle, with tests. Not worth it for CI time alone;
+  worth it if test selection is ever wanted.
 
 ## Q3. Python toolchain
 
@@ -108,10 +117,10 @@ leaves: dciab_archive, dciab_identity, dciab_state
   be stale. The 3.9 leg is the slower unit leg (88 vs 77 s, measured) but off the critical
   path, so dropping it saves one job slot, no wall time. **Decided (Trevor, 2026-11-25):**
   the minimum is EL10's Python, 3.12. #256 raises the launcher and README floor and drops
-  the 3.9 leg. 3.13 would speed up pure-Python code a little; the critical paths don't run
+  the 3.9 leg, which makes an emulated-lab push 19 jobs. 3.13 would speed up pure-Python code a little; the critical paths don't run
   pure-Python hot loops, so the gain is ≈0 s (assumed).
 - **`uv`:** not used. Installs are `pip install` of 2–4 small packages: 2–8 s p50 per job
-  (measured), 21 `pip install`/`setup-python` lines in ci.yml. `uv` with a cache would cut each
+  (measured), 23 `pip install`/`setup-python` lines in ci.yml. `uv` with a cache would cut each
   to ≈1–2 s (assumed from typical uv vs pip ratios), so about **3–6 s per job and ≈2–3 s on
   the critical path** (seed's pip step is 2 s p50). Low value.
 - **pytest config:** no `pytest.ini`/`pyproject.toml`; xdist `-n auto` since #240.
@@ -150,7 +159,8 @@ Mojo speed changes. No further assessment is warranted.
     rebuilds seed's state up to the registry (≈20 s with a cached payload, extrapolated).
 - **Caches:** the CRD cache hits (sampled logs). The seed, `day0-preload` and archive
   payload steps fetch CRDs uncached (5 s, local). Nothing caches the seed payload, apt
-  packages (43 s in each emulated leg), pip, or podman layers.
+  packages, pip, or podman layers. The emulated legs' apt step (43 s p50) is mostly
+  unpacking and setup: in job 139635528680's log its downloads (≈50 MB) took about 2 s.
 - **Runners:** standard 4-vCPU hosted runners throughout. Larger hosted runners need a paid
   plan (Team or Enterprise) (assumed from GitHub's plan docs). The self-hosted lab runner
   refuses PR jobs by design, so it can't take PR load. Nested Proxmox installs are the one
@@ -163,13 +173,13 @@ Mojo speed changes. No further assessment is warranted.
 - **Concurrency:** `cancel-in-progress` for superseded PR runs is in place in `ci.yml` and the
   emulated workflow (#240). Nothing to add.
 - **Deprecation, not speed:** every job warns that `actions/checkout@v4` and
-  `actions/setup-python@v5` target Node.js 20, now forced onto Node 24.
+  `actions/setup-python@v5` (and, in the emulated legs, `actions/cache/restore@v4` and `actions/upload-artifact@v4`) target Node.js 20, now forced onto Node 24.
 
 ## Data I couldn't get
 
 | Question | Missing | How to get it |
 | --- | --- | --- |
-| Cache hit rates over all runs, cache sizes and evictions (10 GB repo limit) | `/repos/{o}/{r}/actions/caches` is blocked from this session's proxy | `gh api repos/TrevorBenson/dciab/actions/caches` from a workstation, or the O1 workflow |
+| Cache hit rates over all runs, cache sizes and evictions (10 GB repo limit) | `/repos/{o}/{r}/actions/caches` wasn't reachable from the environment used | `gh api repos/TrevorBenson/dciab/actions/caches` from a workstation, or the O1 workflow |
 | Whether the account is on Free (20 jobs) or Pro (40) | account billing | Trevor; the plateau at 20 says Free |
 | Which job failures were flakes | failed jobs' logs | read the 15 failed jobs' logs, or let O1 classify them going forward |
 | The 60 s in the backup image check | which command waits | one timed run |

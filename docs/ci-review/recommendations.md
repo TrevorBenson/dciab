@@ -1,4 +1,4 @@
-# CI recommendations (2026-11-25)
+# CI recommendations (2026-11-25 Pacific; data to 2026-11-26 02:00 UTC)
 
 Ranked plan from [findings.md](findings.md), against the critical paths in
 [baseline.md](baseline.md). Nothing here is implemented.
@@ -6,7 +6,9 @@ Ranked plan from [findings.md](findings.md), against the critical paths in
 ## How to read the table
 
 - **Critical paths (post-#240 p50, measured):** **A**, emulated lab off (48% of PR pushes):
-  **193 s**. **B**, emulated lab on (52%): **597 s**, p95 922 s.
+  **193 s**. This is the `ci.yml` run alone (all events, n=9), because only 2 post-#240 PR
+  pushes ran without the emulated lab, and they agree (191 s). **B**, emulated lab on
+  (52%): **597 s**, p95 922 s (n=5).
 - **Savings** are seconds off a path's p50 unless marked *p95*, then the share of that path.
   **Blended** = 0.48 × ΔA + 0.52 × ΔB, the average saving per PR push.
 - **Basis:** M = measured, X = extrapolated from measurements, A = assumed.
@@ -17,31 +19,43 @@ Ranked plan from [findings.md](findings.md), against the critical paths in
 
 ## Quick wins (< 1 day each)
 
+Every S-effort item, in score order. The last four save nothing on a critical path but
+are cheap and free runner time (which is what the queue competes for) or fix hygiene.
+
 | # | Change | Bucket | Savings | Basis | Effort | Risk | Depends on |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| R1 | **Fit a PR push under 20 concurrent jobs:** fold six small `ci.yml` jobs into three. `lint`: shellcheck + frozen classes. `checks`: image digests + Redfish mockups. The two `rockylinux:10` container jobs become one. (The chrony job stays alone: it holds `packages: write`.) 18 jobs → 15; 18 with the emulated lab (17 → 14, and 17, once #256 drops the 3.9 leg). | queue | B p95: −40 to −50 s (−5%); p50 ≈ 0 | M (queue p95 45–57 s on emulated legs post-#240, ≤10 s before) | S | Low. A failure names a combined job; no check is required by the ruleset, so renames break nothing | — |
-| R4 | **Cache the seed payload**, saved from `main` only like the ISO, keyed on `hash(bundle.lock, build/archive.py, build/inventory.py, hack/fetch_crds.py)`. Also give `seed-e2e`, `day0-preload` and the archive steps the existing CRD cache. Keep the `sums` step, so a restored payload is still checked. | image pull | A: −25 to −30 s (−14%) | X (42 s Payload step measured; a 2.1 GB restore assumed ≈15 s, as the 1.7 GB ISO restores in 14 s; CRDs 5 s, local) | S | Low. Everything in it is pinned by digest or sha256. Uses ≈2.1 GB of the 10 GB cache | — |
-| R3a | **Pull, don't rebuild, unchanged images:** in the emulated legs and the `services` job, pull `ghcr.io/…/dciab-day0-chrony` / `dciab-pve-assistant` for the current recipe id when it exists, and build only when the recipe changed. The `day0-chrony` and `pve-assistant` jobs keep building, since they're what proves the recipe. | image build | B: −15 to −20 s (−3%) | X (29 s measured for both builds; pulls of these small images assumed ≈5–10 s) | S | Low–medium. A leg tests the published image, not a fresh `dnf install` of the same recipe; that's closer to what a site runs | pve-assistant needs a `--recipe-id` like chrony's |
-| R7 | **Find the 60 s silence in the backup image check** (`CLUSTERCTL_DISABLE_VERSIONCHECK=true`, then time each command) and remove it. | tests (off path) | 0 s on paths; the job 86 → ≈26 s, freeing a runner slot a minute earlier | M (60.2 s gap in the job log) | S | Low | — |
-| R6 | **Fix the 25 s real sleep** in `test_a_network_reload_that_drops_the_api_fails_clearly`: pass `sleep=` to `post.network()` or patch the default argument. | tests (off path) | 0 s on paths; unit jobs −5 to −15 s | X (25.05 s local; 4 workers in CI) | S (≈1 h) | None | — |
-| R3b | **Cache the emulated legs' apt downloads** (`/var/cache/apt/archives`, keyed on the package list + runner image). | dependency install | B: −5 to −10 s (−1–2%) | A (43 s step measured; the download share isn't) | S | Low | — |
+| R4 | **Cache the seed payload**, saved from `main` only like the ISO, keyed on `hash(bundle.lock, build/archive.py, build/inventory.py, hack/fetch_crds.py, .github/workflows/ci.yml)`; the workflow is in the key because it holds the step's `--only` list. After a restore, check the payload against `bundle.lock`'s pins (image digests, `binarySHA256`). The `sums` step only *writes* SHA256SUMS over what's on disk, so it checks nothing. Also give `seed-e2e`, `day0-preload` and the archive steps the existing CRD cache. | image pull | A: −25 to −30 s (−14%) | X (42 s Payload step measured; a 2.1 GB restore assumed ≈15 s, as the 1.7 GB ISO restores in 14 s; CRDs 5 s, local) | S | Low. Everything in it is pinned. Uses ≈2.1 GB of the 10 GB cache | — |
+| R3a | **Pull, don't rebuild, unchanged images:** in the emulated legs and the `services` job, pull `ghcr.io/…/dciab-day0-chrony` / `dciab-pve-assistant` for the current recipe id when it exists, and build only when the recipe changed. The `day0-chrony` and `pve-assistant` jobs keep building, since they're what proves the recipe. | image build | B: −15 to −20 s (−3%); ≈90 s less runner time per emulated push | X (29 s measured for both builds in a leg; pulls of these small images assumed ≈5–10 s) | S | Low–medium. A leg tests the published image, not a fresh `dnf install` of the same recipe; that's closer to what a site runs | pve-assistant needs a `--recipe-id` like chrony's |
+| R11 | **Skip heavy `ci.yml` jobs on docs/handoff-only PRs** (`dorny/paths-filter` or job `if:`). | all | ≈4% of PR pushes skip ≈190 s: −8 s average on A | M (3 of 85 PR runs were docs/handoff-only) | S | Low: nothing is a required check | — |
+| R1† | **Fewer, larger small jobs:** fold six small `ci.yml` jobs into three. `lint`: shellcheck + frozen classes. `checks`: image digests + Redfish mockups. The two `rockylinux:10` container jobs become one. (The chrony job stays alone: it holds `packages: write`.) 17 jobs → 14; 16 → 13 after #256. | queue | B p95: ≈ −5 s; p50 ≈ 0 | A (each folded job saves ≈5–10 s of setup and one slot; the measured queueing comes from overlapping PRs, which this barely changes) | S | Low. A failure names a combined job; renames break nothing because no check is required | — |
+| R10 | **`uv` with its cache** for the `pip install` steps. | dependency install | A −2 s, B −1 s | A (pip steps 2–8 s measured; uv ratio assumed) | S | Low | — |
+| R3b | **Cache the emulated legs' apt downloads** (`/var/cache/apt/archives`). | dependency install | B: −1 to −2 s | M (≈50 MB downloaded in ≈2 s, job 139635528680's log; the rest of the 43 s step is unpacking) | S | Low | — |
+| R7 | **Find the 60 s silence in the backup image check** (`CLUSTERCTL_DISABLE_VERSIONCHECK=true`, then time each command) and remove it. | tests (off path) | 0 s on paths; the job 86 → ≈26 s, a runner free a minute earlier on every push | M (60.2 s gap in the job log) | S | Low | — |
+| R6 | **Fix the 25 s real sleep** in `test_a_network_reload_that_drops_the_api_fails_clearly`: pass `sleep=` to `post.network()` or patch the default argument. | tests (off path) | 0 s on paths; unit job −5 to −15 s | X (25.05 s local; 4 workers in CI) | S (≈1 h) | None | — |
+| R12 | **Bump the actions that target Node.js 20** to their Node 24 majors: `checkout`, `setup-python`, `cache/restore`, `upload-artifact`. | — | 0 s | — | S | Low | — |
 
 ## Ranked by score
 
 | Rank | # | Change | Bucket | ΔA | ΔB | Blended | Effort | Score | Risk | Depends on |
 | --- | --- | --- | --- | ---: | ---: | ---: | --- | ---: | --- | --- |
-| 1 | R1† | Fit under 20 concurrent jobs | queue | ≈0 | −45 s *p95* | −23 s *p95* | S | 23† | Low | — |
-| 2 | R4 | Cache the seed payload (+ CRD cache everywhere) | image pull | −28 s (−14%) | 0 | −13 s | S | 13 | Low | — |
-| 3 | R3a | Pull unchanged chrony / pve-assistant images | image build | 0 | −18 s (−3%) | −9 s | S | 9 | Low–med | recipe id for pve-assistant |
-| 4 | R2 | **Reinstall leg from a cached pre-installed disk** (deferred by #240): restore a qcow2 of a host that `main` installed, plus its install record, then run only the reinstall scenarios. | tests (e2e) | 0 | −130 s (−22%) | −68 s | L | 8.5 | Medium (below) | cache budget shared with R4 |
-| 5 | R11 | Skip heavy `ci.yml` jobs on docs/handoff-only PRs (`dorny/paths-filter` or job `if:`) | all | −8 s avg | 0 | −4 s | S | 4 | Low: nothing is a required check | — |
-| 6 | R3b | Cache apt downloads in emulated legs | dependency install | 0 | −8 s | −4 s | S | 4 | Low | — |
-| 7 | R5 | Move seed's firewalld section (33 s) into its own parallel job that seeds up to the registry from the cached payload | tests (integration) | −33 s (−17%) | 0 | −16 s | M | 5.3 | Low–med: duplicated setup | R4 (else the new job is slower than what it removes); R1 (it adds a job) |
-| 8 | R10 | `uv` with its cache for the `pip install` steps | dependency install | −2 s | −1 s | −2 s | S | 2 | Low | — |
-| 9 | R7 | Remove the backup check's 60 s wait | tests (off path) | 0 | 0 | 0 (frees a slot) | S | — | Low | — |
+| 1 | R4 | Cache the seed payload (+ CRD cache everywhere) | image pull | −28 s (−14%) | 0 | −13 s | S | 13 | Low | — |
+| 2 | R3a | Pull unchanged chrony / pve-assistant images | image build | 0 | −18 s (−3%) | −9 s | S | 9 | Low–med | recipe id for pve-assistant |
+| 3 | R2 | **Reinstall leg from a cached pre-installed disk** (deferred by #240): restore a qcow2 of a host that `main` installed, plus its install record, then run only the reinstall scenarios. | tests (e2e) | 0 | −130 s (−22%) | −68 s | L | 8.5 | Medium (below) | cache budget shared with R4 |
+| 4 | R5 | Move seed's firewalld section (33 s) into its own parallel job that seeds up to the registry from the cached payload | tests (integration) | −33 s (−17%) | 0 | −16 s | M | 5.3 | Low–med: duplicated setup | R4 (else the new job is slower than what it removes) |
+| 5 | R11 | Skip heavy jobs on docs/handoff-only PRs | all | −8 s avg | 0 | −4 s | S | 4 | Low | — |
+| 6 | R1† | Fold six small jobs into three | queue | ≈0 | −5 s *p95* (A) | −3 s *p95* | S | 3† | Low | — |
+| 7 | R10 | `uv` with its cache | dependency install | −2 s | −1 s | −1.5 s | S | 1.5 | Low | — |
+| 8 | R3b | Cache apt downloads in emulated legs | dependency install | 0 | −1.5 s | −0.8 s | S | 0.8 | Low | — |
+| 9 | R7 | Remove the backup check's 60 s wait | tests (off path) | 0 | 0 | 0 (frees a runner 60 s sooner) | S | — | Low | — |
 | 10 | R6 | Fix the 25 s sleep in one unit test | tests (off path) | 0 | 0 | 0 | S | — | None | — |
-| — | R9 | **Decided: Python 3.12 (EL10's) is the minimum.** #256 raises the launcher and README floor and drops the 3.9 leg | — | 0 | 0 | 0 (−1 job) | S | — | Low | — |
-| — | R12 | Bump `actions/checkout` / `setup-python` to their Node 24 majors | — | 0 | 0 | 0 | S | — | Low | — |
+| — | R9 | **Decided: Python 3.12 (EL10's) is the minimum.** #256 raises the launcher and README floor and drops the 3.9 leg (an emulated-lab push becomes 19 jobs) | — | 0 | 0 | 0 (−1 job) | S | — | Low | — |
+| — | R12 | Bump the Node 20 actions | — | 0 | 0 | 0 | S | — | Low | — |
+
+**The queue, honestly:** the measured queueing (queue p95 65–81 s post-#240) happens only
+when runs from different PRs overlap. Two overlapping emulated-lab pushes are ≈38 jobs
+against a cap of 20, whatever R1 does. What helps is less runner time held per push
+(R7 frees 60 s, R3a ≈90 s, R4 ≈25 s) and fewer lane PRs pushing at the same moment. Neither
+is measurable until it's done; O2 tracks queue p95 so the effect shows.
 
 **R2's risks, spelled out:**
 - **The key can't include the hypervisor code.** The emulated lab runs only when that code
@@ -70,12 +84,12 @@ Ranked plan from [findings.md](findings.md), against the critical paths in
 | | Path A p50 | Path B p50 | Path B p95 |
 | --- | ---: | ---: | ---: |
 | Today (post-#240, M) | 193 s | 597 s | 922 s |
-| Quick wins: R1 + R4 + R3a (+ R3b) (X) | ≈165 s (−15%) | ≈575 s (−4%) | ≈850 s (−8%) |
-| + R2 and R5 (X/A) | ≈130 s (−33%) | ≈445 s (−25%) | ≈720 s (−22%) |
+| Quick wins: R4 + R3a + R1 + R3b (X/A) | ≈165 s (−15%) | ≈577 s (−3%) | ≈895 s (−3%) |
+| + R2 and R5 (X/A) | ≈130 s (−33%) | ≈447 s (−25%) | ≈765 s (−17%) |
 
-The p95 column rests on 5 post-#240 runs; treat it as a direction, not a forecast. R1 leaves
-headroom for one PR push, not two at once (or a PR push plus a post-merge `main` run): the
-cap returns then. O2 below watches for it.
+The p95 column rests on 5 post-#240 runs; treat it as a direction, not a forecast. It
+excludes any queue relief from overlapping PRs needing fewer runner-minutes (see "The
+queue, honestly").
 
 Below ≈130 s, path A is set by the ClusterClass e2e (113 s, measured: kind create 42 s +
 `run.sh` 51 s). Below ≈420 s, path B is set by the install and tagged legs, each one full

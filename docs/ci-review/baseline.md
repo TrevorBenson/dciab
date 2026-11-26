@@ -1,4 +1,4 @@
-# CI baseline (2026-11-25)
+# CI baseline (2026-11-25 Pacific; data to 2026-11-26 02:00 UTC)
 
 Review phase, read-only. Nothing here changes a workflow. Data: the GitHub Actions REST API
 (`/actions/workflows/{id}/runs`, `/actions/runs/{id}/jobs`) and five job logs, pulled
@@ -15,12 +15,12 @@ p95 values as indicative only.
 ## 1. Pipeline map
 
 No status check is required: the "Protect Main" ruleset's `required_status_checks` list is
-empty. In practice the merge gate is "every check green" (the PR work pattern), so the
+empty. In practice a PR merges once every check is green, so the
 critical path below runs from the push to the **last** check finishing.
 
 | Workflow | Trigger | Jobs | Runner | Depends on |
 | --- | --- | --- | --- | --- |
-| `ci.yml` | every `pull_request`, push to `main` | 18 (17 + a 2-leg Python matrix), all parallel, no `needs:` | GitHub-hosted (`ubuntu-latest` / `ubuntu-24.04`; 2 in a `rockylinux:10` container) | none |
+| `ci.yml` | every `pull_request`, push to `main` | 17 (16 jobs, one with a 2-leg Python matrix), all parallel, no `needs:` | GitHub-hosted (`ubuntu-latest` / `ubuntu-24.04`; 2 in a `rockylinux:10` container) | none |
 | `hypervisors-emulated.yml` | `pull_request` / push to `main`, **path-filtered** (hypervisors, services, validate, schema, `bundle.lock`, `dciab`, …) | 3 matrix legs (`untagged-install`, `untagged-reinstall`, `tagged`), parallel | `ubuntu-24.04` with KVM | none |
 | `node-image-boot.yml` | push to `main` (paths), dispatch | 1 | self-hosted lab runner | — |
 | `lab.yml` → `lab-template/cluster/mgmt.yml` | dispatch | chained | self-hosted lab runner | `needs:` chain |
@@ -54,11 +54,11 @@ Two shapes of PR push. Emulated lab off (48%): the seed job sets the time. Emula
 
 ```mermaid
 flowchart LR
-  push([PR push]) --> q{{"queue ≈2 s p50<br/>45–116 s p95 post-#240<br/>(20-job cap)"}}
-  q --> ci["ci.yml: 18 parallel jobs"]
+  push([PR push]) --> q{{"queue ≈2 s p50<br/>65–81 s p95 post-#240<br/>(20-job cap, overlapping PRs)"}}
+  q --> ci["ci.yml: 17 parallel jobs"]
   q --> em["hypervisors-emulated: 3 legs<br/>(52% of PR pushes)"]
   ci --> seed["dciab seed 190 s<br/>payload 42 · seed 93 · firewalld 33"]
-  ci --> rest["17 other jobs ≤113 s"]
+  ci --> rest["16 other jobs ≤113 s"]
   em --> rein["untagged-reinstall 550 s<br/>setup ≈100 · install ≈250 · reinstall ≈220"]
   em --> inst["untagged-install 417 s · tagged 412 s"]
   seed --> green1([all green, emulated off<br/>p50 191–206 s])
@@ -83,7 +83,7 @@ Step p50s from 10 post-#240 runs; the split inside `dciab seed` is from one job 
 
 | Bucket | Seconds | Share | Detail |
 | --- | ---: | ---: | --- |
-| Runner queue / provisioning | 2 (p95 18) | 1% | |
+| Runner queue / provisioning | 2 (p95 81, all ci jobs) | 1% | |
 | Checkout | 1–2 | 1% | |
 | Dependency install | 8 | 4% | setup-python + `pip install pyyaml jsonschema` (≈4 s), `apt-get install dnsutils` (4 s) |
 | Image pull / build | 42 | 22% | "Payload": `oras` pulls 1.7 GB of images + 415 MB of binaries + CRDs, every run, uncached |
@@ -103,7 +103,7 @@ run 45736842265).
 
 | Bucket | Seconds | Share | Detail |
 | --- | ---: | ---: | --- |
-| Runner queue / provisioning | 2 (p95 50) | 0–9% | |
+| Runner queue / provisioning | 2 (p95 65, emulated legs) | 0–11% | |
 | Checkout | 3 | 1% | |
 | Dependency install | 43 | 8% | `apt-get install` qemu, libvirt, OVMF, python3-libvirt… |
 | Image pull / build | 46 | 8% | ISO cache restore 14 s + check 3 s; **chrony + pve-assistant images built from scratch** 29 s |
@@ -124,17 +124,24 @@ suite is partly waiting, not CPU-bound. One test alone sleeps 25 s (findings.md,
 ## 4. Queue time and the 20-job cap
 
 GitHub Free allows 20 concurrent jobs on standard hosted runners. One PR push that triggers
-the emulated lab starts 18 + 3 = **21** jobs.
+the emulated lab starts 17 + 3 = **20** jobs: exactly the cap, so any second run active at the
+same time (another PR's push, or a post-merge `main` run) queues.
 
 | | Jobs | Queued > 20 s | Hosted jobs already running when the queued ones were created |
 | --- | ---: | ---: | --- |
 | Pre-#240 | 1350 | 53 (4%) | 0–19 |
 | Post-#240 | 220 | 45 (20%) | 12–20; never more than 20 running at once in the sample |
 
-Measured from the fetched runs only (other workflows' jobs not in the sample would only
-raise the counts). Job queue p95 rose from ≤25 s to 45–116 s after #240 added a third
-emulated leg. The cap is inferred from the plateau at exactly 20 plus GitHub's documented
-limit; the account's plan isn't visible from here.
+**Every one of the 45 post-#240 jobs that queued > 20 s was created while runs for more than
+one head SHA were active** (measured: lane-g/h follow-ups, lane-i and lane-j PRs pushing
+within minutes of each other). None queued because of a single push. Queue p95 (negative
+values from re-runs clipped to 0): emulated legs 9 → **65 s**, `ci.yml` jobs 15 → **81 s**,
+pre → post #240. A third emulated leg took the one-push total from 19 to exactly 20, so
+any overlap now queues. Pre-#240 also peaked at exactly 20 running jobs.
+
+Counts come from the fetched runs only; other workflows' jobs not in the sample would only
+raise them. The cap is inferred from the plateau at exactly 20 plus GitHub's documented
+limit; the account's plan isn't visible from the API used here.
 
 ## 5. Caches
 
@@ -146,7 +153,7 @@ limit; the account's plan isn't visible from here.
 
 The seed job, `day0-preload` and the archive payload steps call `hack/fetch_crds.py`
 without the CRD cache (5 s uncached, measured locally). The cache list and hit rates over
-all runs couldn't be read: `/actions/caches` is blocked from this session's proxy
+all runs couldn't be read: `/actions/caches` wasn't reachable from the environment used
 (findings.md, "Data I couldn't get").
 
 ## How the numbers were made
@@ -157,5 +164,11 @@ all runs couldn't be read: `/actions/caches` is blocked from this session's prox
   `started_at − created_at`; duration = `completed_at − started_at`; path = last job
   `completed_at` − run `created_at` (earliest of both workflows for a head SHA).
 - Pre/post split: run `created_at` before/after #240's merge (2026-11-26 00:23:26 UTC).
-- The fetch and analysis scripts lived outside the repo for this review; recommendation O1
-  turns them into a workflow.
+- Queries (REST, `gh api`), so anyone can redo this:
+  - `repos/TrevorBenson/dciab/actions/workflows/{ci.yml,hypervisors-emulated.yml}/runs?status=completed&per_page=100`
+  - `repos/TrevorBenson/dciab/actions/runs/{run_id}/jobs?per_page=100` (jobs and steps with timestamps)
+  - `repos/TrevorBenson/dciab/actions/jobs/{job_id}/logs` (the phase splits)
+  - `repos/TrevorBenson/dciab/pulls?head=TrevorBenson:{branch}&state=all` and `pulls/{n}/files` (what PRs touch)
+- The analysis was a throwaway script; recommendation O1 turns it into a workflow in the repo.
+- **Path A** in recommendations.md is the `ci.yml` run alone (all events, post-#240, n=9:
+  193 s), because only 2 post-#240 PR pushes ran `ci.yml` without the emulated lab.
