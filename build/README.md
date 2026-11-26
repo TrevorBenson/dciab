@@ -15,7 +15,7 @@ DCiaB ships as one archive that a site unpacks on the bootstrap host and runs of
 | Packaging (`package.py package`) | done | `dciab`, its libraries, charts, add-ons, docs and the payload as one reproducible tar with a `MANIFEST` |
 | Signatures (`package.py package --signing-key`, `dciab verify-archive`) | done | `MANIFEST` and `SHA256SUMS` signed with a cosign key; the site checks them offline with the public key |
 | `dciab seed` | done | Loading the payload's images into the seed registry ([SEED.md](../docs/SEED.md)) |
-| Node images | next | The bootc node image as an OCI image, plus disks per platform where a platform needs one |
+| Node images (`archive.py nodes`) | Proxmox VE built | The bootc node image (an OCI image in the layout, once pinned) and each platform's disk in `payload/nodes/`, published by the lab runner (`lab-node-image.yml`) and pinned in `bundle.lock` (`nodeImages.published`). vSphere and Metal3 disks join with their lanes |
 
 ## Image inventory
 
@@ -49,6 +49,7 @@ $ python3 build/archive.py binaries --out payload                # first: images
 $ python3 build/archive.py images   --inventory images.yaml --out payload --oras payload/bin/oras
 $ python3 build/archive.py charts   --out payload
 $ python3 build/archive.py providers --out payload --manifests "$crds"
+$ python3 build/archive.py nodes    --out payload --oras payload/bin/oras [--require-built]
 $ python3 build/archive.py sums     --out payload
 ```
 
@@ -59,11 +60,14 @@ payload/
   charts/        <chart>-<version>.tgz
   providers/     Cluster API, provider and cert-manager manifests
   bin/           kind, kubectl, helm, clusterctl, oras, cosign (linux-amd64)
+  nodes/         <platform>/<disk> and <disk>.sha256sum; nodes.yaml lists them
   sboms/         SPDX SBOMs (package.py sboms)
   SHA256SUMS
 ```
 
 **Why every platform.** The provider manifests and `bundle.lock` name multi-platform images by their index digest, and nodes pull that digest from the site registry. A registry only serves an index whose images it holds, so the layout keeps the exact index and every image in it. `oras cp` copies the graph byte for byte; skopeo can't write a Docker manifest list into an OCI layout without converting it, which changes its digest ([ADR 0003](../docs/adr/0003-archive-images-with-oras.md)). Trimming to one platform would change the digest. That costs space; a later change can filter platforms if the site registry learns to serve a trimmed index under a new digest that DCiaB rewrites into the manifests.
+
+**Node disks.** The node image is built on the lab runner (its Rocky bootc base can't be built on a hosted runner) by `.github/workflows/lab-node-image.yml` on `main`, once per tag (`hack/lab/node-image-id.sh`): the bootc image to `ghcr.io/<owner>/dciab-node`, and each disk as an OCI artifact (`dciab-node-disk:<tag>-<platform>`) holding the disk and its `.sha256sum`. `bundle.lock` pins both (`nodeImages.published`), and `archive.py nodes` pulls each pinned disk by digest, checks its sha256 and keeps it with a `.sha256sum` file. A disk that isn't pinned yet is skipped with a note; the full archive (`--require-built`) refuses a missing Proxmox VE disk. The pinned node image itself is listed by the inventory like any other pinned image. Test tooling (`labRunner`), the pve-assistant's build base and the disks are kept out of the image inventory.
 
 **Pinning.** Every input is checked: images by digest (and checked again in the layout after the copy), charts against `chartDigests`, binaries against `bootstrapAppliance.toolChecksums` and `binarySHA256`, and provider manifests against `checksums`. A missing pin is an error. Each step can be rerun; what is already there and correct is kept. Charts, providers and binaries are built in a staging folder and swapped in only when complete, so a failed run leaves the previous set. One run at a time per payload folder.
 

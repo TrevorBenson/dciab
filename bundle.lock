@@ -126,6 +126,17 @@ nodeImages:
     bootcImageBuilder: quay.io/centos-bootc/bootc-image-builder@sha256:dab86ee6b46dcade411b37f4e70b07d93b6a06da0dbfec6fe89247a220e0d9f8
     # CRI-O follows Kubernetes minor versions.
     crioSeries: v1.36
+  # The node image and the disks the archive carries, built and published to GHCR by
+  # .github/workflows/lab-node-image.yml on main (tag <kubernetes version>-<id>,
+  # hack/lab/node-image-id.sh), once per tag. Pin each by digest after its first publish;
+  # build/archive.py nodes copies every pinned disk into the payload and checks its sha256.
+  # Empty = not published yet (a full archive refuses a missing Proxmox disk: --require-built).
+  published:
+    image: ""
+    disks:
+      proxmox: {ref: "", file: disk.qcow2, sha256: ""}   # imported as the Proxmox VE node template
+      vsphere: {ref: "", file: disk.vmdk, sha256: ""}    # not built yet (vSphere lane)
+      metal3: {ref: "", file: disk.raw, sha256: ""}      # not built yet (Metal3, r1beta)
 
 # Day 0, for sites that start from bare servers (docs/adr/0001-day0-hypervisors-and-services.md).
 # Hypervisor installers DCiaB has tested. bundle.lock pins a version whether or not the

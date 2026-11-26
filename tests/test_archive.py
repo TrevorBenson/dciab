@@ -270,3 +270,72 @@ def test_damaged_layout_image_is_copied_again(tmp_path):
     runner2, calls2 = fake_oras()
     archive.copy_images(entries, tmp_path, runner=runner2)
     assert len(calls2) == 1
+
+
+def node_lock(**proxmox):
+    entry = {"ref": "", "file": "disk.qcow2", "sha256": ""}
+    entry.update(proxmox)
+    return {"nodeImages": {"published": {"disks": {
+        "proxmox": entry, "metal3": {"ref": "", "file": "disk.raw", "sha256": ""}}}}}
+
+
+def fake_pull(content=b"qcow2", extra=True):
+    calls = []
+
+    def runner(cmd):
+        calls.append(list(cmd))
+        out = Path(cmd[cmd.index("--output") + 1])
+        (out / "disk.qcow2").write_bytes(content)
+        if extra:
+            (out / "disk.qcow2.sha256").write_text("whatever\n")
+        return done()
+    return runner, calls
+
+
+def test_nodes_pulls_checks_and_records(tmp_path):
+    want = hashlib.sha256(b"qcow2").hexdigest()
+    ref = "ghcr.io/x/dciab-node-disk:v1.36.6-abc@" + D1
+    runner, calls = fake_pull()
+    record = archive.pull_nodes(node_lock(ref=ref, sha256=want), tmp_path, runner=runner)
+    assert calls == [["oras", "pull", "--output", str(tmp_path / ".nodes.new" / "proxmox"), ref]]
+    assert [r["platform"] for r in record] == ["proxmox"]
+    disk = tmp_path / "nodes" / "proxmox" / "disk.qcow2"
+    assert disk.read_bytes() == b"qcow2"
+    assert (tmp_path / "nodes" / "proxmox" / "disk.qcow2.sha256sum").read_text() == f"{want}  disk.qcow2\n"
+    assert not (tmp_path / "nodes" / "proxmox" / "disk.qcow2.sha256").exists(), "only the disk and its sum stay"
+    listed = yaml.safe_load((tmp_path / "nodes" / "nodes.yaml").read_text())["disks"]
+    assert listed == [{"platform": "proxmox", "file": "nodes/proxmox/disk.qcow2", "sha256": want, "ref": ref}]
+    # The sums step covers the disks.
+    sums = archive.write_sums(tmp_path).read_text()
+    assert "nodes/proxmox/disk.qcow2" in sums and "nodes/nodes.yaml" in sums
+
+
+def test_nodes_refuses_a_wrong_disk_and_keeps_the_old_set(tmp_path):
+    ref = "ghcr.io/x/dciab-node-disk:t@" + D1
+    good = hashlib.sha256(b"qcow2").hexdigest()
+    archive.pull_nodes(node_lock(ref=ref, sha256=good), tmp_path, runner=fake_pull()[0])
+    with pytest.raises(archive.ArchiveError, match="bundle.lock says"):
+        archive.pull_nodes(node_lock(ref=ref, sha256=good), tmp_path, runner=fake_pull(b"other")[0])
+    assert (tmp_path / "nodes" / "proxmox" / "disk.qcow2").read_bytes() == b"qcow2"
+
+
+def test_nodes_skips_unpublished_unless_required(tmp_path, capsys):
+    runner, calls = fake_pull()
+    assert archive.pull_nodes(node_lock(), tmp_path, runner=runner) == []
+    assert calls == [] and "not published yet" in capsys.readouterr().out
+    with pytest.raises(archive.ArchiveError, match="proxmox: not published"):
+        archive.pull_nodes(node_lock(), tmp_path, runner=runner, require_built=True)
+
+
+def test_nodes_refuses_bad_pins(tmp_path):
+    good = hashlib.sha256(b"qcow2").hexdigest()
+    for bad, msg in ((dict(ref="ghcr.io/x/disk:t", sha256=good), "not pinned by digest"),
+                     (dict(ref="ghcr.io/x/disk@" + D1, sha256="nope"), "sha256"),
+                     (dict(ref="ghcr.io/x/disk@" + D1, sha256=good, file="../x"), "plain file name")):
+        with pytest.raises(archive.ArchiveError, match=msg):
+            archive.pull_nodes(node_lock(**bad), tmp_path, runner=fake_pull()[0])
+
+
+def test_lock_lists_the_node_disks():
+    platforms = [p for p, *_ in archive.disk_list(archive.load_lock())]
+    assert set(archive.REQUIRED_DISKS) <= set(platforms)

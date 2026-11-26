@@ -65,6 +65,8 @@ jobs:
           python3 build/archive.py images --inventory images.yaml --out "$out" --oras "$out/bin/oras"
           python3 build/archive.py charts --out "$out"
           python3 build/archive.py providers --out "$out" --manifests "$crds"
+          # --require-built: the Proxmox node disk must be published and pinned (lab-node-image.yml).
+          python3 build/archive.py nodes --out "$out" --oras "$out/bin/oras" --require-built
           python3 build/package.py tools --out "$RUNNER_TEMP/build"
           python3 build/package.py sboms --payload "$out" --syft "$RUNNER_TEMP/build/tools/syft"
           python3 build/archive.py sums --out "$out"

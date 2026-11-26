@@ -30,7 +30,7 @@ Moving clusters between platforms (vSphere to Proxmox VE or back) joins `r1` onl
 - [x] `capi-cluster` chart
 - [x] `dciab cluster-values`: capi-cluster values for MGMT, INFRA and workload clusters, generated from the site config
 - [x] ClusterClass end-to-end test: CAPI and all providers on kind, one Cluster per class, generated objects verified (no infrastructure)
-- [ ] Archive build pipeline (`build/README.md` in the source repository; not shipped in the archive): image inventory, image pull, charts, providers, binaries, checksums, SBOMs, packaging and signing (`dciab verify-archive`) done; node images next
+- [ ] Archive build pipeline (`build/README.md` in the source repository; not shipped in the archive): image inventory, image pull, charts, providers, binaries, checksums, SBOMs, packaging and signing (`dciab verify-archive`) done; node disks (`archive.py nodes`) built, pending the first published pin
 - [ ] A release workflow that tags `v`+`VERSION` (`vN.0.0-alpha.M`, `vN.0.0-beta.M`, `vN.0.0`) and creates the GitHub release named `rNalphaM`, `rNbetaM` or `rN` ([VERSIONING.md](VERSIONING.md))
 
 ### Node images and the first cluster
@@ -39,7 +39,7 @@ Moving clusters between platforms (vSphere to Proxmox VE or back) joins `r1` onl
 - [x] First Proxmox template built and verified
 - [x] Cilium install for any cluster (`addons/cilium`), with kube-proxy replaced
 - [x] Real-cluster spike on Proxmox from the template (a 3+1 cluster on the bootc template with Cilium, node replacement without `/readyz` failures)
-- [ ] Node images in the archive
+- [ ] Node images in the archive: the Proxmox VE disk is built, published and pulled into the payload (`archive.py nodes`), pending its first publish and pin; vSphere and Metal3 disks with their lanes
 - [ ] Remove the image-builder recipe and the classes' containerd mirror files, now that a cluster passes on the bootc template (see Decisions)
 
 ### Bootstrap appliance and USB

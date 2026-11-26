@@ -112,3 +112,25 @@ def test_unpublished_built_images_block_the_full_archive(capsys):
 def test_full_archive_requires_the_built_images():
     workflow = (ROOT / ".github" / "workflows" / "archive.yml").read_text()
     assert "build/inventory.py" in workflow and "--require-built" in workflow
+
+
+def test_test_tooling_build_bases_and_node_disks_are_not_shipped():
+    d = "@sha256:" + "c" * 64
+    lock = {
+        "images": {"kubeVip": "ghcr.io/kube-vip/kube-vip:v1.3.1" + d},
+        "labRunner": {"image": "ghcr.io/x/dciab-lab-runner" + d, "disk": "ghcr.io/x/dciab-lab-runner-disk" + d},
+        "pveAssistant": {"baseImage": "docker.io/library/debian:trixie-slim" + d},
+        "nodeImages": {"published": {"image": "ghcr.io/x/dciab-node:v1.36.6-abc" + d,
+                                     "disks": {"proxmox": {"ref": "ghcr.io/x/dciab-node-disk:v1.36.6-abc" + d}}}},
+        "kubernetes": {"version": "v1.36.6"},
+        "clusterAPI": {"variables": {}},
+    }
+    found = inventory(lock, [], [], None)
+    assert any("kube-vip" in r for r in found)
+    assert any("dciab-node:" in r for r in found), "the published node OCI image ships"
+    assert not any("lab-runner" in r or "debian" in r or "dciab-node-disk" in r for r in found)
+
+
+def test_real_lock_ships_no_lab_runner():
+    lock = yaml.safe_load((ROOT / "bundle.lock").read_text())
+    assert not any("lab-runner" in ref for ref in inventory(lock, [], [], None))
