@@ -465,8 +465,10 @@ def token_targets(doc: dict, config: Path, site=None) -> Tuple[List[Path], Optio
 def write_token(secret: str, doc: dict, config: Path, log: Callable[[str], None], site=None,
                 mounts: Optional[str] = None, medium: Optional[Callable[[Path], Tuple[str, str]]] = None) -> List[Path]:
     """Write the token's secret where token_targets says, atomically, mode 600 in folders of mode
-    700; a file that already holds it is left alone, but made mode 600, and its folder loses
-    group and other write access. Returns the target files; logs why when there are none.
+    700; a file that already holds it is left alone, but made mode 600. Nothing is written into
+    a folder others could use to swap the file (unsafe_folder), and no existing folder's mode is
+    changed: DCiaB may not own it (/tmp, a shared team folder). Returns the target files; logs
+    why when there are none.
 
     Never on removable media: neither on a portable file system (exFAT, FAT, NTFS: fs_type) nor
     on a disk the kernel calls removable or that sits on USB, whatever its file system
@@ -489,6 +491,10 @@ def write_token(secret: str, doc: dict, config: Path, log: Callable[[str], None]
             targets, why = [], (f"{detail}, so it might be removable media: the token is never written in plain "
                                 "text where that can't be ruled out")
             break
+        unsafe = unsafe_folder(t)
+        if unsafe:
+            targets, why = [], unsafe
+            break
     if not targets:
         log(f"the token's secret wasn't written in plain text ({why}); open its sealed copy with age")
         return []
@@ -501,10 +507,6 @@ def write_token(secret: str, doc: dict, config: Path, log: Callable[[str], None]
         for d in reversed(missing):                   # every folder made here is root-only
             d.mkdir(mode=0o700)
             os.chmod(d, 0o700)
-        if not missing and t.parent.stat().st_mode & 0o022:
-            # A folder others can write to lets them swap the file: theirs loses that.
-            os.chmod(t.parent, t.parent.stat().st_mode & 0o7755)
-            log(f"{t.parent} was writable by group or others; it no longer is")
         had = t.is_file() and t.stat().st_size > 0
         try:
             if had and t.read_text().strip() == secret:
@@ -527,6 +529,27 @@ def write_token(secret: str, doc: dict, config: Path, log: Callable[[str], None]
             raise
         log(f"the token's secret is in {t} (mode 600){', replacing what was there' if had else ''}")
     return targets
+
+
+def unsafe_folder(target: Path) -> Optional[str]:
+    """Why `target` mustn't be written, or None. Others who can write to the folder the file goes
+    in could swap it, so that folder must not be writable by group or others. When post has to
+    make that folder (mode 700), the nearest existing folder above it may be world-writable only
+    with the sticky bit (/tmp), which stops others renaming what root made there."""
+    folder = target.parent
+    near = folder
+    while not near.exists():
+        near = near.parent
+    try:
+        mode = near.stat().st_mode
+    except OSError as exc:
+        return f"can't check {near} ({exc.strerror})"
+    if not mode & 0o022:
+        return None
+    if near != folder and mode & 0o1000:
+        return None
+    return (f"{near} can be written by group or others (mode {oct(mode & 0o7777)}), who could swap the token's "
+            f"file: point tokenSecret at a private folder. DCiaB doesn't change the mode of a folder it may not own")
 
 
 def token_missing(doc: dict, config: Path, site=None) -> List[Path]:

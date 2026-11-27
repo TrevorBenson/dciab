@@ -170,6 +170,8 @@ class Lab:
             p.parent.mkdir(parents=True, exist_ok=True)
             p.write_text("emulator\n")
             p.chmod(0o600)
+        for d in (site / "secrets", *(site / "secrets").iterdir()):
+            d.chmod(0o700)                       # post refuses folders others can write (#280)
         sh("openssl", "req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:P-256", "-nodes",
            "-keyout", "/dev/null", "-subj", "/CN=dciab-emulator", "-days", "3650",
            "-addext", "basicConstraints=critical,CA:TRUE", "-out", str(site / "secrets/pki/intermediate.crt"))

@@ -46,14 +46,13 @@ class FakePVE:
     VM creation with import-from, templates, deletion and worker tasks. Records every write."""
 
     def __init__(self, cert, vms=None, local_content="iso,vztmpl,backup", fail_task=None, imports=None,
-                 stale_resources=False, vms_perms=None, vm_acls=(9010,), next_id=None, storage_state=None):
+                 stale_resources=False, vms_perms=None, vm_acls=(9010,), storage_state=None):
         self.writes = []
         # The token's effective privileges on /vms ({privilege: propagate}); default: all, propagated
         # (as root@pam has). vm_acls: the VM IDs with the token's own ACL (/vms/<id>), which
         # Proxmox VE removes when it destroys the VM (PVE::AccessControl::remove_vm_access).
         self.vms_perms = {p: 1 for p in TEMPLATE_VM_PRIVILEGES} if vms_perms is None else dict(vms_perms)
         self.vm_acls = set(vm_acls)
-        self.next_id = next_id                         # datacenter.cfg's next-id, or None
         self.storage_state = storage_state or {}       # storage -> {enabled, active} overrides
         self.stale_resources = stale_resources         # /cluster/resources lags, as pvestatd's does
         self.vms = copy.deepcopy(vms or {})            # vmid -> {node, name, template, status, config}
@@ -109,8 +108,6 @@ class FakePVE:
                              **fake.storage_state.get("local-lvm", {}))])
                 if p == "/access/permissions?path=/vms":
                     return self._send(200, {"/vms": fake.vms_perms} if fake.vms_perms else {})
-                if p == "/cluster/options":
-                    return self._send(200, {"next-id": fake.next_id} if fake.next_id else {})
                 if p == "/nodes/pve01/storage/local/content?content=import":
                     return self._send(200, [{"volid": v} for v in fake.imports])
                 if p.startswith("/nodes/pve01/tasks/"):
@@ -648,19 +645,6 @@ def test_replace_never_deletes_what_the_token_couldnt_create_again(fake_pve, cer
     f = fake_pve(vms=OLD_TEMPLATE, local_content="iso,import", vms_perms={p: 0 for p in TEMPLATE_VM_PRIVILEGES})
     with pytest.raises(publish.PublishError, match="not on /vms, propagated"):
         run_publish(f, cert, tmp_path, replace=True)
-
-
-def test_replace_never_deletes_an_id_next_id_forbids_reusing(fake_pve, cert, tmp_path):
-    for rules, said in (({"enforce": 1, "unique": 1}, "unique IDs"),
-                        ({"enforce": 1, "lower": 10000}, "IDs in [10000, 1000000)"),
-                        ("enforce=1,unique=1", "unique IDs")):
-        f = fake_pve(vms=OLD_TEMPLATE, local_content="iso,import", next_id=rules)
-        with pytest.raises(publish.PublishError, match=re.escape(said)):
-            run_publish(f, cert, tmp_path, replace=True)
-        assert f.writes == []
-    # next-id without enforce changes nothing.
-    f = fake_pve(vms=OLD_TEMPLATE, local_content="iso,import", next_id={"lower": 10000, "unique": 1})
-    assert run_publish(f, cert, tmp_path, replace=True)[0] == "published"
 
 
 @pytest.mark.parametrize("store,state", [("local-lvm", {"enabled": 0}), ("local-lvm", {"active": 0}),

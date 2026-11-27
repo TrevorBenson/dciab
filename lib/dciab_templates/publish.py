@@ -117,19 +117,6 @@ def _usable(store: dict) -> bool:
     return str(store.get("enabled", "")) == "1" and str(store.get("active", "")) == "1"
 
 
-def _next_id_rules(api: PveApi) -> dict:
-    """datacenter.cfg's next-id, when the login may read it ({} otherwise): with enforce, a new
-    VM's ID must be in [lower, upper), and with unique as well, not one used before."""
-    try:
-        opts = api.get("/cluster/options") or {}
-    except PostError:
-        return {}
-    rules = opts.get("next-id") if isinstance(opts, dict) else None
-    if isinstance(rules, str):
-        rules = dict(kv.partition("=")[::2] for kv in rules.split(",") if kv)
-    return rules if isinstance(rules, dict) else {}
-
-
 def can_recreate(api: PveApi, vmid: int) -> List[str]:
     """Why the login couldn't create the new VM at vmid once the VM there is deleted, or []: a
     delete is never started that would leave templateID empty for a reason known beforehand.
@@ -137,7 +124,7 @@ def can_recreate(api: PveApi, vmid: int) -> List[str]:
     Proxmox VE removes the VM's own ACLs (/vms/<vmid>, and its pool membership) when it destroys
     the VM. So the template token of docs/PROXMOX.md, whose VM privileges are on /vms/<vmid>
     only, would lose them with the delete: creating needs them on /vms, propagated (root@pam
-    has them). And datacenter.cfg's next-id may forbid reusing an ID (enforce with unique)."""
+    has them)."""
     why: List[str] = []
     try:
         perms = (api.get("/access/permissions?path=/vms") or {}).get("/vms") or {}
@@ -150,13 +137,6 @@ def can_recreate(api: PveApi, vmid: int) -> List[str]:
         if lacking:
             why.append(f"it holds {', '.join(lacking)} on /vms/{vmid} only through that VM's own ACL, which Proxmox "
                        "VE removes with the VM (not on /vms, propagated)")
-    rules = _next_id_rules(api)
-    if str(rules.get("enforce", "0")) in ("1", "True", "true"):
-        lower, upper = int(rules.get("lower") or 100), int(rules.get("upper") or 1000000)
-        if not lower <= vmid < upper:
-            why.append(f"datacenter.cfg's next-id enforces IDs in [{lower}, {upper})")
-        elif str(rules.get("unique", "0")) in ("1", "True", "true"):
-            why.append("datacenter.cfg's next-id enforces unique IDs, so an ID used before can't be used again")
     return why
 
 

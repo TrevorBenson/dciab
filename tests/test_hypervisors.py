@@ -2794,15 +2794,43 @@ def test_a_token_file_with_loose_permissions_is_made_private(tmp_path, monkeypat
     monkeypatch.setattr(dciab_state, "SITE", tmp_path / "no-site")
     target = tmp_path / "secrets" / "pve" / "token"
     target.parent.mkdir(parents=True)
-    target.parent.chmod(0o777)
+    target.parent.chmod(0o750)
     target.write_text("s3cret\n")
     target.chmod(0o644)
     logs = []
     assert post.write_token("s3cret", api_doc(), tmp_path / "dciab.yaml", logs.append, mounts="") == [target]
     assert target.stat().st_mode & 0o777 == 0o600 and target.read_text() == "s3cret\n"
-    assert target.parent.stat().st_mode & 0o022 == 0
+    assert target.parent.stat().st_mode & 0o7777 == 0o750
     assert any("made it mode 600" in line for line in logs)
-    assert any("writable by group or others" in line for line in logs)
+
+
+@pytest.mark.parametrize("mode", [0o777, 0o1777, 0o2775, 0o770])
+def test_a_folder_others_can_write_is_refused_and_left_as_it_is(tmp_path, monkeypatch, mode):
+    # PR #280 verification: post chmodded the folder, even /tmp or a shared team folder.
+    import dciab_state
+    monkeypatch.setattr(dciab_state, "SITE", tmp_path / "no-site")
+    target = tmp_path / "secrets" / "pve" / "token"
+    target.parent.mkdir(parents=True)
+    target.parent.chmod(mode)
+    target.write_text("old\n")
+    target.chmod(0o600)
+    logs = []
+    assert post.write_token("s3cret", api_doc(), tmp_path / "dciab.yaml", logs.append, mounts="") == []
+    assert target.parent.stat().st_mode & 0o7777 == mode and target.read_text() == "old\n"
+    assert "can be written by group or others" in logs[0] and "sealed copy" in logs[0]
+
+
+def test_a_new_private_folder_under_a_sticky_folder_is_fine(tmp_path, monkeypatch):
+    # /tmp-like: world-writable with the sticky bit; post makes its own mode-700 folder in it.
+    import dciab_state
+    monkeypatch.setattr(dciab_state, "SITE", tmp_path / "no-site")
+    (tmp_path / "secrets").mkdir()
+    (tmp_path / "secrets").chmod(0o1777)
+    target = tmp_path / "secrets" / "pve" / "token"
+    logs = []
+    assert post.write_token("s3cret", api_doc(), tmp_path / "dciab.yaml", logs.append, mounts="") == [target]
+    assert target.parent.stat().st_mode & 0o777 == 0o700 and target.stat().st_mode & 0o777 == 0o600
+    assert (tmp_path / "secrets").stat().st_mode & 0o7777 == 0o1777
 
 
 def test_the_token_is_never_written_to_removable_media(tmp_path, monkeypatch):
