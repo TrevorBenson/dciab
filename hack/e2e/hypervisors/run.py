@@ -12,7 +12,8 @@ untagged (managementVLAN untagged, bootMode UEFI, the VM on an access port):
   held-without-flag    no install record, no boot options: held until --first-install
   first-install        validate passes before it (token and certificate pending); --first-install:
                        installs, waits, post (token, ACLs, bridge, first-contact pin, the token
-                       written where tokenSecret points); validate --live then uses both
+                       written where tokenSecret points); validate --live then uses both; then
+                       dciab templates publishes a tiny node disk as root@pam (published, then kept)
   rerun                the API answers: nothing is reset
   lost-state           the install record removed: the 8006 check still holds the host
   reinstall            --reinstall: a new install, post again with the new certificate, old token retired
@@ -286,6 +287,34 @@ def token_and_pin_used(lab: Lab) -> dict:
     return {"tokenFile": str(tf), "liveProxmoxErrors": [f["path"] for f in px]}
 
 
+def node_template(lab: Lab) -> dict:
+    """dciab templates against the real Proxmox VE post set up (#244): as root@pam with the
+    generated root password (a host DCiaB installed, no templateImport), from a payload that
+    build/archive.py nodes --local-disk lays out around a tiny qcow2. It must report published,
+    then kept on a second run."""
+    disk = lab.work / "node-disk" / "disk.qcow2"
+    if not disk.is_file():
+        disk.parent.mkdir(parents=True, exist_ok=True)
+        if not shutil.which("qemu-img"):
+            raise Failed("qemu-img is needed to make the test node disk (qemu-utils)")
+        sh("qemu-img", "create", "-f", "qcow2", str(disk), "64M")
+    payload = lab.work / "payload"
+    sh(sys.executable, str(ROOT / "build" / "archive.py"), "nodes", "--out", str(payload),
+       "--local-disk", f"proxmox={disk}")
+    px = yaml.safe_load(lab.config.read_text())["spec"]["platform"]["proxmox"]  # type: ignore[attr-defined]
+    vmid, node = px["templateID"], px["templateNode"]
+    args = ("templates", str(lab.config), "--state", str(lab.state), "--payload", str(payload),  # type: ignore[attr-defined]
+            "--age-identity", str(lab.work / "id1.txt"), "--timeout", "900")
+    r = lab.dciab(*args, timeout=1200)
+    expect(r.returncode == 0, f"dciab templates exited {r.returncode}, want 0")
+    expect(f"template {vmid} on {node}: published" in r.out, "dciab templates didn't report published")
+    expect("root@pam" in r.out, "dciab templates didn't log in as root@pam")
+    r = lab.dciab(*args, timeout=600)
+    expect(r.returncode == 0, f"the second dciab templates exited {r.returncode}, want 0")
+    expect(f"template {vmid} on {node}: kept" in r.out, "the second dciab templates didn't keep the template")
+    return {"templateID": vmid, "node": node, "results": ["published", "kept"]}
+
+
 def first_install(lab: Lab) -> dict:
     lab.watching.set()
     pending_before_install(lab)
@@ -302,7 +331,8 @@ def first_install(lab: Lab) -> dict:
     nodes = sorted(n.get("node") for n in lab.api_token_get("/nodes") or [])
     expect(nodes == [lab.vm], f"the token sees nodes {nodes}")
     out = {"minutes": round((time.time() - started) / 60, 1), "pveVersion": version.get("version"),
-           "api_fingerprint": rec["api_fingerprint"], "tokenSeesNodes": nodes, "bareSite": token_and_pin_used(lab)}
+           "api_fingerprint": rec["api_fingerprint"], "tokenSeesNodes": nodes, "bareSite": token_and_pin_used(lab),
+           "nodeTemplate": node_template(lab)}
     if lab.mode == "tagged":
         expect("Secure Boot set on" in r.out, "Secure Boot wasn't staged")
         sb = lab.redfish("GET", f"{lab.system_path()}/SecureBoot")

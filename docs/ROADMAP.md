@@ -40,7 +40,7 @@ Moving clusters between platforms (vSphere to Proxmox VE or back) joins `r1` onl
 - [x] Cilium install for any cluster (`addons/cilium`), with kube-proxy replaced
 - [x] Real-cluster spike on Proxmox from the template (a 3+1 cluster on the bootc template with Cilium, node replacement without `/readyz` failures)
 - [ ] Node images in the archive: the Proxmox VE disk is built, published and pulled into the payload (`archive.py nodes`), pending its first publish and pin; vSphere and Metal3 disks with their lanes
-- [x] `dciab templates`: the Proxmox VE node template published from the archive's node disk through the API only (sha256 checked against `nodes.yaml`; kept when it is there, never overwritten without `--replace`), as root on a host `dciab hypervisors` installed or with a token of its own (`platform.proxmox.templateImport`) ([TEMPLATES.md](TEMPLATES.md)). Unit tests in CI; the lab's `lab-template.yml` publishes with it from a built payload
+- [x] `dciab templates`: the Proxmox VE node template published from the archive's node disk through the API only (sha256 checked against `nodes.yaml`; kept when it is there, never overwritten without `--replace`), as root on a host `dciab hypervisors` installed or with a token of its own (`platform.proxmox.templateImport`) ([TEMPLATES.md](TEMPLATES.md)). Unit tests in CI, and the emulated hypervisors workflow publishes with it as root on a real Proxmox VE install (published, then kept); the lab's `lab-template.yml` publishes with its own token from a built payload
 - [x] Remove the image-builder recipe and the classes' containerd mirror files, now that a cluster passes on the bootc template (see Decisions)
 
 ### Bootstrap appliance and USB
