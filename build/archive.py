@@ -26,7 +26,8 @@
   DIR/nodes/<platform>/ and checks its sha256; DIR/nodes/nodes.yaml lists them. A disk not
   published yet is skipped with a note; --require-built refuses a missing Proxmox disk.
   --local-disk lays out a disk built here instead (the lab tests a fresh build of the recipe
-  this way), in the same form, with its ref "local:<file name>"; nothing is pulled.
+  this way), in the same form, with its ref "local:<file name>"; nothing is pulled. It is
+  never taken with --require-built: a local disk can't stand in for the pinned one.
 - sums: writes DIR/SHA256SUMS for every file in DIR. Signing will sign this file.
 
 Every step is safe to rerun: what is already there and correct is kept. Needs network
@@ -526,10 +527,14 @@ def main(argv=None) -> int:
     n = sub.add_parser("nodes", help="pull the pinned node disks into DIR/nodes")
     n.add_argument("--out", type=Path, required=True)
     n.add_argument("--oras", default="oras", help="the oras binary (archive.py binaries puts one in DIR/bin)")
-    n.add_argument("--require-built", action="store_true",
-                   help="refuse while a required node disk isn't published and pinned (the full archive)")
-    n.add_argument("--local-disk", action="append", default=[], metavar="PLATFORM=FILE",
-                   help="lay out a disk built on this host instead of pulling the pinned ones (repeatable)")
+    # One or the other: a local disk is never checked against bundle.lock, so it can't stand in
+    # for the published, pinned disk a full archive requires.
+    pick = n.add_mutually_exclusive_group()
+    pick.add_argument("--require-built", action="store_true",
+                      help="refuse while a required node disk isn't published and pinned (the full archive)")
+    pick.add_argument("--local-disk", action="append", default=[], metavar="PLATFORM=FILE",
+                      help="lay out a disk built on this host instead of pulling the pinned ones (repeatable; "
+                           "not with --require-built)")
     s = sub.add_parser("sums", help="write DIR/SHA256SUMS")
     s.add_argument("--out", type=Path, required=True)
     args = p.parse_args(argv)

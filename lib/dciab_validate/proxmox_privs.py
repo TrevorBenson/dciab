@@ -97,7 +97,7 @@ def csi_grants(csi: dict) -> List[Grant]:
 # VM at templateID from it on the storage, convert it to a template, delete the upload.
 TEMPLATE_IMPORT_STORAGE = BOOTSTRAP_ISO_STORAGE
 TEMPLATE_VM_PRIVILEGES = (
-    "VM.Allocate",            # create the VM, make it a template, delete it with --replace
+    "VM.Allocate",            # create the VM, make it a template, delete it with --replace (see can_recreate)
     "VM.Audit",               # read its config and status (is it ours, is it a template)
     "VM.Config.CPU",
     "VM.Config.Disk",         # the disk imported from the upload
@@ -113,6 +113,9 @@ def template_grants(px: dict) -> List[Grant]:
     template's storage, the upload storage and the bridge."""
     out = [
         Grant("DCiaBTemplateNodes", "/nodes", True, ("Sys.Audit",), "see the node, its storage and its tasks"),
+        # Proxmox VE drops this ACL when it destroys the VM at templateID, so with it alone the
+        # token can't create a VM there after a delete: dciab_templates.publish.can_recreate
+        # stops before deleting, and docs/PROXMOX.md says how to replace a template.
         Grant("DCiaBTemplateVM", f"/vms/{px['templateID']}", False, TEMPLATE_VM_PRIVILEGES,
               "create the template at templateID, and only there"),
     ]

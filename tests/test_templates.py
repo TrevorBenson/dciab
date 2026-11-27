@@ -4,6 +4,7 @@ Proxmox VE API (uploads, tasks, VMs). Nothing here touches a real Proxmox VE."""
 import copy
 import hashlib
 import json
+import re
 import shutil
 import ssl
 import subprocess
@@ -19,7 +20,7 @@ from conftest import ROOT, Site, load_example
 
 from dciab_hypervisors import post
 from dciab_templates import cli, publish
-from dciab_validate.proxmox_privs import template_grants
+from dciab_validate.proxmox_privs import TEMPLATE_VM_PRIVILEGES, template_grants
 
 DISK = b"QFI\xfb" + b"node disk " * 1000
 SHA = hashlib.sha256(DISK).hexdigest()
@@ -45,8 +46,15 @@ class FakePVE:
     VM creation with import-from, templates, deletion and worker tasks. Records every write."""
 
     def __init__(self, cert, vms=None, local_content="iso,vztmpl,backup", fail_task=None, imports=None,
-                 stale_resources=False):
+                 stale_resources=False, vms_perms=None, vm_acls=(9010,), next_id=None, storage_state=None):
         self.writes = []
+        # The token's effective privileges on /vms ({privilege: propagate}); default: all, propagated
+        # (as root@pam has). vm_acls: the VM IDs with the token's own ACL (/vms/<id>), which
+        # Proxmox VE removes when it destroys the VM (PVE::AccessControl::remove_vm_access).
+        self.vms_perms = {p: 1 for p in TEMPLATE_VM_PRIVILEGES} if vms_perms is None else dict(vms_perms)
+        self.vm_acls = set(vm_acls)
+        self.next_id = next_id                         # datacenter.cfg's next-id, or None
+        self.storage_state = storage_state or {}       # storage -> {enabled, active} overrides
         self.stale_resources = stale_resources         # /cluster/resources lags, as pvestatd's does
         self.vms = copy.deepcopy(vms or {})            # vmid -> {node, name, template, status, config}
         self.local_content = local_content
@@ -95,8 +103,14 @@ class FakePVE:
                                              "status": v.get("status", "stopped")} for k, v in fake.vms.items()])
                 if p == "/nodes/pve01/storage":
                     return self._send(200, [
-                        {"storage": "local", "content": fake.local_content, "enabled": 1, "active": 1},
-                        {"storage": "local-lvm", "content": "images,rootdir", "enabled": 1, "active": 1}])
+                        dict({"storage": "local", "content": fake.local_content, "enabled": 1, "active": 1},
+                             **fake.storage_state.get("local", {})),
+                        dict({"storage": "local-lvm", "content": "images,rootdir", "enabled": 1, "active": 1},
+                             **fake.storage_state.get("local-lvm", {}))])
+                if p == "/access/permissions?path=/vms":
+                    return self._send(200, {"/vms": fake.vms_perms} if fake.vms_perms else {})
+                if p == "/cluster/options":
+                    return self._send(200, {"next-id": fake.next_id} if fake.next_id else {})
                 if p == "/nodes/pve01/storage/local/content?content=import":
                     return self._send(200, [{"volid": v} for v in fake.imports])
                 if p.startswith("/nodes/pve01/tasks/"):
@@ -124,6 +138,9 @@ class FakePVE:
                 fake.writes.append(("POST", p, form))
                 if p == "/nodes/pve01/qemu":
                     vmid = int(form["vmid"])
+                    token = self.headers.get("Authorization") == TOKEN_AUTH
+                    if token and not fake.vms_perms.get("VM.Allocate") and vmid not in fake.vm_acls:
+                        return self._send(403, reason=f"Permission check failed (/vms/{vmid}, VM.Allocate)")
                     src = form["scsi0"].split("import-from=")[1].split(",")[0]
                     if src not in fake.imports:
                         return self._send(500)
@@ -190,7 +207,9 @@ class FakePVE:
                     fake.imports.pop(unquote(p.rsplit("/", 1)[1]), None)
                     return self._send(200, self._task("imgdel"))
                 if p.startswith("/nodes/pve01/qemu/"):
-                    fake.vms.pop(int(urlsplit(p).path.split("/")[4]), None)
+                    vmid = int(urlsplit(p).path.split("/")[4])
+                    fake.vms.pop(vmid, None)
+                    fake.vm_acls.discard(vmid)            # remove_vm_access: the VM's own ACL goes with it
                     return self._send(200, self._task("qmdestroy"))
                 self._send(404)
 
@@ -564,6 +583,11 @@ def test_archive_lays_out_a_local_disk_like_a_pulled_one(tmp_path):
     assert sha == SHA and ref == "local:disk.qcow2" and disk.read_bytes() == DISK
     assert (out / "nodes" / "proxmox" / "disk.qcow2.sha256sum").read_text() == f"{SHA}  disk.qcow2\n"
     assert archive.main(["nodes", "--out", str(out), "--local-disk", "proxmox"]) == 1
+    # Never with --require-built: a local disk isn't the published, pinned one a full archive needs.
+    other = tmp_path / "full"
+    with pytest.raises(SystemExit) as exc:
+        archive.main(["nodes", "--out", str(other), "--require-built", "--local-disk", f"proxmox={src}"])
+    assert exc.value.code == 2 and not other.exists()
 
 
 def test_a_refused_upload_says_what_proxmox_ve_said(fake_pve, cert, tmp_path):
@@ -587,3 +611,104 @@ def test_a_second_run_right_after_publishing_keeps_it(fake_pve, cert, tmp_path):
     f.writes.clear()
     result, out = run_publish(f, cert, tmp_path)
     assert result == "kept" and f.writes == []
+
+
+# --- PR #280 CodeRabbit fixes -------------------------------------------------------------------
+
+OLD_TEMPLATE = {9010: {"node": "pve01", "name": "dciab-node-old", "template": 1,
+                       "config": {"scsi0": "x", "description": publish.description("0" * 64, "")}}}
+
+
+def test_replace_never_deletes_what_the_token_couldnt_create_again(fake_pve, cert, tmp_path):
+    # The documented token has its VM privileges on /vms/<templateID> only, and Proxmox VE
+    # removes that ACL when it destroys the VM: delete, then the create fails. Stop first.
+    f = fake_pve(vms=OLD_TEMPLATE, local_content="iso,import", vms_perms={"VM.Audit": 0})
+    with pytest.raises(publish.PublishError) as exc:
+        run_publish(f, cert, tmp_path, replace=True)
+    msg = str(exc.value)
+    assert "couldn't create the new template there afterwards" in msg and "/vms/9010" in msg
+    assert "Nothing was changed" in msg and "DCiaBTemplateVM role on /vms" in msg and "pveum acl modify" in msg
+    assert f.writes == [] and f.vms[9010]["name"] == "dciab-node-old" and 9010 in f.vm_acls
+    # The fake does what Proxmox VE does: once the VM (and its ACL) is gone, the token can't create.
+    f.vms.clear()
+    f.vm_acls.clear()
+    with pytest.raises(post.PostError, match="HTTP 403"):
+        run_publish(f, cert, tmp_path)
+    # DCiaB's own diskless VM is recovered the same way: never deleted when it couldn't come back.
+    half = {9010: {"node": "pve01", "name": f"dciab-node-{SHA[:12]}", "template": 0, "status": "stopped",
+                   "config": {"description": publish.description(SHA, "")}}}
+    f = fake_pve(vms=half, local_content="iso,import", vms_perms={})
+    with pytest.raises(publish.PublishError, match="couldn't create the new template there afterwards"):
+        run_publish(f, cert, tmp_path)
+    assert f.writes == [] and 9010 in f.vms
+    # With the VM privileges on /vms, propagated, the replacement goes through.
+    f = fake_pve(vms=OLD_TEMPLATE, local_content="iso,import")
+    assert run_publish(f, cert, tmp_path, replace=True)[0] == "published"
+    # A grant on /vms that doesn't propagate doesn't reach /vms/<templateID>.
+    f = fake_pve(vms=OLD_TEMPLATE, local_content="iso,import", vms_perms={p: 0 for p in TEMPLATE_VM_PRIVILEGES})
+    with pytest.raises(publish.PublishError, match="not on /vms, propagated"):
+        run_publish(f, cert, tmp_path, replace=True)
+
+
+def test_replace_never_deletes_an_id_next_id_forbids_reusing(fake_pve, cert, tmp_path):
+    for rules, said in (({"enforce": 1, "unique": 1}, "unique IDs"),
+                        ({"enforce": 1, "lower": 10000}, "IDs in [10000, 1000000)"),
+                        ("enforce=1,unique=1", "unique IDs")):
+        f = fake_pve(vms=OLD_TEMPLATE, local_content="iso,import", next_id=rules)
+        with pytest.raises(publish.PublishError, match=re.escape(said)):
+            run_publish(f, cert, tmp_path, replace=True)
+        assert f.writes == []
+    # next-id without enforce changes nothing.
+    f = fake_pve(vms=OLD_TEMPLATE, local_content="iso,import", next_id={"lower": 10000, "unique": 1})
+    assert run_publish(f, cert, tmp_path, replace=True)[0] == "published"
+
+
+@pytest.mark.parametrize("store,state", [("local-lvm", {"enabled": 0}), ("local-lvm", {"active": 0}),
+                                         ("local", {"active": 0})])
+def test_replace_with_a_disabled_or_inactive_storage_keeps_the_old_template(fake_pve, cert, tmp_path, store, state):
+    f = fake_pve(vms=OLD_TEMPLATE, local_content="iso,import", storage_state={store: state})
+    with pytest.raises(publish.PublishError, match=f"storage {store} .*isn't enabled and active"):
+        run_publish(f, cert, tmp_path, replace=True)
+    assert f.vms[9010]["name"] == "dciab-node-old"
+    assert [w for w in f.writes if w[0] in ("DELETE", "UPLOAD")] == []
+
+
+def test_a_template_of_this_disk_that_fails_the_checks_isnt_kept(fake_pve, cert, tmp_path):
+    # Its description holds the sha256, but someone detached scsi0: not "kept", and not changed.
+    f = fake_pve()
+    assert run_publish(f, cert, tmp_path)[0] == "published"
+    del f.vms[9010]["config"]["scsi0"]
+    f.writes.clear()
+    with pytest.raises(publish.PublishError, match="this disk's template, but it has no scsi0 disk.*--replace"):
+        run_publish(f, cert, tmp_path)
+    assert f.writes == [] and 9010 in f.vms
+    # With a cloud-init drive too.
+    f.vms[9010]["config"].update(scsi0="local-lvm:base-9010-disk-0", sata1="local-lvm:vm-9010-cloudinit,media=cdrom")
+    with pytest.raises(publish.PublishError, match="cloud-init drive"):
+        run_publish(f, cert, tmp_path)
+    assert f.writes == []
+    # --replace publishes it again.
+    result, out = run_publish(f, cert, tmp_path, replace=True)
+    assert result == "published" and "this disk's template, but it has a cloud-init drive" in out
+    assert "sata1" not in f.vms[9010]["config"]
+
+
+def test_cloud_init_is_told_from_drive_entries_not_from_any_value():
+    # A disk file named cloudinit.qcow2 ends up in the description: that is no cloud-init drive.
+    conf = {"template": 1, "scsi0": "local-lvm:base-9010-disk-0", "name": "dciab-node-x",
+            "description": publish.description(SHA, "local:cloudinit.qcow2"), "tags": "cloudinit"}
+    assert publish.cloudinit_drives(conf) == [] and publish.problems(conf, SHA) == []
+    for key, value in (("ide0", "local-lvm:cloudinit"), ("scsi2", "local-lvm:vm-9010-cloudinit,media=cdrom"),
+                       ("virtio1", "nfs:9010/vm-9010-cloudinit.qcow2,media=cdrom"),
+                       ("sata0", "local-lvm:base-9010-cloudinit")):
+        assert publish.cloudinit_drives(dict(conf, **{key: value})) == [key]
+    assert publish.cloudinit_drives(dict(conf, scsi1="local-lvm:vm-9010-disk-1,cloudinit=1")) == []
+    assert "cloud-init" in publish.problems(dict(conf, ide2="none,media=cdrom"), SHA)[0]
+
+
+def test_a_disk_named_cloudinit_publishes(fake_pve, cert, tmp_path):
+    f = fake_pve()
+    logs = []
+    assert publish.publish(api_for(f, cert), "pve01", doc_for(), write_disk(tmp_path), SHA, "local:cloudinit.qcow2",
+                           logs.append, sleep=lambda s: None) == "published"
+    assert "cloudinit.qcow2" in f.vms[9010]["config"]["description"]

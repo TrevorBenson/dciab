@@ -95,6 +95,7 @@ When `<storage>` is `local`, `DCiaBTemplateStorage` and `DCiaBTemplateUpload` ar
 
 Notes:
 - **One VM ID.** The VM privileges are on `/vms/<templateID>` only, not propagated: the token can't touch any other VM, and `--replace` can delete only what is at that ID.
+- **Replacing a template with this token.** Proxmox VE removes a VM's own ACLs when it destroys the VM, so deleting what is at `templateID` would also take this token's `/vms/<templateID>` grant, and it couldn't create the new template. `dciab templates` checks that before it deletes anything, and stops with nothing changed when the token's VM privileges aren't also on `/vms`, propagated. Then delete the old template yourself and run the `pveum acl modify /vms/<templateID>` line again before the step, or use a free `templateID` with that ACL ([TEMPLATES.md](TEMPLATES.md#replacing-a-template)). The first publish at an empty `templateID` needs only the one-VM grant.
 - **The upload.** The node disk goes to `local` as the content type `import`. `Datastore.AllocateTemplate` uploads it; `Datastore.Allocate` deletes it afterwards and lets the step add `import` to `local`'s content types, the same as CAPMOX's bootstrap ISOs need there.
 
 ```console

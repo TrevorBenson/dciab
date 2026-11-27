@@ -8,24 +8,31 @@
               description
     template  convert it to a template; delete the upload
 
-Idempotent: a template at templateID whose description holds this disk's sha256 is kept. A VM
-of DCiaB's own at that ID that isn't a template yet (a run stopped part-way) is finished; one
-with no disk that isn't running is deleted and made again. Any other VM or template there is
-never touched without replace=True, and never when it runs or lives on another node. A VM to
-delete is deleted only after the storage checks and the upload succeed, right before the new
-VM is created: if creating or converting it fails then, templateID is left empty (rerun).
+Idempotent: a template at templateID whose description holds this disk's sha256, and that
+passes the same checks as a new one (verify), is kept. A VM of DCiaB's own at that ID that
+isn't a template yet (a run stopped part-way) is finished; one with no disk that isn't running
+is deleted and made again. Any other VM or template there is never touched without
+replace=True, and never when it runs or lives on another node.
+
+A VM to delete is deleted only once nothing that can be told beforehand would stop the new one:
+the login can create a VM at templateID after the delete (Proxmox VE removes a VM's own ACLs,
+/vms/<vmid>, when it destroys it: can_recreate), the storages are enabled and active, and the
+upload succeeded. It is deleted right before the new VM is created. If creating it fails then,
+templateID is left empty; if converting it fails, the new VM stays there and the next run
+finishes it.
 """
 
 from __future__ import annotations
 
 import os
+import re
 import time
 from pathlib import Path
 from typing import Callable, List, Optional
 from urllib.parse import quote
 
 from dciab_hypervisors.post import PostError, PveApi
-from dciab_validate.proxmox_privs import TEMPLATE_IMPORT_STORAGE
+from dciab_validate.proxmox_privs import TEMPLATE_IMPORT_STORAGE, TEMPLATE_VM_PRIVILEGES
 
 # The node template's hardware: what the node image is built and tested for
 # (images/node-bootc). CAPMOX sets each clone's cores, memory, disk size and NIC.
@@ -104,15 +111,70 @@ def existing(api: PveApi, node: str, vmid: int) -> Optional[dict]:
     return info
 
 
+def _usable(store: dict) -> bool:
+    """Enabled and active on the node, as /nodes/<node>/storage says (a disabled storage is
+    listed too, with enabled 0)."""
+    return str(store.get("enabled", "")) == "1" and str(store.get("active", "")) == "1"
+
+
+def _next_id_rules(api: PveApi) -> dict:
+    """datacenter.cfg's next-id, when the login may read it ({} otherwise): with enforce, a new
+    VM's ID must be in [lower, upper), and with unique as well, not one used before."""
+    try:
+        opts = api.get("/cluster/options") or {}
+    except PostError:
+        return {}
+    rules = opts.get("next-id") if isinstance(opts, dict) else None
+    if isinstance(rules, str):
+        rules = dict(kv.partition("=")[::2] for kv in rules.split(",") if kv)
+    return rules if isinstance(rules, dict) else {}
+
+
+def can_recreate(api: PveApi, vmid: int) -> List[str]:
+    """Why the login couldn't create the new VM at vmid once the VM there is deleted, or []: a
+    delete is never started that would leave templateID empty for a reason known beforehand.
+
+    Proxmox VE removes the VM's own ACLs (/vms/<vmid>, and its pool membership) when it destroys
+    the VM. So the template token of docs/PROXMOX.md, whose VM privileges are on /vms/<vmid>
+    only, would lose them with the delete: creating needs them on /vms, propagated (root@pam
+    has them). And datacenter.cfg's next-id may forbid reusing an ID (enforce with unique)."""
+    why: List[str] = []
+    try:
+        perms = (api.get("/access/permissions?path=/vms") or {}).get("/vms") or {}
+    except (PostError, AttributeError):
+        perms = None
+    if perms is None:
+        why.append("its privileges on /vms can't be read")
+    else:
+        lacking = [p for p in TEMPLATE_VM_PRIVILEGES if str(perms.get(p, "0")) not in ("1", "True", "true")]
+        if lacking:
+            why.append(f"it holds {', '.join(lacking)} on /vms/{vmid} only through that VM's own ACL, which Proxmox "
+                       "VE removes with the VM (not on /vms, propagated)")
+    rules = _next_id_rules(api)
+    if str(rules.get("enforce", "0")) in ("1", "True", "true"):
+        lower, upper = int(rules.get("lower") or 100), int(rules.get("upper") or 1000000)
+        if not lower <= vmid < upper:
+            why.append(f"datacenter.cfg's next-id enforces IDs in [{lower}, {upper})")
+        elif str(rules.get("unique", "0")) in ("1", "True", "true"):
+            why.append("datacenter.cfg's next-id enforces unique IDs, so an ID used before can't be used again")
+    return why
+
+
 def check_storage(api: PveApi, node: str, doc: dict, log: Callable[[str], None]) -> None:
     px = doc["spec"]["platform"]["proxmox"]
     stores = {s.get("storage"): s for s in (api.get(f"/nodes/{quote(node)}/storage") or []) if isinstance(s, dict)}
     want = stores.get(px["storage"])
     if want is None or "images" not in str(want.get("content") or "").split(","):
         raise PublishError(f"{node} has no storage {px['storage']} that holds VM disks (spec.platform.proxmox.storage)")
+    if not _usable(want):
+        raise PublishError(f"storage {px['storage']} on {node} isn't enabled and active (spec.platform.proxmox.storage)"
+                           "; nothing was changed")
     up = stores.get(TEMPLATE_IMPORT_STORAGE)
     if up is None:
         raise PublishError(f"{node} has no storage {TEMPLATE_IMPORT_STORAGE}, where the node disk is uploaded")
+    if not _usable(up):
+        raise PublishError(f"storage {TEMPLATE_IMPORT_STORAGE} on {node}, where the node disk is uploaded, isn't "
+                           "enabled and active; nothing was changed")
     content = [c for c in str(up.get("content") or "").split(",") if c]
     if "import" not in content:
         api.put(f"/storage/{TEMPLATE_IMPORT_STORAGE}", {"content": ",".join(content + ["import"])})
@@ -137,9 +199,14 @@ def publish(api: PveApi, node: str, doc: dict, disk: Path, sha: str, ref: str, l
         if have["node"] != node:
             raise PublishError(f"{where}: templateID is taken on another node than templateNode {node}; choose "
                                "another templateID. Nothing was changed")
-        if have["template"] and has_marker(desc, sha):
+        unsound = problems(have["config"], sha) if have["template"] and has_marker(desc, sha) else None
+        if unsound == []:
             log(f"template {vmid} on {node} holds this disk (sha256 {sha[:12]}...): kept")
             return "kept"
+        if unsound and not replace:
+            raise PublishError(f"{where} is this disk's template, but {'; '.join(unsound)}. Nothing was changed. "
+                               "Pass --replace to delete it and publish it again (never while it runs), or fix it "
+                               "by hand")
         ours_half = not have["template"] and has_marker(desc, sha) and have["config"].get("scsi0")
         if ours_half:
             log(f"{where} is this disk's, made by an earlier run that stopped before the template step: finishing it")
@@ -149,6 +216,7 @@ def publish(api: PveApi, node: str, doc: dict, disk: Path, sha: str, ref: str, l
             return "finished"
         ours_broken = not have["template"] and has_marker(desc, sha) and have.get("status") != "running"
         what = ("this disk's, part-made with no disk" if ours_broken else
+                f"this disk's template, but {'; '.join(unsound)}" if unsound else
                 "a template of another DCiaB node disk" if has_marker(desc) else
                 "a template DCiaB didn't make" if have["template"] else "a VM DCiaB didn't make")
         if ours_broken:
@@ -159,6 +227,15 @@ def publish(api: PveApi, node: str, doc: dict, disk: Path, sha: str, ref: str, l
                                "(its clones keep running: CAPMOX makes full clones)")
         if have.get("status") == "running":
             raise PublishError(f"{where} is running: --replace never deletes a running VM. Stop it first if it may go")
+        blocked = can_recreate(api, vmid)
+        if blocked:
+            fix = ("Choose a free templateID" if all(b.startswith("datacenter.cfg") for b in blocked) else
+                   f"Either delete VM {vmid} yourself, then set the template token's ACL on /vms/{vmid} again (the "
+                   "pveum acl modify line in docs/PROXMOX.md) and run again; or choose a free templateID with that "
+                   "ACL; or, for this replacement only, grant the token the DCiaBTemplateVM role on /vms, propagated")
+            raise PublishError(
+                f"{where} is {what}, and would be deleted, but this login couldn't create the new template there "
+                f"afterwards: {'; and '.join(blocked)}. Nothing was changed. {fix} (docs/TEMPLATES.md)")
         doomed = (where, what, ours_broken)
 
     # Everything that can fail before the new template exists comes before any delete: the
@@ -198,19 +275,41 @@ def publish(api: PveApi, node: str, doc: dict, disk: Path, sha: str, ref: str, l
     return "published"
 
 
-def verify(api: PveApi, node: str, vmid: int, sha: str) -> None:
-    conf = api.get(f"/nodes/{quote(node)}/qemu/{vmid}/config") or {}
-    problems: List[str] = []
+DRIVE = re.compile(r"^(ide|sata|scsi|virtio)\d+$")
+
+
+def cloudinit_drives(conf: dict) -> List[str]:
+    """The drive entries (ide/sata/scsi/virtio<N>) whose volume is a cloud-init volume:
+    <storage>:cloudinit as given at create, or vm-<id>-cloudinit as Proxmox VE names it."""
+    out = []
+    for key, value in conf.items():
+        if not DRIVE.match(str(key)):
+            continue
+        volume = str(value).split(",", 1)[0]
+        name = volume.rsplit(":", 1)[-1].rsplit("/", 1)[-1]
+        if name == "cloudinit" or re.fullmatch(r"(vm|base)-\d+-cloudinit(\.\w+)?", name):
+            out.append(key)
+    return sorted(out)
+
+
+def problems(conf: dict, sha: str) -> List[str]:
+    """What keeps the VM config `conf` from being this disk's node template ([] when nothing)."""
+    out: List[str] = []
     if str(conf.get("template") or "0") != "1":
-        problems.append("it isn't a template")
+        out.append("it isn't a template")
     if not conf.get("scsi0"):
-        problems.append("it has no scsi0 disk")
-    if conf.get("ide2") or any(str(v).find("cloudinit") >= 0 for v in conf.values()):
-        problems.append("it has a cloud-init drive (CAPMOX attaches its own, and a second one wins over it)")
+        out.append("it has no scsi0 disk")
+    if conf.get("ide2") or cloudinit_drives(conf):
+        out.append("it has a cloud-init drive (CAPMOX attaches its own, and a second one wins over it)")
     if not has_marker(str(conf.get("description") or ""), sha):
-        problems.append("its description doesn't hold the disk's sha256")
-    if problems:
-        raise PublishError(f"template {vmid} on {node}: " + "; ".join(problems))
+        out.append("its description doesn't hold the disk's sha256")
+    return out
+
+
+def verify(api: PveApi, node: str, vmid: int, sha: str) -> None:
+    found = problems(api.get(f"/nodes/{quote(node)}/qemu/{vmid}/config") or {}, sha)
+    if found:
+        raise PublishError(f"template {vmid} on {node}: " + "; ".join(found))
 
 
 def sha256_file(path: Path) -> str:
