@@ -1037,3 +1037,22 @@ def test_validate_state_option_finds_the_install_records(site, tmp_path):
     assert cli.main([str(path), "--root", str(ROOT), "--output", "json", "--state", str(state)]) == 1
     report = json.loads(site.capsys.readouterr().out)
     assert [e["path"] for e in errors(report)] == ["spec.platform.proxmox.credentials.tokenSecret.file"]
+
+
+def test_proxmox_csi_has_no_template_import_and_dciab_never_creates_its_token():
+    # templateImport belongs to spec.platform.proxmox only; the CSI token is always the site's own.
+    import json
+    schema = json.loads((ROOT / "schema" / "dciab.schema.json").read_text())
+    csi = schema["$defs"]["proxmoxCSI"]
+    assert "templateImport" not in csi["properties"]
+    desc = csi["properties"]["credentials"]["properties"]["tokenSecret"]["description"]
+    assert "creates" not in desc and "hypervisors" not in desc
+    assert "templateImport" in schema["$defs"]["proxmox"]["properties"]
+
+
+def test_proxmox_csi_template_import_is_rejected(site):
+    doc = load_example("proxmox")
+    block = doc["spec"]["storage"]["block"]
+    block["proxmoxCSI"]["templateImport"] = {"credentials": {"tokenID": "t@pve!x", "tokenSecret": {"env": "X"}}}
+    code, report = site.validate(doc)
+    assert code == 1 and any("templateImport" in (e.get("path", "") + e.get("found", "")) for e in errors(report))

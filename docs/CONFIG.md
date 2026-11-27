@@ -572,11 +572,7 @@ Used at: `proxmoxCSI` in [blockStorage](#blockstorage), `overrides.infra.proxmox
 | `shared` | boolean | required |  |  | required, no default: true when the storage is shared in Proxmox (every node reaches it: Ceph RBD, NFS, LVM on a shared LUN), false when it is node-local (local LVM, ZFS, a directory). Storage names don't say which; validate --live checks it against the storage's shared flag |
 | `credentials` | object | required |  |  | the Proxmox CSI plugin's API token |
 | `credentials.tokenID` | string | required |  | `^[^@\s]+@[^!\s]+![^\s]+$` | an API token of its own, not CAPMOX's, such as csi@pve!dciab (docs/PROXMOX.md) |
-| `credentials.tokenSecret` | [secretRef](#types) | required |  |  | the token's secret, a secret reference. When url names a host spec.hypervisors installs, dciab hypervisors creates the token and writes its secret to this file (validate reports it as pending until then); on the bootstrap appliance, a file under ./secrets/ |
-| `templateImport` | object | optional |  |  | how dciab templates logs in to publish the node template on templateNode. Unset: as root@pam with the root password, only on a host dciab hypervisors installed; any other Proxmox VE needs this block, or a template published by hand (docs/TEMPLATES.md) |
-| `templateImport.credentials` | object | required |  |  | an API token of its own, never CAPMOX's, with exactly the privileges docs/PROXMOX.md lists for the node template; validate --live checks them |
-| `templateImport.credentials.tokenID` | string | required |  | `^[^@\s]+@[^!\s]+![^\s]+$` | an API token ID such as template@pve!dciab |
-| `templateImport.credentials.tokenSecret` | [secretRef](#types) | required |  |  | the token's secret, a secret reference |
+| `credentials.tokenSecret` | [secretRef](#types) | required |  |  | the token's secret, a secret reference |
 
 ### cephCSI
 
