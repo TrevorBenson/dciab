@@ -170,7 +170,7 @@ def publish(api: PveApi, node: str, doc: dict, disk: Path, sha: str, ref: str, l
     log(f"uploading {disk} ({size / (1 << 30):.2f} GiB) to {volid}")
     with open(disk, "rb") as fh:
         upid = api.upload(f"/nodes/{quote(node)}/storage/{TEMPLATE_IMPORT_STORAGE}/upload",
-                          {"content": "import", "checksum": sha, "checksum-algorithm": "sha256"}, name, fh, size,
+                          {"content": "import", "checksum-algorithm": "sha256", "checksum": sha}, name, fh, size,
                           timeout=timeout)
     try:
         wait(upid, f"the upload of {name}")

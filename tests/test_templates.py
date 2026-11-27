@@ -151,6 +151,10 @@ class FakePVE:
                     else:
                         fields[name] = data.decode()
                 fake.upload_fields = order
+                # pveproxy reads the fields in this order only, as its web interface sends them.
+                want = [n for n in ("content", "checksum-algorithm", "checksum") if n in order] + ["filename"]
+                if order != want:
+                    return self._send(400)
                 fake.writes.append(("UPLOAD", self.path, {k: v for k, v in fields.items() if k != "__file__"}))
                 if fields.get("content") != "import" or "import" not in fake.local_content.split(","):
                     return self._send(400, reason="Parameter verification failed.",
@@ -255,7 +259,8 @@ def test_publish_uploads_imports_and_makes_a_template(fake_pve, cert, tmp_path):
     assert conf["net0"] == "virtio,bridge=vmbr0" and conf["agent"] == "enabled=1" and conf["boot"] == "order=scsi0"
     assert "ide2" not in conf and not any("cloudinit" in str(v) for v in conf.values())
     # The upload: content and checksum before the file part, which Proxmox VE reads in order.
-    assert f.upload_fields == ["content", "checksum", "checksum-algorithm", "filename"]
+    # pveproxy's fixed order (a real Proxmox VE 9 answers 400 to checksum before checksum-algorithm).
+    assert f.upload_fields == ["content", "checksum-algorithm", "checksum", "filename"]
     up = next(w for w in f.writes if w[0] == "UPLOAD")[2]
     assert up == {"content": "import", "checksum": SHA, "checksum-algorithm": "sha256"}
     create = next(w for w in f.writes if w[1] == "/nodes/pve01/qemu")[2]

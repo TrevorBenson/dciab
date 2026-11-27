@@ -153,8 +153,10 @@ class PveApi:
 
     def upload(self, path: str, fields: Dict[str, str], filename: str, fileobj, size: int,
                timeout: float = 3600.0) -> object:
-        """POST a multipart form with `fields` first, then the file (Proxmox VE reads the fields
-        before the file part), streamed with a Content-Length: never all in memory."""
+        """POST a multipart form with `fields` first, then the file, streamed with a
+        Content-Length: never all in memory. pveproxy reads the form fields in a fixed order
+        before the file part (content, checksum-algorithm, checksum, as its web interface sends
+        them) and answers a bare HTTP 400 to any other: give `fields` in that order."""
         import uuid
         boundary = f"dciab-{uuid.uuid4().hex}"
         head = b"".join(f'--{boundary}\r\nContent-Disposition: form-data; name="{k}"\r\n\r\n{v}\r\n'.encode()
