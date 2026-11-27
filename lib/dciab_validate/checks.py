@@ -203,10 +203,17 @@ class Checker:
         elif api.fingerprint:
             self.notes.append(f"proxmox: tlsFingerprint isn't set, so the Proxmox API on {api.name} is trusted by the "
                               f"certificate dciab hypervisors pinned in its install record ({api.fingerprint})")
-        else:
+        elif api.pending:
             self.notes.append(f"proxmox: pending: the Proxmox API's certificate on {api.name}: dciab hypervisors pins it "
                               f"in the host's install record when it sets the host up ({self.state}/installs/"
                               f"{api.name}.json); tlsFingerprint may stay unset{pending.held_hint(api)}")
+        else:
+            self.error(pending.FINGERPRINT_PATH,
+                       f"not set, and {api.name}'s install record ({self.state}/installs/{api.name}.json) says post is "
+                       "done but pins no API certificate (an older dciab hypervisors, or an install that didn't end "
+                       "installed)",
+                       "set tlsFingerprint to the Proxmox API certificate's fingerprint (SHA-256), or run dciab "
+                       "hypervisors again so its post pins it")
 
     def _token_pending(self, ref: dict) -> bool:
         """The CAPMOX token doesn't exist yet and dciab hypervisors will create it: a note, not

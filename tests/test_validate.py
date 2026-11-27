@@ -995,6 +995,23 @@ def test_bare_site_after_post_uses_the_pin_and_needs_the_token(site):
     assert code == 0 and not any("pending" in n for n in report["notes"])
 
 
+def test_post_done_without_a_pin_is_an_error_not_pending(site):
+    # #281: a record that says post: done but pins no certificate (an older dciab hypervisors).
+    _record(site, outcome="installed", iso="http://x/pve01.iso", post="done")
+    token = site.dir / "secrets" / "pve" / "token"
+    token.parent.mkdir(parents=True, exist_ok=True)
+    token.write_text("s3cret\n")
+    code, report = site.validate(load_example("proxmox-bare"))
+    [e] = errors(report)
+    assert code == 1 and e["path"] == "spec.platform.proxmox.tlsFingerprint"
+    assert "post is done but pins no API certificate" in e["found"] and "dciab hypervisors" in e["fix"]
+    assert not any("pending" in n for n in report["notes"])
+    # Nor when the install didn't end installed (its pin isn't trusted).
+    _record(site, outcome="failed", iso="http://x/pve01.iso", post="done", api_fingerprint=":".join(["AB"] * 32))
+    code, report = site.validate(load_example("proxmox-bare"))
+    assert code == 1 and [e["path"] for e in errors(report)] == ["spec.platform.proxmox.tlsFingerprint"]
+
+
 def test_bare_site_env_token_is_pending_until_set(site, monkeypatch):
     doc = load_example("proxmox-bare")
     doc["spec"]["platform"]["proxmox"]["credentials"]["tokenSecret"] = {"env": "DCIAB_BARE_TOKEN"}

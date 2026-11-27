@@ -1028,6 +1028,26 @@ def test_live_after_post_trusts_the_install_records_pin(cert, servers, monkeypat
     assert "not the pinned one" in f.found
 
 
+def test_live_with_no_pin_and_no_fingerprint_is_an_error_not_a_keyerror(monkeypatch, tmp_path):
+    # #281: post done, no api_fingerprint, no tlsFingerprint: live reported "could not finish (KeyError)".
+    import json
+    spec = proxmox_spec(0, "x")
+    del spec["platform"]["proxmox"]["tlsFingerprint"]
+    spec["platform"]["proxmox"]["templateImport"] = {"credentials": {"tokenID": "template@pve!dciab",
+                                                                     "tokenSecret": {"env": "DCIAB_TEMPLATE_TOKEN"}}}
+    spec["hypervisors"]["hosts"][0]["address"] = "127.0.0.1"           # the URL names pve01
+    monkeypatch.setenv("DCIAB_PVE_TOKEN", TOKEN)
+    state = tmp_path / "state"
+    (state / "installs").mkdir(parents=True)
+    (state / "installs" / "pve01.json").write_text(json.dumps({"outcome": "installed", "iso": "x", "post": "done"}))
+    assert live.proxmox_pending(spec, tmp_path, state) == (None, None)
+    jobs = dict(live.tasks(spec, tmp_path, 3, state))
+    assert "node template token" not in jobs and not any("CSI" in n for n in jobs)
+    [f] = jobs["Proxmox API"]().findings
+    assert f.severity == "error" and f.path == ("spec", "platform", "proxmox", "tlsFingerprint")
+    assert "dciab hypervisors" in f.fix
+
+
 # --- the node template's token (dciab templates) -------------------------------------------------
 
 def test_template_import_token_is_checked(cert, servers, monkeypatch, tmp_path):

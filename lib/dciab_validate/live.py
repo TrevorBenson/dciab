@@ -674,6 +674,18 @@ def tasks(spec: dict, config_dir: FsPath, timeout: float, state=None) -> List[Tu
                 r.note(why)
                 return r
             out.append(("Proxmox API", note))
+        elif not (pin or plat["proxmox"].get("tlsFingerprint")):
+            from .pending import FINGERPRINT_PATH
+
+            def unpinned() -> Results:
+                r = Results()
+                r.error(FINGERPRINT_PATH,
+                        "not set, and no install record pins the Proxmox API's certificate, so the API can't be "
+                        "trusted; the Proxmox API checks weren't run",
+                        "set tlsFingerprint to the Proxmox API certificate's fingerprint (SHA-256), or run dciab "
+                        "hypervisors again so its post pins it")
+                return r
+            out.append(("Proxmox API", unpinned))
         else:
             out.append(("Proxmox API", lambda: check_proxmox(spec, config_dir, timeout, pin)))
             for path, csi in proxmox_csi_blocks(spec):

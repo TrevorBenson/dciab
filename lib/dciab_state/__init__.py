@@ -87,6 +87,14 @@ def read_record(path: PathLike) -> Optional[dict]:
     return record if isinstance(record, dict) and record else {"outcome": "unreadable"}
 
 
+def _replaceable(state: Path) -> bool:
+    """`state` is absent or an empty folder (not a link): migrate_legacy puts the legacy state
+    there, so find_state reads the legacy state instead."""
+    if not os.path.lexists(state):
+        return True
+    return state.is_dir() and not state.is_symlink() and not any(state.iterdir())
+
+
 def migrate_legacy(legacy: PathLike, state: PathLike) -> Optional[str]:
     """Move state from `legacy` (inside a site) to `state`. Returns what was done, or None.
 
@@ -98,7 +106,7 @@ def migrate_legacy(legacy: PathLike, state: PathLike) -> Optional[str]:
         return None
     try:
         state.parent.mkdir(parents=True, exist_ok=True)
-        if state.is_dir() and not state.is_symlink() and not any(state.iterdir()):
+        if os.path.lexists(state) and _replaceable(state):
             state.rmdir()
         if not os.path.lexists(state):
             shutil.move(str(legacy), str(state))
@@ -138,7 +146,10 @@ def find_state(config: PathLike, site: PathLike = SITE) -> Path:
     if os.path.exists(site) and os.path.realpath(config_dir) == os.path.realpath(site):
         state = site_state(site)
         legacy = Path(os.path.realpath(site)) / LEGACY
-        if legacy.is_dir() and not state.exists():
-            return legacy
+        try:
+            if legacy.is_dir() and not legacy.is_symlink() and _replaceable(state):
+                return legacy
+        except OSError:
+            pass
         return state
     return config_dir / LEGACY
