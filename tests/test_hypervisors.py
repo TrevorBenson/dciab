@@ -1917,7 +1917,7 @@ def fake_pve(cert):
         f.close()
 
 
-def run_post(f, cert, tmp_path, monkeypatch, doc=None, record=None, site_password="rootpw", identity=None):
+def run_post(f, cert, tmp_path, monkeypatch, doc=None, record=None, site_password="rootpw", identity=None, config=None):
     doc = doc or bare()
     installs, state = tmp_path / "installs", tmp_path / "state"
     if record is not False:
@@ -1932,7 +1932,7 @@ def run_post(f, cert, tmp_path, monkeypatch, doc=None, record=None, site_passwor
     logs = []
     failed = cli.post_install([host(doc)], doc, state, installs, tmp_path / "answers", site_password, identity,
                               api_for=lambda h, pin: post.PveApi("127.0.0.1", pin, timeout=5, port=f.port),
-                              seen=lambda a: cert["der"], log=logs.append, err=logs.append)
+                              seen=lambda a: cert["der"], log=logs.append, err=logs.append, config=config)
     return failed, "\n".join(logs), sealed, cli.read_install(installs, "pve01")
 
 
@@ -2520,3 +2520,94 @@ def test_wait_hint_points_to_the_hook_log_only_when_tagged():
     hint = cli.wait_hint(tagged_doc())
     assert "journalctl -t dciab-first-boot" in hint and "proxmox-first-boot-network-pre" in hint
     assert "carries VLAN 110 tagged" in hint
+
+
+# --- the CAPMOX token's home (#279) -------------------------------------------------------------
+
+def api_doc():
+    """A bare site whose platform URL names pve01, its token in a file, no tlsFingerprint yet."""
+    doc = bare()
+    px = doc["spec"]["platform"]["proxmox"]
+    px["url"] = "https://pve01.dc3.example.com:8006"
+    px.pop("tlsFingerprint", None)
+    px["credentials"]["tokenSecret"] = {"file": "./secrets/pve/token"}
+    return doc
+
+
+def test_post_writes_the_token_where_token_secret_points(fake_pve, cert, tmp_path, monkeypatch):
+    cfg = tmp_path / "site" / "dciab.yaml"
+    cfg.parent.mkdir()
+    f = fake_pve()
+    failed, out, sealed, record = run_post(f, cert, tmp_path, monkeypatch, doc=api_doc(), config=cfg)
+    assert failed == [], out
+    target = tmp_path / "site" / "secrets" / "pve" / "token"
+    assert target.read_text() == "SECRET-7f3a9c\n" and target.stat().st_mode & 0o777 == 0o600
+    assert target.parent.stat().st_mode & 0o777 == 0o700
+    assert str(post.token_file(tmp_path / "state", "pve01")) in sealed            # sealed as well
+    assert "SECRET-7f3a9c" not in out and f"the token's secret is in {target}" in out
+    # The certificate is pinned on first contact (no tlsFingerprint): validate trusts this pin.
+    assert record["api_fingerprint"] == cert["pin"] and record["post"] == "done"
+    # Only that file holds it in plain text.
+    plain = [p for p in tmp_path.rglob("*") if p.is_file() and "SECRET-7f3a9c" in p.read_text(errors="ignore")]
+    assert plain == [target]
+
+
+def test_post_writes_the_token_into_the_appliance_local_secrets(fake_pve, cert, tmp_path, monkeypatch):
+    import dciab_state
+    copy_dir = tmp_path / "lib" / ".site-abc"
+    (copy_dir / "secrets" / "pve").mkdir(parents=True)
+    (copy_dir / "secrets" / "pve" / "token").write_text("PLACEHOLDER\n")
+    site = tmp_path / "lib" / "site"
+    site.symlink_to(".site-abc")
+    monkeypatch.setattr(dciab_state, "SITE", site)
+    f = fake_pve()
+    failed, out, _, _ = run_post(f, cert, tmp_path, monkeypatch, doc=api_doc(), config=(site / "dciab.yaml").resolve())
+    assert failed == [], out
+    local = tmp_path / "lib" / "site-local" / "secrets" / "pve" / "token"
+    assert local.read_text() == "SECRET-7f3a9c\n" and local.stat().st_mode & 0o777 == 0o600
+    assert (tmp_path / "lib" / "site-local").stat().st_mode & 0o777 == 0o700
+    assert (site / "secrets" / "pve" / "token").read_text() == "SECRET-7f3a9c\n"
+    assert "replacing what was there" in out
+
+
+def test_post_writes_no_token_for_a_host_the_url_doesnt_name(fake_pve, cert, tmp_path, monkeypatch):
+    doc = api_doc()
+    doc["spec"]["platform"]["proxmox"]["url"] = "https://10.30.110.99:8006"
+    cfg = tmp_path / "site" / "dciab.yaml"
+    cfg.parent.mkdir()
+    failed, out, _, _ = run_post(fake_pve(), cert, tmp_path, monkeypatch, doc=doc, config=cfg)
+    assert failed == [] and not (tmp_path / "site" / "secrets").exists()
+
+
+def test_token_targets_refusals(tmp_path, monkeypatch):
+    import dciab_state
+    monkeypatch.setattr(dciab_state, "SITE", tmp_path / "no-site")
+    cfg = tmp_path / "dciab.yaml"
+    doc = api_doc()
+    assert post.token_targets(doc, cfg) == ([tmp_path / "secrets" / "pve" / "token"], None)
+    doc["spec"]["platform"]["proxmox"]["credentials"]["tokenSecret"] = {"env": "DCIAB_PVE_TOKEN"}
+    targets, why = post.token_targets(doc, cfg)
+    assert targets == [] and "DCIAB_PVE_TOKEN" in why
+    # Never over another secret's file.
+    doc["spec"]["platform"]["proxmox"]["credentials"]["tokenSecret"] = {"file": "secrets/bmc/pve01"}
+    targets, why = post.token_targets(doc, cfg)
+    assert targets == [] and "spec.hypervisors.hosts.0.bmc.credentials.password" in why
+    # On the appliance, only under secrets/ (the only folder a sync keeps).
+    copy_dir = tmp_path / ".site-x"
+    copy_dir.mkdir()
+    (tmp_path / "site").symlink_to(".site-x")
+    monkeypatch.setattr(dciab_state, "SITE", tmp_path / "site")
+    doc["spec"]["platform"]["proxmox"]["credentials"]["tokenSecret"] = {"file": "token"}
+    targets, why = post.token_targets(doc, tmp_path / "site" / "dciab.yaml")
+    assert targets == [] and "under secrets/" in why
+
+
+def test_the_token_is_never_written_to_removable_media(tmp_path, monkeypatch):
+    import dciab_state
+    monkeypatch.setattr(dciab_state, "SITE", tmp_path / "no-site")
+    mounts = f"/dev/sda2 / xfs rw 0 0\n/dev/sdb1 {tmp_path} exfat rw,fmask=0177 0 0\n"
+    logs = []
+    assert post.write_token("s3cret", api_doc(), tmp_path / "dciab.yaml", logs.append, mounts=mounts) == []
+    assert "exfat, removable media" in logs[0] and not (tmp_path / "secrets").exists()
+    assert post.fs_type(tmp_path / "a" / "b", mounts) == "exfat"
+    assert post.fs_type(Path("/etc"), mounts) == "xfs"

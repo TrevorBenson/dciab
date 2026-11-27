@@ -149,3 +149,35 @@ def test_sync_without_stick_keeps_the_copy(tmp_path):
     (site / "dciab.yaml").write_text("kept\n")
     assert setup.sync_site(str(tmp_path / "no-stick"), str(site)) is False
     assert (site / "dciab.yaml").read_text() == "kept\n"
+
+
+def test_appliance_local_secrets_survive_a_sync(tmp_path, capsys):
+    # #279: a secret DCiaB generated on the appliance (the CAPMOX token) lives in
+    # <site>-local/secrets/, never on the stick, and every sync puts it over the stick's file.
+    usb, site = tmp_path / "usb", tmp_path / "site"
+    (usb / "secrets" / "pve").mkdir(parents=True)
+    (usb / "dciab.yaml").write_text("spec: {}\n")
+    (usb / "secrets" / "pve" / "token").write_text("PLACEHOLDER\n")
+    assert setup.sync_site(str(usb), str(site)) is True
+    local = tmp_path / "site-local" / "secrets" / "pve"
+    local.mkdir(parents=True)
+    (local / "token").write_text("real-secret\n")
+    (local / "link").symlink_to(local / "token")            # never followed into the copy
+    assert setup.sync_site(str(usb), str(site)) is True
+    assert (site / "secrets" / "pve" / "token").read_text() == "real-secret\n"
+    assert (site / "secrets" / "pve" / "token").stat().st_mode & 0o777 == 0o600
+    assert not (site / "secrets" / "pve" / "link").exists()
+    assert "kept the appliance-local secrets/pve/token" in capsys.readouterr().err
+    # Without the stick's file too, and the stick is never written.
+    (usb / "secrets" / "pve" / "token").unlink()
+    assert setup.sync_site(str(usb), str(site)) is True
+    assert (site / "secrets" / "pve" / "token").read_text() == "real-secret\n"
+    assert not (usb / "secrets" / "pve" / "token").exists()
+
+
+def test_no_local_secrets_changes_nothing(tmp_path):
+    usb, site = tmp_path / "usb", tmp_path / "site"
+    usb.mkdir()
+    (usb / "dciab.yaml").write_text("spec: {}\n")
+    assert setup.sync_site(str(usb), str(site)) is True
+    assert not (site / "secrets").exists() and not (tmp_path / "site-local").exists()

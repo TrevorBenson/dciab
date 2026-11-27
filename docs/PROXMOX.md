@@ -49,7 +49,7 @@ Put the token secret (shown once) where `spec.platform.proxmox.credentials.token
 $ ./dciab validate dciab.yaml --live
 ```
 
-On hosts it installs, `dciab hypervisors` creates the same roles, user, token and ACLs through the API, and seals the token's secret with age ([HYPERVISORS.md](HYPERVISORS.md#post-install)).
+On hosts it installs, `dciab hypervisors` creates the same roles, user, token and ACLs through the API, seals the token's secret with age, and writes it where `tokenSecret` points for the host `platform.proxmox.url` names ([HYPERVISORS.md](HYPERVISORS.md#the-capmox-tokens-home)).
 
 ## The Proxmox CSI plugin's token
 

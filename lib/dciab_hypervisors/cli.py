@@ -33,8 +33,10 @@ Steps, per host, in order; each is safe to re-run:
   post     for each host DCiaB installed that is in spec.platform.proxmox.nodes, through the
            Proxmox VE API as root@pam (post.py): check the bridge (VLAN-aware with vlanTag) and
            the storage, and create the CAPMOX roles, user, privilege-separated token and ACLs
-           of docs/PROXMOX.md, its secret sealed with age in <state>/proxmox/<host>.token.age.
-           A generated root password is opened with --age-identity. Done once per install
+           of docs/PROXMOX.md, its secret sealed with age in <state>/proxmox/<host>.token.age
+           and, for the host spec.platform.proxmox.url names, written where tokenSecret points
+           (post.write_token). A generated root password is opened with --age-identity. Done
+           once per install
 
 --until STEP stops after STEP. --print shows the plan and the answer files with the password
 hash masked, and changes nothing. <state> defaults as for dciab services: .dciab/state next to
@@ -192,14 +194,8 @@ def read_install(installs: Path, name: str) -> Optional[dict]:
     """The host's install record, or None when DCiaB never installed or saw it installed.
     Fails closed: anything at the path that isn't a non-empty JSON object is a record of
     unknown state ({"outcome": "unreadable"}), never "never installed"."""
-    path = installs / f"{name}.json"
-    if not os.path.lexists(path):
-        return None
-    try:
-        record = json.loads(path.read_text())
-    except (ValueError, OSError):
-        record = None
-    return record if isinstance(record, dict) and record else {"outcome": "unreadable"}
+    from dciab_state import read_record
+    return read_record(Path(installs) / f"{name}.json")
 
 
 def write_install(installs: Path, name: str, **fields) -> dict:
@@ -599,6 +595,11 @@ def main(argv: Optional[List[str]] = None) -> int:
                 print(f"    post-install: bridge {px['bridge']}{' (VLAN-aware)' if px.get('vlanTag') else ''}, storage "
                       f"{px['storage']}, token {px['credentials']['tokenID']} sealed to "
                       f"{post.token_file(state, h['name'])}")
+                from dciab_validate.pending import names_host
+                if names_host(px["url"], h, doc["spec"]["network"]["domain"]):
+                    targets, why = post.token_targets(doc, config)
+                    print("    the token's secret, for spec.platform.proxmox.url: "
+                          + (", ".join(str(t) for t in targets) if targets else f"not written ({why})"))
             else:
                 print("    post-install: none (not in spec.platform.proxmox.nodes)")
         for name, text in rendered.items():
@@ -719,7 +720,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         print("\n== hypervisors: post")
         identity = Path(args.age_identity) if args.age_identity else None
         failed += post_install([h for h in hosts if h["name"] not in held and h["name"] not in failed], doc,
-                               state, installs, answers, site_password, identity)
+                               state, installs, answers, site_password, identity, config=config)
     if held:
         print(f"dciab hypervisors: {', '.join(held)}: held, not reinstalled; each needs the operator "
               "(see above)", file=sys.stderr)
@@ -731,7 +732,7 @@ def main(argv: Optional[List[str]] = None) -> int:
 
 def post_install(hosts: List[dict], doc: dict, state: Path, installs: Path, answers: Path,
                  site_password: Optional[str], identity: Optional[Path], api_for=None, seen=None,
-                 log=print, err=None) -> List[str]:
+                 log=print, err=None, config: Optional[Path] = None) -> List[str]:
     """The post step. Returns the hosts it failed for."""
     from . import post
     from .answer import AnswerError, seal_with_age
@@ -743,6 +744,11 @@ def post_install(hosts: List[dict], doc: dict, state: Path, installs: Path, answ
         record = read_install(installs, name) or {}
         if record.get("outcome") != "installed" or not record.get("iso"):
             log(f"  {name}: skipped (not installed by DCiaB; DCiaB never logs in as root to a host it didn't install)")
+            from dciab_validate.pending import names_host
+            if px and not record and names_host(px["url"], h, doc["spec"]["network"]["domain"]):
+                log(f"  {name}: note: spec.platform.proxmox.url names this host, so DCiaB creates no CAPMOX token and "
+                    "pins no certificate for it: create the token as docs/PROXMOX.md says, and set tokenSecret's "
+                    "file and tlsFingerprint")
             continue
         if name not in (px.get("nodes") or []):
             log(f"  {name}: skipped (not in spec.platform.proxmox.nodes)")
@@ -759,7 +765,7 @@ def post_install(hosts: List[dict], doc: dict, state: Path, installs: Path, answ
             api = api_for(h, pin) if api_for else post.PveApi(h["address"], pin)
             done = post.run(api, h, doc, state, password,
                             lambda r, text, dest: seal_with_age(r, text, dest, what="the CAPMOX token secret"),
-                            lambda line: log(f"  {name}: {line}"))
+                            lambda line: log(f"  {name}: {line}"), config=config)
             del password
             write_install(installs, name, post="done", post_at=_now(), post_log=done)
         except (post.PostError, AnswerError, OSError) as exc:

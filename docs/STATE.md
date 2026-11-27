@@ -37,13 +37,20 @@ The folder is mode 700 and owned by root once a root step has run. Under `sudo`,
 | `answers/<host>.root-hash`, `.root-salt` | `hypervisors` | yes | The password's hash and salt, so reruns write the same answer file |
 | `host-isos/<host>.iso` | `hypervisors` | yes | Each host's installer ISO, with its answer file (and root password hash) inside |
 | `installs/<host>.json` | `hypervisors` | no | The install record: what was installed, its media and post-install state, the pinned API certificate. The reinstall guard reads it ([HYPERVISORS.md](HYPERVISORS.md#the-reinstall-guard)) |
-| `proxmox/<host>.token.age` | `hypervisors` (`post`) | sealed | The CAPMOX API token's secret for each host DCiaB installed. A replaced token's file is kept as `.replaced-<time>` |
+| `proxmox/<host>.token.age` | `hypervisors` (`post`) | sealed | The CAPMOX API token's secret for each host DCiaB installed. A replaced token's file is kept as `.replaced-<time>`. For the host `platform.proxmox.url` names, `post` also writes the secret in plain text where `tokenSecret` points ([below](#outside-the-state-folder)) |
 | `mgmt-values.yaml` | `mgmt` | no | MGMT's `capi-cluster` values |
 | `mgmt.kubeconfig` | `mgmt` | yes | Admin access to MGMT (the certificate kubeconfig: break-glass) |
 | `capi-backup/` | `mgmt` | encrypted | Cluster API exports from before the move and after adoption; `LAST` records the latest. The same exports are on the backup site target ([BACKUP.md](BACKUP.md)) |
 | `backup/backup-key.age`, `backup-key.pub` | `mgmt` | sealed | The backup key, when the config gives none: its private half sealed to the recipients, and its public half |
 | `.lock`, `dciab-seed.lock`, `hypervisors.lock`, `host-isos.base-checked` | the steps | no | Locks, and a cache of the base ISO's checked sha256 |
 
+## Outside the state folder
+
+| Path | Written by | Secret | What it is |
+| --- | --- | --- | --- |
+| The file `platform.proxmox.credentials.tokenSecret` names | `hypervisors` (`post`), for the host `platform.proxmox.url` names | yes, mode 600 in folders of mode 700 | The CAPMOX token's secret, so `validate --live`, `seed` and `mgmt` find it with no copying by hand. Never written to removable media (the stick's exFAT partition), to another secret's file, or for `{env: …}` (open the sealed copy into that variable yourself) |
+| `/var/lib/dciab/site-local/secrets/` (the bootstrap appliance) | `hypervisors` (`post`) | yes, root-only | Appliance-local secrets: the same file, at the same path under `secrets/` as in the site copy. Each sync from the stick puts these files over the stick's of the same path, so they last across reboots without ever being on the stick. To stop using one, delete it here |
+
 ## Before retiring the bootstrap host
 
-Keep a copy of at least `pki/`, `answers/*.age`, `proxmox/`, `backup/`, `installs/` and the kubeconfigs, encrypted or on media the site controls. With them, a new bootstrap host can renew the registry certificate under the same CA, reopen hosts' root passwords and tokens, and know which hosts DCiaB installed. The age identities of `spec.bootstrap.recipients` are kept separately, never in the state folder ([PLAN.md](PLAN.md#4-recipients-and-their-keys)).
+Keep a copy of at least `pki/`, `answers/*.age`, `proxmox/`, `backup/`, `installs/` and the kubeconfigs, encrypted or on media the site controls. The appliance-local secrets need no copy: each is sealed in `proxmox/` too. With them, a new bootstrap host can renew the registry certificate under the same CA, reopen hosts' root passwords and tokens, and know which hosts DCiaB installed. The age identities of `spec.bootstrap.recipients` are kept separately, never in the state folder ([PLAN.md](PLAN.md#4-recipients-and-their-keys)).

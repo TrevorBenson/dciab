@@ -10,9 +10,19 @@ folder `dciab media` puts on the work disk and passes as --state in the commands
 
 State that an older dciab left inside the site is moved out once (migrate_legacy).
 
+The appliance-local secrets (site_local): a secret DCiaB generates on the appliance, such as
+the CAPMOX token `dciab hypervisors` creates, must not go on the stick (its exFAT partition is
+readable on any laptop), and the site copy is replaced at each sync. So it goes in
+/var/lib/dciab/site-local/secrets/ (root-only, on the appliance's disk), and every sync puts
+those files over the stick's file of the same path in the new site copy.
+
+Install records (read_install) are read here too, so `dciab validate` can tell a Proxmox VE
+host that `dciab hypervisors` hasn't installed yet from one it has.
+
 Standard library only: dciab-bootstrap-setup imports it on the appliance at boot. The shell
 steps call `python3 -m dciab_state <config>`, so the default lives only here.
 """
+import json
 import os
 import shutil
 import sys
@@ -22,6 +32,7 @@ from typing import Optional, Union
 
 SITE = Path("/var/lib/dciab/site")
 LEGACY = Path(".dciab") / "state"
+LOCAL_SECRETS = "secrets"
 
 PathLike = Union[str, "os.PathLike[str]"]
 
@@ -33,6 +44,40 @@ class StateMigrationError(Exception):
 def site_state(site: PathLike) -> Path:
     """The state folder of a sync'd site: work/state beside the `site` link."""
     return Path(os.path.abspath(site)).parent / "work" / "state"
+
+
+def site_local(site: PathLike) -> Path:
+    """The appliance-local overlay of a sync'd site: <site>-local beside the `site` link. Its
+    secrets/ replace the stick's files of the same path at every sync (dciab_bootstrap_host)."""
+    site = Path(os.path.abspath(site))
+    return site.parent / f"{site.name}-local"
+
+
+def synced_site(config: PathLike, site: PathLike = SITE) -> Optional[Path]:
+    """`site` when `config` is the sync'd site's copy (the appliance), else None."""
+    config_dir = Path(os.path.abspath(config)).parent
+    if os.path.exists(site) and os.path.realpath(config_dir) == os.path.realpath(site):
+        return Path(site)
+    return None
+
+
+def read_install(state: PathLike, name: str) -> Optional[dict]:
+    """The install record <state>/installs/<name>.json that `dciab hypervisors` writes, or None
+    when there is none. Fails closed: anything at the path that isn't a non-empty JSON object is
+    a record of unknown state ({"outcome": "unreadable"}), never "never installed"."""
+    return read_record(Path(os.path.abspath(state)) / "installs" / f"{name}.json")
+
+
+def read_record(path: PathLike) -> Optional[dict]:
+    """One install record file (read_install)."""
+    path = Path(path)
+    if not os.path.lexists(path):
+        return None
+    try:
+        record = json.loads(path.read_text())
+    except (ValueError, OSError):
+        record = None
+    return record if isinstance(record, dict) and record else {"outcome": "unreadable"}
 
 
 def migrate_legacy(legacy: PathLike, state: PathLike) -> Optional[str]:

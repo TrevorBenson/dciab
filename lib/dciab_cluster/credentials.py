@@ -36,8 +36,15 @@ def secret(site: dict, cluster: str, namespace: str, config_dir: FsPath) -> Dict
     kind = platform["type"]
     if kind == "proxmox":
         p = platform["proxmox"]
-        data = {"url": p["url"], "token": p["credentials"]["tokenID"],
-                "secret": resolve(p["credentials"]["tokenSecret"], config_dir)}
+        try:
+            token = resolve(p["credentials"]["tokenSecret"], config_dir)
+        except FileNotFoundError:
+            raise ValueError(f"the CAPMOX token's file {p['credentials']['tokenSecret']['file']} doesn't exist. On a "
+                             "bare site, dciab hypervisors' post-install creates the token and writes it there "
+                             "(docs/HYPERVISORS.md); otherwise create it as docs/PROXMOX.md says") from None
+        if not token:
+            raise ValueError("the CAPMOX token's secret (spec.platform.proxmox.credentials.tokenSecret) is empty")
+        data = {"url": p["url"], "token": p["credentials"]["tokenID"], "secret": token}
     elif kind == "vsphere":
         v = platform["vsphere"]
         data = {"username": v["credentials"]["username"],
