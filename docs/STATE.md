@@ -48,7 +48,7 @@ The folder is mode 700 and owned by root once a root step has run. Under `sudo`,
 
 | Path | Written by | Secret | What it is |
 | --- | --- | --- | --- |
-| The file `platform.proxmox.credentials.tokenSecret` names | `hypervisors` (`post`), for the host `platform.proxmox.url` names | yes, mode 600 in folders of mode 700 | The CAPMOX token's secret, so `validate --live`, `seed` and `mgmt` find it with no copying by hand. Never written to removable media (the stick's exFAT partition), to another secret's file, or for `{env: …}` (open the sealed copy into that variable yourself) |
+| The file `platform.proxmox.credentials.tokenSecret` names | `hypervisors` (`post`), for the host `platform.proxmox.url` names | yes, mode 600 in folders of mode 700 | The CAPMOX token's secret, so `validate --live`, `seed` and `mgmt` find it with no copying by hand. Never written to removable media (the stick's exFAT partition), over the config file or another secret's file, on the appliance outside the site's `secrets/`, or for `{env: …}` (open the sealed copy into that variable yourself) |
 | `/var/lib/dciab/site-local/secrets/` (the bootstrap appliance) | `hypervisors` (`post`) | yes, root-only | Appliance-local secrets: the same file, at the same path under `secrets/` as in the site copy. Each sync from the stick puts these files over the stick's of the same path, so they last across reboots without ever being on the stick. To stop using one, delete it here |
 
 ## Before retiring the bootstrap host

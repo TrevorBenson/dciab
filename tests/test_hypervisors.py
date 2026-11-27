@@ -2600,7 +2600,107 @@ def test_token_targets_refusals(tmp_path, monkeypatch):
     monkeypatch.setattr(dciab_state, "SITE", tmp_path / "site")
     doc["spec"]["platform"]["proxmox"]["credentials"]["tokenSecret"] = {"file": "token"}
     targets, why = post.token_targets(doc, tmp_path / "site" / "dciab.yaml")
-    assert targets == [] and "under secrets/" in why
+    assert targets == [] and "under the site's secrets/" in why
+    # Nor an absolute path outside the site (the documented rule: a file under ./secrets/).
+    doc["spec"]["platform"]["proxmox"]["credentials"]["tokenSecret"] = {"file": str(tmp_path / "elsewhere" / "token")}
+    targets, why = post.token_targets(doc, tmp_path / "site" / "dciab.yaml")
+    assert targets == [] and "under the site's secrets/" in why
+    doc["spec"]["platform"]["proxmox"]["credentials"]["tokenSecret"] = {"file": "./secrets/pve/token"}
+    targets, why = post.token_targets(doc, tmp_path / "site" / "dciab.yaml")
+    assert why is None and targets == [tmp_path / "site-local" / "secrets" / "pve" / "token",
+                                       copy_dir / "secrets" / "pve" / "token"]
+
+
+@pytest.mark.parametrize("ref", ["./dciab.yaml", "dciab.yaml", "secrets"])
+def test_token_targets_never_the_config_or_a_folder(tmp_path, monkeypatch, ref):
+    # Finding: tokenSecret: {file: ./dciab.yaml} passed validate and post would overwrite the config.
+    import dciab_state
+    monkeypatch.setattr(dciab_state, "SITE", tmp_path / "no-site")
+    cfg = tmp_path / "dciab.yaml"
+    cfg.write_text("apiVersion: x\n")
+    (tmp_path / "secrets").mkdir()
+    doc = api_doc()
+    doc["spec"]["platform"]["proxmox"]["credentials"]["tokenSecret"] = {"file": ref}
+    targets, why = post.token_targets(doc, cfg)
+    assert targets == [] and ("config file itself" in why or "regular file" in why)
+    logs = []
+    assert post.write_token("s3cret", doc, cfg, logs.append) == []
+    assert cfg.read_text() == "apiVersion: x\n"
+
+
+def test_a_token_file_that_cant_be_written_still_gets_acls_and_a_rerun_writes_it(fake_pve, cert, tmp_path,
+                                                                                    monkeypatch):
+    # #279 review: publish ran before the ACLs and an OSError failed post with none; a rerun then
+    # kept the token and never wrote the file. Now: ACLs first, the write never fails post, and a
+    # rerun with --age-identity writes the file from the sealed copy.
+    import dciab_state
+    monkeypatch.setattr(dciab_state, "SITE", tmp_path / "no-site")
+    cfg = tmp_path / "site" / "dciab.yaml"
+    cfg.parent.mkdir()
+    real = post.write_token
+
+    def broken(*a, **kw):
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(post, "write_token", broken)
+    f = fake_pve()
+    failed, out, sealed, record = run_post(f, cert, tmp_path, monkeypatch, doc=api_doc(), config=cfg)
+    assert failed == [] and record["post"] == "done", out
+    px = api_doc()["spec"]["platform"]["proxmox"]
+    assert len(f.acl) == len(grants(px))                       # the ACLs are set
+    assert "couldn't write the token's secret" in out and "--age-identity" in out
+    target = tmp_path / "site" / "secrets" / "pve" / "token"
+    assert not target.exists()
+
+    # A rerun: post is done, so no login; without an identity it says what to do.
+    monkeypatch.setattr(post, "write_token", real)
+    logins = f.logins
+    failed, out, _, _ = run_post(f, cert, tmp_path, monkeypatch, doc=api_doc(), config=cfg, record=False)
+    assert failed == [] and f.logins == logins
+    assert f"the token's secret isn't in {target}" in out and "--age-identity" in out and not target.exists()
+
+    # With an identity, the sealed copy is opened and written there.
+    opened = []
+
+    def fake_open(identity, path, run=None):
+        opened.append((identity, path))
+        return "SECRET-7f3a9c"
+
+    monkeypatch.setattr(post, "open_sealed", fake_open)
+    ident = tmp_path / "id.txt"
+    failed, out, _, _ = run_post(f, cert, tmp_path, monkeypatch, doc=api_doc(), config=cfg, record=False,
+                                 identity=ident)
+    assert failed == [] and f.logins == logins
+    assert opened == [(ident, post.token_file(tmp_path / "state", "pve01"))]
+    assert target.read_text() == "SECRET-7f3a9c\n" and target.stat().st_mode & 0o777 == 0o600
+    # Again: nothing to change.
+    failed, out, _, _ = run_post(f, cert, tmp_path, monkeypatch, doc=api_doc(), config=cfg, record=False,
+                                 identity=ident)
+    assert failed == [] and "already" in out and target.read_text() == "SECRET-7f3a9c\n"
+
+
+def test_a_kept_token_with_a_stale_file_is_rewritten_from_the_sealed_copy(fake_pve, cert, tmp_path, monkeypatch):
+    # post failed after the token was made (record: failed): the rerun logs in, keeps the token, and
+    # with an identity puts the sealed secret over a stale file.
+    import dciab_state
+    monkeypatch.setattr(dciab_state, "SITE", tmp_path / "no-site")
+    cfg = tmp_path / "site" / "dciab.yaml"
+    target = tmp_path / "site" / "secrets" / "pve" / "token"
+    target.parent.mkdir(parents=True)
+    target.write_text("PLACEHOLDER\n")
+    px = api_doc()["spec"]["platform"]["proxmox"]
+    user, tname = px["credentials"]["tokenID"].split("!")
+    sealed = post.token_file(tmp_path / "state", "pve01")
+    sealed.parent.mkdir(parents=True)
+    sealed.write_text("age-encrypted\n")
+    monkeypatch.setattr(post, "open_sealed", lambda identity, path, run=None: "SEALED-SECRET")
+    f = fake_pve(users=[user], tokens={user: [tname]})
+    failed, out, _, record = run_post(f, cert, tmp_path, monkeypatch, doc=api_doc(), config=cfg,
+                                      record={"outcome": "installed", "iso": HOST_ISO, "post": "failed"},
+                                      identity=tmp_path / "id.txt")
+    assert failed == [] and record["post"] == "done", out
+    assert "present; secret sealed" in out and target.read_text() == "SEALED-SECRET\n"
+    assert "replacing what was there" in out and len(f.acl) == len(grants(px))
 
 
 def test_the_token_is_never_written_to_removable_media(tmp_path, monkeypatch):

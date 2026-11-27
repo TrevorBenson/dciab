@@ -1,4 +1,5 @@
 import pytest
+import json
 import os
 import subprocess
 
@@ -1029,6 +1030,7 @@ def test_validate_state_option_finds_the_install_records(site, tmp_path):
     state = tmp_path / "elsewhere"
     (state / "installs").mkdir(parents=True)
     (state / "installs" / "pve01.json").write_text(json.dumps({"outcome": "installed", "post": "done",
+                                                               "iso": "http://x/pve01.iso",
                                                                "api_fingerprint": ":".join(["CD"] * 32)}))
     from dciab_validate import cli
     path = site.dir / "dciab.yaml"
@@ -1116,7 +1118,7 @@ def test_no_record_pending_note_says_a_held_host_needs_its_token(site):
     notes = [n for n in report["notes"] if "pending" in n]
     assert notes and all("held pve01" in n and "by hand" in n for n in notes)
     # With a record (installed, post not done yet), the note doesn't need the hint.
-    _record(site, outcome="installed")
+    _record(site, outcome="installed", iso="http://x/pve01.iso")
     code, report = site.validate(load_example("proxmox-bare"))
     notes = [n for n in report["notes"] if "pending" in n]
     assert code == 0 and notes and not any("held" in n for n in notes)
@@ -1185,3 +1187,68 @@ def test_services_main_passes_state_to_validate(monkeypatch, tmp_path):
 def test_mgmt_passes_its_state_to_cluster_values():
     text = (ROOT / "lib" / "steps" / "mgmt.sh").read_text()
     assert 'args=("$config" mgmt -o "$values" --state "$state")' in text
+
+
+# --- #279 review fixes: the files post may write the token to --------------------------------
+
+def test_token_secret_naming_the_config_file_is_an_error(site):
+    doc = load_example("proxmox-bare")
+    doc["spec"]["platform"]["proxmox"]["credentials"]["tokenSecret"] = {"file": "./dciab.yaml"}
+    code, report = site.validate(doc)
+    [e] = errors(report, "spec.platform.proxmox.credentials.tokenSecret.file")
+    assert code == 1 and "config file itself" in e["found"]
+
+
+def test_any_secret_naming_the_config_file_is_an_error(site):
+    doc = load_example("proxmox-bare")
+    doc["spec"]["hypervisors"]["hosts"][0]["bmc"]["credentials"]["password"] = {"file": "dciab.yaml"}
+    code, report = site.validate(doc)
+    [e] = errors(report, "spec.hypervisors.hosts[0].bmc.credentials.password.file")
+    assert code == 1 and "config file itself" in e["found"]
+
+
+def test_token_secret_shared_with_another_secret_is_an_error_when_post_writes_it(site):
+    doc = load_example("proxmox-bare")
+    doc["spec"]["platform"]["proxmox"]["credentials"]["tokenSecret"] = {"file": "./secrets/bmc/pve01"}
+    code, report = site.validate(doc)
+    [e] = errors(report, "spec.platform.proxmox.credentials.tokenSecret.file")
+    assert code == 1 and "spec.hypervisors.hosts[0].bmc.credentials.password" in e["found"]
+
+
+def test_on_the_appliance_token_secret_must_be_under_secrets(site, monkeypatch, tmp_path):
+    import yaml
+    import dciab_state
+    from dciab_validate import cli
+    copy = tmp_path / ".site-x"
+    copy.mkdir()
+    import shutil
+    shutil.copytree(site.dir / "secrets", copy / "secrets")
+    link = tmp_path / "site"
+    link.symlink_to(".site-x")
+    monkeypatch.setattr(dciab_state, "SITE", link)
+    doc = load_example("proxmox-bare")
+    for raw in ("./token", str(tmp_path / "outside" / "token")):
+        doc["spec"]["platform"]["proxmox"]["credentials"]["tokenSecret"] = {"file": raw}
+        (copy / "dciab.yaml").write_text(yaml.safe_dump(doc, sort_keys=False))
+        code = cli.main([str(link / "dciab.yaml"), "--root", str(ROOT), "--output", "json",
+                         "--state", str(tmp_path / "state")])
+        report = json.loads(site.capsys.readouterr().out)
+        [e] = errors(report, "spec.platform.proxmox.credentials.tokenSecret.file")
+        assert code == 1 and "under the site's secrets/" in e["found"], raw
+    doc["spec"]["platform"]["proxmox"]["credentials"]["tokenSecret"] = {"file": "./secrets/pve/token"}
+    (copy / "dciab.yaml").write_text(yaml.safe_dump(doc, sort_keys=False))
+    code = cli.main([str(link / "dciab.yaml"), "--root", str(ROOT), "--output", "json",
+                     "--state", str(tmp_path / "state")])
+    report = json.loads(site.capsys.readouterr().out)
+    assert code == 0, errors(report)
+
+
+def test_a_proxmox_ve_that_already_ran_is_not_pending(site):
+    # dciab hypervisors found its API answering and left it as it is: installed, but no iso, and
+    # post never sets it up. So nothing will create the token: required, not pending forever.
+    _record(site, outcome="installed", media="ejected")
+    code, report = site.validate(load_example("proxmox-bare"))
+    assert code == 1 and not any("pending" in n for n in report["notes"])
+    by_path = {e["path"]: e for e in errors(report)}
+    assert "wasn't installed by DCiaB" in by_path["spec.platform.proxmox.tlsFingerprint"]["found"]
+    assert "docs/PROXMOX.md" in by_path["spec.platform.proxmox.credentials.tokenSecret.file"]["fix"]

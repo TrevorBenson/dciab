@@ -53,6 +53,7 @@ class Checker:
     def __init__(self, doc: dict, config_path: FsPath, root: FsPath, state: Optional[FsPath] = None):
         self.doc = doc
         self.spec = doc["spec"]
+        self.config_path = config_path
         self.config_dir = config_path.resolve().parent
         self.root = root
         # The state folder, for the install records (pending): --state, else the default.
@@ -173,9 +174,16 @@ class Checker:
             self.error(("spec", "platform", "proxmox", "templateImport", "credentials", "tokenID"),
                        f"{imp['tokenID']}, CAPMOX's token",
                        "give dciab templates a token of its own (docs/PROXMOX.md): CAPMOX's token never imports templates")
+        api = self.api_state()
+        if api.host is not None:
+            # post writes the token where tokenSecret points: never over a file it must not touch.
+            _, why, refused = pending.token_home(self.doc, self.config_path)
+            if refused and not any(f.path == pending.TOKEN_PATH + ("file",) for f in self.findings):
+                self.error(pending.TOKEN_PATH + ("file",), why,
+                           "point tokenSecret at a file of its own, under ./secrets/ (dciab hypervisors' post "
+                           "writes the token there)")
         if px.get("tlsFingerprint"):
             return
-        api = self.api_state()
         if api.host is None:
             self.error(pending.FINGERPRINT_PATH, "not set",
                        "set it to the Proxmox API certificate's fingerprint (SHA-256): it can be left out only when "
@@ -186,6 +194,12 @@ class Checker:
                        f"not set, and {api.name}'s install record ({self.state}/installs/{api.name}.json) can't be read",
                        "run as root (the state folder is root-only) with --state naming the steps' state folder, "
                        "repair the record, or set tlsFingerprint")
+        elif api.foreign:
+            self.error(pending.FINGERPRINT_PATH,
+                       f"not set, and {api.name} wasn't installed by DCiaB (its Proxmox VE already ran: its install "
+                       "record names no install ISO), so dciab hypervisors pins no certificate for it",
+                       "set it to the Proxmox API certificate's fingerprint (SHA-256), and create the CAPMOX token "
+                       "as docs/PROXMOX.md says")
         elif api.fingerprint:
             self.notes.append(f"proxmox: tlsFingerprint isn't set, so the Proxmox API on {api.name} is trusted by the "
                               f"certificate dciab hypervisors pinned in its install record ({api.fingerprint})")
@@ -226,6 +240,9 @@ class Checker:
             return
         raw = ref["file"]
         target = FsPath(raw) if os.path.isabs(raw) else self.config_dir / raw
+        if os.path.realpath(target) == os.path.realpath(self.config_path):
+            self.error(path + ("file",), f"{raw} is the config file itself", "point at a file that holds only the secret")
+            return
         if not target.exists():
             fix = "create the file, or correct the path; relative paths start at the config file's folder"
             if path == pending.TOKEN_PATH and self.api_state().unreadable:
@@ -233,6 +250,9 @@ class Checker:
                 fix = (f"{name}'s install record ({self.state}/installs/{name}.json) can't be read, so nothing says "
                        "whether dciab hypervisors has created the token yet: run as root with --state naming the "
                        "steps' state folder, or repair the record")
+            elif path == pending.TOKEN_PATH and self.api_state().foreign:
+                fix = (f"{self.api_state().name}'s Proxmox VE ran before DCiaB, so dciab hypervisors creates no token "
+                       "there: create it as docs/PROXMOX.md says and write its secret into this file")
             elif path == pending.TOKEN_PATH and self.api_state().host is not None:
                 name = self.api_state().name
                 fix = (f"dciab hypervisors' post-install wrote it when it created the token on {name}; open its "

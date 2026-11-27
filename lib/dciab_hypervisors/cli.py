@@ -36,7 +36,8 @@ Steps, per host, in order; each is safe to re-run:
            of docs/PROXMOX.md, its secret sealed with age in <state>/proxmox/<host>.token.age
            and, for the host spec.platform.proxmox.url names, written where tokenSecret points
            (post.write_token). A generated root password is opened with --age-identity. Done
-           once per install
+           once per install; a later run with --age-identity writes the token's file again from
+           the sealed copy when it is missing or stale (post.TokenHome)
 
 --until STEP stops after STEP. --print shows the plan and the answer files with the password
 hash masked, and changes nothing. <state> defaults as for dciab services: .dciab/state next to
@@ -510,7 +511,8 @@ def main(argv: Optional[List[str]] = None) -> int:
                          "overrides a record, an answering host or an OS boot entry: that takes --reinstall")
     ap.add_argument("--age-identity", metavar="FILE",
                     help="an age identity for one of spec.bootstrap.recipients: post opens a generated root "
-                         "password with it")
+                         "password with it, and the CAPMOX token's sealed copy to write it where tokenSecret "
+                         "points when that file is missing or stale")
     ap.add_argument("--print", dest="print_only", action="store_true")
     ap.add_argument("config")
     args = ap.parse_args(argv)
@@ -755,6 +757,13 @@ def post_install(hosts: List[dict], doc: dict, state: Path, installs: Path, answ
             continue
         if record.get("post") == "done":
             log(f"  {name}: post-install done ({record.get('post_at')})")
+            from dciab_validate.pending import names_host
+            if config is not None and px and names_host(px["url"], h, doc["spec"]["network"]["domain"]):
+                # A write that failed in an earlier run (post doesn't fail for it), or a stale file:
+                # put the sealed secret where tokenSecret points again. No login needed.
+                reopen = (lambda sealed: post.open_sealed(identity, sealed)) if identity is not None else None
+                post.TokenHome(doc, config, lambda line, n=name: log(f"  {n}: {line}"), reopen).refresh(
+                    post.token_file(state, name))
             continue
         try:
             pin, note = post.trust_for(h, doc, record, **({"seen": seen} if seen else {}))
@@ -765,7 +774,7 @@ def post_install(hosts: List[dict], doc: dict, state: Path, installs: Path, answ
             api = api_for(h, pin) if api_for else post.PveApi(h["address"], pin)
             done = post.run(api, h, doc, state, password,
                             lambda r, text, dest: seal_with_age(r, text, dest, what="the CAPMOX token secret"),
-                            lambda line: log(f"  {name}: {line}"), config=config)
+                            lambda line: log(f"  {name}: {line}"), config=config, identity=identity)
             del password
             write_install(installs, name, post="done", post_at=_now(), post_log=done)
         except (post.PostError, AnswerError, OSError) as exc:

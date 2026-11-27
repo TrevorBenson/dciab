@@ -23,8 +23,10 @@ site's (spec.hypervisors.rootPassword) or the generated one, opened from
            spec.bootstrap.recipients in <state>/proxmox/<host>.token.age. For the host the
            platform URL names, it is also written where tokenSecret points (mode 600; on the
            appliance, also in the appliance-local secrets that survive a resync), never to
-           removable media (write_token). Roles whose privileges differ are corrected; an
-           existing token is kept only if its sealed secret is here
+           removable media (write_token), after the ACLs and never fatally. Roles whose
+           privileges differ are corrected; an existing token is kept only if its sealed secret
+           is here, and with --age-identity its file is written again from the sealed copy when
+           missing or stale (TokenHome; the post step does that on later runs too)
 """
 
 from __future__ import annotations
@@ -337,21 +339,8 @@ def fs_type(path: Path, mounts: Optional[str] = None) -> str:
 
 def _secret_files(node, config_dir: Path, skip: tuple, path: tuple = ()) -> List[Tuple[tuple, Path]]:
     """Every {file: ...} secret reference in the config, but the one at `skip`, as real paths."""
-    from dciab_validate.checks import SECRET_KEYS
-    out: List[Tuple[tuple, Path]] = []
-    if isinstance(node, dict):
-        for key, value in node.items():
-            p = path + (key,)
-            if key in SECRET_KEYS and isinstance(value, dict) and set(value) == {"file"}:
-                if p != skip:
-                    raw = value["file"]
-                    out.append((p, Path(os.path.realpath(raw if os.path.isabs(raw) else config_dir / raw))))
-            else:
-                out += _secret_files(value, config_dir, skip, p)
-    elif isinstance(node, list):
-        for i, value in enumerate(node):
-            out += _secret_files(value, config_dir, skip, path + (i,))
-    return out
+    from dciab_validate.pending import secret_files
+    return secret_files(node, config_dir, skip, path)
 
 
 def token_targets(doc: dict, config: Path, site=None) -> Tuple[List[Path], Optional[str]]:
@@ -359,41 +348,19 @@ def token_targets(doc: dict, config: Path, site=None) -> Tuple[List[Path], Optio
     read tokenSecret find it: ([files], None), or ([], why it can't). On the bootstrap appliance
     that is the file in the site copy and the same file in the appliance-local secrets
     (dciab_state.site_local), which every sync puts back over the stick's; elsewhere the file
-    tokenSecret names. Never on removable media."""
-    import dciab_state
-    from dciab_validate.pending import TOKEN_PATH
-    ref = doc["spec"]["platform"]["proxmox"]["credentials"]["tokenSecret"]
-    if "file" not in ref:
-        return [], f"tokenSecret is {{env: {ref.get('env')}}}: put the token's secret in that variable yourself"
-    config_dir = Path(os.path.realpath(Path(config).parent))
-    raw = ref["file"]
-    target = Path(os.path.realpath(raw if os.path.isabs(raw) else config_dir / raw))
-    for path, other in _secret_files(doc["spec"], config_dir, TOKEN_PATH, ("spec",)):
-        if other == target:
-            from dciab_validate.findings import format_path
-            return [], (f"tokenSecret's file {raw} is also {format_path(path)}'s: not overwriting it. "
-                        "Give the token a file of its own")
-    site = dciab_state.SITE if site is None else Path(site)
-    targets = [target]
-    synced = dciab_state.synced_site(config, site)
-    if synced is not None:
-        real_site = Path(os.path.realpath(synced))
-        try:
-            rel = target.relative_to(real_site)
-        except ValueError:
-            rel = None
-        if rel is not None:
-            if not rel.parts or rel.parts[0] != dciab_state.LOCAL_SECRETS:
-                return [], (f"tokenSecret's file {raw} isn't under secrets/, the only folder the appliance keeps "
-                            "besides dciab.yaml: point tokenSecret at a file under ./secrets/")
-            targets = [dciab_state.site_local(site) / rel, target]
-    return targets, None
+    tokenSecret names. Never the config file, another secret's file, a file on the appliance
+    outside the site's secrets/, or removable media (write_token). validate refuses the same
+    files (dciab_validate.pending.token_home)."""
+    from dciab_validate.pending import token_home
+    targets, why, _ = token_home(doc, config, site)
+    return targets, why
 
 
 def write_token(secret: str, doc: dict, config: Path, log: Callable[[str], None], site=None,
                 mounts: Optional[str] = None) -> List[Path]:
     """Write the token's secret where token_targets says, atomically, mode 600 in folders of mode
-    700. Returns the files written; logs why when there are none."""
+    700; a file that already holds it is left alone. Returns the target files; logs why when
+    there are none."""
     import tempfile
     targets, why = token_targets(doc, config, site)
     for t in targets:
@@ -415,6 +382,12 @@ def write_token(secret: str, doc: dict, config: Path, log: Callable[[str], None]
             d.mkdir(mode=0o700)
             os.chmod(d, 0o700)
         had = t.is_file() and t.stat().st_size > 0
+        try:
+            if had and t.read_text().strip() == secret:
+                log(f"the token's secret is in {t} already")
+                continue
+        except OSError:
+            pass
         fd, tmp = tempfile.mkstemp(dir=t.parent, prefix=f".{t.name}.", suffix=".tmp")   # mode 600
         try:
             with os.fdopen(fd, "w") as fh:
@@ -428,8 +401,63 @@ def write_token(secret: str, doc: dict, config: Path, log: Callable[[str], None]
     return targets
 
 
+def token_missing(doc: dict, config: Path, site=None) -> List[Path]:
+    """The files token_targets names that don't hold a secret yet (missing or empty)."""
+    targets, _ = token_targets(doc, config, site)
+    return [t for t in targets if not (t.is_file() and t.stat().st_size > 0)]
+
+
+class TokenHome:
+    """Where post writes the CAPMOX token's secret in plain text (write_token), for the host
+    platform.proxmox.url names. reopen opens the sealed copy (with --age-identity) so a rerun
+    can write a file that's missing or stale; None when there's no identity."""
+
+    def __init__(self, doc: dict, config: Path, log: Callable[[str], None],
+                 reopen: Optional[Callable[[Path], str]] = None, site=None):
+        self.doc, self.config, self.log, self.reopen, self.site = doc, config, log, reopen, site
+
+    def write(self, secret: str, sealed: Path) -> None:
+        """Never fatal: the token exists and is sealed, so a write that fails only costs a copy
+        by hand (or a rerun with --age-identity), and the ACLs must still be set."""
+        try:
+            write_token(secret, self.doc, self.config, self.log, self.site)
+        except OSError as exc:
+            self.log(f"couldn't write the token's secret where tokenSecret points ({exc}); it is sealed in "
+                     f"{sealed}: run dciab hypervisors again with --age-identity to have post write it, or open "
+                     "it with age (docs/TROUBLESHOOTING.md)")
+
+    def refresh(self, sealed: Path) -> None:
+        """A kept token: write its secret from the sealed copy when a file is missing or stale."""
+        if self.reopen is None:
+            missing = token_missing(self.doc, self.config, self.site)
+            if missing:
+                self.log(f"the token's secret isn't in {', '.join(map(str, missing))}; pass --age-identity to have "
+                         f"post write it from {sealed}, or open it with age (docs/TROUBLESHOOTING.md)")
+            return
+        try:
+            secret = self.reopen(sealed)
+        except PostError as exc:
+            self.log(f"couldn't open the token's sealed copy to check where tokenSecret points ({exc})")
+            return
+        if secret:
+            self.write(secret, sealed)
+        del secret
+
+
+def open_sealed(identity: Path, sealed: Path, run=None) -> str:
+    """The plain text of a file sealed with age, opened with the identity."""
+    import subprocess
+    run = run or (lambda cmd: subprocess.run(cmd, check=True, capture_output=True, text=True, timeout=30))
+    try:
+        return run(["age", "-d", "-i", str(identity), str(sealed)]).stdout.rstrip("\n")
+    except FileNotFoundError:
+        raise PostError(f"age is needed to open {sealed} (the payload's bin/ has it)") from None
+    except subprocess.CalledProcessError:
+        raise PostError(f"age couldn't open {sealed} with {identity}") from None
+
+
 def token(api: PveApi, name: str, doc: dict, state: Path, sealer, log: Callable[[str], None],
-          publish: Optional[Callable[[str], object]] = None) -> None:
+          home: Optional[TokenHome] = None) -> None:
     from dciab_validate.proxmox_privs import grants
     px = doc["spec"]["platform"]["proxmox"]
     tokenid = px["credentials"]["tokenID"]
@@ -461,6 +489,7 @@ def token(api: PveApi, name: str, doc: dict, state: Path, sealer, log: Callable[
                             "can't be read back: delete the token (Datacenter > Permissions > API Tokens) and run "
                             "again, or put its secret where tokenSecret points yourself")
         log(f"token {tokenid} present; secret sealed in {sealed}")
+        secret = None
     else:
         data = api.post(f"/access/users/{quote(user)}/token/{quote(tname)}",
                         {"privsep": 1, "comment": "DCiaB: CAPMOX"})
@@ -471,14 +500,20 @@ def token(api: PveApi, name: str, doc: dict, state: Path, sealer, log: Callable[
         os.chmod(sealed.parent, 0o700)
         sealer(doc["spec"]["bootstrap"]["recipients"], secret, sealed)
         log(f"token {tokenid} created (privilege-separated); its secret is sealed in {sealed}")
-        if publish is not None:
-            publish(secret)
-        del secret
 
     for g in want:
         api.put("/access/acl", {"path": g.path, "roles": g.role, "users": user, "tokens": tokenid,
                                 "propagate": 1 if g.propagate else 0})
     log(f"ACLs set for {user} and {tokenid}: " + ", ".join(f"{g.path} {g.role}" for g in want))
+
+    # After the ACLs, so a file that can't be written never leaves the token without them. A
+    # kept token's file is written from the sealed copy when missing or stale (a rerun).
+    if home is not None:
+        if secret:
+            home.write(secret, sealed)
+        else:
+            home.refresh(sealed)
+    del secret
 
 
 def root_password(answers: Path, name: str, site: Optional[str], identity: Optional[Path],
@@ -503,11 +538,13 @@ def root_password(answers: Path, name: str, site: Optional[str], identity: Optio
 
 
 def run(api: PveApi, host: dict, doc: dict, state: Path, password: str, sealer,
-        log: Callable[[str], None], config: Optional[Path] = None) -> List[str]:
+        log: Callable[[str], None], config: Optional[Path] = None,
+        identity: Optional[Path] = None) -> List[str]:
     """Log in and run network, storage and token for one host. Returns what was done.
 
-    For the host platform.proxmox.url names, a new token's secret is also written where
-    tokenSecret points (write_token), given the config's path."""
+    For the host platform.proxmox.url names, the token's secret is also written where
+    tokenSecret points (write_token), given the config's path: a new token's at once; a kept
+    token's from its sealed copy when the file is missing or stale and an age identity is given."""
     from dciab_validate.pending import names_host
     done: List[str] = []
 
@@ -520,8 +557,9 @@ def run(api: PveApi, host: dict, doc: dict, state: Path, password: str, sealer,
     node = host["name"]
     network(api, node, doc, say)
     storage(api, node, doc, say)
-    publish = None
+    home = None
     if config is not None and names_host(doc["spec"]["platform"]["proxmox"]["url"], host, doc["spec"]["network"]["domain"]):
-        publish = lambda secret: write_token(secret, doc, config, say)   # noqa: E731
-    token(api, node, doc, state, sealer, say, publish)
+        reopen = (lambda sealed: open_sealed(identity, sealed)) if identity is not None else None
+        home = TokenHome(doc, config, say, reopen)
+    token(api, node, doc, state, sealer, say, home)
     return done
