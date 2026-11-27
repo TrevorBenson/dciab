@@ -80,4 +80,6 @@ $ ./dciab validate dciab.yaml           # on any machine, as you write it
 $ ./dciab validate dciab.yaml --live    # on the bootstrap host, before the first step that changes anything
 ```
 
+On a bare site, `--live` reports the Proxmox API errors until the hypervisors are installed, so it exits 1 there; the other live checks are what matter at this point ([QUICKSTART.md](QUICKSTART.md)).
+
 [VALIDATE.md](VALIDATE.md) lists every check. Then follow the [quickstart](QUICKSTART.md).

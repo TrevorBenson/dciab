@@ -2,8 +2,8 @@
 
 One run in order, on the bootstrap appliance, from bare servers to MGMT on Proxmox VE. Each step says how to check it worked before going on. Plan the site first ([PLAN.md](PLAN.md)); what is built today is in [ROADMAP.md](ROADMAP.md).
 
-- **A site whose Proxmox VE already runs** skips steps 4 to 6: it has its API token, fingerprint and node template from the start.
-- **A Rocky Linux 10 host you provide** skips step 2: unpack the archive, run `./dciab` from it instead of `dciab`, and set `CFG` to your config and `WORK` to `spec.bootstrap.workDisk.path`. Edit the config where it is. The rest is the same.
+- **A site whose Proxmox VE already runs** skips steps 4 and 5: its API token and fingerprint exist from the start. It needs step 6 only if the node template isn't on `templateNode` yet.
+- **A Rocky Linux 10 host you provide** skips step 2's appliance install: unpack the archive there, use its `./dciab` wherever this page says `dciab`, and set the paths below for that host. Its config isn't copied from a stick, so edit the config and its secrets where they are, wherever this page says to edit the stick's copy.
 
 ## 1. Prepare the USB stick and the config
 
@@ -34,8 +34,8 @@ $ ssh <you>@<spec.bootstrap.address>
 Set the paths once. Every command below uses them, so every step shares one state folder ([STATE.md](STATE.md)):
 
 ```console
-$ CFG=/var/lib/dciab/site/dciab.yaml
-$ WORK=/var/lib/dciab/work
+$ CFG=/var/lib/dciab/site/dciab.yaml     # a host you provide: your config's path
+$ WORK=/var/lib/dciab/work               # a host you provide: spec.bootstrap.workDisk.path
 $ STATE=$WORK/state
 $ ISOS=$WORK/isos
 ```
@@ -82,19 +82,21 @@ Each host is installed through its BMC, then set up for CAPMOX through the Proxm
 > [!WARNING]
 > A host that shows any sign of an existing install is held, not wiped. `--reinstall <host>` overrides that and wipes it. Read [the reinstall guard](HYPERVISORS.md#the-reinstall-guard) before using it.
 
-**Check:** each host ends installed (`wait`) and post-installed (`post`); `$STATE/installs/<host>.json` records it. Then replace the placeholders, on the stick ([see the note](#2-boot-server-zero-and-log-in)), for the host `platform.proxmox.url` names:
+**Check:** each host ends installed (`wait`) and post-installed (`post`); `$STATE/installs/<host>.json` records it. Then replace the placeholders for the host `platform.proxmox.url` names:
 
-1. `post` stops once for that host, printing its new API certificate's fingerprint. Set `tlsFingerprint` to it, copy the config in, and rerun this step.
-2. Open that host's token into the token file, with the `age` from the archive's payload:
+1. `post` stops once for that host, printing its new API certificate's fingerprint. Set `tlsFingerprint` to it on the stick ([see the note](#2-boot-server-zero-and-log-in)), copy the config in, and rerun this step. The fingerprint isn't secret.
+2. Open that host's token into the root-only site copy, never onto the stick: the stick's partition is readable on any laptop. Use the `age` from the archive's payload; the file is replaced only if decryption succeeds:
    ```console
-   $ sudo ./payload/bin/age -d -i ~/alice.agekey $STATE/proxmox/<host>.token.age | sudo tee /var/mnt/dciab/secrets/pve/token >/dev/null
-   $ sudo systemctl restart dciab-bootstrap-setup.service
+   $ T=/var/lib/dciab/site/secrets/pve/token      # a host you provide: the file tokenSecret names
+   $ sudo ./payload/bin/age -d -i ~/alice.agekey -o $T.new $STATE/proxmox/<host>.token.age && sudo chmod 600 $T.new && sudo mv $T.new $T
    ```
-3. Run `sudo dciab validate $CFG --live` again: the Proxmox API checks now pass, except the node template's.
+   A boot with the stick plugged in, or a restart of `dciab-bootstrap-setup`, puts the stick's placeholder back. So take the stick out now (`dciab media` no longer needs it), or repeat this after either.
+3. Delete the identity you copied over: `shred -u ~/alice.agekey`. Anyone who can read it can open everything sealed to that recipient.
+4. Run `sudo dciab validate $CFG --live` again: the Proxmox API checks now pass, except the node template's.
 
-## 6. The node template (bare servers only)
+## 6. The node template
 
-`dciab mgmt` clones its nodes from the template `templateID` on `templateNode`, and a freshly installed host has none. DCiaB doesn't publish the template onto a host yet (node images in the archive, [ROADMAP.md](ROADMAP.md)): build it from the DCiaB node image recipe and import it at that ID on that node, without a Proxmox cloud-init drive (CAPMOX attaches its own).
+`dciab mgmt` clones its nodes from the template `templateID` on `templateNode`. A freshly installed host has none, and an existing Proxmox VE may not have it yet. DCiaB doesn't publish the template onto a host yet (node images in the archive, [ROADMAP.md](ROADMAP.md)): build it from the DCiaB node image recipe and import it at that ID on that node, without a Proxmox cloud-init drive (CAPMOX attaches its own).
 
 **Check:** `sudo dciab validate $CFG --live` passes with no Proxmox errors.
 
