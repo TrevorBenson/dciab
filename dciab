@@ -12,9 +12,10 @@ usage() {
 Usage: dciab <command> [options]
 
 Commands:
-  validate <config> [--output text|json] [--live [--timeout SECONDS]]
+  validate <config> [--output text|json] [--state DIR] [--live [--timeout SECONDS]]
                                            Check a site config; changes nothing. --live also asks the
-                                           hypervisor API, BMCs, NTP and DNS servers, and probes addresses
+                                           hypervisor API, BMCs, NTP and DNS servers, and probes addresses.
+                                           --state: whose install records say what dciab hypervisors set up
   cluster-values <config> <cluster> [--trust-bundle FILE] [-o FILE]
                                            Print a cluster's capi-cluster values (--list: cluster names)
   media <config> (--key PUB | --checksums-only) [--source DIR] [--until STEP] [--print]

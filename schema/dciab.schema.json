@@ -173,10 +173,10 @@
     "proxmox": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["url", "tlsFingerprint", "nodes", "templateNode", "templateID", "storage", "bridge", "credentials"],
+      "required": ["url", "nodes", "templateNode", "templateID", "storage", "bridge", "credentials"],
       "properties": {
         "url": {"type": "string", "pattern": "^https://[^/]+(:\\d+)?/?$", "description": "the Proxmox API URL, such as https://pve01.example.net:8006"},
-        "tlsFingerprint": {"$ref": "#/$defs/fingerprint", "description": "the fingerprint of the Proxmox API's TLS certificate. CAPMOX and validate --live trust the API by it"},
+        "tlsFingerprint": {"$ref": "#/$defs/fingerprint", "description": "the fingerprint of the Proxmox API's TLS certificate; DCiaB and validate --live trust the API by it. Required, except when url names a host spec.hypervisors installs: then DCiaB trusts the certificate dciab hypervisors pins on first contact (in the host's install record), and a value given here must match the certificate"},
         "nodes": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1}, "description": "the PVE nodes DCiaB may use, at least one. templateNode and every failure domain's proxmox.node must be one of them; validate --live checks each is a node of the cluster"},
         "templateNode": {"type": "string", "minLength": 1, "description": "the node that holds the VM template; CAPMOX clones from it (one of nodes)"},
         "templateID": {"type": "integer", "minimum": 100, "description": "the node VM template's ID, 100 or more"},
@@ -190,7 +190,7 @@
           "required": ["tokenID", "tokenSecret"],
           "properties": {
             "tokenID": {"type": "string", "pattern": "^[^@\\s]+@[^!\\s]+![^\\s]+$", "description": "an API token ID such as dciab@pve!capmox"},
-            "tokenSecret": {"$ref": "#/$defs/secretRef", "description": "the token's secret, a secret reference"}
+            "tokenSecret": {"$ref": "#/$defs/secretRef", "description": "the token's secret, a secret reference. When url names a host spec.hypervisors installs, dciab hypervisors creates the token and writes its secret to this file (validate reports it as pending until then); on the bootstrap appliance, a file under ./secrets/"}
           }
         }
       }
@@ -573,7 +573,7 @@
           "required": ["tokenID", "tokenSecret"],
           "properties": {
             "tokenID": {"type": "string", "pattern": "^[^@\\s]+@[^!\\s]+![^\\s]+$", "description": "an API token of its own, not CAPMOX's, such as csi@pve!dciab (docs/PROXMOX.md)"},
-            "tokenSecret": {"$ref": "#/$defs/secretRef", "description": "the token's secret, a secret reference"}
+            "tokenSecret": {"$ref": "#/$defs/secretRef", "description": "the token's secret, a secret reference. When url names a host spec.hypervisors installs, dciab hypervisors creates the token and writes its secret to this file (validate reports it as pending until then); on the bootstrap appliance, a file under ./secrets/"}
           }
         }
       }

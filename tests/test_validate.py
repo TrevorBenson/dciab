@@ -955,3 +955,85 @@ def test_isolated_with_resolvers_is_a_warning(site):
     code, report = site.validate(doc)
     assert code == 0
     assert warnings(report, "spec.network.isolated")
+
+
+# --- a bare site's Proxmox VE API before dciab hypervisors (#276) --------------------------------
+
+def _record(site, **fields):
+    import json
+    d = site.dir / ".dciab" / "state" / "installs"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "pve01.json").write_text(json.dumps(fields))
+
+
+def test_bare_site_token_and_fingerprint_are_pending_before_install(site):
+    # examples/proxmox-bare.yaml: the URL names pve01, no tlsFingerprint, and no token file yet.
+    code, report = site.validate(load_example("proxmox-bare"))
+    assert code == 0 and errors(report) == []
+    notes = report["notes"]
+    assert any("pending: the CAPMOX token" in n and "./secrets/pve/token" in n and "pve01" in n for n in notes)
+    assert any("pending: the Proxmox API's certificate on pve01" in n for n in notes)
+    # Still pending once installed, until post is done.
+    _record(site, outcome="installed", iso="http://x/pve01.iso")
+    code, report = site.validate(load_example("proxmox-bare"))
+    assert code == 0 and any("pending: the CAPMOX token" in n for n in report["notes"])
+
+
+def test_bare_site_after_post_uses_the_pin_and_needs_the_token(site):
+    _record(site, outcome="installed", iso="http://x/pve01.iso", post="done", api_fingerprint=":".join(["AB"] * 32))
+    code, report = site.validate(load_example("proxmox-bare"))
+    [e] = errors(report)
+    assert e["path"] == "spec.platform.proxmox.credentials.tokenSecret.file"
+    assert "pve01.token.age" in e["fix"] and "age" in e["fix"]
+    assert any("trusted by the certificate dciab hypervisors pinned" in n and "AB:AB" in n for n in report["notes"])
+    token = site.dir / "secrets" / "pve" / "token"
+    token.parent.mkdir(parents=True, exist_ok=True)
+    token.write_text("s3cret\n")
+    token.chmod(0o600)
+    code, report = site.validate(load_example("proxmox-bare"))
+    assert code == 0 and not any("pending" in n for n in report["notes"])
+
+
+def test_bare_site_env_token_is_pending_until_set(site, monkeypatch):
+    doc = load_example("proxmox-bare")
+    doc["spec"]["platform"]["proxmox"]["credentials"]["tokenSecret"] = {"env": "DCIAB_BARE_TOKEN"}
+    monkeypatch.delenv("DCIAB_BARE_TOKEN", raising=False)
+    code, report = site.validate(doc)
+    assert code == 0 and any("environment variable DCIAB_BARE_TOKEN" in n and "pending" in n for n in report["notes"])
+
+
+def test_fingerprint_is_required_for_a_proxmox_dciab_doesnt_install(site):
+    doc = load_example("proxmox")
+    del doc["spec"]["platform"]["proxmox"]["tlsFingerprint"]
+    code, report = site.validate(doc)
+    [e] = errors(report)
+    assert code == 1 and e["path"] == "spec.platform.proxmox.tlsFingerprint" and "spec.hypervisors" in e["fix"]
+    # A URL that names none of spec.hypervisors' hosts: the token is required as before.
+    doc = load_example("proxmox-bare")
+    doc["spec"]["platform"]["proxmox"]["url"] = "https://pve-api.dc3.example.com:8006"
+    code, report = site.validate(doc)
+    assert {e["path"] for e in errors(report)} == {"spec.platform.proxmox.tlsFingerprint",
+                                                   "spec.platform.proxmox.credentials.tokenSecret.file"}
+
+
+def test_an_empty_secret_file_is_an_error(site):
+    (site.dir / "secrets" / "bmc" / "pve02").write_text("")
+    code, report = site.validate(load_example("proxmox-bare"))
+    [e] = errors(report)
+    assert code == 1 and e["path"] == "spec.hypervisors.hosts[1].bmc.credentials.password.file"
+    assert e["found"] == "./secrets/bmc/pve02 is empty" and e["fix"] == "write the secret into the file"
+
+
+def test_validate_state_option_finds_the_install_records(site, tmp_path):
+    import json
+    state = tmp_path / "elsewhere"
+    (state / "installs").mkdir(parents=True)
+    (state / "installs" / "pve01.json").write_text(json.dumps({"outcome": "installed", "post": "done",
+                                                               "api_fingerprint": ":".join(["CD"] * 32)}))
+    from dciab_validate import cli
+    path = site.dir / "dciab.yaml"
+    import yaml
+    path.write_text(yaml.safe_dump(load_example("proxmox-bare"), sort_keys=False))
+    assert cli.main([str(path), "--root", str(ROOT), "--output", "json", "--state", str(state)]) == 1
+    report = json.loads(site.capsys.readouterr().out)
+    assert [e["path"] for e in errors(report)] == ["spec.platform.proxmox.credentials.tokenSecret.file"]

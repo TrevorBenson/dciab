@@ -234,6 +234,7 @@ def test_print_changes_nothing(tmp_path, monkeypatch, capsys):
     doc = bare()
     Site(tmp_path, monkeypatch, capsys)   # writes the secret files the example refers to
     monkeypatch.setattr(answer, "hash_password", fake_hash)
+    monkeypatch.setattr(cli.os, "geteuid", lambda: 1000)      # --print needs no root
     cfg = tmp_path / "dciab.yaml"
     cfg.write_text(yaml.safe_dump(doc, sort_keys=False))
     code = cli.main(["--root", str(ROOT), "--print", "--host", "pve02", str(cfg)])
@@ -2591,7 +2592,7 @@ def test_token_targets_refusals(tmp_path, monkeypatch):
     # Never over another secret's file.
     doc["spec"]["platform"]["proxmox"]["credentials"]["tokenSecret"] = {"file": "secrets/bmc/pve01"}
     targets, why = post.token_targets(doc, cfg)
-    assert targets == [] and "spec.hypervisors.hosts.0.bmc.credentials.password" in why
+    assert targets == [] and "spec.hypervisors.hosts[0].bmc.credentials.password" in why
     # On the appliance, only under secrets/ (the only folder a sync keeps).
     copy_dir = tmp_path / ".site-x"
     copy_dir.mkdir()

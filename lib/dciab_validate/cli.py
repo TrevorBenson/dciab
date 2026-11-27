@@ -26,6 +26,9 @@ def main(argv: Optional[List[str]] = None) -> int:
                              "unused addresses); off by default so review works offline")
     parser.add_argument("--timeout", type=float, default=5.0, metavar="SECONDS",
                         help="timeout for each live request (default 5)")
+    parser.add_argument("--state", metavar="DIR",
+                        help="the state folder the steps use, whose install records say whether a bare site's "
+                             "Proxmox VE is set up yet (default: as for the steps)")
     args = parser.parse_args(argv)
     if args.timeout <= 0:
         parser.error("--timeout must be more than 0")
@@ -61,7 +64,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     if findings:
         notes.append("the semantic checks (addresses, references, secrets) run once the schema errors are fixed")
     else:
-        more, check_notes = checks.run(doc, config_path, root)
+        state = FsPath(args.state) if args.state else None
+        more, check_notes = checks.run(doc, config_path, root, state)
         findings.extend(more)
         notes.extend(check_notes)
     if not args.live:
@@ -71,7 +75,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     else:
         from . import live
 
-        more, live_notes = live.run(doc, config_path, args.timeout)
+        more, live_notes = live.run(doc, config_path, args.timeout, FsPath(args.state) if args.state else None)
         findings.extend(more)
         notes.extend(live_notes)
 

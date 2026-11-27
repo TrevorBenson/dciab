@@ -8,7 +8,7 @@ Steps that change the host run as root. `services`, `hypervisors`, `seed`, `mgmt
 
 | Command | Page |
 | --- | --- |
-| `dciab validate <config> [--output text\|json] [--live [--timeout SECONDS]]` | [VALIDATE.md](VALIDATE.md). On the appliance, run it with `sudo`: the site copy of the config is root-only |
+| `dciab validate <config> [--output text\|json] [--state DIR] [--live [--timeout SECONDS]]` | [VALIDATE.md](VALIDATE.md). On the appliance, run it with `sudo`: the site copy of the config is root-only |
 | `dciab media <config> (--key PUB \| --checksums-only) [--source DIR] [--cosign BIN] [--isos-from DIR] [--until STEP] [--print]` | [MEDIA.md](MEDIA.md) |
 | `dciab services <config> [--state DIR] [--isos DIR] [--payload DIR] [--until STEP] [--print]`<br>`dciab services <config> --down [--state DIR] [--forget '<line>']` | [SERVICES.md](SERVICES.md) |
 | `dciab hypervisors <config> [--state DIR] [--isos DIR] [--iso FILE] [--host NAME ...] [--reinstall NAME ...] [--first-install NAME ...] [--age-identity FILE] [--timeout SECONDS] [--attach-timeout SECONDS] [--until STEP] [--print]` | [HYPERVISORS.md](HYPERVISORS.md) |

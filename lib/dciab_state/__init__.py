@@ -116,14 +116,22 @@ def default_state(config: PathLike, site: PathLike = SITE, migrate: bool = True)
 
     With migrate=False nothing is changed: state still inside the site is used where it is."""
     config_dir = Path(os.path.abspath(config)).parent
+    if migrate and os.path.exists(site) and os.path.realpath(config_dir) == os.path.realpath(site):
+        state = site_state(site)
+        done = migrate_legacy(Path(os.path.realpath(site)) / LEGACY, state)
+        if done:
+            print(f"dciab: {done}", file=sys.stderr)
+        return state
+    return find_state(config, site)
+
+
+def find_state(config: PathLike, site: PathLike = SITE) -> Path:
+    """default_state without changing anything (for reading it, as `dciab validate` does)."""
+    config_dir = Path(os.path.abspath(config)).parent
     if os.path.exists(site) and os.path.realpath(config_dir) == os.path.realpath(site):
         state = site_state(site)
         legacy = Path(os.path.realpath(site)) / LEGACY
-        if migrate:
-            done = migrate_legacy(legacy, state)
-            if done:
-                print(f"dciab: {done}", file=sys.stderr)
-        elif legacy.is_dir() and not state.exists():
+        if legacy.is_dir() and not state.exists():
             return legacy
         return state
     return config_dir / LEGACY

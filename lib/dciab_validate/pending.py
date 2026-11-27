@@ -72,5 +72,5 @@ def proxmox_api(spec: dict, state: Optional[os.PathLike]) -> ApiState:
 
 def default_state(config: os.PathLike) -> Path:
     """The state folder a step uses without --state (read-only: nothing is migrated)."""
-    from dciab_state import default_state as default
-    return default(config, migrate=False)
+    from dciab_state import find_state
+    return find_state(config)

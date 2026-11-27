@@ -2,7 +2,7 @@
 
 One run in order, on the bootstrap appliance, from bare servers to MGMT on Proxmox VE. Each step says how to check it worked before going on. Plan the site first ([PLAN.md](PLAN.md)); what is built today is in [ROADMAP.md](ROADMAP.md).
 
-- **A site whose Proxmox VE already runs** skips steps 4 and 5: its API token and fingerprint exist from the start. It needs step 6 only if the node template isn't on `templateNode` yet.
+- **A site whose Proxmox VE already runs** skips steps 4 and 5: its API token and fingerprint exist from the start, and the config gives them. It needs step 6 only if the node template isn't on `templateNode` yet.
 - **A Rocky Linux 10 host you provide** skips step 2's appliance install: unpack the archive there, use its `./dciab` wherever this page says `dciab`, and set the paths below for that host. Its config isn't copied from a stick, so edit the config and its secrets where they are, wherever this page says to edit the stick's copy.
 
 ## 1. Prepare the USB stick and the config
@@ -10,13 +10,10 @@ One run in order, on the bootstrap appliance, from bare servers to MGMT on Proxm
 On any laptop, write the DCiaB USB image to a stick and open its `DCIAB` partition. Add:
 
 - `dciab.yaml`, starting from [examples/proxmox-bare.yaml](../examples/proxmox-bare.yaml);
-- every file it references, under `secrets/` (the appliance copies only `dciab.yaml` and `secrets/`);
+- every file it references, under `secrets/` (the appliance copies only `dciab.yaml` and `secrets/`), except the CAPMOX token's;
 - the pinned Proxmox VE installer ISO, under `isos/`.
 
-Two values of `spec.platform.proxmox` can't exist yet on a bare site: the CAPMOX API token, which `dciab hypervisors` creates in step 5, and the API certificate's fingerprint, which the installed host makes. Every step checks the config, so give placeholders until step 5:
-
-- `credentials.tokenSecret: {file: ./secrets/pve/token}`, with a file that holds any text. Use a file, not `{env: …}`: neither the appliance's boot-time check nor a `sudo` step sees your environment.
-- `tlsFingerprint`: any well-formed SHA-256 fingerprint.
+Two values of `spec.platform.proxmox` can't exist yet on a bare site, and the config needs neither: the CAPMOX API token and the API certificate's fingerprint. Keep `platform.proxmox.url` naming the host DCiaB installs, `credentials.tokenSecret: {file: ./secrets/pve/token}` with no such file, and no `tlsFingerprint`, as the example does. `dciab hypervisors` creates the token and writes it there on the bootstrap host, never on the stick, and pins the certificate it sees on first contact (step 5). Until then every check reports them as pending, not as errors.
 
 A laptop with the archive unpacked and Python 3.12 or later (with `jsonschema` and `PyYAML`) can run `./dciab validate dciab.yaml` now: the offline checks need no network.
 
@@ -50,7 +47,7 @@ $ sudo dciab validate $CFG --live
 $ sudo dciab media $CFG --key ~/cosign.pub
 ```
 
-`--live` asks the BMCs, NTP and DNS servers whether the config fits them, and checks that the addresses DCiaB will use are free ([VALIDATE.md](VALIDATE.md)). On a bare site its Proxmox API checks fail until step 5, because nothing is installed yet; everything else should pass. `cosign.pub` is the release's public key, obtained separately from the archive ([RELEASING.md](RELEASING.md)). `media` copies the archive and the ISOs to the work disk, verifies them, and loads the Day 0 images ([MEDIA.md](MEDIA.md)).
+`--live` asks the BMCs, NTP and DNS servers whether the config fits them, and checks that the addresses DCiaB will use are free ([VALIDATE.md](VALIDATE.md)). On a bare site it reports the Proxmox API checks as pending until step 5, because nothing is installed yet; everything else must pass. `cosign.pub` is the release's public key, obtained separately from the archive ([RELEASING.md](RELEASING.md)). `media` copies the archive and the ISOs to the work disk, verifies them, and loads the Day 0 images ([MEDIA.md](MEDIA.md)).
 
 **Check:** `media` ends by printing the next commands. From here on, run the copy it made:
 
@@ -82,17 +79,7 @@ Each host is installed through its BMC, then set up for CAPMOX through the Proxm
 > [!WARNING]
 > A host that shows any sign of an existing install is held, not wiped. `--reinstall <host>` overrides that and wipes it. Read [the reinstall guard](HYPERVISORS.md#the-reinstall-guard) before using it.
 
-**Check:** each host ends installed (`wait`) and post-installed (`post`); `$STATE/installs/<host>.json` records it. Then replace the placeholders for the host `platform.proxmox.url` names:
-
-1. `post` stops once for that host, printing its new API certificate's fingerprint. Set `tlsFingerprint` to it on the stick ([see the note](#2-boot-server-zero-and-log-in)), copy the config in, and rerun this step. The fingerprint isn't secret.
-2. Open that host's token into the root-only site copy, never onto the stick: the stick's partition is readable on any laptop. Use the `age` from the archive's payload; the file is replaced only if decryption succeeds:
-   ```console
-   $ T=/var/lib/dciab/site/secrets/pve/token      # a host you provide: the file tokenSecret names
-   $ sudo ./payload/bin/age -d -i ~/alice.agekey -o $T.new $STATE/proxmox/<host>.token.age && sudo chmod 600 $T.new && sudo mv $T.new $T
-   ```
-   A boot with the stick plugged in, or a restart of `dciab-bootstrap-setup`, puts the stick's placeholder back. So take the stick out now (`dciab media` no longer needs it), or repeat this after either.
-3. Delete the identity you copied over: `shred -u ~/alice.agekey`. Anyone who can read it can open everything sealed to that recipient.
-4. Run `sudo dciab validate $CFG --live` again: the Proxmox API checks now pass, except the node template's.
+**Check:** each host ends installed (`wait`) and post-installed (`post`); `$STATE/installs/<host>.json` records it, with the API certificate `post` pinned. For the host `platform.proxmox.url` names, `post` wrote the CAPMOX token where `tokenSecret` points: on the appliance, into the site copy and the appliance-local secrets that every boot keeps ([the token's home](HYPERVISORS.md#the-capmox-tokens-home)). There is nothing to copy. Run `sudo dciab validate $CFG --live` again: the Proxmox API checks now pass, except the node template's.
 
 ## 6. The node template
 

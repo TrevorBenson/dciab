@@ -67,13 +67,15 @@ def _secret_path(ref: dict) -> str:
 
 # -- Proxmox --------------------------------------------------------------------------
 
-def check_proxmox(spec: dict, config_dir: FsPath, timeout: float) -> Results:
+def check_proxmox(spec: dict, config_dir: FsPath, timeout: float, fingerprint: Optional[str] = None) -> Results:
+    """The CAPMOX token and what CAPMOX needs. fingerprint: the API certificate's pin
+    (default tlsFingerprint; on a bare site, the install record's: pending.proxmox_api)."""
     r = Results()
     px = spec["platform"]["proxmox"]
     base: Path = ("spec", "platform", "proxmox")
     creds = px["credentials"]
     secret = read_secret(creds["tokenSecret"], config_dir)
-    client = HttpsClient(px["url"], Trust(fingerprint=px["tlsFingerprint"]), timeout)
+    client = HttpsClient(px["url"], Trust(fingerprint=fingerprint or px["tlsFingerprint"]), timeout)
     auth = {"Authorization": f"PVEAPIToken={creds['tokenID']}={secret}"}
 
     def get(path: str):
@@ -117,7 +119,7 @@ def check_proxmox(spec: dict, config_dir: FsPath, timeout: float) -> Results:
                         "give the token VM.Audit so DCiaB can see the template")
             elif not match:
                 r.error(base + ("templateID",), f"{px['templateID']}: no VM with this ID on {tnode}",
-                        "build the node template there, or correct templateID and templateNode")
+                        "publish the node template there (dciab templates), or correct templateID and templateNode")
             elif not match[0].get("template"):
                 r.error(base + ("templateID",), f"{px['templateID']} on {tnode} is a VM, not a template",
                         "convert it to a template (qm template) or use the template's ID")
@@ -196,7 +198,8 @@ def proxmox_csi_blocks(spec: dict) -> List[Tuple[Path, dict]]:
     return out
 
 
-def check_proxmox_csi(spec: dict, base: Path, csi: dict, config_dir: FsPath, timeout: float) -> Results:
+def check_proxmox_csi(spec: dict, base: Path, csi: dict, config_dir: FsPath, timeout: float,
+                      fingerprint: Optional[str] = None) -> Results:
     """The Proxmox CSI plugin's own token: accepted, its storage on every node and shared as the
     config says, and exactly the privileges docs/PROXMOX.md lists for it."""
     from .proxmox_privs import csi_grants
@@ -204,7 +207,7 @@ def check_proxmox_csi(spec: dict, base: Path, csi: dict, config_dir: FsPath, tim
     px = spec["platform"]["proxmox"]
     creds = csi["credentials"]
     secret = read_secret(creds["tokenSecret"], config_dir)
-    client = HttpsClient(px["url"], Trust(fingerprint=px["tlsFingerprint"]), timeout)
+    client = HttpsClient(px["url"], Trust(fingerprint=fingerprint or px["tlsFingerprint"]), timeout)
     auth = {"Authorization": f"PVEAPIToken={creds['tokenID']}={secret}"}
 
     def get(path: str):
@@ -607,14 +610,46 @@ def check_addresses(spec: dict, timeout: float) -> Results:
 
 # -- entry ------------------------------------------------------------------------------------
 
-def tasks(spec: dict, config_dir: FsPath, timeout: float) -> List[Tuple[str, Callable[[], Results]]]:
+def _secret_missing(ref: dict, config_dir: FsPath) -> bool:
+    if "env" in ref:
+        return not os.environ.get(ref["env"])
+    raw = ref["file"]
+    target = FsPath(raw) if os.path.isabs(raw) else config_dir / raw
+    return not target.is_file() or target.stat().st_size == 0
+
+
+def proxmox_pending(spec: dict, config_dir: FsPath, state) -> Tuple[Optional[str], Optional[str]]:
+    """(fingerprint to trust the API by, None), or (None, why the Proxmox API checks are pending):
+    the URL names a host spec.hypervisors installs, whose install record doesn't say post: done,
+    and the token or the certificate's pin doesn't exist yet (#276)."""
+    from .pending import proxmox_api
+    api = proxmox_api(spec, state)
+    token_missing = _secret_missing(spec["platform"]["proxmox"]["credentials"]["tokenSecret"], config_dir)
+    if api.pending and (token_missing or not api.fingerprint):
+        what = " and ".join(w for w, missing in (("the CAPMOX token", token_missing),
+                                                 ("the API certificate's pin", not api.fingerprint)) if missing)
+        return None, (f"Proxmox API checks pending: {api.name} isn't set up by dciab hypervisors yet (its install "
+                      f"record in {state}/installs/ doesn't say post: done), so {what} can't exist yet. Run "
+                      "--live again after dciab hypervisors")
+    return api.fingerprint, None
+
+
+def tasks(spec: dict, config_dir: FsPath, timeout: float, state=None) -> List[Tuple[str, Callable[[], Results]]]:
     out: List[Tuple[str, Callable[[], Results]]] = []
     plat = spec["platform"]
     if plat["type"] == "proxmox":
-        out.append(("Proxmox API", lambda: check_proxmox(spec, config_dir, timeout)))
-        for path, csi in proxmox_csi_blocks(spec):
-            out.append((f"Proxmox CSI token {csi['credentials']['tokenID']}",
-                        lambda p=path, c=csi: check_proxmox_csi(spec, p, c, config_dir, timeout)))
+        pin, why = proxmox_pending(spec, config_dir, state)
+        if why:
+            def note(why=why) -> Results:
+                r = Results()
+                r.note(why)
+                return r
+            out.append(("Proxmox API", note))
+        else:
+            out.append(("Proxmox API", lambda: check_proxmox(spec, config_dir, timeout, pin)))
+            for path, csi in proxmox_csi_blocks(spec):
+                out.append((f"Proxmox CSI token {csi['credentials']['tokenID']}",
+                            lambda p=path, c=csi: check_proxmox_csi(spec, p, c, config_dir, timeout, pin)))
     else:
         out.append(("vSphere API", lambda: check_vsphere(spec, config_dir, timeout)))
     hosts: List[Tuple[Path, dict]] = []
@@ -635,10 +670,12 @@ def tasks(spec: dict, config_dir: FsPath, timeout: float) -> List[Tuple[str, Cal
     return out
 
 
-def run(doc: dict, config_path: FsPath, timeout: float) -> Tuple[List[Finding], List[str]]:
+def run(doc: dict, config_path: FsPath, timeout: float, state=None) -> Tuple[List[Finding], List[str]]:
+    """The live checks. state: the state folder (install records; default the step default)."""
+    from .pending import default_state
     spec = doc["spec"]
     config_dir = config_path.resolve().parent
-    jobs = tasks(spec, config_dir, timeout)
+    jobs = tasks(spec, config_dir, timeout, state if state is not None else default_state(config_path))
     findings: List[Finding] = []
     notes: List[str] = []
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:

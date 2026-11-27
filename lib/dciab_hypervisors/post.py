@@ -305,7 +305,8 @@ def token_targets(doc: dict, config: Path, site=None) -> Tuple[List[Path], Optio
     target = Path(os.path.realpath(raw if os.path.isabs(raw) else config_dir / raw))
     for path, other in _secret_files(doc["spec"], config_dir, TOKEN_PATH, ("spec",)):
         if other == target:
-            return [], (f"tokenSecret's file {raw} is also {'.'.join(map(str, path))}'s: not overwriting it. "
+            from dciab_validate.findings import format_path
+            return [], (f"tokenSecret's file {raw} is also {format_path(path)}'s: not overwriting it. "
                         "Give the token a file of its own")
     site = dciab_state.SITE if site is None else Path(site)
     targets = [target]

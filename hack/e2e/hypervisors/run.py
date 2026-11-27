@@ -10,7 +10,9 @@ every scenario passed.
 untagged (managementVLAN untagged, bootMode UEFI, the VM on an access port):
   disk-refused         a hinted serial number no drive has: refused before anything is written
   held-without-flag    no install record, no boot options: held until --first-install
-  first-install        --first-install: installs, waits, post (token, ACLs, bridge, first-contact pin)
+  first-install        validate passes before it (token and certificate pending); --first-install:
+                       installs, waits, post (token, ACLs, bridge, first-contact pin, the token
+                       written where tokenSecret points); validate --live then uses both
   rerun                the API answers: nothing is reset
   lost-state           the install record removed: the 8006 check still holds the host
   reinstall            --reinstall: a new install, post again with the new certificate, old token retired
@@ -141,8 +143,12 @@ class Lab:
             recipients.append(sh(str(keygen), "-y", str(ident)).stdout.strip())
         spec["bootstrap"]["interface"] = self.env["BOOT_MAC"]
         spec["bootstrap"]["recipients"] = recipients
-        # A URL that doesn't name pve01: post pins the certificate it sees on first contact.
-        spec["platform"]["proxmox"]["url"] = "https://pve-api.dc3.example.com:8006"
+        # The URL names pve01, and the config has no tlsFingerprint and no token file: validate
+        # reports both as pending until post pins the certificate it sees on first contact and
+        # writes the token to ./secrets/pve/token (the bare-site flow, #276 and #279).
+        spec["platform"]["proxmox"]["url"] = f"https://{HOST_ADDR}:8006"
+        spec["platform"]["proxmox"].pop("tlsFingerprint", None)
+        spec["platform"]["proxmox"]["credentials"]["tokenSecret"] = {"file": "./secrets/pve/token"}
         der = ssl.PEM_cert_to_DER_cert((self.work / "bmc.crt").read_text())
         pin = ":".join(f"{b:02X}" for b in hashlib.sha256(der).digest())
         hv = spec["hypervisors"]
@@ -203,6 +209,13 @@ class Lab:
         with opener.open(req, timeout=30) as resp:
             return json.loads(resp.read().decode())["data"]
 
+    def token_file(self) -> Path:
+        return self.config.parent / "secrets" / "pve" / "token"   # type: ignore[attr-defined]
+
+    def sealed_secret(self) -> str:
+        sealed = self.state / "proxmox" / f"{self.vm}.token.age"
+        return sh(str(self.work / "bin" / "age"), "-d", "-i", str(self.work / "id1.txt"), str(sealed)).stdout.strip()
+
     def wait_api(self, timeout: float = 900) -> None:
         deadline = time.time() + timeout
         while time.time() < deadline:
@@ -247,8 +260,32 @@ def held_without_flag(lab: Lab) -> dict:
     return {"held": True}
 
 
+def pending_before_install(lab: Lab) -> None:
+    """Before the install, validate passes, with the token and the certificate pending (#276)."""
+    r = lab.dciab("validate", str(lab.config))
+    expect(r.returncode == 0, f"validate before the install exited {r.returncode}, want 0")
+    expect("pending: the CAPMOX token" in r.out, "validate didn't report the token as pending")
+    expect("pending: the Proxmox API's certificate" in r.out, "validate didn't report the certificate as pending")
+
+
+def token_and_pin_used(lab: Lab) -> dict:
+    """After post: the token is where tokenSecret points (mode 600) and validate --live trusts
+    the API by the install record's pin with it. Only the node template may be missing."""
+    tf = lab.token_file()
+    expect(tf.is_file() and tf.stat().st_mode & 0o777 == 0o600, f"post didn't write {tf} (mode 600)")
+    expect(tf.read_text().strip() == lab.sealed_secret(), "the token file doesn't hold the sealed token")
+    r = lab.dciab("validate", str(lab.config), "--live", "--output", "json")
+    report = json.loads(r.stdout)
+    px = [f for f in report["findings"] if f["severity"] == "error" and f["path"].startswith("spec.platform.proxmox")]
+    expect([f["path"] for f in px] == ["spec.platform.proxmox.templateID"],
+           f"validate --live's Proxmox errors: {[(f['path'], f['found']) for f in px]}")
+    expect(any("accepted token" in n for n in report["notes"]), "validate --live didn't use the token")
+    return {"tokenFile": str(tf), "liveProxmoxErrors": [f["path"] for f in px]}
+
+
 def first_install(lab: Lab) -> dict:
     lab.watching.set()
+    pending_before_install(lab)
     started = time.time()
     r = lab.hv("--first-install", lab.vm)
     expect(r.returncode == 0, f"exit {r.returncode}, want 0")
@@ -262,7 +299,7 @@ def first_install(lab: Lab) -> dict:
     nodes = sorted(n.get("node") for n in lab.api_token_get("/nodes") or [])
     expect(nodes == [lab.vm], f"the token sees nodes {nodes}")
     out = {"minutes": round((time.time() - started) / 60, 1), "pveVersion": version.get("version"),
-           "api_fingerprint": rec["api_fingerprint"], "tokenSeesNodes": nodes}
+           "api_fingerprint": rec["api_fingerprint"], "tokenSeesNodes": nodes, "bareSite": token_and_pin_used(lab)}
     if lab.mode == "tagged":
         expect("Secure Boot set on" in r.out, "Secure Boot wasn't staged")
         sb = lab.redfish("GET", f"{lab.system_path()}/SecureBoot")
@@ -383,6 +420,7 @@ def reinstall(lab: Lab) -> dict:
     retired = sorted(p.name for p in (lab.state / "proxmox").glob(f"{lab.vm}.token.age.replaced-*"))
     expect(bool(retired), "the old token wasn't moved aside")
     lab.api_token_get("/version")
+    expect(lab.token_file().read_text().strip() == lab.sealed_secret(), "post didn't write the new token's secret")
     return {"minutes": round((time.time() - started) / 60, 1), "retiredTokens": retired}
 
 

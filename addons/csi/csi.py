@@ -13,7 +13,8 @@ install.sh can pipe it into kubectl apply --server-side -f -: credentials never 
 in a process's arguments, or in a last-applied annotation.
 
 Proxmox: the plugin trusts only the Proxmox API certificate whose fingerprint is
-spec.platform.proxmox.tlsFingerprint. `secret` reads the certificate from the API, checks
+spec.platform.proxmox.tlsFingerprint (or, when the config leaves it out for a host `dciab
+hypervisors` installed, the one that host's install record pins). `secret` reads the certificate from the API, checks
 the fingerprint, and puts it in the Secret as ca.pem, which the config names as ca_file: the plugin's
 only trusted root, without the image's public CAs.
 --template leaves it out, and reads no secret, for rendering without the network.
@@ -147,6 +148,20 @@ def _secret(ref, config_dir: Path, redact: bool) -> str:
     return REDACTED if redact else resolve(ref, config_dir)
 
 
+def api_fingerprint(spec: dict, config_dir: Path) -> str:
+    """The Proxmox API certificate's pin: tlsFingerprint, or on a bare site the one `dciab
+    hypervisors` pinned in the API host's install record (dciab_validate.pending)."""
+    px = spec["platform"]["proxmox"]
+    if px.get("tlsFingerprint"):
+        return px["tlsFingerprint"]
+    from dciab_validate.pending import default_state, proxmox_api
+    pin = proxmox_api(spec, default_state(Path(config_dir) / "dciab.yaml")).fingerprint
+    if not pin:
+        raise CSIError("spec.platform.proxmox.tlsFingerprint isn't set and no install record pins the API's "
+                       "certificate yet: run dciab hypervisors first, or set tlsFingerprint")
+    return pin
+
+
 def proxmox_config(site: dict, cluster: str, config_dir: Path, redact: bool = False) -> str:
     spec = site["spec"]
     px = spec["platform"]["proxmox"]
@@ -205,7 +220,7 @@ def secret(site: dict, cluster: str, config_dir: Path, fetch: bool = True,
         data = {"config.yaml": proxmox_config(site, cluster, config_dir, redact)}
         px = spec["platform"]["proxmox"]
         if certificate is None and fetch and not redact:
-            certificate = proxmox_certificate(px["url"], px["tlsFingerprint"])
+            certificate = proxmox_certificate(px["url"], api_fingerprint(spec, config_dir))
         if certificate:
             data["ca.pem"] = certificate
     else:

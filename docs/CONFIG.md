@@ -87,7 +87,7 @@ See also: [the Proxmox VE API tokens](PROXMOX.md), [dciab mgmt](MGMT.md), [ADR 0
 | `spec.platform.vsphere.credentials.password` | [secretRef](#types) | required |  |  | the user's password, a secret reference |
 | `spec.platform.proxmox` | object | required when `type: proxmox` |  |  | the Proxmox VE settings: required with type proxmox, not allowed with vsphere |
 | `spec.platform.proxmox.url` | string | required |  | `^https://[^/]+(:\d+)?/?$` | the Proxmox API URL, such as https://pve01.example.net:8006 |
-| `spec.platform.proxmox.tlsFingerprint` | [fingerprint](#types) | required |  |  | the fingerprint of the Proxmox API's TLS certificate. CAPMOX and validate --live trust the API by it |
+| `spec.platform.proxmox.tlsFingerprint` | [fingerprint](#types) | optional |  |  | the fingerprint of the Proxmox API's TLS certificate; DCiaB and validate --live trust the API by it. Required, except when url names a host spec.hypervisors installs: then DCiaB trusts the certificate dciab hypervisors pins on first contact (in the host's install record), and a value given here must match the certificate |
 | `spec.platform.proxmox.nodes` | array of string | required |  | at least 1 item; no duplicates | the PVE nodes DCiaB may use, at least one. templateNode and every failure domain's proxmox.node must be one of them; validate --live checks each is a node of the cluster |
 | `spec.platform.proxmox.templateNode` | string | required |  |  | the node that holds the VM template; CAPMOX clones from it (one of nodes) |
 | `spec.platform.proxmox.templateID` | integer | required |  | at least 100 | the node VM template's ID, 100 or more |
@@ -96,7 +96,7 @@ See also: [the Proxmox VE API tokens](PROXMOX.md), [dciab mgmt](MGMT.md), [ADR 0
 | `spec.platform.proxmox.vlanTag` | integer | optional |  | 1 to 4094 | the VLAN tag on node VMs' NIC, 1-4094, for a VLAN-aware bridge. Unset: the NIC is untagged. Optional, except with spec.hypervisors.managementVLAN: tagged, where it must equal network.nodes.vlan |
 | `spec.platform.proxmox.credentials` | object | required |  |  | CAPMOX's API token. docs/PROXMOX.md lists the privileges it needs; validate --live checks them |
 | `spec.platform.proxmox.credentials.tokenID` | string | required |  | `^[^@\s]+@[^!\s]+![^\s]+$` | an API token ID such as dciab@pve!capmox |
-| `spec.platform.proxmox.credentials.tokenSecret` | [secretRef](#types) | required |  |  | the token's secret, a secret reference |
+| `spec.platform.proxmox.credentials.tokenSecret` | [secretRef](#types) | required |  |  | the token's secret, a secret reference. When url names a host spec.hypervisors installs, dciab hypervisors creates the token and writes its secret to this file (validate reports it as pending until then); on the bootstrap appliance, a file under ./secrets/ |
 
 ## spec.kubernetes
 
@@ -568,7 +568,7 @@ Used at: `proxmoxCSI` in [blockStorage](#blockstorage), `overrides.infra.proxmox
 | `shared` | boolean | required |  |  | required, no default: true when the storage is shared in Proxmox (every node reaches it: Ceph RBD, NFS, LVM on a shared LUN), false when it is node-local (local LVM, ZFS, a directory). Storage names don't say which; validate --live checks it against the storage's shared flag |
 | `credentials` | object | required |  |  | the Proxmox CSI plugin's API token |
 | `credentials.tokenID` | string | required |  | `^[^@\s]+@[^!\s]+![^\s]+$` | an API token of its own, not CAPMOX's, such as csi@pve!dciab (docs/PROXMOX.md) |
-| `credentials.tokenSecret` | [secretRef](#types) | required |  |  | the token's secret, a secret reference |
+| `credentials.tokenSecret` | [secretRef](#types) | required |  |  | the token's secret, a secret reference. When url names a host spec.hypervisors installs, dciab hypervisors creates the token and writes its secret to this file (validate reports it as pending until then); on the bootstrap appliance, a file under ./secrets/ |
 
 ### cephCSI
 

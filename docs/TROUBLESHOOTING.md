@@ -8,7 +8,8 @@ What to do when a step stops, by symptom. Every step is safe to rerun once the c
 | --- | --- | --- |
 | A step refuses the config | `dciab validate` finds errors | Run `sudo ./dciab validate <config>`; each error names the field, what it found and the fix ([VALIDATE.md](VALIDATE.md)) |
 | A secret given as `{env: VAR}` is missing under `sudo` | `sudo` drops environment variables | `sudo --preserve-env=VAR …`, or use a `{file: …}` reference ([PLAN.md](PLAN.md#5-secrets)) |
-| On a bare site, every step refuses the config before the hypervisors exist | The CAPMOX token or the API fingerprint can't exist until `dciab hypervisors` runs | Give placeholders until then ([QUICKSTART.md](QUICKSTART.md#1-prepare-the-usb-stick-and-the-config)) |
+| On a bare site, a step refuses the config over the CAPMOX token or `tlsFingerprint` before the hypervisors exist | `platform.proxmox.url` doesn't name a host in `spec.hypervisors.hosts` (its address, name or FQDN), so DCiaB won't create them | Make the URL name the host DCiaB installs; then both are pending until `dciab hypervisors` ([VALIDATE.md](VALIDATE.md#before-the-hypervisors-are-installed)) |
+| After `dciab hypervisors`, the CAPMOX token file is missing | `post` couldn't write it (an `{env: …}` reference, removable media, or another secret's file: its output says which), or it was deleted | Open the sealed copy into the file: `sudo ./payload/bin/age -d -i <identity> -o <file> <state>/proxmox/<host>.token.age`, then `sudo chmod 600 <file>`; on the appliance, the file under `/var/lib/dciab/site-local/secrets/` so that it lasts ([the token's home](HYPERVISORS.md#the-capmox-tokens-home)) |
 | A config edit on the appliance was lost | `/var/lib/dciab/site` is replaced from the stick at each boot | Edit the stick's copy ([QUICKSTART.md](QUICKSTART.md#2-boot-server-zero-and-log-in)) |
 | A step doesn't see what an earlier one did (no kubeconfig, no CA, "run seed first") | The steps ran with different state folders | Pass the same `--state` to every step; after `media`, `<work>/state` ([STATE.md](STATE.md)) |
 | `dciab status` fails with a permission error, or reports checks as missing or unknown | It ran without root, so it can't read the root-only state folder or see root's containers | `sudo ./dciab status …` |
@@ -19,7 +20,8 @@ What to do when a step stops, by symptom. Every step is safe to rerun once the c
 | Symptom | Cause | Fix |
 | --- | --- | --- |
 | An address "answers on the node network" | Something already uses the bootstrap address, a DNS service IP, an API VIP or a node range | Pick free addresses, or free them. Run `--live` before `seed`: once clusters exist, their own addresses answer ([VALIDATE.md](VALIDATE.md#live-checks)) |
-| A TLS fingerprint doesn't match | The certificate changed (a reinstalled host, a new BMC certificate) or the config is wrong | Check the certificate out of band, then update `tlsFingerprint` / `thumbprint` |
+| A TLS fingerprint doesn't match | The certificate changed (a reinstalled host, a new BMC certificate) or the config is wrong | Check the certificate out of band, then update `tlsFingerprint` / `thumbprint`. For a host DCiaB installed and a config with no `tlsFingerprint`, the pin is in its install record: `dciab hypervisors` renews it when it reinstalls the host |
+| The Proxmox API checks are pending after `dciab hypervisors` | `validate` reads another state folder than the steps used, or `post` didn't finish | `--state <state>`; check `post` in `<state>/installs/<host>.json` ([VALIDATE.md](VALIDATE.md#before-the-hypervisors-are-installed)) |
 | The Proxmox token lacks privileges | Its roles or ACLs differ from [PROXMOX.md](PROXMOX.md) | Recreate them as listed there |
 
 ## `dciab media`
@@ -47,7 +49,7 @@ What to do when a step stops, by symptom. Every step is safe to rerun once the c
 | The install is refused | `rootDeviceHints` match no drive the BMC lists | Fix the serial number or WWN ([Redfish preparation](HYPERVISORS.md#redfish-preparation)) |
 | The CD slot never shows the ISO | The BMC can't fetch it: no route back to the bootstrap host, HTTP blocked, or the ISO isn't served | Check the route and firewall from the BMC network to `spec.bootstrap.address:80`, and that `dciab services` runs ([the attach check](HYPERVISORS.md#the-attach-check)) |
 | `wait` times out on a tagged port | The first-boot script that moves the address onto the VLAN failed | On the host's console: `journalctl -t dciab-first-boot`, and check the switch port carries the node VLAN tagged ([the management VLAN](HYPERVISORS.md#the-management-vlan)) |
-| `post` stops with a certificate fingerprint | `platform.proxmox.url` names this host, and its fresh install has a new certificate | Set `platform.proxmox.tlsFingerprint` to the fingerprint it prints, and rerun ([post-install](HYPERVISORS.md#post-install)) |
+| `post` stops with a certificate fingerprint | `platform.proxmox.url` names this host, the config gives `tlsFingerprint`, and the fresh install has another certificate | Check the certificate on the host's console, then set `tlsFingerprint` to it, or remove `tlsFingerprint` to trust the certificate `post` pins; rerun ([post-install](HYPERVISORS.md#post-install)) |
 | `post` can't open the root password | No identity to open the sealed password | Pass `--age-identity` with one recipient's identity |
 | The media wasn't ejected after the install | The BMC refused or didn't confirm the eject | Eject it through the BMC; the next run checks again |
 
