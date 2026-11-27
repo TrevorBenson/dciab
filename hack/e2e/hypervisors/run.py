@@ -270,16 +270,19 @@ def pending_before_install(lab: Lab) -> None:
 
 def token_and_pin_used(lab: Lab) -> dict:
     """After post: the token is where tokenSecret points (mode 600) and validate --live trusts
-    the API by the install record's pin with it. Only the node template may be missing."""
+    the API by the install record's pin with it. Only the node template may be missing (the
+    template check runs once the node reports online, which a fresh install may not yet)."""
     tf = lab.token_file()
     expect(tf.is_file() and tf.stat().st_mode & 0o777 == 0o600, f"post didn't write {tf} (mode 600)")
     expect(tf.read_text().strip() == lab.sealed_secret(), "the token file doesn't hold the sealed token")
     r = lab.dciab("validate", str(lab.config), "--live", "--output", "json")
     report = json.loads(r.stdout)
     px = [f for f in report["findings"] if f["severity"] == "error" and f["path"].startswith("spec.platform.proxmox")]
-    expect([f["path"] for f in px] == ["spec.platform.proxmox.templateID"],
+    expect({f["path"] for f in px} <= {"spec.platform.proxmox.templateID"},
            f"validate --live's Proxmox errors: {[(f['path'], f['found']) for f in px]}")
     expect(any("accepted token" in n for n in report["notes"]), "validate --live didn't use the token")
+    expect(any("has every privilege" in n for n in report["notes"]), "validate --live didn't check the token")
+    expect(any("pinned in its install record" in n for n in report["notes"]), "validate didn't use the pin")
     return {"tokenFile": str(tf), "liveProxmoxErrors": [f["path"] for f in px]}
 
 
