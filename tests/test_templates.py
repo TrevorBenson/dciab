@@ -293,6 +293,47 @@ def test_a_different_vm_at_the_id_is_never_overwritten_without_replace(fake_pve,
     assert f.vms[9010]["config"]["description"] == publish.description(SHA, "ghcr.io/x/dciab-node-disk@sha256:abc")
 
 
+def test_replace_with_a_bad_storage_or_a_failed_upload_keeps_the_old_template(fake_pve, cert, tmp_path):
+    # #244 review: --replace deleted the old template before the storage check and the upload.
+    old = {9010: {"node": "pve01", "name": "dciab-node-old", "template": 1,
+                  "config": {"scsi0": "x", "description": publish.description("0" * 64, "")}}}
+    f = fake_pve(vms=old)
+    doc = doc_for()
+    doc["spec"]["platform"]["proxmox"]["storage"] = "no-such-storage"
+    with pytest.raises(publish.PublishError, match="no storage no-such-storage"):
+        run_publish(f, cert, tmp_path, doc=doc, replace=True)
+    assert f.vms[9010]["name"] == "dciab-node-old" and not [w for w in f.writes if w[0] == "DELETE"]
+    # An upload Proxmox VE refuses (a sha256 that doesn't match): the old template stays too.
+    f2 = fake_pve(vms=old, local_content="iso,import")
+    logs = []
+    with pytest.raises(post.PostError):
+        publish.publish(api_for(f2, cert), "pve01", doc_for(), write_disk(tmp_path), "f" * 64, "", logs.append,
+                        replace=True, sleep=lambda s: None)
+    assert f2.vms[9010]["name"] == "dciab-node-old"
+    assert not [w for w in f2.writes if w[0] == "DELETE" and "/qemu/" in w[1]]
+
+
+def test_replace_deletes_only_after_the_upload(fake_pve, cert, tmp_path):
+    old = {9010: {"node": "pve01", "name": "dciab-node-old", "template": 1,
+                  "config": {"scsi0": "x", "description": publish.description("0" * 64, "")}}}
+    f = fake_pve(vms=old, local_content="iso,import")
+    result, _ = run_publish(f, cert, tmp_path, replace=True)
+    kinds = [(w[0], w[1]) for w in f.writes]
+    upload = next(i for i, w in enumerate(kinds) if w[0] == "UPLOAD")
+    delete = next(i for i, w in enumerate(kinds) if w == ("DELETE", "/nodes/pve01/qemu/9010?purge=1&destroy-unreferenced-disks=1"))
+    create = next(i for i, w in enumerate(kinds) if w == ("POST", "/nodes/pve01/qemu"))
+    assert result == "published" and upload < delete < create
+
+
+def test_this_disks_half_made_vm_with_no_disk_is_made_again_without_replace(fake_pve, cert, tmp_path):
+    # docs/TEMPLATES.md, step 2: DCiaB's own VM for this disk, with no disk and not running.
+    half = {9010: {"node": "pve01", "name": f"dciab-node-{SHA[:12]}", "template": 0, "status": "stopped",
+                   "config": {"description": publish.description(SHA, "")}}}
+    f = fake_pve(vms=half, local_content="iso,import")
+    result, out = run_publish(f, cert, tmp_path)
+    assert result == "published" and "deleting VM 9010" in out and "--replace" not in out
+
+
 def test_replace_never_deletes_a_running_vm_or_one_on_another_node(fake_pve, cert, tmp_path):
     running = {9010: {"node": "pve01", "name": "busy", "template": 0, "status": "running", "config": {"scsi0": "x"}}}
     f = fake_pve(vms=running)

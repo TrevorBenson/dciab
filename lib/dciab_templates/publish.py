@@ -9,9 +9,11 @@
     template  convert it to a template; delete the upload
 
 Idempotent: a template at templateID whose description holds this disk's sha256 is kept. A VM
-of DCiaB's own at that ID that isn't a template yet (a run stopped part-way) is finished. Any
-other VM or template there is never touched without replace=True, and never when it runs or
-lives on another node.
+of DCiaB's own at that ID that isn't a template yet (a run stopped part-way) is finished; one
+with no disk that isn't running is deleted and made again. Any other VM or template there is
+never touched without replace=True, and never when it runs or lives on another node. A VM to
+delete is deleted only after the storage checks and the upload succeed, right before the new
+VM is created: if creating or converting it fails then, templateID is left empty (rerun).
 """
 
 from __future__ import annotations
@@ -122,6 +124,7 @@ def publish(api: PveApi, node: str, doc: dict, disk: Path, sha: str, ref: str, l
         api.wait_task(node, upid, timeout=timeout, sleep=sleep, what=what)
 
     have = existing(api, node, vmid)
+    doomed = None           # (where, what, ours) of a VM to delete, once the new disk is uploaded
     if have is not None:
         desc = str(have["config"].get("description") or "")
         where = f"VM {vmid} ({have.get('name') or 'no name'}) on {have['node']}"
@@ -150,9 +153,11 @@ def publish(api: PveApi, node: str, doc: dict, disk: Path, sha: str, ref: str, l
                                "(its clones keep running: CAPMOX makes full clones)")
         if have.get("status") == "running":
             raise PublishError(f"{where} is running: --replace never deletes a running VM. Stop it first if it may go")
-        log(f"{'--replace: ' if not ours_broken else ''}deleting {where} ({what})")
-        wait(api.delete(f"{q}/{vmid}?purge=1&destroy-unreferenced-disks=1"), f"deleting VM {vmid}")
+        doomed = (where, what, ours_broken)
 
+    # Everything that can fail before the new template exists comes before any delete: the
+    # storage checks and the upload (Proxmox VE checks its sha256). A bad storage or a failed
+    # upload leaves the VM at templateID as it was.
     check_storage(api, node, doc, log)
     name = upload_name(sha)
     volid = f"{TEMPLATE_IMPORT_STORAGE}:import/{name}"
@@ -169,6 +174,10 @@ def publish(api: PveApi, node: str, doc: dict, disk: Path, sha: str, ref: str, l
                           timeout=timeout)
     try:
         wait(upid, f"the upload of {name}")
+        if doomed is not None:
+            where, what, ours = doomed
+            log(f"{'' if ours else '--replace: '}deleting {where} ({what})")
+            wait(api.delete(f"{q}/{vmid}?purge=1&destroy-unreferenced-disks=1"), f"deleting VM {vmid}")
         log(f"creating VM {vmid} ({template_name(sha)}) on {node}, its disk imported into {px['storage']}")
         wait(api.post(q, vm_settings(doc, sha, ref)), f"creating VM {vmid}")
         wait(api.post(f"{q}/{vmid}/template"), f"converting VM {vmid} to a template")

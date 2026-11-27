@@ -14,8 +14,8 @@ Options: `--state DIR` (the same folder the other steps use, [STATE.md](STATE.md
 ## What it does
 
 1. **Checks the disk.** The payload's `nodes/nodes.yaml` lists the Proxmox VE disk (`nodes/proxmox/disk.qcow2`) with its sha256, as the archive build pulled and checked it. The disk's sha256 must match, or the step stops: copy the archive again (`dciab media`) and check it (`dciab verify-archive`).
-2. **Looks at `templateID`.** A template there whose description holds this disk's sha256 is kept, and the step ends. A VM that DCiaB made from this disk but didn't make a template yet (an earlier run stopped) is finished. Anything else at that ID is left alone, and the step stops; see [replacing a template](#replacing-a-template).
-3. **Uploads the disk** to the storage `local` as the content type `import`, with its sha256 for Proxmox VE to check. `local` gains that content type when it lacks it.
+2. **Looks at `templateID`.** A template there whose description holds this disk's sha256 is kept, and the step ends. A VM that DCiaB made from this disk but didn't make a template yet (an earlier run stopped) is finished. Such a VM with no disk that isn't running (an import that failed part-way) is DCiaB's own, so it is deleted and made again, without `--replace`; the delete waits for step 3 as with `--replace`. Anything else at that ID is left alone, and the step stops; see [replacing a template](#replacing-a-template).
+3. **Checks the storages and uploads the disk** to the storage `local` as the content type `import`, with its sha256 for Proxmox VE to check. `local` gains that content type when it lacks it. `spec.platform.proxmox.storage` must exist on `templateNode` and hold VM disks.
 4. **Creates the VM** `templateID` on `templateNode`, named `dciab-node-<the disk's sha256, first 12>`, its `scsi0` imported from the upload onto `spec.platform.proxmox.storage` (`import-from`), and converts it to a template. The upload is deleted afterwards, whether or not this worked.
 5. **Checks the template:** a template, with `scsi0`, with the disk's sha256 in its description, and no cloud-init drive.
 
@@ -39,6 +39,8 @@ A new archive with a new node disk doesn't change a template that is already the
 
 - set `templateID` to a free ID and run the step again (the old template stays until nothing clones from it), or
 - run it with `--replace`, which deletes what is at `templateID` and publishes there. It never deletes a running VM, nor anything on another node than `templateNode`. Clusters already running are untouched: CAPMOX makes full clones, which don't depend on the template.
+
+With `--replace`, nothing is deleted until the storages are checked and the new disk is uploaded and checked (step 3): a missing storage or a failed upload leaves the old template as it was. The old one is deleted right before the new VM is created. If creating or converting the new one fails then, `templateID` is left empty until the step is run again (no new clone can start meanwhile); the error says which task failed.
 
 ## By hand
 
