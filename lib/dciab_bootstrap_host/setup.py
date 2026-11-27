@@ -173,8 +173,9 @@ def sync_site(usb: str, site: str) -> bool:
 
 def overlay_local(local: str, dest: str) -> List[str]:
     """Copy every regular file under `local` to the same path under `dest`, replacing what is
-    there. Symbolic links are skipped: the overlay holds files DCiaB wrote. Returns the paths
-    copied, as secrets/<relative path>."""
+    there, including a file or link where the overlay needs a folder. Symbolic links in `local`
+    are skipped: the overlay holds files DCiaB wrote. Returns the paths copied, as
+    secrets/<relative path>."""
     copied: List[str] = []
     if not os.path.isdir(local) or os.path.islink(local):
         return copied
@@ -186,6 +187,13 @@ def overlay_local(local: str, dest: str) -> List[str]:
                 continue
             rel = os.path.relpath(src, local)
             target = os.path.join(dest, rel)
+            # A file (or link) on the stick where the overlay needs a folder (secrets/pve vs
+            # secrets/pve/token): the overlay wins, as it does for files.
+            here = dest
+            for part in [""] + os.path.dirname(rel).split(os.sep):
+                here = os.path.join(here, part) if part else here
+                if os.path.lexists(here) and (os.path.islink(here) or not os.path.isdir(here)):
+                    os.remove(here)
             os.makedirs(os.path.dirname(target), exist_ok=True)
             if os.path.lexists(target) and (os.path.islink(target) or os.path.isdir(target)):
                 shutil.rmtree(target) if os.path.isdir(target) and not os.path.islink(target) else os.remove(target)

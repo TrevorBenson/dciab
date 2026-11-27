@@ -350,6 +350,99 @@ def fs_type(path: Path, mounts: Optional[str] = None) -> str:
     return kind
 
 
+def _existing(path: Path) -> Path:
+    p = Path(os.path.abspath(path))
+    while not p.exists() and p != p.parent:
+        p = p.parent
+    return p
+
+
+def _mount_source(path: Path, mountinfo: Optional[str]) -> Optional[str]:
+    """The source device of the mount `path` is on (/proc/self/mountinfo), when it is a /dev node."""
+    if mountinfo is None:
+        try:
+            mountinfo = Path("/proc/self/mountinfo").read_text()
+        except OSError:
+            return None
+    real = os.path.realpath(path)
+    best, source = "", None
+    for line in mountinfo.splitlines():
+        left, sep, right = line.partition(" - ")
+        fields, tail = left.split(), right.split()
+        if not sep or len(fields) < 5 or len(tail) < 2:
+            continue
+        point = _unescape_mount(fields[4]).rstrip("/") or "/"
+        if (real == point or real.startswith(point.rstrip("/") + "/") or point == "/") and len(point) >= len(best):
+            best, source = point, _unescape_mount(tail[1])
+    return source if source and source.startswith("/dev/") else None
+
+
+def _device_number(path: Path, mountinfo: Optional[str] = None) -> Optional[str]:
+    """"MAJ:MIN" of the block device `path` is stored on, or None. A file system with anonymous
+    device numbers (btrfs, overlay, tmpfs, NFS: major 0) is resolved through its mount's
+    source device, when that is a /dev node."""
+    st = os.stat(path)
+    if os.major(st.st_dev) != 0:
+        return f"{os.major(st.st_dev)}:{os.minor(st.st_dev)}"
+    source = _mount_source(path, mountinfo)
+    if source is None:
+        return None
+    try:
+        rdev = os.stat(source).st_rdev
+    except OSError:
+        return None
+    return f"{os.major(rdev)}:{os.minor(rdev)}" if os.major(rdev) else None
+
+
+def _removable_disks(dev: Path, seen: Optional[set] = None) -> Tuple[List[str], List[str]]:
+    """(removable devices, unclassifiable devices) behind the sysfs block device `dev`: its whole
+    disk, or for device mapper, MD RAID and the like every device under slaves/."""
+    seen = set() if seen is None else seen
+    real = Path(os.path.realpath(dev))
+    if real in seen:
+        return [], []
+    seen.add(real)
+    if not real.is_dir():
+        return [], [str(dev)]
+    disk = real.parent if (real / "partition").exists() else real
+    slaves = sorted((disk / "slaves").iterdir()) if (disk / "slaves").is_dir() else []
+    if slaves:
+        removable, unknown = [], []
+        for s in slaves:
+            r, u = _removable_disks(s, seen)
+            removable += r
+            unknown += u
+        return removable, unknown
+    try:
+        flag = (disk / "removable").read_text().strip()
+    except OSError:
+        return [], [disk.name]
+    if flag == "1" or "/usb" in str(disk):
+        return [disk.name], []
+    return [], []
+
+
+def backing_medium(path: Path, sysfs: Path = Path("/sys"), mountinfo: Optional[str] = None) -> Tuple[str, str]:
+    """("local" | "removable" | "unknown", detail) for the disk `path` (or its nearest existing
+    parent) is stored on: the file system's device, through /sys/dev/block/MAJ:MIN to its whole
+    disk (and, for device mapper or RAID, the disks under it). Removable: the kernel's
+    `removable` flag is 1, or the disk sits on a USB bus. Unknown when it can't be told
+    (no block device, no sysfs entry): the token is then not written in plain text either."""
+    p = _existing(path)
+    try:
+        devno = _device_number(p, mountinfo)
+    except OSError as exc:
+        return "unknown", f"can't stat {p} ({exc.strerror})"
+    if devno is None:
+        return "unknown", f"{p} isn't on a block device DCiaB can identify"
+    removable, unknown = _removable_disks(sysfs / "dev" / "block" / devno)
+    if removable:
+        return "removable", f"{p} is on {', '.join(removable)} (block device {devno}), removable media"
+    if unknown:
+        return "unknown", f"can't tell what kind of disk {p} is on (block device {devno}: {', '.join(unknown)})"
+    return "local", f"{p} is on block device {devno}, a fixed disk"
+
+
 def _secret_files(node, config_dir: Path, skip: tuple, path: tuple = ()) -> List[Tuple[tuple, Path]]:
     """Every {file: ...} secret reference in the config, but the one at `skip`, as real paths."""
     from dciab_validate.pending import secret_files
@@ -370,17 +463,31 @@ def token_targets(doc: dict, config: Path, site=None) -> Tuple[List[Path], Optio
 
 
 def write_token(secret: str, doc: dict, config: Path, log: Callable[[str], None], site=None,
-                mounts: Optional[str] = None) -> List[Path]:
+                mounts: Optional[str] = None, medium: Optional[Callable[[Path], Tuple[str, str]]] = None) -> List[Path]:
     """Write the token's secret where token_targets says, atomically, mode 600 in folders of mode
-    700; a file that already holds it is left alone. Returns the target files; logs why when
-    there are none."""
+    700; a file that already holds it is left alone, but made mode 600, and its folder loses
+    group and other write access. Returns the target files; logs why when there are none.
+
+    Never on removable media: neither on a portable file system (exFAT, FAT, NTFS: fs_type) nor
+    on a disk the kernel calls removable or that sits on USB, whatever its file system
+    (backing_medium); nor where the disk can't be classified."""
     import tempfile
+    medium = medium or (lambda p: backing_medium(p))
     targets, why = token_targets(doc, config, site)
     for t in targets:
         kind = fs_type(t, mounts)
         if kind in PORTABLE_FS:
             targets, why = [], (f"{t} is on {kind}, removable media: the token is never written there in plain "
                                 "text. Run dciab from the bootstrap host's own copy of the config")
+            break
+        where, detail = medium(t)
+        if where == "removable":
+            targets, why = [], (f"{detail}: the token is never written there in plain text. Run dciab from the "
+                                "bootstrap host's own copy of the config")
+            break
+        if where != "local":
+            targets, why = [], (f"{detail}, so it might be removable media: the token is never written in plain "
+                                "text where that can't be ruled out")
             break
     if not targets:
         log(f"the token's secret wasn't written in plain text ({why}); open its sealed copy with age")
@@ -394,10 +501,18 @@ def write_token(secret: str, doc: dict, config: Path, log: Callable[[str], None]
         for d in reversed(missing):                   # every folder made here is root-only
             d.mkdir(mode=0o700)
             os.chmod(d, 0o700)
+        if not missing and t.parent.stat().st_mode & 0o022:
+            # A folder others can write to lets them swap the file: theirs loses that.
+            os.chmod(t.parent, t.parent.stat().st_mode & 0o7755)
+            log(f"{t.parent} was writable by group or others; it no longer is")
         had = t.is_file() and t.stat().st_size > 0
         try:
             if had and t.read_text().strip() == secret:
-                log(f"the token's secret is in {t} already")
+                if t.stat().st_mode & 0o777 != 0o600:
+                    os.chmod(t, 0o600)
+                    log(f"the token's secret is in {t} already; made it mode 600")
+                else:
+                    log(f"the token's secret is in {t} already")
                 continue
         except OSError:
             pass

@@ -1780,6 +1780,15 @@ def test_only_real_booleans_and_known_strings_are_turned_on(value, expected):
 from urllib.parse import parse_qs  # noqa: E402
 
 from dciab_hypervisors import post  # noqa: E402
+
+REAL_BACKING_MEDIUM = post.backing_medium
+
+
+@pytest.fixture(autouse=True)
+def fixed_disk(monkeypatch):
+    """The test's folders are on a fixed disk, whatever this machine's are (overlay, tmpfs):
+    the tests of backing_medium below use a fake /sys instead."""
+    monkeypatch.setattr(post, "backing_medium", lambda path, *a, **kw: ("local", f"{path} is on a fixed disk"))
 from dciab_validate.proxmox_privs import grants  # noqa: E402
 
 
@@ -2701,6 +2710,99 @@ def test_a_kept_token_with_a_stale_file_is_rewritten_from_the_sealed_copy(fake_p
     assert failed == [] and record["post"] == "done", out
     assert "present; secret sealed" in out and target.read_text() == "SEALED-SECRET\n"
     assert "replacing what was there" in out and len(f.acl) == len(grants(px))
+
+
+def fake_sysfs(tmp_path, disk, part=None, removable="0", bus="pci0000:00/0000:00:1f.2/ata1/host0/target0:0:0/0:0:0:0",
+               devno="8:17"):
+    """/sys with one block device: /sys/dev/block/<devno> -> the partition (or whole disk)."""
+    sysfs = tmp_path / "sys"
+    d = sysfs / "devices" / bus / "block" / disk
+    d.mkdir(parents=True)
+    (d / "removable").write_text(removable + "\n")
+    node = d
+    if part:
+        node = d / part
+        node.mkdir()
+        (node / "partition").write_text("1\n")
+    (sysfs / "dev" / "block").mkdir(parents=True)
+    (sysfs / "dev" / "block" / devno).symlink_to(node)
+    return sysfs
+
+
+def test_backing_medium_tells_a_fixed_disk_from_removable_media(tmp_path, monkeypatch):
+    # PR #280 review: an ext4 USB stick passed the file-system check. The disk is what counts.
+    target = tmp_path / "secrets" / "pve" / "token"
+    monkeypatch.setattr(post, "_device_number", lambda path, mountinfo=None: "8:17")
+    sysfs = fake_sysfs(tmp_path / "a", "sdb", "sdb1")
+    assert REAL_BACKING_MEDIUM(target, sysfs)[0] == "local"
+    # The kernel's removable flag on the whole disk (the partition has none).
+    sysfs = fake_sysfs(tmp_path / "b", "sdb", "sdb1", removable="1")
+    kind, detail = REAL_BACKING_MEDIUM(target, sysfs)
+    assert kind == "removable" and "sdb" in detail
+    # A USB disk that says it isn't removable (most USB SSDs and many sticks).
+    usb = "pci0000:00/0000:00:14.0/usb2/2-1/2-1:1.0/host6/target6:0:0/6:0:0:0"
+    sysfs = fake_sysfs(tmp_path / "c", "sdc", "sdc1", bus=usb)
+    assert REAL_BACKING_MEDIUM(target, sysfs)[0] == "removable"
+    # Device mapper (LVM, LUKS) over a USB disk: its slaves are what count.
+    sysfs = fake_sysfs(tmp_path / "d", "sdc", "sdc1", bus=usb)
+    dm = sysfs / "devices" / "virtual" / "block" / "dm-0"
+    (dm / "slaves").mkdir(parents=True)
+    (dm / "removable").write_text("0\n")
+    (dm / "slaves" / "sdc1").symlink_to(sysfs / "devices" / usb / "block" / "sdc" / "sdc1")
+    (sysfs / "dev" / "block" / "253:0").symlink_to(dm)
+    monkeypatch.setattr(post, "_device_number", lambda path, mountinfo=None: "253:0")
+    assert REAL_BACKING_MEDIUM(target, sysfs)[0] == "removable"
+    # What can't be classified is never taken for a fixed disk.
+    monkeypatch.setattr(post, "_device_number", lambda path, mountinfo=None: "9:9")
+    assert REAL_BACKING_MEDIUM(target, sysfs)[0] == "unknown"
+    monkeypatch.setattr(post, "_device_number", lambda path, mountinfo=None: None)
+    assert REAL_BACKING_MEDIUM(target, sysfs)[0] == "unknown"
+
+
+def test_device_number_of_an_anonymous_file_system_comes_from_its_mount_source(tmp_path, monkeypatch):
+    # btrfs, overlay and tmpfs report major 0: the mount's /dev source tells the disk, if any.
+    import types
+    dev = "/dev/dciab-test-nvme0n1p2"
+
+    def stat(path, *a, **kw):
+        if str(path) == dev:
+            return types.SimpleNamespace(st_dev=os.makedev(0, 5), st_rdev=os.makedev(259, 2))
+        return types.SimpleNamespace(st_dev=os.makedev(0, 41), st_rdev=0)
+
+    monkeypatch.setattr(post.os, "stat", stat)
+    mountinfo = (f"22 1 0:41 / / rw - overlay overlay rw\n"
+                 f"30 22 0:42 / {tmp_path} rw,relatime - btrfs {dev} rw\n")
+    assert post._device_number(tmp_path, mountinfo) == "259:2"
+    assert post._device_number(Path("/etc"), mountinfo) is None          # overlay: no device
+
+
+def test_the_token_is_never_written_to_an_ext4_usb_stick_or_an_unknown_disk(tmp_path, monkeypatch):
+    import dciab_state
+    monkeypatch.setattr(dciab_state, "SITE", tmp_path / "no-site")
+    mounts = f"/dev/sda2 / xfs rw 0 0\n/dev/sdb1 {tmp_path} ext4 rw 0 0\n"
+    for kind, said in (("removable", "is on sdb: the token is never written there"),
+                       ("unknown", "might be removable media")):
+        logs = []
+        assert post.write_token("s3cret", api_doc(), tmp_path / "dciab.yaml", logs.append, mounts=mounts,
+                                medium=lambda p, kind=kind: (kind, f"{p} is on sdb")) == []
+        assert said in logs[0] and "sealed copy" in logs[0] and not (tmp_path / "secrets").exists()
+
+
+def test_a_token_file_with_loose_permissions_is_made_private(tmp_path, monkeypatch):
+    # PR #280 review: a file that already held the secret kept mode 644.
+    import dciab_state
+    monkeypatch.setattr(dciab_state, "SITE", tmp_path / "no-site")
+    target = tmp_path / "secrets" / "pve" / "token"
+    target.parent.mkdir(parents=True)
+    target.parent.chmod(0o777)
+    target.write_text("s3cret\n")
+    target.chmod(0o644)
+    logs = []
+    assert post.write_token("s3cret", api_doc(), tmp_path / "dciab.yaml", logs.append, mounts="") == [target]
+    assert target.stat().st_mode & 0o777 == 0o600 and target.read_text() == "s3cret\n"
+    assert target.parent.stat().st_mode & 0o022 == 0
+    assert any("made it mode 600" in line for line in logs)
+    assert any("writable by group or others" in line for line in logs)
 
 
 def test_the_token_is_never_written_to_removable_media(tmp_path, monkeypatch):

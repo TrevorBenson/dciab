@@ -175,6 +175,38 @@ def test_appliance_local_secrets_survive_a_sync(tmp_path, capsys):
     assert not (usb / "secrets" / "pve" / "token").exists()
 
 
+def test_a_stick_file_where_the_overlay_needs_a_folder_is_replaced(tmp_path, monkeypatch):
+    # PR #280 review: the stick's secrets/pve was a file and the overlay's secrets/pve/token
+    # aborted the sync (FileExistsError), so bootstrap setup stopped. The overlay wins.
+    usb, site = tmp_path / "usb", tmp_path / "site"
+    (usb / "secrets").mkdir(parents=True)
+    (usb / "dciab.yaml").write_text("spec: {}\n")
+    (usb / "secrets" / "pve").write_text("a file on the stick\n")
+    (usb / "secrets" / "other").write_text("kept\n")
+    assert setup.sync_site(str(usb), str(site)) is True
+    first = site.resolve()
+    local = tmp_path / "site-local" / "secrets" / "pve"
+    local.mkdir(parents=True)
+    (local / "token").write_text("real-secret\n")
+    assert setup.sync_site(str(usb), str(site)) is True
+    assert (site / "secrets" / "pve" / "token").read_text() == "real-secret\n"
+    assert (site / "secrets" / "other").read_text() == "kept\n"
+    assert (usb / "secrets" / "pve").read_text() == "a file on the stick\n"     # the stick is never written
+    assert not first.exists()
+    # A failure while staging still leaves the previous copy in place (the rollback).
+    current = site.resolve()
+
+    def broken(*a, **kw):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(setup.shutil, "copyfile", broken)
+    with pytest.raises(OSError):
+        setup.sync_site(str(usb), str(site))
+    monkeypatch.undo()
+    assert site.resolve() == current and (site / "secrets" / "pve" / "token").read_text() == "real-secret\n"
+    assert sorted(p.name for p in tmp_path.glob(".site*")) == sorted([current.name, ".site.lock"])
+
+
 def test_no_local_secrets_changes_nothing(tmp_path):
     usb, site = tmp_path / "usb", tmp_path / "site"
     usb.mkdir()
