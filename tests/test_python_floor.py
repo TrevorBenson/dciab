@@ -46,8 +46,8 @@ def test_the_launcher_checks_the_floor():
     assert f"sys.version_info >= {FLOOR}" in (ROOT / "dciab").read_text()
 
 
-def test_the_readme_states_the_floor():
-    assert f"Needs Python {FLOOR_TEXT}+" in (ROOT / "README.md").read_text()
+def test_the_docs_state_the_floor():
+    assert f"Needs Python {FLOOR_TEXT}+" in (ROOT / "docs" / "VALIDATE.md").read_text()
 
 
 def _ci_python_versions():

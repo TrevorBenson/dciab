@@ -1,6 +1,6 @@
 # Identity
 
-Who logs in to DCiaB, and through which identity provider. Decided in [ADR 0004](adr/0004-identity-and-sso.md) and [ADR 0008](adr/0008-provider-pattern.md) (decisions 2 and 3, and amendment 3). `spec.identity` holds it all.
+Who logs in to DCiaB, and through which identity provider. `spec.identity` holds it all. What this page describes was decided in [ADR 0008](adr/0008-provider-pattern.md) (decisions 2 and 3, and amendment 3). The wider identity design, Authentik for people and SPIFFE/SPIRE for workloads, is [ADR 0004](adr/0004-identity-and-sso.md), still proposed.
 
 ## Two providers
 

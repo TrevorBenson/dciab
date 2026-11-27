@@ -2,18 +2,34 @@
 
 Runs the pivot services decided in [ADR 0001](adr/0001-day0-hypervisors-and-services.md) as one podman pod with host networking:
 
-- **DNS (CoreDNS)** on `network.dnsServiceIPs`: authoritative for `network.domain` and the node network's reverse zones, including `registry.<domain>`. Other names go to `network.upstreamResolvers`; with an empty list nothing is forwarded and those names are refused.
-- **NTP (chrony)** on the same addresses, only with `spec.time.servedBy: dciab`.
-- **HTTP (Caddy)** on `spec.bootstrap.address:80`: installer ISOs, and each hypervisor's own ISO for that host's BMC only.
+- **DNS (CoreDNS)** on `network.dnsServiceIPs`: authoritative for `network.domain` and the node network's reverse zones. Its records: `dns1` and `dns2` (the DNS service IPs), `bootstrap` and `registry` (`spec.bootstrap.address`), and every hypervisor host. Other names go to `network.upstreamResolvers` ([below](#forwarding-only-for-the-site)); with an empty list nothing is forwarded and those names are refused.
+- **NTP (chrony)**, only with `spec.time.servedBy: dciab`: one server per DNS service IP, syncing from `time.upstream`, or serving the local clock when `serveLocalClock` is true (an isolated site). It never sets the host clock. Its image is built from `images/day0-chrony` when the archive is built, pinned in `bundle.lock` (`day0.images.chrony`) and shipped in the archive; nothing is built at the site.
+- **HTTP (Caddy)** on `spec.bootstrap.address:80`: the installer ISOs under `/isos/` (from `--isos`), and each hypervisor's own ISO under `/host-isos/`, served to that host's BMC address only ([HYPERVISORS.md](HYPERVISORS.md)).
 
-A site without `spec.hypervisors` gets CoreDNS alone (DNS-only), which `dciab seed` runs for it.
+A site without `spec.hypervisors` (its servers exist already) gets CoreDNS alone (DNS-only), which `dciab seed` runs for it in its `dns` step.
 
+> [!IMPORTANT]
+> The DNS service IPs are the cluster nodes' only resolvers. With an empty `network.upstreamResolvers`, nodes resolve only `network.domain`: anything they fetch by another name (an image the seed registry doesn't hold, an NTP pool, a package mirror) fails, and `kubeadm init` can stall waiting for images. Set `network.isolated: true` when that is intended; otherwise `dciab validate` warns.
+
+```console
+$ sudo ./dciab services dciab.yaml --state <state> --isos <work>/isos --print   # the plan and every rendered file; changes nothing
+$ sudo ./dciab services dciab.yaml --state <state> --isos <work>/isos
+$ sudo ./dciab services dciab.yaml --down --state <state>                       # take it all away
 ```
-dciab services <config> [--state DIR] [--isos DIR] [--payload DIR] [--until STEP] [--print]
-dciab services <config> --down [--state DIR] [--forget '<record line>']
-```
 
-It runs as root. Steps: `preflight`, `render`, `address`, `firewall`, `images`, `pod`, `ready`. Each is safe to rerun, and a run with an unchanged config changes nothing.
+It runs as root. Steps: `preflight`, `render`, `address`, `firewall`, `images`, `pod`, `ready`. Each is safe to rerun, and a run with an unchanged config changes nothing. The last step checks, from the network's side, DNS both ways and `registry.<domain>`, NTP and HTTP.
+
+| Option | Default | Meaning |
+| --- | --- | --- |
+| `--state DIR` | `.dciab/state` next to the config; `/var/lib/dciab/work/state` on the appliance | The state folder ([STATE.md](STATE.md)). Use the same one for every step |
+| `--isos DIR` | `workDisk.path/isos`, else `<state>/isos` | The installer ISOs to serve. After `dciab media`, pass `<work>/isos` |
+| `--payload DIR` | `$DCIAB_PAYLOAD`, else the archive's `payload/` when it exists | Load the pinned images from the archive's payload; nothing is pulled from the internet |
+| `--until STEP` | | Stop after this step |
+| `--print` | | Show the plan and every rendered file; change nothing |
+| `--down` | | Remove what the services added to the host ([below](#what-it-adds-to-the-host-and-taking-it-away)) |
+| `--forget '<line>'` | | With `--down`: drop one line from the record without touching the host |
+
+`DCIAB_CHRONY_IMAGE` names a chrony image already in local storage in place of the pinned one, for building and testing DCiaB; the step warns when it is set.
 
 `render` stages the new files under `<state>/services/.staged`; the files the running pod reads, the units, and the removal of what the old config added all change together in `pod`. So a run that stops before `pod` (`--until`, or a failure such as a missing image) leaves the previous config whole: the old addresses, files and units still match each other, and a reboot or a crash restart brings that config back.
 

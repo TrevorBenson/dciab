@@ -60,4 +60,4 @@ The workflow never runs on a push or a merge, and it refuses to run from any bra
 
 ## Before the full archive can be built
 
-The full payload includes the published node disks (`nodeImages.published` in `bundle.lock`). It fails until the lab workflow `lab-node-image.yml` has published the Proxmox VE disk and its pins are in `bundle.lock` ([build/README.md](../build/README.md)).
+The full payload includes the published node disks (`nodeImages.published` in `bundle.lock`). It fails until the lab workflow `lab-node-image.yml` has published the Proxmox VE disk and its pins are in `bundle.lock` ([build/README.md](https://github.com/TrevorBenson/dciab/blob/main/build/README.md)).
