@@ -38,7 +38,7 @@ $ ISOS=$WORK/isos
 ```
 
 > [!NOTE]
-> **Changing the config on the appliance.** Edit `dciab.yaml` and `secrets/` on the stick, which the appliance mounts at `/var/mnt/dciab`, then run `sudo systemctl restart dciab-bootstrap-setup.service` (or reboot) to copy them in. An edit made only in `/var/lib/dciab/site` is replaced at the next boot with the stick plugged in.
+> **Changing the config on the appliance.** Edit `dciab.yaml` and `secrets/` on the stick, which the appliance mounts root-only at `/var/mnt/dciab` (`sudoedit /var/mnt/dciab/dciab.yaml`), then run `sudo systemctl restart dciab-bootstrap-setup.service` (or reboot) to copy them in. An edit made only in `/var/lib/dciab/site` is replaced at the next boot or restart of that service with the stick plugged in; without the stick, the copy is kept. Secrets DCiaB generates on the appliance, such as the CAPMOX token, live in `/var/lib/dciab/site-local/secrets/` and survive every copy ([STATE.md](STATE.md#outside-the-state-folder)). Before taking the stick out after an edit, `sudo umount /var/mnt/dciab`.
 
 ## 3. Check the config against the site, and copy the archive
 

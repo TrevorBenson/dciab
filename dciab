@@ -19,26 +19,27 @@ Commands:
                                            --state: whose install records say what dciab hypervisors set up
   cluster-values <config> <cluster> [--trust-bundle FILE] [-o FILE]
                                            Print a cluster's capi-cluster values (--list: cluster names)
-  media <config> (--key PUB | --checksums-only) [--source DIR] [--until STEP] [--print]
+  media <config> (--key PUB | --checksums-only) [--source DIR] [--cosign BIN] [--isos-from DIR] [--until STEP] [--print]
                                            Copy the archive to spec.bootstrap.workDisk and put container
                                            storage there (as root); prints the next steps with --state
                                            and --isos on the work disk
   services <config> [--state DIR] [--isos DIR] [--payload DIR] [--until STEP] [--print]
-  services <config> --down [--state DIR]
+  services <config> --down [--state DIR] [--forget '<line>']
                                            Day 0 DNS, NTP and HTTP on the bootstrap host (as root)
-  hypervisors <config> [--state DIR] [--isos DIR] [--host NAME ...] [--until STEP] [--iso FILE]
-              [--reinstall NAME ...] [--first-install NAME ...] [--age-identity FILE] [--print]
+  hypervisors <config> [--state DIR] [--isos DIR] [--iso FILE] [--host NAME ...] [--reinstall NAME ...]
+              [--first-install NAME ...] [--age-identity FILE] [--timeout SECONDS] [--attach-timeout SECONDS]
+              [--until STEP] [--print]
                                            Day 0: install Proxmox VE on spec.hypervisors.hosts over Redfish (as root)
   templates <config> [--state DIR] [--payload DIR] [--age-identity FILE] [--replace] [--timeout SECONDS] [--print]
                                            Publish the Proxmox VE node template from the archive's node disk (as root)
-  mgmt <config> [--bootstrap-kubeconfig FILE] [--state DIR] [--trust-bundle FILE] [--payload DIR] [--until STEP]
-                                           Build MGMT from the bootstrap cluster and move CAPI to it
   seed <config> [--payload DIR] [--state DIR] [--age-identity FILE] [--force-new-ca] [--until STEP]
                                            Seed registry and bootstrap (kind) cluster from the payload
   seed <config> --remove [--state DIR] [--force] [--purge-state]
                                            Undo what seed did to this host (keeps the state unless --purge-state)
+  mgmt <config> [--bootstrap-kubeconfig FILE] [--state DIR] [--trust-bundle FILE] [--payload DIR] [--until STEP]
+                                           Build MGMT from the bootstrap cluster and move CAPI to it
   infra | platform | finalize              Bootstrap steps (not implemented yet)
-  verify-archive (--key PUB | --checksums-only) [ARCHIVE]
+  verify-archive (--key PUB | --checksums-only) [--cosign BIN] [ARCHIVE]
                                            Check the archive (this one by default) against its signed MANIFEST
   status <config> [--state DIR] [--output text|json]
                                            Where the bootstrap stands (read-only)

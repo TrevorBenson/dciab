@@ -504,3 +504,20 @@ def test_finalize_refuses_a_signed_archive_and_its_own_input(tree, monkeypatch):
     unsigned = build(tree, "u")
     with pytest.raises(archive.ArchiveError, match="another folder"):
         package.finalize(unsigned, unsigned.parent, key, runner=fake_cosign())
+
+
+def test_dciab_help_matches_the_commands_page():
+    """`dciab help` names every step and the options docs/CLI.md gives them (#278)."""
+    import re
+    out = subprocess.run([str(ROOT / "dciab"), "help"], capture_output=True, text=True, check=True).stdout
+    cli_md = (ROOT / "docs" / "CLI.md").read_text()
+    for cmd in ("validate", "media", "services", "hypervisors", "templates", "seed", "mgmt", "status",
+                "verify-archive", "cluster-values"):
+        assert re.search(rf"^  {cmd} ", out, re.M), f"dciab help doesn't list {cmd}"
+        rows = [ln for ln in cli_md.splitlines() if f"dciab {cmd} " in ln]
+        flags = set(re.findall(r"--[a-z][a-z-]+", " ".join(rows)))
+        block = "\n".join(ln for ln in re.split(r"\n(?=  \S)", out) if ln.startswith(f"  {cmd} "))
+        missing = sorted(f for f in flags if f not in block)
+        assert not missing, f"dciab help's {cmd} lacks {missing} (docs/CLI.md has them)"
+    # The run order: hypervisors, templates, seed, mgmt.
+    assert out.index("  hypervisors ") < out.index("  templates ") < out.index("  seed ") < out.index("  mgmt ")
