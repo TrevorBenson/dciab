@@ -44,8 +44,10 @@ class FakePVE:
     """A Proxmox VE API with one node, pve01: storage, uploads into `local`'s import content,
     VM creation with import-from, templates, deletion and worker tasks. Records every write."""
 
-    def __init__(self, cert, vms=None, local_content="iso,vztmpl,backup", fail_task=None, imports=None):
+    def __init__(self, cert, vms=None, local_content="iso,vztmpl,backup", fail_task=None, imports=None,
+                 stale_resources=False):
         self.writes = []
+        self.stale_resources = stale_resources         # /cluster/resources lags, as pvestatd's does
         self.vms = copy.deepcopy(vms or {})            # vmid -> {node, name, template, status, config}
         self.local_content = local_content
         self.imports = dict(imports or {})             # volid -> bytes
@@ -86,6 +88,9 @@ class FakePVE:
                 if not self._authed(False):
                     return self._send(401)
                 if p == "/cluster/resources?type=vm":
+                    if fake.stale_resources:
+                        return self._send(200, [{"vmid": k, "node": v["node"], "template": 0, "status": "stopped"}
+                                                for k, v in fake.vms.items()])
                     return self._send(200, [{"vmid": k, "node": v["node"], "name": v["name"], "template": v["template"],
                                              "status": v.get("status", "stopped")} for k, v in fake.vms.items()])
                 if p == "/nodes/pve01/storage":
@@ -571,3 +576,14 @@ def test_a_refused_upload_says_what_proxmox_ve_said(fake_pve, cert, tmp_path):
             api.upload("/nodes/pve01/storage/local/upload", {"content": "import"}, "x.qcow2", fh, len(DISK))
     msg = str(exc.value)
     assert "HTTP 400: Parameter verification failed." in msg and "does not support 'import' content" in msg
+
+
+def test_a_second_run_right_after_publishing_keeps_it(fake_pve, cert, tmp_path):
+    # Seen on a real Proxmox VE 9: right after publishing, /cluster/resources still lists the new
+    # template as a VM with no name; the node's config is current.
+    f = fake_pve(local_content="iso,import")
+    assert run_publish(f, cert, tmp_path)[0] == "published"
+    f.stale_resources = True
+    f.writes.clear()
+    result, out = run_publish(f, cert, tmp_path)
+    assert result == "kept" and f.writes == []

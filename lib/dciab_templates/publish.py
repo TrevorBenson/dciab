@@ -94,7 +94,13 @@ def existing(api: PveApi, node: str, vmid: int) -> Optional[dict]:
     info = {"node": row.get("node"), "template": int(row.get("template") or 0), "name": row.get("name"),
             "status": row.get("status"), "config": {}}
     if row.get("node") == node:
-        info["config"] = _try(lambda: api.get(f"/nodes/{quote(node)}/qemu/{vmid}/config")) or {}
+        conf = _try(lambda: api.get(f"/nodes/{quote(node)}/qemu/{vmid}/config")) or {}
+        info["config"] = conf
+        if conf:
+            # The node's own config is current; /cluster/resources lags (pvestatd), and right
+            # after a run it still shows a new template as a VM with no name.
+            info["template"] = int(conf.get("template") or 0)
+            info["name"] = conf.get("name") or info["name"]
     return info
 
 
