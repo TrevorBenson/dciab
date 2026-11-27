@@ -179,14 +179,20 @@ class Checker:
         if api.host is None:
             self.error(pending.FINGERPRINT_PATH, "not set",
                        "set it to the Proxmox API certificate's fingerprint (SHA-256): it can be left out only when "
-                       "platform.proxmox.url names a host spec.hypervisors installs")
+                       "platform.proxmox.url names a host spec.hypervisors installs that is one of "
+                       "platform.proxmox.nodes")
+        elif api.unreadable:
+            self.error(pending.FINGERPRINT_PATH,
+                       f"not set, and {api.name}'s install record ({self.state}/installs/{api.name}.json) can't be read",
+                       "run as root (the state folder is root-only) with --state naming the steps' state folder, "
+                       "repair the record, or set tlsFingerprint")
         elif api.fingerprint:
             self.notes.append(f"proxmox: tlsFingerprint isn't set, so the Proxmox API on {api.name} is trusted by the "
                               f"certificate dciab hypervisors pinned in its install record ({api.fingerprint})")
         else:
             self.notes.append(f"proxmox: pending: the Proxmox API's certificate on {api.name}: dciab hypervisors pins it "
                               f"in the host's install record when it sets the host up ({self.state}/installs/"
-                              f"{api.name}.json); tlsFingerprint may stay unset")
+                              f"{api.name}.json); tlsFingerprint may stay unset{pending.held_hint(api)}")
 
     def _token_pending(self, ref: dict) -> bool:
         """The CAPMOX token doesn't exist yet and dciab hypervisors will create it: a note, not
@@ -206,7 +212,7 @@ class Checker:
                 return False
             where = f"file {raw}, which dciab hypervisors' post-install writes"
         self.notes.append(f"proxmox: pending: the CAPMOX token (spec.platform.proxmox.credentials.tokenSecret, {where}): "
-                          f"dciab hypervisors creates it once it has installed {api.name}")
+                          f"dciab hypervisors creates it once it has installed {api.name}{pending.held_hint(api)}")
         return True
 
     def _check_secret_ref(self, path: Path, ref: dict) -> None:
@@ -222,7 +228,12 @@ class Checker:
         target = FsPath(raw) if os.path.isabs(raw) else self.config_dir / raw
         if not target.exists():
             fix = "create the file, or correct the path; relative paths start at the config file's folder"
-            if path == pending.TOKEN_PATH and self.api_state().host is not None:
+            if path == pending.TOKEN_PATH and self.api_state().unreadable:
+                name = self.api_state().name
+                fix = (f"{name}'s install record ({self.state}/installs/{name}.json) can't be read, so nothing says "
+                       "whether dciab hypervisors has created the token yet: run as root with --state naming the "
+                       "steps' state folder, or repair the record")
+            elif path == pending.TOKEN_PATH and self.api_state().host is not None:
                 name = self.api_state().name
                 fix = (f"dciab hypervisors' post-install wrote it when it created the token on {name}; open its "
                        f"sealed copy ({self.state}/proxmox/{name}.token.age) into it with age (docs/TROUBLESHOOTING.md)")

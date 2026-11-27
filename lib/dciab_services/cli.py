@@ -40,7 +40,7 @@ except ImportError:  # PyYAML missing: main() says what to install
 
 
 
-def _load(config: Path, root: Path) -> dict:
+def _load(config: Path, root: Path, state: Optional[Path] = None) -> dict:
     from dciab_validate import checks, schema_check
     from dciab_validate.findings import ERROR
     from dciab_validate.loader import LoadError, load
@@ -53,7 +53,7 @@ def _load(config: Path, root: Path) -> dict:
         raise SystemExit(f"dciab services: {config}: {exc.message}")
     findings = schema_check.check(doc, schema_check.load_schema(root))
     if not findings:
-        findings, _ = checks.run(doc, config, root)
+        findings, _ = checks.run(doc, config, root, state)
     errors = [f for f in findings if f.severity == ERROR]
     if errors:
         print(f"dciab services: {config} is not valid ({len(errors)} errors); run: dciab validate {config}",
@@ -279,7 +279,7 @@ def main(argv: Optional[List[str]] = None) -> int:
         return 2
 
     root = Path(args.root).resolve()
-    doc = _load(Path(args.config), root)
+    doc = _load(Path(args.config), root, Path(args.state))
     paths = Paths(doc, Path(args.state), args.isos)
     try:
         files = _files(doc, root, paths)

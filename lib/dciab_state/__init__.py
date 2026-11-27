@@ -64,15 +64,22 @@ def synced_site(config: PathLike, site: PathLike = SITE) -> Optional[Path]:
 def read_install(state: PathLike, name: str) -> Optional[dict]:
     """The install record <state>/installs/<name>.json that `dciab hypervisors` writes, or None
     when there is none. Fails closed: anything at the path that isn't a non-empty JSON object is
-    a record of unknown state ({"outcome": "unreadable"}), never "never installed"."""
+    a record of unknown state ({"outcome": "unreadable"}), never "never installed"; so is a path
+    that can't be looked at (no permission on the state folder)."""
     return read_record(Path(os.path.abspath(state)) / "installs" / f"{name}.json")
 
 
 def read_record(path: PathLike) -> Optional[dict]:
     """One install record file (read_install)."""
     path = Path(path)
-    if not os.path.lexists(path):
+    try:
+        os.lstat(path)
+    except FileNotFoundError:
         return None
+    except OSError:
+        # EACCES on the state folder, a file where a folder should be, ...: os.path.lexists says
+        # False for these, but a record may well be there. Unknown, never "never installed".
+        return {"outcome": "unreadable"}
     try:
         record = json.loads(path.read_text())
     except (ValueError, OSError):

@@ -176,7 +176,7 @@
       "required": ["url", "nodes", "templateNode", "templateID", "storage", "bridge", "credentials"],
       "properties": {
         "url": {"type": "string", "pattern": "^https://[^/]+(:\\d+)?/?$", "description": "the Proxmox API URL, such as https://pve01.example.net:8006"},
-        "tlsFingerprint": {"$ref": "#/$defs/fingerprint", "description": "the fingerprint of the Proxmox API's TLS certificate; DCiaB and validate --live trust the API by it. Required, except when url names a host spec.hypervisors installs: then DCiaB trusts the certificate dciab hypervisors pins on first contact (in the host's install record), and a value given here must match the certificate"},
+        "tlsFingerprint": {"$ref": "#/$defs/fingerprint", "description": "the fingerprint of the Proxmox API's TLS certificate; DCiaB and validate --live trust the API by it. Required, except when url names a host spec.hypervisors installs that is one of nodes: then DCiaB trusts the certificate dciab hypervisors pins on first contact (in the host's install record), and a value given here must match the certificate"},
         "nodes": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "minLength": 1}, "description": "the PVE nodes DCiaB may use, at least one. templateNode and every failure domain's proxmox.node must be one of them; validate --live checks each is a node of the cluster"},
         "templateNode": {"type": "string", "minLength": 1, "description": "the node that holds the VM template; CAPMOX clones from it (one of nodes)"},
         "templateID": {"type": "integer", "minimum": 100, "description": "the node VM template's ID, 100 or more"},

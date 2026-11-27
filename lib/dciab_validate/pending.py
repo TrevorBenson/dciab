@@ -11,6 +11,15 @@ host's install record doesn't say `post: done`. tlsFingerprint may be left out f
 host: the install record's pin is used instead (trust on first use, as for every other host
 post sets up), and a tlsFingerprint the config does give must match the certificate.
 
+Only a host post sets up counts: one of spec.hypervisors.hosts that is also one of
+spec.platform.proxmox.nodes. An install record that can't be read (bad JSON, no permission on
+the state folder) is an error, never pending: nothing can say post will create the token.
+
+A host `dciab hypervisors` held (it found an OS already there) has no install record, exactly
+like one it hasn't reached yet, so nothing tells the two apart: it stays pending, and the
+pending note says so. Such a host needs its token and tlsFingerprint given by hand, which ends
+the pending notes (docs/VALIDATE.md).
+
 Standard library only.
 """
 
@@ -31,14 +40,17 @@ def names_host(url: str, host: dict, domain: str) -> bool:
 
 
 def api_host(spec: dict) -> Optional[dict]:
-    """The spec.hypervisors host that spec.platform.proxmox.url names, or None (a Proxmox VE
-    that DCiaB doesn't install, or no Proxmox VE platform)."""
+    """The spec.hypervisors host that spec.platform.proxmox.url names and that is one of
+    spec.platform.proxmox.nodes, or None (a Proxmox VE that DCiaB doesn't install and set up,
+    or no Proxmox VE platform)."""
     px = (spec.get("platform") or {}).get("proxmox")
     hv = spec.get("hypervisors") or {}
     if not px or hv.get("type") != "proxmox":
         return None
     domain = (spec.get("network") or {}).get("domain", "")
-    return next((h for h in hv.get("hosts") or [] if names_host(px["url"], h, domain)), None)
+    nodes = set(px.get("nodes") or [])
+    # post sets up only the hosts that are also nodes DCiaB uses: no other host gets a token.
+    return next((h for h in hv.get("hosts") or [] if h["name"] in nodes and names_host(px["url"], h, domain)), None)
 
 
 class ApiState(NamedTuple):
@@ -48,10 +60,21 @@ class ApiState(NamedTuple):
     source: str                   # "config", "install record" or "" (none yet)
 
     @property
+    def unreadable(self) -> bool:
+        """The host's install record is there but can't be read: an error, not pending."""
+        return self.host is not None and (self.record or {}).get("outcome") == "unreadable"
+
+    @property
     def pending(self) -> bool:
         """DCiaB will create the token and pin the certificate, and hasn't finished: the URL
-        names a host spec.hypervisors installs and its record doesn't say post: done."""
-        return self.host is not None and (self.record or {}).get("post") != "done"
+        names a host post sets up and its readable record doesn't say post: done (or there is
+        none yet: not installed, or held)."""
+        return self.host is not None and not self.unreadable and (self.record or {}).get("post") != "done"
+
+    @property
+    def no_record(self) -> bool:
+        """No install record: dciab hypervisors hasn't installed the host, or held it."""
+        return self.host is not None and self.record is None
 
     @property
     def name(self) -> str:
@@ -63,7 +86,7 @@ def proxmox_api(spec: dict, state: Optional[os.PathLike]) -> ApiState:
     from dciab_state import read_install
     px = spec["platform"]["proxmox"]
     host = api_host(spec)
-    record = read_install(state, host["name"]) if host and state else None
+    record = read_install(state, host["name"]) if host and state is not None else None
     if px.get("tlsFingerprint"):
         return ApiState(host, record, px["tlsFingerprint"], "config")
     pinned = (record or {}).get("api_fingerprint") if (record or {}).get("outcome") == "installed" else None
@@ -74,3 +97,11 @@ def default_state(config: os.PathLike) -> Path:
     """The state folder a step uses without --state (read-only: nothing is migrated)."""
     from dciab_state import find_state
     return find_state(config)
+
+
+def held_hint(api: ApiState) -> str:
+    """For a pending note while there is no install record: a held host looks the same."""
+    if not api.no_record:
+        return ""
+    return (f". If dciab hypervisors held {api.name} (it found an OS already there) or you set it up some other way, "
+            "give the token and tlsFingerprint by hand: this stays pending until then")

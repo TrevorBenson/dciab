@@ -1056,3 +1056,132 @@ def test_proxmox_csi_template_import_is_rejected(site):
     block["proxmoxCSI"]["templateImport"] = {"credentials": {"tokenID": "t@pve!x", "tokenSecret": {"env": "X"}}}
     code, report = site.validate(doc)
     assert code == 1 and any("templateImport" in (e.get("path", "") + e.get("found", "")) for e in errors(report))
+
+
+# --- #276 review fixes: when "pending" applies ---------------------------------------------------
+
+def test_url_host_not_in_nodes_is_not_pending(site):
+    # post only sets up hosts that are also platform.proxmox.nodes: pve02 gets no token.
+    doc = load_example("proxmox-bare")
+    doc["spec"]["platform"]["proxmox"]["url"] = "https://10.30.110.7:8006"   # pve02
+    code, report = site.validate(doc)
+    assert code == 1
+    assert {e["path"] for e in errors(report)} >= {"spec.platform.proxmox.tlsFingerprint",
+                                                   "spec.platform.proxmox.credentials.tokenSecret.file"}
+    assert not any("pending" in n for n in report["notes"])
+
+
+def test_unreadable_install_record_is_an_error_not_pending(site):
+    d = site.dir / ".dciab" / "state" / "installs"
+    d.mkdir(parents=True)
+    (d / "pve01.json").write_text("{not json")
+    code, report = site.validate(load_example("proxmox-bare"))
+    assert code == 1 and not any("pending" in n for n in report["notes"])
+    by_path = {e["path"]: e for e in errors(report)}
+    assert "can't be read" in by_path["spec.platform.proxmox.tlsFingerprint"]["found"]
+    assert "can't be read" in by_path["spec.platform.proxmox.credentials.tokenSecret.file"]["fix"]
+
+
+def test_a_state_folder_without_permission_is_unreadable_not_absent(site, monkeypatch):
+    import errno
+    import dciab_state
+    real = os.lstat
+
+    def lstat(path, *a, **kw):
+        if str(path).endswith("installs/pve01.json"):
+            raise PermissionError(errno.EACCES, "Permission denied", str(path))
+        return real(path, *a, **kw)
+
+    monkeypatch.setattr(dciab_state.os, "lstat", lstat)
+    assert dciab_state.read_install(site.dir / ".dciab" / "state", "pve01") == {"outcome": "unreadable"}
+    code, report = site.validate(load_example("proxmox-bare"))
+    assert code == 1 and not any("pending" in n for n in report["notes"])
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root reads any folder")
+def test_a_real_unreadable_state_folder(site):
+    import dciab_state
+    state = site.dir / ".dciab" / "state"
+    (state / "installs").mkdir(parents=True)
+    state.chmod(0)
+    try:
+        assert dciab_state.read_install(state, "pve01") == {"outcome": "unreadable"}
+    finally:
+        state.chmod(0o700)
+
+
+def test_no_record_pending_note_says_a_held_host_needs_its_token(site):
+    code, report = site.validate(load_example("proxmox-bare"))
+    assert code == 0
+    notes = [n for n in report["notes"] if "pending" in n]
+    assert notes and all("held pve01" in n and "by hand" in n for n in notes)
+    # With a record (installed, post not done yet), the note doesn't need the hint.
+    _record(site, outcome="installed")
+    code, report = site.validate(load_example("proxmox-bare"))
+    notes = [n for n in report["notes"] if "pending" in n]
+    assert code == 0 and notes and not any("held" in n for n in notes)
+
+
+def test_a_held_host_given_its_token_and_fingerprint_is_not_pending(site):
+    doc = load_example("proxmox-bare")
+    doc["spec"]["platform"]["proxmox"]["tlsFingerprint"] = ":".join(["AB"] * 32)
+    token = site.dir / "secrets" / "pve" / "token"
+    token.parent.mkdir(parents=True, exist_ok=True)
+    token.write_text("s3cret\n")
+    token.chmod(0o600)
+    code, report = site.validate(doc)
+    assert code == 0 and not any("pending" in n for n in report["notes"])
+
+
+def test_steps_pass_their_state_to_the_validate_gate(site, tmp_path, monkeypatch):
+    """services, cluster-values and seed's preflight read the install records in their own state."""
+    import yaml
+    from dciab_validate import checks
+    seen = []
+    real = checks.run
+
+    def spy(doc, config, root, state=None):
+        seen.append(state)
+        return real(doc, config, root, state)
+
+    monkeypatch.setattr(checks, "run", spy)
+    config = site.dir / "dciab.yaml"
+    config.write_text(yaml.safe_dump(load_example("proxmox-bare"), sort_keys=False))
+    state = tmp_path / "custom-state"
+    from dciab_services import cli as services_cli
+    services_cli._load(config, ROOT, state)
+    from dciab_cluster import cli as cluster_cli
+    cluster_cli.main([str(config), "--root", str(ROOT), "--list", "--state", str(state)])
+    assert [str(s) for s in seen] == [str(state), str(state)]
+
+    from dciab_seed import cli as seed_cli
+    calls = []
+
+    class Done:
+        returncode = 0
+        stdout = ""
+
+    monkeypatch.setattr(seed_cli.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(seed_cli.shutil, "which", lambda t: "/bin/" + t)
+    payload = tmp_path / "payload"
+    for sub in ("images", "providers"):
+        (payload / sub).mkdir(parents=True)
+    (payload / "images.yaml").write_text("{}\n")
+    monkeypatch.setattr(seed_cli.subprocess, "run", lambda cmd, **kw: calls.append(cmd) or Done())
+    seed_cli.step_preflight(ROOT, config, payload, state)
+    assert calls[-1][-2:] == ["--state", str(state)]
+
+
+def test_services_main_passes_state_to_validate(monkeypatch, tmp_path):
+    from dciab_services import cli as services_cli
+    got = {}
+    monkeypatch.setattr(services_cli, "_load", lambda config, root, state=None: got.update(state=state) or
+                        (_ for _ in ()).throw(SystemExit(9)))
+    with pytest.raises(SystemExit):
+        services_cli.main(["--root", str(ROOT), str(tmp_path / "dciab.yaml"), "--state", str(tmp_path / "s"), "env"])
+    assert str(got["state"]) == str(tmp_path / "s")
+
+
+def test_mgmt_passes_its_state_to_cluster_values():
+    text = (ROOT / "lib" / "steps" / "mgmt.sh").read_text()
+    assert 'args=("$config" mgmt -o "$values" --state "$state")' in text

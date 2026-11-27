@@ -651,7 +651,7 @@ def proxmox_pending(spec: dict, config_dir: FsPath, state) -> Tuple[Optional[str
     """(fingerprint to trust the API by, None), or (None, why the Proxmox API checks are pending):
     the URL names a host spec.hypervisors installs, whose install record doesn't say post: done,
     and the token or the certificate's pin doesn't exist yet (#276)."""
-    from .pending import proxmox_api
+    from .pending import held_hint, proxmox_api
     api = proxmox_api(spec, state)
     token_missing = _secret_missing(spec["platform"]["proxmox"]["credentials"]["tokenSecret"], config_dir)
     if api.pending and (token_missing or not api.fingerprint):
@@ -659,7 +659,7 @@ def proxmox_pending(spec: dict, config_dir: FsPath, state) -> Tuple[Optional[str
                                                  ("the API certificate's pin", not api.fingerprint)) if missing)
         return None, (f"Proxmox API checks pending: {api.name} isn't set up by dciab hypervisors yet (its install "
                       f"record in {state}/installs/ doesn't say post: done), so {what} can't exist yet. Run "
-                      "--live again after dciab hypervisors")
+                      f"--live again after dciab hypervisors{held_hint(api)}")
     return api.fingerprint, None
 
 

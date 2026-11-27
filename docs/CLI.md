@@ -23,9 +23,9 @@ Steps that change the host run as root. `services`, `hypervisors`, `templates`, 
 
 Where the bootstrap stands, read-only: the Day 0 pod, the platform CA and registry certificate, the seed registry, the bootstrap cluster, and where MGMT's Cluster lives. Run it as root: the state folder is root-only, and without root it can't read it. Exit code `0` when every check that applies is ok, `1` otherwise.
 
-### `dciab cluster-values <config> <cluster> [--trust-bundle FILE] [-o FILE]`
+### `dciab cluster-values <config> <cluster> [--state DIR] [--trust-bundle FILE] [-o FILE]`
 
-Prints a cluster's `capi-cluster` chart values, generated from the config: `mgmt`, `infra` or a workload cluster (`--list` names them). `-o FILE` writes them to a file (mode 600). With `pki.mode: generate-root`, pass `--trust-bundle <state>/pki/trust-bundle.pem` once `seed` has created the platform CA. `dciab mgmt` runs it for MGMT.
+Prints a cluster's `capi-cluster` chart values, generated from the config: `mgmt`, `infra` or a workload cluster (`--list` names them). `-o FILE` writes them to a file (mode 600). With `pki.mode: generate-root`, pass `--trust-bundle <state>/pki/trust-bundle.pem` once `seed` has created the platform CA. It validates the config first; `--state` names the steps' state folder, whose install records that check reads on a bare Proxmox VE site ([VALIDATE.md](VALIDATE.md)). `dciab mgmt` runs it for MGMT with its own `--state`.
 
 ### `dciab verify-archive (--key PUB | --checksums-only) [--cosign BIN] [ARCHIVE]`
 

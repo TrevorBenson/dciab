@@ -44,13 +44,17 @@ Exit codes: `0` valid (warnings allowed), `1` not valid, `2` could not run. `--o
 
 ## Before the hypervisors are installed
 
-On a site that starts from bare servers, `platform.proxmox.url` names a host that `dciab hypervisors` installs. Until it has, two values can't exist: the CAPMOX token, which its `post` creates and writes where `credentials.tokenSecret` points, and the API certificate, which `post` pins on first contact in the host's install record (`<state>/installs/<host>.json`, [HYPERVISORS.md](HYPERVISORS.md#post-install)). While that record doesn't say `post: done`:
+On a site that starts from bare servers, `platform.proxmox.url` names a host that `dciab hypervisors` installs and that is one of `platform.proxmox.nodes` (`post` sets up only those). Until it has, two values can't exist: the CAPMOX token, which its `post` creates and writes where `credentials.tokenSecret` points, and the API certificate, which `post` pins on first contact in the host's install record (`<state>/installs/<host>.json`, [HYPERVISORS.md](HYPERVISORS.md#post-install)). While that record doesn't say `post: done`:
 
 - a missing or empty token file (or an unset `{env: …}`) is a **pending** note, not an error;
 - `tlsFingerprint` may be left out (a pending note): once `post` has run, the API is trusted by the pin in the install record. A `tlsFingerprint` the config gives must match the certificate;
 - `--live` reports the Proxmox API checks (the token, nodes, template, storage, bridge, and the Proxmox CSI token) as pending, and runs every other check.
 
-Once `post` is done, the token file must exist (the error says how to reopen its sealed copy), and `--live` checks the API with it. The install records are read from the state folder the steps use by default ([STATE.md](STATE.md)); give `--state DIR` when the steps use another. With no install record (validating on a laptop, for example), the values are pending. If the host already ran Proxmox VE before DCiaB, `dciab hypervisors` doesn't set it up: give the token and `tlsFingerprint` yourself ([PROXMOX.md](PROXMOX.md)).
+Once `post` is done, the token file must exist (the error says how to reopen its sealed copy), and `--live` checks the API with it. The install records are read from the state folder the steps use by default ([STATE.md](STATE.md)); give `--state DIR` when the steps use another. The steps that validate the config before they run (`services`, `templates`, `seed`, `cluster-values` and so `mgmt`) pass their own `--state` on.
+
+- **No install record** (validating on a laptop, or before `dciab hypervisors` has run): the values are pending.
+- **An install record that can't be read** (not JSON, or the state folder can't be read, for example without root on the appliance): an error, not pending. Run as root, with `--state` naming the steps' state folder, or repair the record.
+- **A host `dciab hypervisors` held** because it found an OS already there gets no install record, so validate can't tell it from one not installed yet: it stays pending, and the pending note says so. Such a host (and any Proxmox VE that ran before DCiaB) isn't set up by `post`: give the token and `tlsFingerprint` yourself ([PROXMOX.md](PROXMOX.md)), which ends the pending notes.
 
 ## Live checks
 
