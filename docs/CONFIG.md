@@ -97,6 +97,10 @@ See also: [the Proxmox VE API tokens](PROXMOX.md), [dciab mgmt](MGMT.md), [ADR 0
 | `spec.platform.proxmox.credentials` | object | required |  |  | CAPMOX's API token. docs/PROXMOX.md lists the privileges it needs; validate --live checks them |
 | `spec.platform.proxmox.credentials.tokenID` | string | required |  | `^[^@\s]+@[^!\s]+![^\s]+$` | an API token ID such as dciab@pve!capmox |
 | `spec.platform.proxmox.credentials.tokenSecret` | [secretRef](#types) | required |  |  | the token's secret, a secret reference. When url names a host spec.hypervisors installs, dciab hypervisors creates the token and writes its secret to this file (validate reports it as pending until then); on the bootstrap appliance, a file under ./secrets/ |
+| `spec.platform.proxmox.templateImport` | object | optional |  |  | how dciab templates logs in to publish the node template on templateNode. Unset: as root@pam with the root password, only on a host dciab hypervisors installed; any other Proxmox VE needs this block, or a template published by hand (docs/TEMPLATES.md) |
+| `spec.platform.proxmox.templateImport.credentials` | object | required |  |  | an API token of its own, never CAPMOX's, with exactly the privileges docs/PROXMOX.md lists for the node template; validate --live checks them |
+| `spec.platform.proxmox.templateImport.credentials.tokenID` | string | required |  | `^[^@\s]+@[^!\s]+![^\s]+$` | an API token ID such as template@pve!dciab |
+| `spec.platform.proxmox.templateImport.credentials.tokenSecret` | [secretRef](#types) | required |  |  | the token's secret, a secret reference |
 
 ## spec.kubernetes
 
@@ -569,6 +573,10 @@ Used at: `proxmoxCSI` in [blockStorage](#blockstorage), `overrides.infra.proxmox
 | `credentials` | object | required |  |  | the Proxmox CSI plugin's API token |
 | `credentials.tokenID` | string | required |  | `^[^@\s]+@[^!\s]+![^\s]+$` | an API token of its own, not CAPMOX's, such as csi@pve!dciab (docs/PROXMOX.md) |
 | `credentials.tokenSecret` | [secretRef](#types) | required |  |  | the token's secret, a secret reference. When url names a host spec.hypervisors installs, dciab hypervisors creates the token and writes its secret to this file (validate reports it as pending until then); on the bootstrap appliance, a file under ./secrets/ |
+| `templateImport` | object | optional |  |  | how dciab templates logs in to publish the node template on templateNode. Unset: as root@pam with the root password, only on a host dciab hypervisors installed; any other Proxmox VE needs this block, or a template published by hand (docs/TEMPLATES.md) |
+| `templateImport.credentials` | object | required |  |  | an API token of its own, never CAPMOX's, with exactly the privileges docs/PROXMOX.md lists for the node template; validate --live checks them |
+| `templateImport.credentials.tokenID` | string | required |  | `^[^@\s]+@[^!\s]+![^\s]+$` | an API token ID such as template@pve!dciab |
+| `templateImport.credentials.tokenSecret` | [secretRef](#types) | required |  |  | the token's secret, a secret reference |
 
 ### cephCSI
 

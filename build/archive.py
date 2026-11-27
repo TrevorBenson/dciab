@@ -7,6 +7,7 @@
     python3 build/archive.py providers --out DIR --manifests FOLDER
     python3 build/archive.py binaries --out DIR
     python3 build/archive.py nodes    --out DIR [--oras PATH] [--require-built]
+    python3 build/archive.py nodes    --out DIR --local-disk PLATFORM=FILE ...
     python3 build/archive.py sums     --out DIR
 
 - digests: for each image the inventory lists without a digest, resolves its tag at the
@@ -24,6 +25,8 @@
 - nodes: pulls each node disk bundle.lock pins (nodeImages.published.disks) into
   DIR/nodes/<platform>/ and checks its sha256; DIR/nodes/nodes.yaml lists them. A disk not
   published yet is skipped with a note; --require-built refuses a missing Proxmox disk.
+  --local-disk lays out a disk built here instead (the lab tests a fresh build of the recipe
+  this way), in the same form, with its ref "local:<file name>"; nothing is pulled.
 - sums: writes DIR/SHA256SUMS for every file in DIR. Signing will sign this file.
 
 Every step is safe to rerun: what is already there and correct is kept. Needs network
@@ -413,6 +416,30 @@ def disk_list(lock: dict) -> List[tuple]:
     return out
 
 
+def local_nodes(disks: Dict[str, Path], out: Path) -> List[dict]:
+    """Lay out disks built on this host (platform -> file) as pull_nodes does, without bundle.lock:
+    DIR/nodes/<platform>/<file>, its .sha256sum and nodes.yaml."""
+    dest = staging(out, "nodes")
+    record = []
+    for platform, src in sorted(disks.items()):
+        if not re.fullmatch(r"[a-z0-9]+", platform):
+            raise ArchiveError(f"--local-disk {platform}=...: not a platform name")
+        if not src.is_file() or not DISK_FILE.fullmatch(src.name):
+            raise ArchiveError(f"--local-disk {platform}={src}: not a file with a plain name")
+        folder = dest / platform
+        folder.mkdir()
+        disk = folder / src.name
+        shutil.copyfile(src, disk)
+        got = sha256_file(disk)
+        (folder / f"{src.name}.sha256sum").write_text(f"{got}  {src.name}\n")
+        record.append({"platform": platform, "file": f"nodes/{platform}/{src.name}", "sha256": got,
+                       "ref": f"local:{src.name}"})
+        print(f"nodes {platform} {src.name} {got} (local)")
+    (dest / "nodes.yaml").write_text(yaml.safe_dump({"disks": record}, sort_keys=False))
+    replace_dir(dest, out / "nodes")
+    return record
+
+
 def pull_nodes(lock: dict, out: Path, runner: Runner = run, oras: str = "oras",
                require_built: bool = False) -> List[dict]:
     """Pull every pinned node disk into DIR/nodes/<platform>/ and check it against bundle.lock."""
@@ -501,6 +528,8 @@ def main(argv=None) -> int:
     n.add_argument("--oras", default="oras", help="the oras binary (archive.py binaries puts one in DIR/bin)")
     n.add_argument("--require-built", action="store_true",
                    help="refuse while a required node disk isn't published and pinned (the full archive)")
+    n.add_argument("--local-disk", action="append", default=[], metavar="PLATFORM=FILE",
+                   help="lay out a disk built on this host instead of pulling the pinned ones (repeatable)")
     s = sub.add_parser("sums", help="write DIR/SHA256SUMS")
     s.add_argument("--out", type=Path, required=True)
     args = p.parse_args(argv)
@@ -534,6 +563,11 @@ def main(argv=None) -> int:
                 if unknown:
                     raise ArchiveError(f"--only: no such binary: {', '.join(unknown)}")
             fetch_binaries(lock, args.out, print_sums=args.print_sums, binaries=chosen)
+        elif args.cmd == "nodes" and args.local_disk:
+            pairs = [d.partition("=") for d in args.local_disk]
+            if any(not sep or not f for _, sep, f in pairs):
+                raise ArchiveError("--local-disk takes PLATFORM=FILE")
+            local_nodes({p: Path(f) for p, _, f in pairs}, args.out)
         elif args.cmd == "nodes":
             pull_nodes(load_lock(), args.out, oras=args.oras, require_built=args.require_built)
         elif args.cmd == "sums":

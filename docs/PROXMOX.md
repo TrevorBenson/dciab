@@ -1,6 +1,6 @@
 # Proxmox VE: the API tokens DCiaB uses
 
-DCiaB and CAPMOX reach Proxmox VE only through its API, with one API token. The Proxmox CSI plugin, when it is the block storage (`spec.storage.block.provider: proxmox-csi`), has a token of its own ([below](#the-proxmox-csi-plugins-token)). Nothing DCiaB runs needs SSH to a Proxmox VE host. The token belongs to a dedicated user and is privilege-separated (`privsep=1`): its privileges are what both the user's and the token's ACLs grant, so each ACL is set for both.
+DCiaB and CAPMOX reach Proxmox VE only through its API, with one API token. The Proxmox CSI plugin, when it is the block storage (`spec.storage.block.provider: proxmox-csi`), has a token of its own ([below](#the-proxmox-csi-plugins-token)), and so does `dciab templates` on a Proxmox VE that DCiaB didn't install ([below](#the-node-templates-token)). Nothing DCiaB runs needs SSH to a Proxmox VE host. The token belongs to a dedicated user and is privilege-separated (`privsep=1`): its privileges are what both the user's and the token's ACLs grant, so each ACL is set for both.
 
 This page lists exactly what each token needs on Proxmox VE 9. `dciab validate --live` reads the token's effective privileges (`GET /access/permissions`) and reports anything missing as an error, and anything that could change permissions or the hosts (`Permissions.Modify`, `User.Modify`, `Sys.Modify`, `Sys.PowerMgmt`, `Sys.Console`, `Realm.Allocate`, `Group.Allocate`) as a warning. Both come from `lib/dciab_validate/proxmox_privs.py`, which this page must match (a test checks it).
 
@@ -22,7 +22,7 @@ Notes:
 - **Guest agent.** CAPMOX reads cloud-init's status inside each machine with the QEMU guest agent's `guest-exec`, which needs `VM.GuestAgent.Unrestricted` on Proxmox VE 9 (`VM.Monitor` was dropped). That privilege lets the token run commands inside machines it manages; it covers only `/vms`.
 - **Bootstrap ISOs.** CAPMOX uploads each machine's bootstrap data as `local:iso/user-data-<vmid>.iso` and deletes it with the machine. Deleting needs `Datastore.Allocate` on `local`, which also allows deleting other volumes there. Keep templates and other images off `local` if that matters to the site.
 - **No pool.** CAPMOX doesn't put machines in a pool, so the VM privileges propagate from `/vms`. They don't reach the hosts or other users.
-- **The template.** Publishing a node template is a separate, one-time task with its own credentials. It isn't part of this token.
+- **The template.** Publishing the node template is a separate, one-time task with its own credentials ([below](#the-node-templates-token)). It isn't part of this token.
 
 ## Creating them
 
@@ -78,3 +78,38 @@ pveum acl modify /storage/<csi storage> --users csi@pve --tokens 'csi@pve!dciab'
 ```
 
 Put its secret where `proxmoxCSI.credentials.tokenSecret` points, with `tokenID: csi@pve!dciab`.
+
+## The node template's token
+
+`dciab templates` publishes the node template ([TEMPLATES.md](TEMPLATES.md)). On a host `dciab hypervisors` installed it logs in as `root@pam`, as `post` does. Anywhere else it needs a token of its own, `spec.platform.proxmox.templateImport.credentials`, never CAPMOX's (`dciab validate` refuses the same token ID). It is a one-time task, so the token can be removed once the template is published, and made again for the next one. `dciab validate --live` checks this token the same way as the others.
+
+| Role | Path | Propagate | Privileges | Why |
+| --- | --- | --- | --- | --- |
+| `DCiaBTemplateNodes` | `/nodes` | yes | `Sys.Audit` | see the node, its storage and its tasks |
+| `DCiaBTemplateVM` | `/vms/<templateID>` | no | `VM.Allocate`, `VM.Audit`, `VM.Config.CPU`, `VM.Config.Disk`, `VM.Config.HWType`, `VM.Config.Memory`, `VM.Config.Network`, `VM.Config.Options` | create the template at templateID, and only there |
+| `DCiaBTemplateStorage` | `/storage/<storage>` | no | `Datastore.AllocateSpace`, `Datastore.Audit` | the template's disk |
+| `DCiaBTemplateUpload` | `/storage/local` | no | `Datastore.Allocate`, `Datastore.AllocateTemplate`, `Datastore.Audit` | upload the node disk (content type import), allow that type, delete the upload |
+| `DCiaBTemplateNetwork` | `/sdn/zones/localnetwork/<bridge>/<vlanTag>` | no | `SDN.Use` | the template's NIC on the bridge (and VLAN) |
+
+When `<storage>` is `local`, `DCiaBTemplateStorage` and `DCiaBTemplateUpload` are one role on `/storage/local` with the privileges of both.
+
+Notes:
+- **One VM ID.** The VM privileges are on `/vms/<templateID>` only, not propagated: the token can't touch any other VM, and `--replace` can delete only what is at that ID.
+- **The upload.** The node disk goes to `local` as the content type `import`. `Datastore.AllocateTemplate` uploads it; `Datastore.Allocate` deletes it afterwards and lets the step add `import` to `local`'s content types, the same as CAPMOX's bootstrap ISOs need there.
+
+```console
+pveum role add DCiaBTemplateNodes --privs "Sys.Audit"
+pveum role add DCiaBTemplateVM --privs "VM.Allocate,VM.Audit,VM.Config.CPU,VM.Config.Disk,VM.Config.HWType,VM.Config.Memory,VM.Config.Network,VM.Config.Options"
+pveum role add DCiaBTemplateStorage --privs "Datastore.AllocateSpace,Datastore.Audit"
+pveum role add DCiaBTemplateUpload --privs "Datastore.Allocate,Datastore.AllocateTemplate,Datastore.Audit"
+pveum role add DCiaBTemplateNetwork --privs "SDN.Use"
+pveum user add template@pve --comment "DCiaB: node template"
+pveum user token add template@pve dciab --privsep 1
+pveum acl modify /nodes --users template@pve --tokens 'template@pve!dciab' --roles DCiaBTemplateNodes --propagate 1
+pveum acl modify /vms/<templateID> --users template@pve --tokens 'template@pve!dciab' --roles DCiaBTemplateVM --propagate 0
+pveum acl modify /storage/<storage> --users template@pve --tokens 'template@pve!dciab' --roles DCiaBTemplateStorage --propagate 0
+pveum acl modify /storage/local --users template@pve --tokens 'template@pve!dciab' --roles DCiaBTemplateUpload --propagate 0
+pveum acl modify /sdn/zones/localnetwork/<bridge>/<vlanTag> --users template@pve --tokens 'template@pve!dciab' --roles DCiaBTemplateNetwork --propagate 0
+```
+
+Put its secret where `templateImport.credentials.tokenSecret` points, with `tokenID: template@pve!dciab`.

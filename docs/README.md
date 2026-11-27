@@ -23,6 +23,7 @@ People who plan a site, write its config and run the steps.
 | [MEDIA.md](MEDIA.md) | `dciab media`: the archive onto the bootstrap host's work disk |
 | [SERVICES.md](SERVICES.md) | `dciab services`: Day 0 DNS, NTP and HTTP on the bootstrap host, and taking them away |
 | [HYPERVISORS.md](HYPERVISORS.md) | `dciab hypervisors`: Proxmox VE onto bare servers over Redfish |
+| [TEMPLATES.md](TEMPLATES.md) | `dciab templates`: the Proxmox VE node template from the archive's node disk |
 | [SEED.md](SEED.md) | `dciab seed`: seed DNS, the seed registry, the platform CA and the bootstrap cluster |
 | [MGMT.md](MGMT.md) | `dciab mgmt`: building MGMT and moving Cluster API into it |
 | [TROUBLESHOOTING.md](TROUBLESHOOTING.md) | What to do when a step stops, by symptom |

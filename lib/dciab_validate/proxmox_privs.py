@@ -1,5 +1,6 @@
 """The exact Proxmox VE privileges DCiaB's API tokens need, by ACL path (Proxmox VE 9): the
-CAPMOX token, and the Proxmox CSI plugin's own token (spec.storage.block proxmoxCSI).
+CAPMOX token, the Proxmox CSI plugin's own token (spec.storage.block proxmoxCSI), and the token
+`dciab templates` publishes the node template with (spec.platform.proxmox.templateImport).
 
 One source of truth: docs/PROXMOX.md is written from it (tests check they agree), and
 `dciab validate --live` compares the token's effective privileges with it.
@@ -90,6 +91,45 @@ def csi_grants(csi: dict) -> List[Grant]:
         Grant("DCiaBCSIStorage", f"/storage/{csi['storage']}", False, CSI_STORAGE_PRIVILEGES,
               "create, resize and delete volumes on the storage"),
     ]
+
+
+# `dciab templates`: upload the node disk to `local` (content type import), create the template
+# VM at templateID from it on the storage, convert it to a template, delete the upload.
+TEMPLATE_IMPORT_STORAGE = BOOTSTRAP_ISO_STORAGE
+TEMPLATE_VM_PRIVILEGES = (
+    "VM.Allocate",            # create the VM, make it a template, delete it with --replace
+    "VM.Audit",               # read its config and status (is it ours, is it a template)
+    "VM.Config.CPU",
+    "VM.Config.Disk",         # the disk imported from the upload
+    "VM.Config.HWType",       # SCSI controller, BIOS, serial console
+    "VM.Config.Memory",
+    "VM.Config.Network",      # its NIC on the bridge
+    "VM.Config.Options",      # name, description (the disk's sha256), tags, boot order, agent
+)
+
+
+def template_grants(px: dict) -> List[Grant]:
+    """Every ACL the node template's token needs for spec.platform.proxmox: one VM ID, the
+    template's storage, the upload storage and the bridge."""
+    out = [
+        Grant("DCiaBTemplateNodes", "/nodes", True, ("Sys.Audit",), "see the node, its storage and its tasks"),
+        Grant("DCiaBTemplateVM", f"/vms/{px['templateID']}", False, TEMPLATE_VM_PRIVILEGES,
+              "create the template at templateID, and only there"),
+    ]
+    disks = ("Datastore.AllocateSpace", "Datastore.Audit")
+    upload = ("Datastore.Allocate", "Datastore.AllocateTemplate", "Datastore.Audit")
+    if px["storage"] == TEMPLATE_IMPORT_STORAGE:
+        out.append(Grant("DCiaBTemplateStorage", f"/storage/{px['storage']}", False, tuple(sorted(set(disks + upload))),
+                         "the template's disk, and the uploaded node disk"))
+    else:
+        out.append(Grant("DCiaBTemplateStorage", f"/storage/{px['storage']}", False, disks, "the template's disk"))
+        out.append(Grant("DCiaBTemplateUpload", f"/storage/{TEMPLATE_IMPORT_STORAGE}", False, upload,
+                         "upload the node disk (content type import), allow that type, delete the upload"))
+    sdn = f"/sdn/zones/localnetwork/{px['bridge']}"
+    if px.get("vlanTag"):
+        sdn += f"/{px['vlanTag']}"
+    out.append(Grant("DCiaBTemplateNetwork", sdn, False, ("SDN.Use",), "the template's NIC on the bridge (and VLAN)"))
+    return out
 
 
 # Privileges that would let the token change who can do what, or the hosts themselves.

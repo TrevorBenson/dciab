@@ -1026,3 +1026,34 @@ def test_live_after_post_trusts_the_install_records_pin(cert, servers, monkeypat
     (state / "installs" / "pve01.json").write_text(json.dumps(rec))
     [f] = dict(live.tasks(spec, tmp_path, 3, state))["Proxmox API"]().findings
     assert "not the pinned one" in f.found
+
+
+# --- the node template's token (dciab templates) -------------------------------------------------
+
+def test_template_import_token_is_checked(cert, servers, monkeypatch, tmp_path):
+    from urllib.parse import quote
+
+    from dciab_validate.proxmox_privs import template_grants
+    monkeypatch.setenv("DCIAB_TEMPLATE_TOKEN", "tpl")
+    spec = proxmox_spec(0, cert["sha256"])
+    px = spec["platform"]["proxmox"]
+    px["templateImport"] = {"credentials": {"tokenID": "template@pve!dciab",
+                                            "tokenSecret": {"env": "DCIAB_TEMPLATE_TOKEN"}}}
+
+    def routes(drop=None):
+        r = {("GET", "/api2/json/version"): (200, {"data": {"version": "9.1.1"}}),
+             ("GET", "/api2/json/access/permissions?path=%2F"): (200, {"data": {"/": {}}})}
+        for g in template_grants(px):
+            r[("GET", f"/api2/json/access/permissions?path={quote(g.path, safe='')}")] = \
+                (200, {"data": {g.path: {p: int(g.propagate) for p in g.privileges if p != drop}}})
+        return r
+    srv = servers(cert, routes(), {"PVEAPIToken=template@pve!dciab=tpl"})
+    px["url"] = f"https://127.0.0.1:{srv.port}"
+    r = live.check_template_import(spec, tmp_path, 3)
+    assert r.findings == [] and any("template@pve!dciab has every privilege" in n for n in r.notes)
+    srv = servers(cert, routes(drop="VM.Config.Disk"), {"PVEAPIToken=template@pve!dciab=tpl"})
+    px["url"] = f"https://127.0.0.1:{srv.port}"
+    [f] = live.check_template_import(spec, tmp_path, 3).findings
+    assert f.path == ("spec", "platform", "proxmox", "templateImport", "credentials", "tokenID")
+    assert "/vms/9010: VM.Config.Disk" in f.found and "node template" in f.fix
+    assert "node template token" in [n for n, _ in live.tasks(spec, tmp_path, 3)]

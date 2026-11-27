@@ -2,7 +2,7 @@ name: lab
 
 # The entry point for the lab's infrastructure tests, run by hand from the Actions tab (main
 # only: the runner refuses every other ref). It chains the reusable workflows:
-#   template  build and publish the node template, test a clone      (task 0006)
+#   template  build the node template, publish it with dciab templates, test a clone (task 0006)
 #   cluster   a real cluster on that template                        (task 0003)
 #   mgmt      dciab seed and dciab mgmt                              (task 0007)
 # "all" runs them in that order; each later job needs the one before, and skipped earlier
@@ -41,8 +41,6 @@ jobs:
     if: ${{ contains(fromJSON('["template","all"]'), inputs.run) }}
     uses: ./.github/workflows/lab-template.yml
     secrets: inherit
-    with:
-      name: ${{ inputs.template-name }}
 
   cluster:
     needs: [template]

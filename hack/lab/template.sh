@@ -1,13 +1,19 @@
 #!/usr/bin/env bash
 # Publish a node image as a Proxmox template, and test a clone of it. Through the API only.
 #
-#   hack/lab/template.sh publish DISK.qcow2 NAME    upload, create the VM, make it a template
+#   hack/lab/template.sh dciab DISK.qcow2           the product's step: lay DISK out as an archive payload
+#                                                   (build/archive.py nodes --local-disk), write a lab site
+#                                                   config, run `dciab templates` twice (the second must keep it)
+#   hack/lab/template.sh publish DISK.qcow2 NAME    by hand: upload, create the VM, make it a template
 #   hack/lab/template.sh test NAME                  clone, grow, boot, check, reboot, delete
 #   hack/lab/template.sh delete NAME                delete a template (by name)
 #
-# Environment: PVE_* (hack/lab/pve.sh), handoff/lab/network.yaml. The publish needs the
-# storage `import_storage` to allow the content type "import" (see handoff/LAB.md).
-# `publish` prints the new template's VMID on its last line; `test` fails on any check.
+# Environment: PVE_* (hack/lab/pve.sh: the publisher token, which `dciab` gets as the site's
+# templateImport token), CAPMOX_TOKEN_ID (the site's CAPMOX token ID; dciab templates never
+# uses it), handoff/lab/network.yaml. `publish` needs the storage `import_storage` to allow
+# the content type "import" (see handoff/LAB.md); `dciab templates` adds it to `local` itself.
+# `dciab` prints the template's name and `publish` its VMID on the last line; `test` fails
+# on any check.
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck disable=SC1091
@@ -52,6 +58,73 @@ publish() {
   lab_log "convert $vmid to a template"
   pve POST "$Q/$vmid/template" >/dev/null
   echo "$vmid"
+}
+
+# The product's step on the lab: dciab templates from a payload holding DISK, as a site whose
+# Proxmox VE already runs (templateImport: the publisher token). Run twice: the second must keep it.
+dciab_publish() {
+  local disk="${1:?disk}" work vmid cfg name addr iface root
+  [[ -f "$disk" ]] || lab_die "no such file: $disk"
+  root="$(cd "$HERE/../.." && pwd)"
+  work="$(mktemp -d)"; mkdir -p "$work/site"
+  python3 "$root/build/archive.py" nodes --out "$work/payload" --local-disk "proxmox=$disk" >&2
+  vmid="$(pve_free_vmid "$(lab_get vmid.template.first)" "$(lab_get vmid.template.last)")"
+  addr="$(ip -4 route get "$(lab_get network.gateway)" | sed -n 's/.* src \([0-9.]*\).*/\1/p' | head -1)"
+  iface="$(ip -4 route get "$(lab_get network.gateway)" | sed -n 's/.* dev \([^ ]*\).*/\1/p' | head -1)"
+  ssh-keygen -q -t ed25519 -N '' -f "$work/admin-key" >/dev/null
+  cfg="$work/site/dciab.yaml"
+  TPL="$vmid" ADDR="$addr" IFACE="$iface" PUB="$(cat "$work/admin-key.pub")" \
+    LAB_NETWORK="$root/handoff/lab/network.yaml" EXAMPLE="$root/examples/proxmox.yaml" python3 - <<'PY' > "$cfg"
+import os, yaml
+n = yaml.safe_load(open(os.environ["LAB_NETWORK"]))
+c = yaml.safe_load(open(os.environ["EXAMPLE"]))
+s, px, net, site, m = c["spec"], c["spec"]["platform"]["proxmox"], n["network"], n["site"], n["clusters"]["mgmt"]
+node = n["proxmox"]["node"]
+px.update(url=os.environ["PVE_URL"], tlsFingerprint=os.environ["PVE_TLS_FINGERPRINT"], nodes=[node], templateNode=node,
+          templateID=int(os.environ["TPL"]), storage=n["proxmox"]["storage"], bridge=n["proxmox"]["bridge"])
+px.pop("vlanTag", None)
+px["credentials"] = {"tokenID": os.environ["CAPMOX_TOKEN_ID"], "tokenSecret": {"env": "DCIAB_PVE_TOKEN"}}
+px["templateImport"] = {"credentials": {"tokenID": os.environ["PVE_TOKEN_ID"],
+                                        "tokenSecret": {"env": "DCIAB_TEMPLATE_TOKEN"}}}
+s["bootstrap"].update(interface=os.environ["IFACE"], address=os.environ["ADDR"], managementVLAN="untagged")
+s["network"].update(domain=site["domain"], upstreamResolvers=net["dns"], dnsServiceIPs=site["dnsServiceIPs"])
+s["network"].pop("isolated", None); s["network"].pop("storage", None)
+s["network"]["nodes"] = {"cidr": ".".join(net["gateway"].split(".")[:3]) + ".0/%d" % net["prefix"],
+                         "gateway": net["gateway"], "vlan": 1}
+s["time"] = {"servedBy": "site", "servers": net["ntp"]}
+s["failureDomains"] = {"domains": [{"name": node, "proxmox": {"node": node}}],
+                       "notHighlyAvailable": {"reason": "the lab has one Proxmox node"}}
+s["clusters"]["mgmt"].update(apiVIP=m["apiVIP"], nodeIPRange=m["nodeIPRange"], lbPool=site["lbPool"],
+                             podCIDR=m["podCIDR"], serviceCIDR=m["serviceCIDR"])
+i = s["clusters"]["infra"]
+i.update(apiVIP=site["infra"]["apiVIP"], nodeIPRange=site["infra"]["nodeIPRange"], lbPool=site["infra"]["lbPool"],
+         podCIDR=site["infra"]["podCIDR"], serviceCIDR=site["infra"]["serviceCIDR"])
+i.pop("storageIPRanges", None)
+s["pki"] = {"mode": "generate-root", "commonName": "DCiaB lab root CA"}
+s["identity"]["initialAdmins"] = [{"username": "ci", "email": "ci@lab.invalid", "sshPublicKey": os.environ["PUB"]}]
+s["storage"] = {"block": {"provider": "longhorn", "longhorn": {"replicaCount": 2}}}
+s["backup"]["targets"]["site"] = {"url": "nfs://%s:/exports/longhorn" % net["gateway"]}
+print(yaml.safe_dump(c, sort_keys=False))
+PY
+  # The tokens reach root's dciab through the environment, never on a command line.
+  export DCIAB_PVE_TOKEN="${CAPMOX_TOKEN_SECRET:-}" DCIAB_TEMPLATE_TOKEN="$PVE_TOKEN_SECRET"
+  # shellcheck disable=SC2054  # sudo's --preserve-env takes a comma-separated list
+  local run=(sudo --preserve-env=DCIAB_PVE_TOKEN,DCIAB_TEMPLATE_TOKEN "$root/dciab" templates "$cfg"
+             --state "$work/state" --payload "$work/payload")
+  # On failure: remove what this run may have left at its VMID (the lab range is CI's own).
+  failed() { sudo rm -rf "$work"; pve GET "$Q/$vmid/config" >/dev/null 2>&1 \
+    && { task "$(pve DELETE "$Q/$vmid?purge=1&destroy-unreferenced-disks=1")" || true; }; lab_die "$1"; }
+  "${run[@]}" >&2 || failed "dciab templates failed"
+  lab_log "dciab templates again: the template must be kept" >&2
+  local again
+  again="$("${run[@]}" 2>&1)" || { echo "$again" >&2; failed "the second dciab templates failed"; }
+  echo "$again" >&2
+  grep -q "template $vmid on $PVE_NODE: kept" <<<"$again" || failed "the second dciab templates didn't keep template $vmid"
+  name="$(python3 -c 'import sys, yaml; print("dciab-node-" + yaml.safe_load(open(sys.argv[1]))["disks"][0]["sha256"][:12])' \
+    "$work/payload/nodes/nodes.yaml")"
+  sudo rm -rf "$work"
+  [[ "$(pve_vmid_by_name "$name")" == "$vmid" ]] || lab_die "no template called $name at VMID $vmid"
+  echo "$name"
 }
 
 # SSH to the clone with a throwaway key; the key never leaves the runner.
@@ -118,8 +191,9 @@ delete_template() {
 }
 
 case "${1:-}" in
+  dciab) shift; dciab_publish "$@" ;;
   publish) shift; publish "$@" ;;
   test) shift; test_template "$@" ;;
   delete) shift; delete_template "$@" ;;
-  *) sed -n '2,10p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2; exit 2 ;;
+  *) sed -n '2,16p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//' >&2; exit 2 ;;
 esac

@@ -47,11 +47,12 @@ Each step has a page with its options and what it does. The bootstrap host is Ro
 | 2 | [`dciab media`](docs/MEDIA.md) | Copies and verifies the archive on the bootstrap host's work disk | Day 0 |
 | 3 | [`dciab services`](docs/SERVICES.md) | Bare servers only: DNS, NTP and HTTP on the bootstrap host | Day 0 |
 | 4 | [`dciab hypervisors`](docs/HYPERVISORS.md) | Bare servers only: installs the hypervisors through their BMCs | Day 0 |
-| 5 | [`dciab seed`](docs/SEED.md) | The platform CA, the seed registry and the bootstrap cluster | Day 0 |
-| 6 | [`dciab mgmt`](docs/MGMT.md) | Builds MGMT and moves Cluster API into it | Day 0 |
-| 7 | `dciab infra` | Builds INFRA: Argo CD, Forgejo, OpenBao, CloudNativePG | Day 1 |
-| 8 | `dciab platform` | Pushes the platform's repositories; Argo CD and OpenTofu bring up the rest | Day 1 |
-| 9 | `dciab finalize` | Moves the images to INFRA's registry and retires the bootstrap host | Day 1 |
+| 5 | [`dciab templates`](docs/TEMPLATES.md) | Proxmox VE: publishes the node template from the archive, unless it is there | Day 0 |
+| 6 | [`dciab seed`](docs/SEED.md) | The platform CA, the seed registry and the bootstrap cluster | Day 0 |
+| 7 | [`dciab mgmt`](docs/MGMT.md) | Builds MGMT and moves Cluster API into it | Day 0 |
+| 8 | `dciab infra` | Builds INFRA: Argo CD, Forgejo, OpenBao, CloudNativePG | Day 1 |
+| 9 | `dciab platform` | Pushes the platform's repositories; Argo CD and OpenTofu bring up the rest | Day 1 |
+| 10 | `dciab finalize` | Moves the images to INFRA's registry and retires the bootstrap host | Day 1 |
 
 `dciab status` shows where the bootstrap stands at any point; every command is in [docs/CLI.md](docs/CLI.md).
 

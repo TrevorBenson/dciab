@@ -36,7 +36,7 @@ import ssl
 import time
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple
-from urllib.parse import quote, urlencode, urlsplit
+from urllib.parse import quote, urlencode
 
 from dciab_validate.probes import HttpsClient, ProbeError, Trust, fingerprint_matches, format_fingerprint
 
@@ -117,9 +117,74 @@ def trust_for(host: dict, doc: dict, record: dict, seen: Callable[[str], bytes] 
 class PveApi:
     """The Proxmox VE API of one host, logged in with a ticket."""
 
-    def __init__(self, address: str, fingerprint: str, timeout: float = 30.0, port: int = 8006):
-        self.client = HttpsClient(f"https://{address}:{port}", Trust(fingerprint=fingerprint), timeout)
+    def __init__(self, address: str, fingerprint: str, timeout: float = 30.0, port: int = 8006, url: Optional[str] = None):
+        self.client = HttpsClient(url or f"https://{address}:{port}", Trust(fingerprint=fingerprint), timeout)
         self.headers: Dict[str, str] = {}
+
+    @classmethod
+    def from_url(cls, url: str, fingerprint: str, timeout: float = 30.0) -> "PveApi":
+        return cls("", fingerprint, timeout, url=url.rstrip("/"))
+
+    def use_token(self, tokenid: str, secret: str) -> None:
+        """Authenticate every request with an API token instead of a ticket."""
+        self.headers = {"Authorization": f"PVEAPIToken={tokenid}={secret}"}
+
+    def delete(self, path: str) -> object:
+        return self._send("DELETE", path)
+
+    def upload(self, path: str, fields: Dict[str, str], filename: str, fileobj, size: int,
+               timeout: float = 3600.0) -> object:
+        """POST a multipart form with `fields` first, then the file (Proxmox VE reads the fields
+        before the file part), streamed with a Content-Length: never all in memory."""
+        import uuid
+        boundary = f"dciab-{uuid.uuid4().hex}"
+        head = b"".join(f'--{boundary}\r\nContent-Disposition: form-data; name="{k}"\r\n\r\n{v}\r\n'.encode()
+                        for k, v in fields.items())
+        head += (f'--{boundary}\r\nContent-Disposition: form-data; name="filename"; filename="{filename}"\r\n'
+                 "Content-Type: application/octet-stream\r\n\r\n").encode()
+        tail = f"\r\n--{boundary}--\r\n".encode()
+
+        def body():
+            yield head
+            while True:
+                chunk = fileobj.read(1 << 20)
+                if not chunk:
+                    break
+                yield chunk
+            yield tail
+        headers = dict(self.headers, **{"Content-Type": f"multipart/form-data; boundary={boundary}",
+                                        "Content-Length": str(len(head) + size + len(tail))})
+        old = self.client.timeout
+        self.client.timeout = max(old, timeout)
+        try:
+            resp = self.client.request("POST", "/api2/json" + path, headers, body())
+        except ProbeError as exc:
+            raise PostError(str(exc)) from None
+        finally:
+            self.client.timeout = old
+        if resp.status != 200:
+            raise PostError(f"{self.client.where}: POST {path} (upload) answered HTTP {resp.status}")
+        try:
+            return resp.json().get("data") if resp.body else None
+        except (ProbeError, AttributeError, ValueError):
+            return None
+
+    def wait_task(self, node: str, upid: object, timeout: float = 3600.0, interval: float = 2.0,
+                  sleep: Callable[[float], None] = time.sleep, what: str = "the task") -> None:
+        """Wait for a worker task (a UPID an API call returned) to stop; fail unless it ended OK.
+        Anything but a UPID string means the call finished at once."""
+        if not isinstance(upid, str) or not upid.startswith("UPID:"):
+            return
+        deadline = time.monotonic() + timeout
+        while True:
+            st = self.get(f"/nodes/{quote(node)}/tasks/{quote(upid, safe='')}/status") or {}
+            if isinstance(st, dict) and st.get("status") == "stopped":
+                if st.get("exitstatus") != "OK":
+                    raise PostError(f"{what} failed on {node}: {st.get('exitstatus')}")
+                return
+            if time.monotonic() > deadline:
+                raise PostError(f"{what} on {node} didn't finish within {timeout:g}s ({upid})")
+            sleep(interval)
 
     def _send(self, method: str, path: str, form: Optional[dict] = None, ok=(200,)) -> object:
         body = None

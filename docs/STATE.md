@@ -36,7 +36,7 @@ The folder is mode 700 and owned by root once a root step has run. Under `sudo`,
 | `answers/<host>.root-password.age` | `hypervisors` | sealed | A host's generated root password (when `spec.hypervisors.rootPassword` isn't set) |
 | `answers/<host>.root-hash`, `.root-salt` | `hypervisors` | yes | The password's hash and salt, so reruns write the same answer file |
 | `host-isos/<host>.iso` | `hypervisors` | yes | Each host's installer ISO, with its answer file (and root password hash) inside |
-| `installs/<host>.json` | `hypervisors` | no | The install record: what was installed, its media and post-install state, the pinned API certificate. The reinstall guard reads it ([HYPERVISORS.md](HYPERVISORS.md#the-reinstall-guard)) |
+| `installs/<host>.json` | `hypervisors` | no | The install record: what was installed, its media and post-install state, the pinned API certificate. The reinstall guard reads it ([HYPERVISORS.md](HYPERVISORS.md#the-reinstall-guard)), and so do `validate` (is a bare site's Proxmox VE set up yet, [VALIDATE.md](VALIDATE.md#before-the-hypervisors-are-installed)) and `templates` (may it log in as root, and by which certificate) |
 | `proxmox/<host>.token.age` | `hypervisors` (`post`) | sealed | The CAPMOX API token's secret for each host DCiaB installed. A replaced token's file is kept as `.replaced-<time>`. For the host `platform.proxmox.url` names, `post` also writes the secret in plain text where `tokenSecret` points ([below](#outside-the-state-folder)) |
 | `mgmt-values.yaml` | `mgmt` | no | MGMT's `capi-cluster` values |
 | `mgmt.kubeconfig` | `mgmt` | yes | Admin access to MGMT (the certificate kubeconfig: break-glass) |

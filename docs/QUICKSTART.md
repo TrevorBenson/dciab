@@ -2,7 +2,7 @@
 
 One run in order, on the bootstrap appliance, from bare servers to MGMT on Proxmox VE. Each step says how to check it worked before going on. Plan the site first ([PLAN.md](PLAN.md)); what is built today is in [ROADMAP.md](ROADMAP.md).
 
-- **A site whose Proxmox VE already runs** skips steps 4 and 5: its API token and fingerprint exist from the start, and the config gives them. It needs step 6 only if the node template isn't on `templateNode` yet.
+- **A site whose Proxmox VE already runs** skips steps 4 and 5: its API token and fingerprint exist from the start, and the config gives them. It needs step 6 only if the node template isn't on `templateNode` yet, and then a token for it in the config (`platform.proxmox.templateImport`, [TEMPLATES.md](TEMPLATES.md#credentials)).
 - **A Rocky Linux 10 host you provide** skips step 2's appliance install: unpack the archive there, use its `./dciab` wherever this page says `dciab`, and set the paths below for that host. Its config isn't copied from a stick, so edit the config and its secrets where they are, wherever this page says to edit the stick's copy.
 
 ## 1. Prepare the USB stick and the config
@@ -74,7 +74,7 @@ $ sudo ./dciab hypervisors $CFG --state $STATE --isos $ISOS --print
 $ sudo ./dciab hypervisors $CFG --state $STATE --isos $ISOS --age-identity ~/alice.agekey
 ```
 
-Each host is installed through its BMC, then set up for CAPMOX through the Proxmox VE API ([HYPERVISORS.md](HYPERVISORS.md)). `--age-identity` (one recipient's identity, copied to the bootstrap host for this run only) lets post-install open the generated root passwords.
+Each host is installed through its BMC, then set up for CAPMOX through the Proxmox VE API ([HYPERVISORS.md](HYPERVISORS.md)). `--age-identity` (one recipient's identity, copied to the bootstrap host for steps 5 and 6 only) lets post-install open the generated root passwords.
 
 > [!WARNING]
 > A host that shows any sign of an existing install is held, not wiped. `--reinstall <host>` overrides that and wipes it. Read [the reinstall guard](HYPERVISORS.md#the-reinstall-guard) before using it.
@@ -83,9 +83,16 @@ Each host is installed through its BMC, then set up for CAPMOX through the Proxm
 
 ## 6. The node template
 
-`dciab mgmt` clones its nodes from the template `templateID` on `templateNode`. A freshly installed host has none, and an existing Proxmox VE may not have it yet. DCiaB doesn't publish the template onto a host yet (node images in the archive, [ROADMAP.md](ROADMAP.md)): build it from the DCiaB node image recipe and import it at that ID on that node, without a Proxmox cloud-init drive (CAPMOX attaches its own).
+`dciab mgmt` clones its nodes from the template `templateID` on `templateNode`. A freshly installed host has none, and an existing Proxmox VE may not have it yet. Publish it from the archive's node disk, through the Proxmox VE API ([TEMPLATES.md](TEMPLATES.md)):
 
-**Check:** `sudo dciab validate $CFG --live` passes with no Proxmox errors.
+```console
+$ sudo ./dciab templates $CFG --state $STATE --print
+$ sudo ./dciab templates $CFG --state $STATE --age-identity ~/alice.agekey
+```
+
+On a host step 5 installed, it logs in as root with the host's root password (`--age-identity` opens a generated one); an existing Proxmox VE needs `platform.proxmox.templateImport` instead. A template already there from the same disk is kept, and anything else at `templateID` is left alone.
+
+**Check:** the step ends with `template <templateID> on <templateNode>: published` (or `kept`), and `sudo ./dciab validate $CFG --live` passes with no Proxmox errors. Then delete the identity you copied over, with `rm ~/alice.agekey`: anyone who can read it can open everything sealed to that recipient. Copy it over again for a later step that needs it, and keep the identities off the bootstrap host otherwise ([PLAN.md](PLAN.md#4-recipients-and-their-keys)).
 
 ## 7. Seed registry and bootstrap cluster
 

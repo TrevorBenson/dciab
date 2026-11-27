@@ -7,14 +7,14 @@ What the runner did by hand in tasks 0003, 0006 and 0007 now runs as GitHub Acti
 | Workflow | Kind | What it does | Task |
 | --- | --- | --- | --- |
 | `lab.yml` | entry, run by hand from the Actions tab | `run`: `template`, `cluster`, `mgmt` or `all`, in that order | all |
-| `lab-template.yml` | reusable | build the node image (root), publish it as a template through the API, test a 25G clone (growth, SELinux module, `guest-exec cloud-init status`, iSCSI, reboot) | 0006 |
+| `lab-template.yml` | reusable | build the node image (root), lay it out as an archive payload (`build/archive.py nodes --local-disk`), publish it with `dciab templates` (the publisher token as the site's `templateImport` token) and again (it must be kept), test a 25G clone (growth, SELinux module, `guest-exec cloud-init status`, iSCSI, reboot) | 0006 |
 | `lab-cluster.yml` | reusable | kind management cluster, `lab01` (3 control plane + 1 worker), Cilium, checks, replace a worker and a control plane node, always clean up | 0003 |
 | `lab-mgmt.yml` | reusable | payload (cached by `bundle.lock`), the capmox token checked live (`validate --live`), `dciab seed` twice, `dciab mgmt` with each step timed, MGMT manages itself, replace a node on MGMT, re-run changes nothing, no permission failure in CAPMOX's logs, always clean up and check that nothing is left | 0007, 0008 |
 | `.github/actions/lab-pve` | composite action | checks the TLS fingerprint, the token and the node; masks the secret | all |
 
 Rules every lab workflow follows (`tests/test_lab_runner.py`, `tests/test_lab_workflows.py`): `runs-on: [self-hosted, dciab-lab]`, no pull-request triggers, actions pinned by SHA, no inputs interpolated into `run:`. The **entry** workflow sets the `dciab-lab` concurrency group; reusable workflows must not repeat it (a called workflow that declares its caller's group is cancelled). Stages are separate reusable workflows because each is useful alone (publish a template without building a cluster) and because a later stage can take an existing template by name.
 
-Templates are found **by name**, never by VMID (VMIDs changed on every template build). The default name is `dciab-node-<commit>`.
+Templates are found **by name**, never by VMID (VMIDs changed on every template build). `dciab templates` names each after its disk, `dciab-node-<sha256[:12]>`; `lab-template.yml` outputs that name for the later stages.
 
 ## Environments and credentials
 
@@ -28,7 +28,7 @@ Both deploy from `main` only. The tokens and their privileges are in `handoff/LA
 ## Prerequisites on the lab (one time)
 
 - **The lab runner VM exists** (task 0011). Until then these workflows can't run.
-- **`local` storage allows the content type `import`**, so the publish can upload a disk image through the API and create the VM with `import-from`. As a Proxmox admin: `pvesm set local --content backup,vztmpl,iso,snippets,import` (keep the current list and add `import`). `hack/lab/template.sh publish` checks this and says so.
+- **`local` storage allows the content type `import`**, so the publish can upload a disk image through the API and create the VM with `import-from`. `dciab templates` adds it itself (the publisher token has `Datastore.Allocate` on `local`); for `hack/lab/template.sh publish` by hand, as a Proxmox admin: `pvesm set local --content backup,vztmpl,iso,snippets,import` (keep the current list and add `import`).
 - The addresses in `handoff/lab/network.yaml` are free: lab jobs and hand runs share them, so don't run both at once.
 
 ## Not done yet

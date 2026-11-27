@@ -184,6 +184,35 @@ def check_token_privileges(px: dict, get, r: Results, base: Path, want=None, tok
         r.note(f"token {token_id} has every privilege {what} lists")
 
 
+def check_template_import(spec: dict, config_dir: FsPath, timeout: float, fingerprint: Optional[str] = None) -> Results:
+    """The token dciab templates logs in with (templateImport): accepted, and exactly the
+    privileges docs/PROXMOX.md lists for the node template."""
+    from .proxmox_privs import template_grants
+    r = Results()
+    px = spec["platform"]["proxmox"]
+    base: Path = ("spec", "platform", "proxmox", "templateImport")
+    creds = px["templateImport"]["credentials"]
+    secret = read_secret(creds["tokenSecret"], config_dir)
+    client = HttpsClient(px["url"], Trust(fingerprint=fingerprint or px["tlsFingerprint"]), timeout)
+    auth = {"Authorization": f"PVEAPIToken={creds['tokenID']}={secret}"}
+
+    def get(path: str):
+        resp = client.request("GET", "/api2/json" + path, auth)
+        return resp.status, (resp.json().get("data") if resp.status == 200 else None)
+
+    try:
+        status, _ = get("/version")
+        if status in (401, 403):
+            r.error(base + ("credentials", "tokenID"), f"the API rejected token {creds['tokenID']} (HTTP {status})",
+                    f"check the token ID and the secret in {_secret_path(creds['tokenSecret'])}")
+            return r
+        check_token_privileges(px, get, r, base, want=template_grants(px), token_id=creds["tokenID"],
+                               what="docs/PROXMOX.md (node template)")
+    except ProbeError as exc:
+        r.error(("spec", "platform", "proxmox", "url"), str(exc), "check the network path to the Proxmox API")
+    return r
+
+
 def proxmox_csi_blocks(spec: dict) -> List[Tuple[Path, dict]]:
     """(path, proxmoxCSI settings) for each place the config gives the Proxmox CSI plugin's."""
     block = spec["storage"].get("block")
@@ -650,6 +679,8 @@ def tasks(spec: dict, config_dir: FsPath, timeout: float, state=None) -> List[Tu
             for path, csi in proxmox_csi_blocks(spec):
                 out.append((f"Proxmox CSI token {csi['credentials']['tokenID']}",
                             lambda p=path, c=csi: check_proxmox_csi(spec, p, c, config_dir, timeout, pin)))
+            if plat["proxmox"].get("templateImport"):
+                out.append(("node template token", lambda: check_template_import(spec, config_dir, timeout, pin)))
     else:
         out.append(("vSphere API", lambda: check_vsphere(spec, config_dir, timeout)))
     hosts: List[Tuple[Path, dict]] = []

@@ -1,16 +1,15 @@
 name: lab template
 
-# Reusable: build the node image on the lab runner, publish it as a Proxmox template through
-# the API, and test a clone (growth, SELinux, guest-exec, iSCSI, reboot). Task 0006's steps.
+# Reusable: build the node image on the lab runner, publish it as a Proxmox template with the
+# product's own step, `dciab templates`, from an archive payload laid out around the fresh disk
+# (build/archive.py nodes --local-disk), through the API only, twice (the second run must keep
+# it), and test a clone (growth, SELinux, guest-exec, iSCSI, reboot). Task 0006's steps.
+# The template is named after its disk: dciab-node-<sha256[:12]>.
 # The caller sets the concurrency group (a reusable workflow that repeats its caller's group
-# is cancelled), and the lab-write Environment holds the credentials.
+# is cancelled), and the lab-write Environment holds the credentials: the publisher token is
+# the lab site's templateImport token.
 on:
   workflow_call:
-    inputs:
-      name:
-        description: Template name; default dciab-node-<commit>
-        type: string
-        default: ""
     outputs:
       template-name:
         description: The published template's name (look it up by name; VMIDs change)
@@ -25,12 +24,14 @@ jobs:
     environment: lab-write
     timeout-minutes: 75
     outputs:
-      name: ${{ steps.name.outputs.name }}
+      name: ${{ steps.publish.outputs.name }}
     env:
       PVE_URL: ${{ vars.PVE_URL }}
       PVE_TLS_FINGERPRINT: ${{ vars.PVE_TLS_FINGERPRINT }}
       PVE_TOKEN_ID: ${{ secrets.PVE_TOKEN_ID }}
       PVE_TOKEN_SECRET: ${{ secrets.PVE_TOKEN_SECRET }}
+      CAPMOX_TOKEN_ID: ${{ secrets.CAPMOX_TOKEN_ID }}
+      CAPMOX_TOKEN_SECRET: ${{ secrets.CAPMOX_TOKEN_SECRET }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262  # v4.4.0
       - uses: ./.github/actions/lab-pve
@@ -39,23 +40,20 @@ jobs:
           fingerprint: ${{ vars.PVE_TLS_FINGERPRINT }}
           token-id: ${{ secrets.PVE_TOKEN_ID }}
           token-secret: ${{ secrets.PVE_TOKEN_SECRET }}
-      - name: Template name
-        id: name
-        env:
-          INPUT_NAME: ${{ inputs.name }}
-        run: echo "name=${INPUT_NAME:-dciab-node-${GITHUB_SHA::7}}" >> "$GITHUB_OUTPUT"
       - name: Build the node image (root, rootful podman)
         run: sudo images/node-bootc/build.sh --type qcow2
-      - name: Publish the template (API only)
-        env:
-          TEMPLATE_NAME: ${{ steps.name.outputs.name }}
-        run: hack/lab/template.sh publish images/node-bootc/output/qcow2/disk.qcow2 "$TEMPLATE_NAME"
+      - name: Publish the template with dciab templates from a built payload (API only; a second run keeps it)
+        id: publish
+        run: |
+          set -euo pipefail
+          name="$(hack/lab/template.sh dciab images/node-bootc/output/qcow2/disk.qcow2 | tail -1)"
+          echo "name=$name" >> "$GITHUB_OUTPUT"
       - name: Test a clone
         env:
-          TEMPLATE_NAME: ${{ steps.name.outputs.name }}
+          TEMPLATE_NAME: ${{ steps.publish.outputs.name }}
         run: hack/lab/template.sh test "$TEMPLATE_NAME"
       - name: Delete a template that failed its test
-        if: failure()
+        if: failure() && steps.publish.outputs.name != ''
         env:
-          TEMPLATE_NAME: ${{ steps.name.outputs.name }}
+          TEMPLATE_NAME: ${{ steps.publish.outputs.name }}
         run: hack/lab/template.sh delete "$TEMPLATE_NAME"

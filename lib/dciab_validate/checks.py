@@ -165,7 +165,15 @@ class Checker:
     def check_proxmox_api(self) -> None:
         """tlsFingerprint: required, except for a Proxmox VE that spec.hypervisors installs
         (pending, then the certificate its install record pins)."""
-        if self.spec["platform"]["type"] != "proxmox" or self.spec["platform"]["proxmox"].get("tlsFingerprint"):
+        if self.spec["platform"]["type"] != "proxmox":
+            return
+        px = self.spec["platform"]["proxmox"]
+        imp = (px.get("templateImport") or {}).get("credentials")
+        if imp and imp["tokenID"] == px["credentials"]["tokenID"]:
+            self.error(("spec", "platform", "proxmox", "templateImport", "credentials", "tokenID"),
+                       f"{imp['tokenID']}, CAPMOX's token",
+                       "give dciab templates a token of its own (docs/PROXMOX.md): CAPMOX's token never imports templates")
+        if px.get("tlsFingerprint"):
             return
         api = self.api_state()
         if api.host is None:

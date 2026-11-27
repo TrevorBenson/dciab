@@ -53,6 +53,16 @@ What to do when a step stops, by symptom. Every step is safe to rerun once the c
 | `post` can't open the root password | No identity to open the sealed password | Pass `--age-identity` with one recipient's identity |
 | The media wasn't ejected after the install | The BMC refused or didn't confirm the eject | Eject it through the BMC; the next run checks again |
 
+## `dciab templates`
+
+| Symptom | Cause | Fix |
+| --- | --- | --- |
+| It has no credentials for `templateNode` | `templateNode` isn't a host `dciab hypervisors` installed | Give `platform.proxmox.templateImport.credentials`, a token with the privileges in [PROXMOX.md](PROXMOX.md#the-node-templates-token), or publish the template by hand ([TEMPLATES.md](TEMPLATES.md#by-hand)) |
+| The disk's sha256 doesn't match `nodes.yaml` | The payload copy is damaged | Copy the archive again (`dciab media`) and check it (`dciab verify-archive`) |
+| It stops at a VM or template at `templateID` | Something DCiaB didn't make from this disk is there: a site VM, or the template of an older node disk | Choose a free `templateID`, or `--replace` if what is there may go ([replacing a template](TEMPLATES.md#replacing-a-template)) |
+| It can't open the root password | No identity to open the sealed password | Pass `--age-identity` with one recipient's identity |
+| The upload or a task fails | No space on `local`, or the token lacks a privilege | Free space on `local` (the disk is staged there); `dciab validate --live` names a missing privilege |
+
 ## `dciab seed`
 
 | Symptom | Cause | Fix |

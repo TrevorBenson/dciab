@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # DCiaB entrypoint. Each step is idempotent and runs in order:
-#   validate -> [media] -> [services -> hypervisors] -> seed -> mgmt -> infra -> platform -> finalize
+#   validate -> [media] -> [services -> hypervisors] -> [templates] -> seed -> mgmt -> infra -> platform -> finalize
 # media runs on the bootstrap appliance (or wherever spec.bootstrap.workDisk is set);
-# services and hypervisors run only for sites that start from bare servers.
+# services and hypervisors run only for sites that start from bare servers; templates only when
+# the Proxmox VE node template isn't on templateNode yet.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
@@ -28,6 +29,8 @@ Commands:
   hypervisors <config> [--state DIR] [--isos DIR] [--host NAME ...] [--until STEP] [--iso FILE]
               [--reinstall NAME ...] [--first-install NAME ...] [--age-identity FILE] [--print]
                                            Day 0: install Proxmox VE on spec.hypervisors.hosts over Redfish (as root)
+  templates <config> [--state DIR] [--payload DIR] [--age-identity FILE] [--replace] [--timeout SECONDS] [--print]
+                                           Publish the Proxmox VE node template from the archive's node disk (as root)
   mgmt <config> [--bootstrap-kubeconfig FILE] [--state DIR] [--trust-bundle FILE] [--payload DIR] [--until STEP]
                                            Build MGMT from the bootstrap cluster and move CAPI to it
   seed <config> [--payload DIR] [--state DIR] [--age-identity FILE] [--force-new-ca] [--until STEP]
@@ -102,6 +105,10 @@ case "$cmd" in
   hypervisors)
     require_python
     PYTHONPATH="$ROOT/lib${PYTHONPATH:+:$PYTHONPATH}" exec python3 -m dciab_hypervisors --root "$ROOT" "$@"
+    ;;
+  templates)
+    require_python
+    PYTHONPATH="$ROOT/lib${PYTHONPATH:+:$PYTHONPATH}" exec python3 -m dciab_templates --root "$ROOT" "$@"
     ;;
   infra|platform|finalize|verify)
     echo "dciab $cmd: not implemented yet (see docs/ROADMAP.md)" >&2
