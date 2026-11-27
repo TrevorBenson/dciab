@@ -44,6 +44,8 @@ jobs:
         run: sudo images/node-bootc/build.sh --type qcow2
       - name: Publish the template with dciab templates from a built payload (API only; a second run keeps it)
         id: publish
+        # template.sh reuses the VMID of a template already made from this disk, and on any failure
+        # deletes what it made itself (its EXIT trap), so a failed publish leaves nothing behind.
         run: |
           set -euo pipefail
           name="$(hack/lab/template.sh dciab images/node-bootc/output/qcow2/disk.qcow2 | tail -1)"

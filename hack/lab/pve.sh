@@ -62,8 +62,9 @@ pve_free_vmid() {
   lab_die "no free VMID between $1 and $2"
 }
 
-# pve_vmid_by_name NAME: prints the VMID of the template or VM called NAME, or nothing.
-pve_vmid_by_name() { pve GET "/cluster/resources?type=vm" | jq -r --arg n "$1" '[.[] | select(.name == $n)] | first | .vmid // empty'; }
+# pve_vmid_by_name NAME: prints the VMID of the template or VM called NAME, or nothing. Names
+# needn't be unique: a template comes before a VM, then the lowest VMID.
+pve_vmid_by_name() { pve GET "/cluster/resources?type=vm" | jq -r --arg n "$1" '[.[] | select(.name == $n)] | sort_by((.template // 0) != 1, .vmid) | first | .vmid // empty'; }
 
 # lab_get KEY.PATH: reads handoff/lab/network.yaml (for example lab_get network.gateway).
 lab_get() {

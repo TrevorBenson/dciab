@@ -318,21 +318,31 @@ def node_template(lab: Lab) -> dict:
 
 def curl_upload(lab: Lab, disk: Path) -> str:
     """Diagnostics only, when dciab templates fails: the same upload by curl as root@pam, so the
-    run says whether Proxmox VE takes it from another client (the status line holds its message)."""
+    run says whether Proxmox VE takes it from another client (the status line holds its message).
+    The root password goes to curl on stdin, never in its arguments (an error or a timeout prints
+    those), and both requests have a time limit, so the original failure is always reported."""
     try:
         sealed = lab.state / "answers" / f"{lab.vm}.root-password.age"
-        pw = sh(str(lab.work / "bin" / "age"), "-d", "-i", str(lab.work / "id1.txt"), str(sealed)).stdout.rstrip("\n")
+        pw = sh(str(lab.work / "bin" / "age"), "-d", "-i", str(lab.work / "id1.txt"), str(sealed),
+                timeout=30).stdout.rstrip("\n")
         base = f"https://{HOST_ADDR}:8006/api2/json"
-        t = json.loads(sh("curl", "-sk", "--noproxy", "*", "--data-urlencode", "username=root@pam",
-                          "--data-urlencode", f"password={pw}", f"{base}/access/ticket").stdout)["data"]
-        r = sh("curl", "-sk", "--noproxy", "*", "-D", "-", "-o", "/dev/stderr",
+        r = subprocess.run(["curl", "-sk", "--noproxy", "*", "--max-time", "30", "--data-urlencode", "username=root@pam",
+                            "--data-urlencode", "password@-", f"{base}/access/ticket"],
+                           input=pw, capture_output=True, text=True, timeout=60)
+        del pw
+        if r.returncode != 0:
+            return f"curl's ticket request as root@pam failed (curl exit {r.returncode})"
+        t = json.loads(r.stdout)["data"]
+        r = sh("curl", "-sk", "--noproxy", "*", "--max-time", "300", "-D", "-", "-o", "/dev/stderr",
                "-H", f"CSRFPreventionToken: {t['CSRFPreventionToken']}", "-b", f"PVEAuthCookie={t['ticket']}",
                "-F", "content=import", "-F", f"filename=@{disk};filename=dciab-curl-test.qcow2",
-               f"{base}/nodes/{lab.vm}/storage/local/upload", check=False)
+               f"{base}/nodes/{lab.vm}/storage/local/upload", check=False, timeout=360)
         status = (r.stdout.splitlines() or ["no answer"])[0].strip()
         return f"curl's upload as root@pam: {status} {r.stderr.strip()[-300:]}"
+    except subprocess.TimeoutExpired as exc:
+        return f"curl's diagnostic request didn't finish within {exc.timeout:g}s"
     except Exception as exc:  # noqa: BLE001 - diagnostics must never hide the failure
-        return f"curl's upload couldn't run: {exc}"
+        return f"curl's upload couldn't run: {type(exc).__name__}"
 
 
 def first_install(lab: Lab) -> dict:

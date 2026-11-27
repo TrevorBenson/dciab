@@ -218,3 +218,80 @@ def test_lab_pve_action_names_empty_inputs_before_running_the_check():
     steps = action["runs"]["steps"]
     assert "::error::lab-pve: input" in steps[0]["run"]
     assert steps[-1]["run"] == "hack/lab/check-token.sh"
+
+
+def _bash(script: str) -> str:
+    r = subprocess.run(["bash", "-c", script], capture_output=True, text=True, cwd=ROOT)
+    assert r.returncode == 0, r.stderr
+    return r.stdout
+
+
+def _functions(*names: str) -> str:
+    text = (ROOT / "hack" / "lab" / "template.sh").read_text()
+    out = []
+    for name in names:
+        start = text.index(f"\n{name}() {{") + 1
+        out.append(text[start:text.index("\n}\n", start) + 3])
+    return "".join(out)
+
+
+FAKE_PVE = r'''
+set -euo pipefail
+PVE_NODE=pve; Q=/nodes/pve/qemu
+lab_log() { echo "== $*"; }
+lab_get() { case "$1" in vmid.template.first) echo 9000;; vmid.template.last) echo 9099;; esac; }
+pve() {
+  case "$1 $2" in
+    "GET /cluster/resources?type=vm") echo '[{"vmid":9001,"node":"pve","name":"dciab-node-aaaaaaaaaaaa","template":1},
+      {"vmid":9003,"node":"pve","template":1},{"vmid":9002,"node":"pve","name":"dciab-node-bbbbbbbbbbbb","template":0},
+      {"vmid":9004,"node":"other","template":1},{"vmid":100,"node":"pve","template":1},
+      {"vmid":9000,"node":"pve","name":"dciab-node-bbbbbbbbbbbb","template":0}]';;
+    "GET /nodes/pve/qemu/9000/config") echo '{"description":"someone else'"'"'s","template":0}';;
+    "GET /nodes/pve/qemu/9001/config") echo '{"description":"DCiaB node template (dciab templates). Do not edit.\nsha256: aaaa\nfrom: x","template":1}';;
+    "GET /nodes/pve/qemu/9003/config") echo '{"description":"DCiaB node template (dciab templates). Do not edit.\nsha256: cccc\n","template":1}';;
+    "GET /nodes/pve/qemu/9002/config") echo '{"description":"DCiaB node template (dciab templates). Do not edit.\nsha256: bbbb\n","template":0}';;
+    "GET /nodes/pve/qemu/9004/config"|"GET /nodes/pve/qemu/100/config") echo '{"description":"sha256: cccc"}';;
+    "DELETE "*) echo "DELETED $2" >&2; echo UPID;;
+    *) return 1;;
+  esac
+}
+task() { :; }
+'''
+
+
+def test_lab_template_reuses_the_template_of_the_same_disk():
+    # PR #280 review: every run took a new VMID, and a second template with the same name could follow.
+    script = FAKE_PVE + _functions("find_disk_template") + '''
+echo "a=$(find_disk_template aaaa)"; echo "b=$(find_disk_template bbbb)"; echo "c=$(find_disk_template cccc)"
+echo "d=$(find_disk_template dddd)"'''
+    out = _bash(script).split()
+    # Matched by the description's sha256 (a lagging /cluster/resources has no name for a new one),
+    # in CI's range on the node only.
+    assert out == ["a=9001", "1", "b=9002", "0", "c=9003", "1", "d="]
+
+
+def test_lab_template_cleans_up_what_it_made_on_any_failure():
+    # PR #280 review: a failure after the template existed (the final name lookup) skipped cleanup.
+    cases = {"made": ("PUB_VMID=9001; PUB_REUSED=0; PUB_DONE=0", True),
+             "reused": ("PUB_VMID=9001; PUB_REUSED=1; PUB_DONE=0", False),
+             "done": ("PUB_VMID=9001; PUB_REUSED=0; PUB_DONE=1", False),
+             "none yet": ('PUB_VMID=""; PUB_REUSED=0; PUB_DONE=0', False)}
+    for what, (state, deleted) in cases.items():
+        script = FAKE_PVE + 'sudo() { "$@"; }\nPUB_WORK=""\n' + _functions("dciab_publish_cleanup") + \
+            f"{state}\ntrap dciab_publish_cleanup EXIT\nfalse\n"
+        r = subprocess.run(["bash", "-c", script], capture_output=True, text=True, cwd=ROOT)
+        assert r.returncode == 1, what
+        assert ("DELETED /nodes/pve/qemu/9001?purge=1" in r.stderr) is deleted, (what, r.stderr)
+    text = (ROOT / "hack" / "lab" / "template.sh").read_text()
+    body = _functions("dciab_publish")
+    assert "trap dciab_publish_cleanup EXIT" in body and "failed()" not in text
+    assert body.index("find_disk_template") < body.index("pve_free_vmid")
+    assert "pve_vmid_by_name" not in body          # the final check reads the VM's own config
+
+
+def test_pve_vmid_by_name_prefers_a_template_then_the_lowest_vmid():
+    script = (ROOT / "hack" / "lab" / "pve.sh").read_text() + r'''
+pve() { echo '[{"vmid":9005,"name":"n","template":0},{"vmid":9007,"name":"n","template":1},
+  {"vmid":9006,"name":"n","template":1},{"vmid":9001,"name":"m","template":1}]'; }
+pve_vmid_by_name n; pve_vmid_by_name m; echo "[$(pve_vmid_by_name none)]"'''
+    assert _bash(script).split() == ["9006", "9001", "[]"]

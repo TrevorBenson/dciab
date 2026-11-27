@@ -62,13 +62,54 @@ publish() {
 
 # The product's step on the lab: dciab templates from a payload holding DISK, as a site whose
 # Proxmox VE already runs (templateImport: the publisher token). Run twice: the second must keep it.
+# find_disk_template SHA256: the VMID in CI's template range on $PVE_NODE whose description holds
+# this disk's sha256 (what dciab templates writes), lowest first; "VMID template" (1 or 0), or nothing.
+find_disk_template() {
+  local sha="$1" id conf
+  for id in $(pve GET "/cluster/resources?type=vm" | jq -r --arg node "$PVE_NODE" \
+      --argjson first "$(lab_get vmid.template.first)" --argjson last "$(lab_get vmid.template.last)" \
+      '[.[] | select(.node == $node and .vmid >= $first and .vmid <= $last) | .vmid] | sort | .[]'); do
+    conf="$(pve GET "$Q/$id/config" 2>/dev/null)" || continue
+    if jq -e --arg line "sha256: $sha" '(.description // "") | split("\n") | map(gsub("^\\s+|\\s+$"; "")) | index($line)' \
+        >/dev/null <<<"$conf"; then
+      echo "$id $(jq -r '.template // 0' <<<"$conf")"; return 0
+    fi
+  done
+}
+
+# Globals, not locals: the EXIT trap below runs after dciab_publish has returned.
+PUB_WORK=""; PUB_VMID=""; PUB_REUSED=0; PUB_DONE=0
+# On any failure after the VMID is chosen: remove what this run made there (the lab range is CI's
+# own), never a template that was already there for this disk.
+dciab_publish_cleanup() {
+  [[ -n "$PUB_WORK" ]] && sudo rm -rf "$PUB_WORK"
+  [[ "$PUB_DONE" == 1 || "$PUB_REUSED" == 1 || -z "$PUB_VMID" ]] && return 0
+  pve GET "$Q/$PUB_VMID/config" >/dev/null 2>&1 || return 0
+  lab_log "deleting VM $PUB_VMID, left by the failed run" >&2
+  ( task "$(pve DELETE "$Q/$PUB_VMID?purge=1&destroy-unreferenced-disks=1")" ) || true
+}
+
 dciab_publish() {
-  local disk="${1:?disk}" work vmid cfg name addr iface root
+  local disk="${1:?disk}" cfg name sha found addr iface root
   [[ -f "$disk" ]] || lab_die "no such file: $disk"
   root="$(cd "$HERE/../.." && pwd)"
-  work="$(mktemp -d)"; mkdir -p "$work/site"
+  PUB_WORK="$(mktemp -d)"; local work="$PUB_WORK"; mkdir -p "$work/site"
+  trap dciab_publish_cleanup EXIT
   python3 "$root/build/archive.py" nodes --out "$work/payload" --local-disk "proxmox=$disk" >&2
-  vmid="$(pve_free_vmid "$(lab_get vmid.template.first)" "$(lab_get vmid.template.last)")"
+  sha="$(python3 -c 'import sys, yaml; print(yaml.safe_load(open(sys.argv[1]))["disks"][0]["sha256"])' \
+    "$work/payload/nodes/nodes.yaml")"
+  name="dciab-node-${sha:0:12}"
+  # The same disk as an earlier run: its template's VMID, so dciab templates keeps it (or finishes
+  # it) instead of a second template with the same name at a new VMID.
+  found="$(find_disk_template "$sha")"
+  if [[ -n "$found" ]]; then
+    PUB_VMID="${found% *}"
+    [[ "${found#* }" == 1 ]] && PUB_REUSED=1
+    lab_log "VM $PUB_VMID already holds this disk ($name): using it" >&2
+  else
+    PUB_VMID="$(pve_free_vmid "$(lab_get vmid.template.first)" "$(lab_get vmid.template.last)")"
+  fi
+  local vmid="$PUB_VMID"
   addr="$(ip -4 route get "$(lab_get network.gateway)" | sed -n 's/.* src \([0-9.]*\).*/\1/p' | head -1)"
   iface="$(ip -4 route get "$(lab_get network.gateway)" | sed -n 's/.* dev \([^ ]*\).*/\1/p' | head -1)"
   ssh-keygen -q -t ed25519 -N '' -f "$work/admin-key" >/dev/null
@@ -111,19 +152,17 @@ PY
   # shellcheck disable=SC2054  # sudo's --preserve-env takes a comma-separated list
   local run=(sudo --preserve-env=DCIAB_PVE_TOKEN,DCIAB_TEMPLATE_TOKEN "$root/dciab" templates "$cfg"
              --state "$work/state" --payload "$work/payload")
-  # On failure: remove what this run may have left at its VMID (the lab range is CI's own).
-  failed() { sudo rm -rf "$work"; pve GET "$Q/$vmid/config" >/dev/null 2>&1 \
-    && { task "$(pve DELETE "$Q/$vmid?purge=1&destroy-unreferenced-disks=1")" || true; }; lab_die "$1"; }
-  "${run[@]}" >&2 || failed "dciab templates failed"
+  # Any failure from here on exits through dciab_publish_cleanup (the EXIT trap).
+  "${run[@]}" >&2 || lab_die "dciab templates failed"
   lab_log "dciab templates again: the template must be kept" >&2
   local again
-  again="$("${run[@]}" 2>&1)" || { echo "$again" >&2; failed "the second dciab templates failed"; }
+  again="$("${run[@]}" 2>&1)" || { echo "$again" >&2; lab_die "the second dciab templates failed"; }
   echo "$again" >&2
-  grep -q "template $vmid on $PVE_NODE: kept" <<<"$again" || failed "the second dciab templates didn't keep template $vmid"
-  name="$(python3 -c 'import sys, yaml; print("dciab-node-" + yaml.safe_load(open(sys.argv[1]))["disks"][0]["sha256"][:12])' \
-    "$work/payload/nodes/nodes.yaml")"
-  sudo rm -rf "$work"
-  [[ "$(pve_vmid_by_name "$name")" == "$vmid" ]] || lab_die "no template called $name at VMID $vmid"
+  grep -q "template $vmid on $PVE_NODE: kept" <<<"$again" || lab_die "the second dciab templates didn't keep template $vmid"
+  # The node's own config, not /cluster/resources (it lags, and names needn't be unique).
+  pve GET "$Q/$vmid/config" | jq -e --arg n "$name" '.name == $n and (.template // 0) == 1' >/dev/null \
+    || lab_die "VM $vmid isn't a template called $name"
+  PUB_DONE=1
   echo "$name"
 }
 
