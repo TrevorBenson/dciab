@@ -22,6 +22,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("--trust-bundle", metavar="FILE",
                         help="the platform CA (PEM). Default: pki.chain when pki.mode is import-intermediate")
     parser.add_argument("--list", action="store_true", help="list the config's clusters and exit")
+    parser.add_argument("--state", metavar="DIR",
+                        help="the steps' state folder, whose install records validate reads (default: the steps' default)")
     parser.add_argument("-o", "--output", metavar="FILE", help="write the values here (mode 600) instead of stdout")
     args = parser.parse_args(argv)
 
@@ -52,7 +54,7 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     findings = schema_check.check(doc, schema_check.load_schema(root))
     if not findings:
-        findings, _ = checks.run(doc, config_path, root)
+        findings, _ = checks.run(doc, config_path, root, FsPath(args.state) if args.state else None)
     errors = [f for f in findings if f.severity == ERROR]
     if errors:
         print(f"dciab cluster-values: {config_path} is not valid ({len(errors)} errors); "

@@ -10,7 +10,10 @@ every scenario passed.
 untagged (managementVLAN untagged, bootMode UEFI, the VM on an access port):
   disk-refused         a hinted serial number no drive has: refused before anything is written
   held-without-flag    no install record, no boot options: held until --first-install
-  first-install        --first-install: installs, waits, post (token, ACLs, bridge, first-contact pin)
+  first-install        validate passes before it (token and certificate pending); --first-install:
+                       installs, waits, post (token, ACLs, bridge, first-contact pin, the token
+                       written where tokenSecret points); validate --live then uses both; then
+                       dciab templates publishes a tiny node disk as root@pam (published, then kept)
   rerun                the API answers: nothing is reset
   lost-state           the install record removed: the 8006 check still holds the host
   reinstall            --reinstall: a new install, post again with the new certificate, old token retired
@@ -141,8 +144,12 @@ class Lab:
             recipients.append(sh(str(keygen), "-y", str(ident)).stdout.strip())
         spec["bootstrap"]["interface"] = self.env["BOOT_MAC"]
         spec["bootstrap"]["recipients"] = recipients
-        # A URL that doesn't name pve01: post pins the certificate it sees on first contact.
-        spec["platform"]["proxmox"]["url"] = "https://pve-api.dc3.example.com:8006"
+        # The URL names pve01, and the config has no tlsFingerprint and no token file: validate
+        # reports both as pending until post pins the certificate it sees on first contact and
+        # writes the token to ./secrets/pve/token (the bare-site flow, #276 and #279).
+        spec["platform"]["proxmox"]["url"] = f"https://{HOST_ADDR}:8006"
+        spec["platform"]["proxmox"].pop("tlsFingerprint", None)
+        spec["platform"]["proxmox"]["credentials"]["tokenSecret"] = {"file": "./secrets/pve/token"}
         der = ssl.PEM_cert_to_DER_cert((self.work / "bmc.crt").read_text())
         pin = ":".join(f"{b:02X}" for b in hashlib.sha256(der).digest())
         hv = spec["hypervisors"]
@@ -163,6 +170,8 @@ class Lab:
             p.parent.mkdir(parents=True, exist_ok=True)
             p.write_text("emulator\n")
             p.chmod(0o600)
+        for d in (site / "secrets", *(site / "secrets").iterdir()):
+            d.chmod(0o700)                       # post refuses folders others can write (#280)
         sh("openssl", "req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:P-256", "-nodes",
            "-keyout", "/dev/null", "-subj", "/CN=dciab-emulator", "-days", "3650",
            "-addext", "basicConstraints=critical,CA:TRUE", "-out", str(site / "secrets/pki/intermediate.crt"))
@@ -202,6 +211,13 @@ class Lab:
         opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), urllib.request.HTTPSHandler(context=ctx))
         with opener.open(req, timeout=30) as resp:
             return json.loads(resp.read().decode())["data"]
+
+    def token_file(self) -> Path:
+        return self.config.parent / "secrets" / "pve" / "token"   # type: ignore[attr-defined]
+
+    def sealed_secret(self) -> str:
+        sealed = self.state / "proxmox" / f"{self.vm}.token.age"
+        return sh(str(self.work / "bin" / "age"), "-d", "-i", str(self.work / "id1.txt"), str(sealed)).stdout.strip()
 
     def wait_api(self, timeout: float = 900) -> None:
         deadline = time.time() + timeout
@@ -247,8 +263,93 @@ def held_without_flag(lab: Lab) -> dict:
     return {"held": True}
 
 
+def pending_before_install(lab: Lab) -> None:
+    """Before the install, validate passes, with the token and the certificate pending (#276)."""
+    r = lab.dciab("validate", str(lab.config))
+    expect(r.returncode == 0, f"validate before the install exited {r.returncode}, want 0")
+    expect("pending: the CAPMOX token" in r.out, "validate didn't report the token as pending")
+    expect("pending: the Proxmox API's certificate" in r.out, "validate didn't report the certificate as pending")
+
+
+def token_and_pin_used(lab: Lab) -> dict:
+    """After post: the token is where tokenSecret points (mode 600) and validate --live trusts
+    the API by the install record's pin with it. Only the node template may be missing (the
+    template check runs once the node reports online, which a fresh install may not yet)."""
+    tf = lab.token_file()
+    expect(tf.is_file() and tf.stat().st_mode & 0o777 == 0o600, f"post didn't write {tf} (mode 600)")
+    expect(tf.read_text().strip() == lab.sealed_secret(), "the token file doesn't hold the sealed token")
+    r = lab.dciab("validate", str(lab.config), "--live", "--output", "json")
+    report = json.loads(r.stdout)
+    px = [f for f in report["findings"] if f["severity"] == "error" and f["path"].startswith("spec.platform.proxmox")]
+    expect({f["path"] for f in px} <= {"spec.platform.proxmox.templateID"},
+           f"validate --live's Proxmox errors: {[(f['path'], f['found']) for f in px]}")
+    expect(any("accepted token" in n for n in report["notes"]), "validate --live didn't use the token")
+    expect(any("has every privilege" in n for n in report["notes"]), "validate --live didn't check the token")
+    expect(any("pinned in its install record" in n for n in report["notes"]), "validate didn't use the pin")
+    return {"tokenFile": str(tf), "liveProxmoxErrors": [f["path"] for f in px]}
+
+
+def node_template(lab: Lab) -> dict:
+    """dciab templates against the real Proxmox VE post set up (#244): as root@pam with the
+    generated root password (a host DCiaB installed, no templateImport), from a payload that
+    build/archive.py nodes --local-disk lays out around a tiny qcow2. It must report published,
+    then kept on a second run."""
+    disk = lab.work / "node-disk" / "disk.qcow2"
+    if not disk.is_file():
+        disk.parent.mkdir(parents=True, exist_ok=True)
+        if not shutil.which("qemu-img"):
+            raise Failed("qemu-img is needed to make the test node disk (qemu-utils)")
+        sh("qemu-img", "create", "-f", "qcow2", str(disk), "64M")
+    payload = lab.work / "payload"
+    sh(sys.executable, str(ROOT / "build" / "archive.py"), "nodes", "--out", str(payload),
+       "--local-disk", f"proxmox={disk}")
+    px = yaml.safe_load(lab.config.read_text())["spec"]["platform"]["proxmox"]  # type: ignore[attr-defined]
+    vmid, node = px["templateID"], px["templateNode"]
+    args = ("templates", str(lab.config), "--state", str(lab.state), "--payload", str(payload),  # type: ignore[attr-defined]
+            "--age-identity", str(lab.work / "id1.txt"), "--timeout", "900")
+    r = lab.dciab(*args, timeout=1200)
+    if r.returncode != 0:
+        raise Failed(f"dciab templates exited {r.returncode}, want 0; {curl_upload(lab, disk)}")
+    expect(f"template {vmid} on {node}: published" in r.out, "dciab templates didn't report published")
+    expect("root@pam" in r.out, "dciab templates didn't log in as root@pam")
+    r = lab.dciab(*args, timeout=600)
+    expect(r.returncode == 0, f"the second dciab templates exited {r.returncode}, want 0")
+    expect(f"template {vmid} on {node}: kept" in r.out, "the second dciab templates didn't keep the template")
+    return {"templateID": vmid, "node": node, "results": ["published", "kept"]}
+
+
+def curl_upload(lab: Lab, disk: Path) -> str:
+    """Diagnostics only, when dciab templates fails: the same upload by curl as root@pam, so the
+    run says whether Proxmox VE takes it from another client (the status line holds its message).
+    The root password goes to curl on stdin, never in its arguments (an error or a timeout prints
+    those), and both requests have a time limit, so the original failure is always reported."""
+    try:
+        sealed = lab.state / "answers" / f"{lab.vm}.root-password.age"
+        pw = sh(str(lab.work / "bin" / "age"), "-d", "-i", str(lab.work / "id1.txt"), str(sealed),
+                timeout=30).stdout.rstrip("\n")
+        base = f"https://{HOST_ADDR}:8006/api2/json"
+        r = subprocess.run(["curl", "-sk", "--noproxy", "*", "--max-time", "30", "--data-urlencode", "username=root@pam",
+                            "--data-urlencode", "password@-", f"{base}/access/ticket"],
+                           input=pw, capture_output=True, text=True, timeout=60)
+        del pw
+        if r.returncode != 0:
+            return f"curl's ticket request as root@pam failed (curl exit {r.returncode})"
+        t = json.loads(r.stdout)["data"]
+        r = sh("curl", "-sk", "--noproxy", "*", "--max-time", "300", "-D", "-", "-o", "/dev/stderr",
+               "-H", f"CSRFPreventionToken: {t['CSRFPreventionToken']}", "-b", f"PVEAuthCookie={t['ticket']}",
+               "-F", "content=import", "-F", f"filename=@{disk};filename=dciab-curl-test.qcow2",
+               f"{base}/nodes/{lab.vm}/storage/local/upload", check=False, timeout=360)
+        status = (r.stdout.splitlines() or ["no answer"])[0].strip()
+        return f"curl's upload as root@pam: {status} {r.stderr.strip()[-300:]}"
+    except subprocess.TimeoutExpired as exc:
+        return f"curl's diagnostic request didn't finish within {exc.timeout:g}s"
+    except Exception as exc:  # noqa: BLE001 - diagnostics must never hide the failure
+        return f"curl's upload couldn't run: {type(exc).__name__}"
+
+
 def first_install(lab: Lab) -> dict:
     lab.watching.set()
+    pending_before_install(lab)
     started = time.time()
     r = lab.hv("--first-install", lab.vm)
     expect(r.returncode == 0, f"exit {r.returncode}, want 0")
@@ -262,7 +363,8 @@ def first_install(lab: Lab) -> dict:
     nodes = sorted(n.get("node") for n in lab.api_token_get("/nodes") or [])
     expect(nodes == [lab.vm], f"the token sees nodes {nodes}")
     out = {"minutes": round((time.time() - started) / 60, 1), "pveVersion": version.get("version"),
-           "api_fingerprint": rec["api_fingerprint"], "tokenSeesNodes": nodes}
+           "api_fingerprint": rec["api_fingerprint"], "tokenSeesNodes": nodes, "bareSite": token_and_pin_used(lab),
+           "nodeTemplate": node_template(lab)}
     if lab.mode == "tagged":
         expect("Secure Boot set on" in r.out, "Secure Boot wasn't staged")
         sb = lab.redfish("GET", f"{lab.system_path()}/SecureBoot")
@@ -383,6 +485,7 @@ def reinstall(lab: Lab) -> dict:
     retired = sorted(p.name for p in (lab.state / "proxmox").glob(f"{lab.vm}.token.age.replaced-*"))
     expect(bool(retired), "the old token wasn't moved aside")
     lab.api_token_get("/version")
+    expect(lab.token_file().read_text().strip() == lab.sealed_secret(), "post didn't write the new token's secret")
     return {"minutes": round((time.time() - started) / 60, 1), "retiredTokens": retired}
 
 

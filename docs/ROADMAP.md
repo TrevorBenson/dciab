@@ -40,6 +40,7 @@ Moving clusters between platforms (vSphere to Proxmox VE or back) joins `r1` onl
 - [x] Cilium install for any cluster (`addons/cilium`), with kube-proxy replaced
 - [x] Real-cluster spike on Proxmox from the template (a 3+1 cluster on the bootc template with Cilium, node replacement without `/readyz` failures)
 - [ ] Node images in the archive: the Proxmox VE disk is built, published and pulled into the payload (`archive.py nodes`), pending its first publish and pin; vSphere and Metal3 disks with their lanes
+- [x] `dciab templates`: the Proxmox VE node template published from the archive's node disk through the API only (sha256 checked against `nodes.yaml`; kept when it is there, never overwritten without `--replace`), as root on a host `dciab hypervisors` installed or with a token of its own (`platform.proxmox.templateImport`) ([TEMPLATES.md](TEMPLATES.md)). Unit tests in CI, and the emulated hypervisors workflow publishes with it as root on a real Proxmox VE install (published, then kept); the lab's `lab-template.yml` publishes with its own token from a built payload
 - [x] Remove the image-builder recipe and the classes' containerd mirror files, now that a cluster passes on the bootc template (see Decisions)
 
 ### Bootstrap appliance and USB
@@ -69,6 +70,7 @@ Decided in [ADR 0001](adr/0001-day0-hypervisors-and-services.md).
 - [x] `dciab hypervisors` reinstall guard: the Proxmox VE API's answer, not an open port; OS boot entries and `--first-install` for hosts without an install record ([docs/HYPERVISORS.md](HYPERVISORS.md#the-reinstall-guard))
 - [x] `dciab hypervisors` Redfish preparation before an install: UEFI boot mode, Secure Boot per `bootMode`, virtualization extensions, a disk matching `rootDeviceHints` ([docs/HYPERVISORS.md](HYPERVISORS.md#redfish-preparation))
 - [x] `dciab hypervisors` post-install through the Proxmox VE API: the CAPMOX roles, user, token and ACLs (secret sealed with age), the VLAN-aware bridge, the storage ([docs/HYPERVISORS.md](HYPERVISORS.md#post-install))
+- [x] Bare Proxmox VE sites need no placeholders: `validate` (offline, `--live` and at the appliance's boot) reports the CAPMOX token and the API certificate as pending until `post` ([VALIDATE.md](VALIDATE.md#before-the-hypervisors-are-installed)); `post` pins the certificate on first contact, which the later steps trust, and writes the token where `tokenSecret` points, on the appliance also into the appliance-local secrets that every resync keeps ([HYPERVISORS.md](HYPERVISORS.md#the-capmox-tokens-home)). Proven on a real Proxmox VE install by the emulated hypervisors workflow
 - [ ] `dciab hypervisors`: tagged and untagged management VLANs (a first-boot hook on each host's ISO for tagged; [docs/HYPERVISORS.md](HYPERVISORS.md#the-management-vlan)): built; hardware proof pending (handoff task 0013)
 - [x] Live checks: BMC routes, Redfish and credentials (`dciab validate --live`)
 

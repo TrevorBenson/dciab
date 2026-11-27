@@ -169,3 +169,47 @@ def test_run_writes_a_valid_site(tmp_path):
         r = subprocess.run([str(ROOT / "dciab"), "validate", str(config)], capture_output=True, text=True,
                            env=dict(os.environ, DCIAB_PVE_TOKEN="x", DCIAB_PVE_CSI_TOKEN="x"))
         assert r.returncode == 0, r.stdout + r.stderr
+
+
+def test_curl_diagnostics_never_show_the_root_password_and_always_end(monkeypatch, tmp_path):
+    """PR #280 review: the ticket request put password=<root password> in curl's arguments, which
+    a failed sh() printed, and neither curl call had a time limit."""
+    import types
+    sys.path.insert(0, str(HERE))
+    try:
+        import run
+    finally:
+        sys.path.pop(0)
+    secret = "R00t-Pa55-w0rd"
+    calls = []
+
+    def fake_run(args, **kw):
+        calls.append((list(args), kw))
+        if args[0].endswith("age"):
+            return types.SimpleNamespace(returncode=0, stdout=secret + "\n", stderr="")
+        if behaviour == "timeout":
+            raise subprocess.TimeoutExpired(args, kw.get("timeout"))
+        if "/access/ticket" in args[-1]:
+            return types.SimpleNamespace(returncode=behaviour == "ticket-fails" and 7 or 0,
+                                         stdout='{"data": {"ticket": "T", "CSRFPreventionToken": "C"}}', stderr="")
+        return types.SimpleNamespace(returncode=0, stdout="HTTP/1.1 400 bad\r\n", stderr="")
+
+    monkeypatch.setattr(run.subprocess, "run", fake_run)
+    lab = types.SimpleNamespace(state=tmp_path, vm="pve01", work=tmp_path)
+    for behaviour in ("ticket-fails", "timeout", "ok"):
+        calls.clear()
+        out = run.curl_upload(lab, tmp_path / "disk.qcow2")
+        assert secret not in out, behaviour
+        assert all(secret not in " ".join(a) for a, _ in calls), behaviour
+        for args, kw in calls:
+            assert kw.get("timeout"), args
+            if args[0] == "curl":
+                assert "--max-time" in args
+        if behaviour == "ticket-fails":
+            assert "curl exit 7" in out
+        elif behaviour == "timeout":
+            assert "didn't finish within" in out
+        else:
+            assert "HTTP/1.1 400" in out
+            ticket = next(kw for a, kw in calls if "/access/ticket" in a[-1])
+            assert ticket["input"] == secret

@@ -10,9 +10,19 @@ folder `dciab media` puts on the work disk and passes as --state in the commands
 
 State that an older dciab left inside the site is moved out once (migrate_legacy).
 
+The appliance-local secrets (site_local): a secret DCiaB generates on the appliance, such as
+the CAPMOX token `dciab hypervisors` creates, must not go on the stick (its exFAT partition is
+readable on any laptop), and the site copy is replaced at each sync. So it goes in
+/var/lib/dciab/site-local/secrets/ (root-only, on the appliance's disk), and every sync puts
+those files over the stick's file of the same path in the new site copy.
+
+Install records (read_install) are read here too, so `dciab validate` can tell a Proxmox VE
+host that `dciab hypervisors` hasn't installed yet from one it has.
+
 Standard library only: dciab-bootstrap-setup imports it on the appliance at boot. The shell
 steps call `python3 -m dciab_state <config>`, so the default lives only here.
 """
+import json
 import os
 import shutil
 import sys
@@ -22,6 +32,7 @@ from typing import Optional, Union
 
 SITE = Path("/var/lib/dciab/site")
 LEGACY = Path(".dciab") / "state"
+LOCAL_SECRETS = "secrets"
 
 PathLike = Union[str, "os.PathLike[str]"]
 
@@ -35,6 +46,55 @@ def site_state(site: PathLike) -> Path:
     return Path(os.path.abspath(site)).parent / "work" / "state"
 
 
+def site_local(site: PathLike) -> Path:
+    """The appliance-local overlay of a sync'd site: <site>-local beside the `site` link. Its
+    secrets/ replace the stick's files of the same path at every sync (dciab_bootstrap_host)."""
+    site = Path(os.path.abspath(site))
+    return site.parent / f"{site.name}-local"
+
+
+def synced_site(config: PathLike, site: PathLike = SITE) -> Optional[Path]:
+    """`site` when `config` is the sync'd site's copy (the appliance), else None."""
+    config_dir = Path(os.path.abspath(config)).parent
+    if os.path.exists(site) and os.path.realpath(config_dir) == os.path.realpath(site):
+        return Path(site)
+    return None
+
+
+def read_install(state: PathLike, name: str) -> Optional[dict]:
+    """The install record <state>/installs/<name>.json that `dciab hypervisors` writes, or None
+    when there is none. Fails closed: anything at the path that isn't a non-empty JSON object is
+    a record of unknown state ({"outcome": "unreadable"}), never "never installed"; so is a path
+    that can't be looked at (no permission on the state folder)."""
+    return read_record(Path(os.path.abspath(state)) / "installs" / f"{name}.json")
+
+
+def read_record(path: PathLike) -> Optional[dict]:
+    """One install record file (read_install)."""
+    path = Path(path)
+    try:
+        os.lstat(path)
+    except FileNotFoundError:
+        return None
+    except OSError:
+        # EACCES on the state folder, a file where a folder should be, ...: os.path.lexists says
+        # False for these, but a record may well be there. Unknown, never "never installed".
+        return {"outcome": "unreadable"}
+    try:
+        record = json.loads(path.read_text())
+    except (ValueError, OSError):
+        record = None
+    return record if isinstance(record, dict) and record else {"outcome": "unreadable"}
+
+
+def _replaceable(state: Path) -> bool:
+    """`state` is absent or an empty folder (not a link): migrate_legacy puts the legacy state
+    there, so find_state reads the legacy state instead."""
+    if not os.path.lexists(state):
+        return True
+    return state.is_dir() and not state.is_symlink() and not any(state.iterdir())
+
+
 def migrate_legacy(legacy: PathLike, state: PathLike) -> Optional[str]:
     """Move state from `legacy` (inside a site) to `state`. Returns what was done, or None.
 
@@ -46,7 +106,7 @@ def migrate_legacy(legacy: PathLike, state: PathLike) -> Optional[str]:
         return None
     try:
         state.parent.mkdir(parents=True, exist_ok=True)
-        if state.is_dir() and not state.is_symlink() and not any(state.iterdir()):
+        if os.path.lexists(state) and _replaceable(state):
             state.rmdir()
         if not os.path.lexists(state):
             shutil.move(str(legacy), str(state))
@@ -71,14 +131,25 @@ def default_state(config: PathLike, site: PathLike = SITE, migrate: bool = True)
 
     With migrate=False nothing is changed: state still inside the site is used where it is."""
     config_dir = Path(os.path.abspath(config)).parent
+    if migrate and os.path.exists(site) and os.path.realpath(config_dir) == os.path.realpath(site):
+        state = site_state(site)
+        done = migrate_legacy(Path(os.path.realpath(site)) / LEGACY, state)
+        if done:
+            print(f"dciab: {done}", file=sys.stderr)
+        return state
+    return find_state(config, site)
+
+
+def find_state(config: PathLike, site: PathLike = SITE) -> Path:
+    """default_state without changing anything (for reading it, as `dciab validate` does)."""
+    config_dir = Path(os.path.abspath(config)).parent
     if os.path.exists(site) and os.path.realpath(config_dir) == os.path.realpath(site):
         state = site_state(site)
         legacy = Path(os.path.realpath(site)) / LEGACY
-        if migrate:
-            done = migrate_legacy(legacy, state)
-            if done:
-                print(f"dciab: {done}", file=sys.stderr)
-        elif legacy.is_dir() and not state.exists():
-            return legacy
+        try:
+            if legacy.is_dir() and not legacy.is_symlink() and _replaceable(state):
+                return legacy
+        except OSError:
+            pass
         return state
     return config_dir / LEGACY

@@ -157,7 +157,7 @@ def verify_payload_tools(payload: Path) -> None:
                 raise SeedError(f"{rel} doesn't match the payload's SHA256SUMS; refusing to run it")
 
 
-def step_preflight(root: Path, config: Path, payload: Path) -> None:
+def step_preflight(root: Path, config: Path, payload: Path, state: Optional[Path] = None) -> None:
     if os.geteuid() != 0:
         raise SeedError("run as root: the registry binds port 443 and kind runs on rootful podman")
     missing = [t for t in TOOLS if shutil.which(t) is None]
@@ -167,7 +167,9 @@ def step_preflight(root: Path, config: Path, payload: Path) -> None:
     for sub in ("images", "images.yaml", "providers"):
         if not (payload / sub).exists():
             raise SeedError(f"{payload}: no {sub} (pass --payload, the archive's payload folder)")
-    result = subprocess.run([str(root / "dciab"), "validate", str(config)], text=True, capture_output=True)
+    # The same state folder as seed's: validate reads a bare site's install records there (#276).
+    cmd = [str(root / "dciab"), "validate", str(config)] + (["--state", str(state)] if state is not None else [])
+    result = subprocess.run(cmd, text=True, capture_output=True)
     if result.returncode != 0:
         sys.stdout.write(result.stdout)
         raise SeedError("the config is not valid; fix it first (dciab validate)")
@@ -679,7 +681,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             say(f"\n== seed: {step}")
             started = time.monotonic()
             if step == "preflight":
-                step_preflight(root, config, payload)
+                step_preflight(root, config, payload, state)
             elif step == "pki":
                 for line in pki.ensure(state / "pki", s, args.age_identity,
                                        force_new_ca=args.force_new_ca) or ["unchanged"]:

@@ -82,6 +82,28 @@ def test_default_state_migrates_once(tmp_path, capsys):
     assert capsys.readouterr().err == ""
 
 
+def test_find_state_reads_legacy_records_when_work_state_is_empty(tmp_path):
+    # PR #280 review: migrate_legacy fills an empty work/state, so the read-only reader must read
+    # the legacy folder then too (validate saw no record and called a done host pending).
+    from dciab_state import find_state, read_install
+    site = tmp_path / "site"
+    assert setup.sync_site(str(_usb(tmp_path)), str(site))
+    old = site.resolve() / LEGACY
+    (old / "installs").mkdir(parents=True)
+    (old / "installs" / "pve01.json").write_text('{"outcome": "installed", "post": "done"}')
+    state = site_state(site)
+    state.mkdir(parents=True)
+    assert find_state(site / "dciab.yaml", site=site) == old
+    assert read_install(find_state(site / "dciab.yaml", site=site), "pve01")["post"] == "done"
+    # A work/state that holds anything wins, as migrate_legacy keeps it and sets the legacy aside.
+    (state / "ca.crt").write_text("CA\n")
+    assert find_state(site / "dciab.yaml", site=site) == state
+    # And the reader agrees with the migration in the empty case.
+    (state / "ca.crt").unlink()
+    assert default_state(site / "dciab.yaml", site=site) == state
+    assert read_install(state, "pve01")["post"] == "done"
+
+
 def test_migration_never_overwrites_existing_state(tmp_path):
     old, state = tmp_path / "old", tmp_path / "work" / "state"
     old.mkdir()

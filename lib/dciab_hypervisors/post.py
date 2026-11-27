@@ -6,8 +6,9 @@ site's (spec.hypervisors.rootPassword) or the generated one, opened from
 <state>/answers/<host>.root-password.age with --age-identity. Nothing uses SSH.
 
   trust    the API's certificate: spec.platform.proxmox.tlsFingerprint when the platform URL
-           names this host, else the fingerprint seen on first contact, recorded in the
-           install record (api_fingerprint) and pinned from then on
+           names this host and the config gives one, else the fingerprint seen on first
+           contact, recorded in the install record (api_fingerprint) and pinned from then on
+           (validate and the later steps trust the API by it: dciab_validate.pending)
   network  spec.platform.proxmox.bridge must exist (the installer makes vmbr0 on the
            management NIC). With platform.proxmox.vlanTag it is made VLAN-aware, keeping its
            address, and the network is reloaded. With managementVLAN: tagged the first-boot
@@ -19,9 +20,13 @@ site's (spec.hypervisors.rootPassword) or the generated one, opened from
   token    the roles, user, token and ACLs of lib/dciab_validate/proxmox_privs.py (the one
            source of truth for docs/PROXMOX.md and validate --live). The token is
            privilege-separated; its secret, shown once, is sealed at once to
-           spec.bootstrap.recipients in <state>/proxmox/<host>.token.age and never written in
-           plain text. Roles whose privileges differ are corrected; an existing token is kept
-           only if its sealed secret is here
+           spec.bootstrap.recipients in <state>/proxmox/<host>.token.age. For the host the
+           platform URL names, it is also written where tokenSecret points (mode 600; on the
+           appliance, also in the appliance-local secrets that survive a resync), never to
+           removable media (write_token), after the ACLs and never fatally. Roles whose
+           privileges differ are corrected; an existing token is kept only if its sealed secret
+           is here, and with --age-identity its file is written again from the sealed copy when
+           missing or stale (TokenHome; the post step does that on later runs too)
 """
 
 from __future__ import annotations
@@ -33,13 +38,30 @@ import ssl
 import time
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple
-from urllib.parse import quote, urlencode, urlsplit
+from urllib.parse import quote, urlencode
 
 from dciab_validate.probes import HttpsClient, ProbeError, Trust, fingerprint_matches, format_fingerprint
 
 
 class PostError(Exception):
     """A post-install step that can't go on. The message is safe to print."""
+
+
+def _why(resp) -> str:
+    """What Proxmox VE said about a failed call: its status line's text (where it puts the
+    message) and the body's parameter errors, printable."""
+    parts = []
+    reason = str(getattr(resp, "reason", "") or "").strip()
+    if reason and reason.lower() not in ("bad request", "internal server error", "not implemented", "ok"):
+        parts.append(reason)
+    try:
+        errors = resp.json().get("errors")
+        if errors:
+            parts.append(json.dumps(errors))
+    except (ProbeError, AttributeError, ValueError):
+        pass
+    text = "; ".join(parts).replace("\n", " ")[:500]
+    return f": {text}" if text else ""
 
 
 def host_cidr(doc: dict, node: str) -> str:
@@ -86,12 +108,16 @@ def seen_certificate(address: str, port: int = 8006, timeout: float = 10.0) -> b
 
 def trust_for(host: dict, doc: dict, record: dict, seen: Callable[[str], bytes] = seen_certificate) -> Tuple[str, Optional[str]]:
     """(fingerprint to pin, a note or None). Never trusts the system CAs: a fresh install's
-    certificate is self-signed. tlsFingerprint may be SHA-256 or SHA-1, as the schema allows."""
+    certificate is self-signed. tlsFingerprint may be SHA-256 or SHA-1, as the schema allows.
+
+    The host platform.proxmox.url names is checked against tlsFingerprint when the config gives
+    one. Otherwise, as for every other host, the certificate seen on first contact is pinned in
+    the install record, and validate and the later steps trust the API by that pin
+    (dciab_validate.pending)."""
+    from dciab_validate.pending import names_host
     px = doc["spec"]["platform"]["proxmox"]
-    fqdn = f"{host['name']}.{doc['spec']['network']['domain']}"
-    url_host = urlsplit(px["url"]).hostname
     observed = record.get("api_fingerprint")
-    if url_host in (host["address"], fqdn, host["name"]):
+    if names_host(px["url"], host, doc["spec"]["network"]["domain"]) and px.get("tlsFingerprint"):
         pin = px["tlsFingerprint"]
         der = seen(host["address"])
         if not fingerprint_matches(der, pin):
@@ -104,15 +130,82 @@ def trust_for(host: dict, doc: dict, record: dict, seen: Callable[[str], bytes] 
         return observed, None
     current = format_fingerprint(seen(host["address"]))
     return current, (f"pinned the API certificate seen on first contact, {current} (recorded in the install record); "
-                     "every later run checks it")
+                     "every later run, validate and the later steps check it")
 
 
 class PveApi:
     """The Proxmox VE API of one host, logged in with a ticket."""
 
-    def __init__(self, address: str, fingerprint: str, timeout: float = 30.0, port: int = 8006):
-        self.client = HttpsClient(f"https://{address}:{port}", Trust(fingerprint=fingerprint), timeout)
+    def __init__(self, address: str, fingerprint: str, timeout: float = 30.0, port: int = 8006, url: Optional[str] = None):
+        self.client = HttpsClient(url or f"https://{address}:{port}", Trust(fingerprint=fingerprint), timeout)
         self.headers: Dict[str, str] = {}
+
+    @classmethod
+    def from_url(cls, url: str, fingerprint: str, timeout: float = 30.0) -> "PveApi":
+        return cls("", fingerprint, timeout, url=url.rstrip("/"))
+
+    def use_token(self, tokenid: str, secret: str) -> None:
+        """Authenticate every request with an API token instead of a ticket."""
+        self.headers = {"Authorization": f"PVEAPIToken={tokenid}={secret}"}
+
+    def delete(self, path: str) -> object:
+        return self._send("DELETE", path)
+
+    def upload(self, path: str, fields: Dict[str, str], filename: str, fileobj, size: int,
+               timeout: float = 3600.0) -> object:
+        """POST a multipart form with `fields` first, then the file, streamed with a
+        Content-Length: never all in memory. pveproxy reads the form fields in a fixed order
+        before the file part (content, checksum-algorithm, checksum, as its web interface sends
+        them) and answers a bare HTTP 400 to any other: give `fields` in that order."""
+        import uuid
+        boundary = f"dciab-{uuid.uuid4().hex}"
+        head = b"".join(f'--{boundary}\r\nContent-Disposition: form-data; name="{k}"\r\n\r\n{v}\r\n'.encode()
+                        for k, v in fields.items())
+        head += (f'--{boundary}\r\nContent-Disposition: form-data; name="filename"; filename="{filename}"\r\n'
+                 "Content-Type: application/octet-stream\r\n\r\n").encode()
+        tail = f"\r\n--{boundary}--\r\n".encode()
+
+        def body():
+            yield head
+            while True:
+                chunk = fileobj.read(1 << 20)
+                if not chunk:
+                    break
+                yield chunk
+            yield tail
+        headers = dict(self.headers, **{"Content-Type": f"multipart/form-data; boundary={boundary}",
+                                        "Content-Length": str(len(head) + size + len(tail))})
+        old = self.client.timeout
+        self.client.timeout = max(old, timeout)
+        try:
+            resp = self.client.request("POST", "/api2/json" + path, headers, body())
+        except ProbeError as exc:
+            raise PostError(str(exc)) from None
+        finally:
+            self.client.timeout = old
+        if resp.status != 200:
+            raise PostError(f"{self.client.where}: POST {path} (upload) answered HTTP {resp.status}{_why(resp)}")
+        try:
+            return resp.json().get("data") if resp.body else None
+        except (ProbeError, AttributeError, ValueError):
+            return None
+
+    def wait_task(self, node: str, upid: object, timeout: float = 3600.0, interval: float = 2.0,
+                  sleep: Callable[[float], None] = time.sleep, what: str = "the task") -> None:
+        """Wait for a worker task (a UPID an API call returned) to stop; fail unless it ended OK.
+        Anything but a UPID string means the call finished at once."""
+        if not isinstance(upid, str) or not upid.startswith("UPID:"):
+            return
+        deadline = time.monotonic() + timeout
+        while True:
+            st = self.get(f"/nodes/{quote(node)}/tasks/{quote(upid, safe='')}/status") or {}
+            if isinstance(st, dict) and st.get("status") == "stopped":
+                if st.get("exitstatus") != "OK":
+                    raise PostError(f"{what} failed on {node}: {st.get('exitstatus')}")
+                return
+            if time.monotonic() > deadline:
+                raise PostError(f"{what} on {node} didn't finish within {timeout:g}s ({upid})")
+            sleep(interval)
 
     def _send(self, method: str, path: str, form: Optional[dict] = None, ok=(200,)) -> object:
         body = None
@@ -125,13 +218,7 @@ class PveApi:
         except ProbeError as exc:
             raise PostError(str(exc)) from None
         if resp.status not in ok:
-            reason = ""
-            try:
-                errors = resp.json().get("errors")
-                reason = f": {json.dumps(errors)}" if errors else ""
-            except (ProbeError, AttributeError, ValueError):
-                pass
-            raise PostError(f"{self.client.where}: {method} {path} answered HTTP {resp.status}{reason}")
+            raise PostError(f"{self.client.where}: {method} {path} answered HTTP {resp.status}{_why(resp)}")
         try:
             return resp.json().get("data") if resp.body else None
         except (ProbeError, AttributeError, ValueError):
@@ -231,7 +318,297 @@ def token_file(state: Path, name: str) -> Path:
     return Path(os.path.abspath(state)) / "proxmox" / f"{name}.token.age"
 
 
-def token(api: PveApi, name: str, doc: dict, state: Path, sealer, log: Callable[[str], None]) -> None:
+# File systems a USB stick or other removable media uses: the token is never written to them in
+# plain text (the DCiaB stick's exFAT partition is readable on any laptop).
+PORTABLE_FS = frozenset({"vfat", "msdos", "exfat", "ntfs", "ntfs3", "fuseblk", "iso9660", "udf"})
+
+
+def _unescape_mount(text: str) -> str:
+    return text.replace("\\040", " ").replace("\\011", "\t").replace("\\012", "\n").replace("\\134", "\\")
+
+
+def fs_type(path: Path, mounts: Optional[str] = None) -> str:
+    """The file system type `path` (or its nearest existing parent) is on, from /proc/self/mounts;
+    "" when it can't be told."""
+    if mounts is None:
+        try:
+            mounts = Path("/proc/self/mounts").read_text()
+        except OSError:
+            return ""
+    p = Path(os.path.abspath(path))
+    while not p.exists() and p != p.parent:
+        p = p.parent
+    real = os.path.realpath(p)
+    best, kind = "", ""
+    for line in mounts.splitlines():
+        parts = line.split()
+        if len(parts) < 3:
+            continue
+        point = _unescape_mount(parts[1]).rstrip("/") or "/"
+        if (real == point or real.startswith(point.rstrip("/") + "/") or point == "/") and len(point) >= len(best):
+            best, kind = point, parts[2]
+    return kind
+
+
+def _existing(path: Path) -> Path:
+    p = Path(os.path.abspath(path))
+    while not p.exists() and p != p.parent:
+        p = p.parent
+    return p
+
+
+def _mount_source(path: Path, mountinfo: Optional[str]) -> Optional[str]:
+    """The source device of the mount `path` is on (/proc/self/mountinfo), when it is a /dev node."""
+    if mountinfo is None:
+        try:
+            mountinfo = Path("/proc/self/mountinfo").read_text()
+        except OSError:
+            return None
+    real = os.path.realpath(path)
+    best, source = "", None
+    for line in mountinfo.splitlines():
+        left, sep, right = line.partition(" - ")
+        fields, tail = left.split(), right.split()
+        if not sep or len(fields) < 5 or len(tail) < 2:
+            continue
+        point = _unescape_mount(fields[4]).rstrip("/") or "/"
+        if (real == point or real.startswith(point.rstrip("/") + "/") or point == "/") and len(point) >= len(best):
+            best, source = point, _unescape_mount(tail[1])
+    return source if source and source.startswith("/dev/") else None
+
+
+def _device_number(path: Path, mountinfo: Optional[str] = None) -> Optional[str]:
+    """"MAJ:MIN" of the block device `path` is stored on, or None. A file system with anonymous
+    device numbers (btrfs, overlay, tmpfs, NFS: major 0) is resolved through its mount's
+    source device, when that is a /dev node."""
+    st = os.stat(path)
+    if os.major(st.st_dev) != 0:
+        return f"{os.major(st.st_dev)}:{os.minor(st.st_dev)}"
+    source = _mount_source(path, mountinfo)
+    if source is None:
+        return None
+    try:
+        rdev = os.stat(source).st_rdev
+    except OSError:
+        return None
+    return f"{os.major(rdev)}:{os.minor(rdev)}" if os.major(rdev) else None
+
+
+def _removable_disks(dev: Path, seen: Optional[set] = None) -> Tuple[List[str], List[str]]:
+    """(removable devices, unclassifiable devices) behind the sysfs block device `dev`: its whole
+    disk, or for device mapper, MD RAID and the like every device under slaves/."""
+    seen = set() if seen is None else seen
+    real = Path(os.path.realpath(dev))
+    if real in seen:
+        return [], []
+    seen.add(real)
+    if not real.is_dir():
+        return [], [str(dev)]
+    disk = real.parent if (real / "partition").exists() else real
+    slaves = sorted((disk / "slaves").iterdir()) if (disk / "slaves").is_dir() else []
+    if slaves:
+        removable, unknown = [], []
+        for s in slaves:
+            r, u = _removable_disks(s, seen)
+            removable += r
+            unknown += u
+        return removable, unknown
+    try:
+        flag = (disk / "removable").read_text().strip()
+    except OSError:
+        return [], [disk.name]
+    if flag == "1" or "/usb" in str(disk):
+        return [disk.name], []
+    return [], []
+
+
+def backing_medium(path: Path, sysfs: Path = Path("/sys"), mountinfo: Optional[str] = None) -> Tuple[str, str]:
+    """("local" | "removable" | "unknown", detail) for the disk `path` (or its nearest existing
+    parent) is stored on: the file system's device, through /sys/dev/block/MAJ:MIN to its whole
+    disk (and, for device mapper or RAID, the disks under it). Removable: the kernel's
+    `removable` flag is 1, or the disk sits on a USB bus. Unknown when it can't be told
+    (no block device, no sysfs entry): the token is then not written in plain text either."""
+    p = _existing(path)
+    try:
+        devno = _device_number(p, mountinfo)
+    except OSError as exc:
+        return "unknown", f"can't stat {p} ({exc.strerror})"
+    if devno is None:
+        return "unknown", f"{p} isn't on a block device DCiaB can identify"
+    removable, unknown = _removable_disks(sysfs / "dev" / "block" / devno)
+    if removable:
+        return "removable", f"{p} is on {', '.join(removable)} (block device {devno}), removable media"
+    if unknown:
+        return "unknown", f"can't tell what kind of disk {p} is on (block device {devno}: {', '.join(unknown)})"
+    return "local", f"{p} is on block device {devno}, a fixed disk"
+
+
+def _secret_files(node, config_dir: Path, skip: tuple, path: tuple = ()) -> List[Tuple[tuple, Path]]:
+    """Every {file: ...} secret reference in the config, but the one at `skip`, as real paths."""
+    from dciab_validate.pending import secret_files
+    return secret_files(node, config_dir, skip, path)
+
+
+def token_targets(doc: dict, config: Path, site=None) -> Tuple[List[Path], Optional[str]]:
+    """Where `post` writes the CAPMOX token's secret in plain text (mode 600), so the steps that
+    read tokenSecret find it: ([files], None), or ([], why it can't). On the bootstrap appliance
+    that is the file in the site copy and the same file in the appliance-local secrets
+    (dciab_state.site_local), which every sync puts back over the stick's; elsewhere the file
+    tokenSecret names. Never the config file, another secret's file, a file on the appliance
+    outside the site's secrets/, or removable media (write_token). validate refuses the same
+    files (dciab_validate.pending.token_home)."""
+    from dciab_validate.pending import token_home
+    targets, why, _ = token_home(doc, config, site)
+    return targets, why
+
+
+def write_token(secret: str, doc: dict, config: Path, log: Callable[[str], None], site=None,
+                mounts: Optional[str] = None, medium: Optional[Callable[[Path], Tuple[str, str]]] = None) -> List[Path]:
+    """Write the token's secret where token_targets says, atomically, mode 600 in folders of mode
+    700; a file that already holds it is left alone, but made mode 600. Nothing is written into
+    a folder others could use to swap the file (unsafe_folder), and no existing folder's mode is
+    changed: DCiaB may not own it (/tmp, a shared team folder). Returns the target files; logs
+    why when there are none.
+
+    Never on removable media: neither on a portable file system (exFAT, FAT, NTFS: fs_type) nor
+    on a disk the kernel calls removable or that sits on USB, whatever its file system
+    (backing_medium); nor where the disk can't be classified."""
+    import tempfile
+    medium = medium or (lambda p: backing_medium(p))
+    targets, why = token_targets(doc, config, site)
+    for t in targets:
+        kind = fs_type(t, mounts)
+        if kind in PORTABLE_FS:
+            targets, why = [], (f"{t} is on {kind}, removable media: the token is never written there in plain "
+                                "text. Run dciab from the bootstrap host's own copy of the config")
+            break
+        where, detail = medium(t)
+        if where == "removable":
+            targets, why = [], (f"{detail}: the token is never written there in plain text. Run dciab from the "
+                                "bootstrap host's own copy of the config")
+            break
+        if where != "local":
+            targets, why = [], (f"{detail}, so it might be removable media: the token is never written in plain "
+                                "text where that can't be ruled out")
+            break
+        unsafe = unsafe_folder(t)
+        if unsafe:
+            targets, why = [], unsafe
+            break
+    if not targets:
+        log(f"the token's secret wasn't written in plain text ({why}); open its sealed copy with age")
+        return []
+    for t in targets:
+        missing = []
+        p = t.parent
+        while not p.exists():
+            missing.append(p)
+            p = p.parent
+        for d in reversed(missing):                   # every folder made here is root-only
+            d.mkdir(mode=0o700)
+            os.chmod(d, 0o700)
+        had = t.is_file() and t.stat().st_size > 0
+        try:
+            if had and t.read_text().strip() == secret:
+                if t.stat().st_mode & 0o777 != 0o600:
+                    os.chmod(t, 0o600)
+                    log(f"the token's secret is in {t} already; made it mode 600")
+                else:
+                    log(f"the token's secret is in {t} already")
+                continue
+        except OSError:
+            pass
+        fd, tmp = tempfile.mkstemp(dir=t.parent, prefix=f".{t.name}.", suffix=".tmp")   # mode 600
+        try:
+            with os.fdopen(fd, "w") as fh:
+                fh.write(secret + "\n")
+            os.replace(tmp, t)
+        except BaseException:
+            if os.path.exists(tmp):
+                os.unlink(tmp)
+            raise
+        log(f"the token's secret is in {t} (mode 600){', replacing what was there' if had else ''}")
+    return targets
+
+
+def unsafe_folder(target: Path) -> Optional[str]:
+    """Why `target` mustn't be written, or None. Others who can write to the folder the file goes
+    in could swap it, so that folder must not be writable by group or others. When post has to
+    make that folder (mode 700), the nearest existing folder above it may be world-writable only
+    with the sticky bit (/tmp), which stops others renaming what root made there."""
+    folder = target.parent
+    near = folder
+    while not near.exists():
+        near = near.parent
+    try:
+        mode = near.stat().st_mode
+    except OSError as exc:
+        return f"can't check {near} ({exc.strerror})"
+    if not mode & 0o022:
+        return None
+    if near != folder and mode & 0o1000:
+        return None
+    return (f"{near} can be written by group or others (mode {oct(mode & 0o7777)}), who could swap the token's "
+            f"file: point tokenSecret at a private folder. DCiaB doesn't change the mode of a folder it may not own")
+
+
+def token_missing(doc: dict, config: Path, site=None) -> List[Path]:
+    """The files token_targets names that don't hold a secret yet (missing or empty)."""
+    targets, _ = token_targets(doc, config, site)
+    return [t for t in targets if not (t.is_file() and t.stat().st_size > 0)]
+
+
+class TokenHome:
+    """Where post writes the CAPMOX token's secret in plain text (write_token), for the host
+    platform.proxmox.url names. reopen opens the sealed copy (with --age-identity) so a rerun
+    can write a file that's missing or stale; None when there's no identity."""
+
+    def __init__(self, doc: dict, config: Path, log: Callable[[str], None],
+                 reopen: Optional[Callable[[Path], str]] = None, site=None):
+        self.doc, self.config, self.log, self.reopen, self.site = doc, config, log, reopen, site
+
+    def write(self, secret: str, sealed: Path) -> None:
+        """Never fatal: the token exists and is sealed, so a write that fails only costs a copy
+        by hand (or a rerun with --age-identity), and the ACLs must still be set."""
+        try:
+            write_token(secret, self.doc, self.config, self.log, self.site)
+        except OSError as exc:
+            self.log(f"couldn't write the token's secret where tokenSecret points ({exc}); it is sealed in "
+                     f"{sealed}: run dciab hypervisors again with --age-identity to have post write it, or open "
+                     "it with age (docs/TROUBLESHOOTING.md)")
+
+    def refresh(self, sealed: Path) -> None:
+        """A kept token: write its secret from the sealed copy when a file is missing or stale."""
+        if self.reopen is None:
+            missing = token_missing(self.doc, self.config, self.site)
+            if missing:
+                self.log(f"the token's secret isn't in {', '.join(map(str, missing))}; pass --age-identity to have "
+                         f"post write it from {sealed}, or open it with age (docs/TROUBLESHOOTING.md)")
+            return
+        try:
+            secret = self.reopen(sealed)
+        except PostError as exc:
+            self.log(f"couldn't open the token's sealed copy to check where tokenSecret points ({exc})")
+            return
+        if secret:
+            self.write(secret, sealed)
+        del secret
+
+
+def open_sealed(identity: Path, sealed: Path, run=None) -> str:
+    """The plain text of a file sealed with age, opened with the identity."""
+    import subprocess
+    run = run or (lambda cmd: subprocess.run(cmd, check=True, capture_output=True, text=True, timeout=30))
+    try:
+        return run(["age", "-d", "-i", str(identity), str(sealed)]).stdout.rstrip("\n")
+    except FileNotFoundError:
+        raise PostError(f"age is needed to open {sealed} (the payload's bin/ has it)") from None
+    except subprocess.CalledProcessError:
+        raise PostError(f"age couldn't open {sealed} with {identity}") from None
+
+
+def token(api: PveApi, name: str, doc: dict, state: Path, sealer, log: Callable[[str], None],
+          home: Optional[TokenHome] = None) -> None:
     from dciab_validate.proxmox_privs import grants
     px = doc["spec"]["platform"]["proxmox"]
     tokenid = px["credentials"]["tokenID"]
@@ -263,6 +640,7 @@ def token(api: PveApi, name: str, doc: dict, state: Path, sealer, log: Callable[
                             "can't be read back: delete the token (Datacenter > Permissions > API Tokens) and run "
                             "again, or put its secret where tokenSecret points yourself")
         log(f"token {tokenid} present; secret sealed in {sealed}")
+        secret = None
     else:
         data = api.post(f"/access/users/{quote(user)}/token/{quote(tname)}",
                         {"privsep": 1, "comment": "DCiaB: CAPMOX"})
@@ -272,13 +650,21 @@ def token(api: PveApi, name: str, doc: dict, state: Path, sealer, log: Callable[
         sealed.parent.mkdir(parents=True, exist_ok=True)
         os.chmod(sealed.parent, 0o700)
         sealer(doc["spec"]["bootstrap"]["recipients"], secret, sealed)
-        del secret
         log(f"token {tokenid} created (privilege-separated); its secret is sealed in {sealed}")
 
     for g in want:
         api.put("/access/acl", {"path": g.path, "roles": g.role, "users": user, "tokens": tokenid,
                                 "propagate": 1 if g.propagate else 0})
     log(f"ACLs set for {user} and {tokenid}: " + ", ".join(f"{g.path} {g.role}" for g in want))
+
+    # After the ACLs, so a file that can't be written never leaves the token without them. A
+    # kept token's file is written from the sealed copy when missing or stale (a rerun).
+    if home is not None:
+        if secret:
+            home.write(secret, sealed)
+        else:
+            home.refresh(sealed)
+    del secret
 
 
 def root_password(answers: Path, name: str, site: Optional[str], identity: Optional[Path],
@@ -303,8 +689,14 @@ def root_password(answers: Path, name: str, site: Optional[str], identity: Optio
 
 
 def run(api: PveApi, host: dict, doc: dict, state: Path, password: str, sealer,
-        log: Callable[[str], None]) -> List[str]:
-    """Log in and run network, storage and token for one host. Returns what was done."""
+        log: Callable[[str], None], config: Optional[Path] = None,
+        identity: Optional[Path] = None) -> List[str]:
+    """Log in and run network, storage and token for one host. Returns what was done.
+
+    For the host platform.proxmox.url names, the token's secret is also written where
+    tokenSecret points (write_token), given the config's path: a new token's at once; a kept
+    token's from its sealed copy when the file is missing or stale and an age identity is given."""
+    from dciab_validate.pending import names_host
     done: List[str] = []
 
     def say(line: str) -> None:
@@ -316,5 +708,9 @@ def run(api: PveApi, host: dict, doc: dict, state: Path, password: str, sealer,
     node = host["name"]
     network(api, node, doc, say)
     storage(api, node, doc, say)
-    token(api, node, doc, state, sealer, say)
+    home = None
+    if config is not None and names_host(doc["spec"]["platform"]["proxmox"]["url"], host, doc["spec"]["network"]["domain"]):
+        reopen = (lambda sealed: open_sealed(identity, sealed)) if identity is not None else None
+        home = TokenHome(doc, config, say, reopen)
+    token(api, node, doc, state, sealer, say, home)
     return done

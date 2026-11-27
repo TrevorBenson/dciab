@@ -234,6 +234,7 @@ def test_print_changes_nothing(tmp_path, monkeypatch, capsys):
     doc = bare()
     Site(tmp_path, monkeypatch, capsys)   # writes the secret files the example refers to
     monkeypatch.setattr(answer, "hash_password", fake_hash)
+    monkeypatch.setattr(cli.os, "geteuid", lambda: 1000)      # --print needs no root
     cfg = tmp_path / "dciab.yaml"
     cfg.write_text(yaml.safe_dump(doc, sort_keys=False))
     code = cli.main(["--root", str(ROOT), "--print", "--host", "pve02", str(cfg)])
@@ -1779,6 +1780,15 @@ def test_only_real_booleans_and_known_strings_are_turned_on(value, expected):
 from urllib.parse import parse_qs  # noqa: E402
 
 from dciab_hypervisors import post  # noqa: E402
+
+REAL_BACKING_MEDIUM = post.backing_medium
+
+
+@pytest.fixture(autouse=True)
+def fixed_disk(monkeypatch):
+    """The test's folders are on a fixed disk, whatever this machine's are (overlay, tmpfs):
+    the tests of backing_medium below use a fake /sys instead."""
+    monkeypatch.setattr(post, "backing_medium", lambda path, *a, **kw: ("local", f"{path} is on a fixed disk"))
 from dciab_validate.proxmox_privs import grants  # noqa: E402
 
 
@@ -1917,7 +1927,7 @@ def fake_pve(cert):
         f.close()
 
 
-def run_post(f, cert, tmp_path, monkeypatch, doc=None, record=None, site_password="rootpw", identity=None):
+def run_post(f, cert, tmp_path, monkeypatch, doc=None, record=None, site_password="rootpw", identity=None, config=None):
     doc = doc or bare()
     installs, state = tmp_path / "installs", tmp_path / "state"
     if record is not False:
@@ -1932,7 +1942,7 @@ def run_post(f, cert, tmp_path, monkeypatch, doc=None, record=None, site_passwor
     logs = []
     failed = cli.post_install([host(doc)], doc, state, installs, tmp_path / "answers", site_password, identity,
                               api_for=lambda h, pin: post.PveApi("127.0.0.1", pin, timeout=5, port=f.port),
-                              seen=lambda a: cert["der"], log=logs.append, err=logs.append)
+                              seen=lambda a: cert["der"], log=logs.append, err=logs.append, config=config)
     return failed, "\n".join(logs), sealed, cli.read_install(installs, "pve01")
 
 
@@ -2520,3 +2530,315 @@ def test_wait_hint_points_to_the_hook_log_only_when_tagged():
     hint = cli.wait_hint(tagged_doc())
     assert "journalctl -t dciab-first-boot" in hint and "proxmox-first-boot-network-pre" in hint
     assert "carries VLAN 110 tagged" in hint
+
+
+# --- the CAPMOX token's home (#279) -------------------------------------------------------------
+
+def api_doc():
+    """A bare site whose platform URL names pve01, its token in a file, no tlsFingerprint yet."""
+    doc = bare()
+    px = doc["spec"]["platform"]["proxmox"]
+    px["url"] = "https://pve01.dc3.example.com:8006"
+    px.pop("tlsFingerprint", None)
+    px["credentials"]["tokenSecret"] = {"file": "./secrets/pve/token"}
+    return doc
+
+
+def test_post_writes_the_token_where_token_secret_points(fake_pve, cert, tmp_path, monkeypatch):
+    cfg = tmp_path / "site" / "dciab.yaml"
+    cfg.parent.mkdir()
+    f = fake_pve()
+    failed, out, sealed, record = run_post(f, cert, tmp_path, monkeypatch, doc=api_doc(), config=cfg)
+    assert failed == [], out
+    target = tmp_path / "site" / "secrets" / "pve" / "token"
+    assert target.read_text() == "SECRET-7f3a9c\n" and target.stat().st_mode & 0o777 == 0o600
+    assert target.parent.stat().st_mode & 0o777 == 0o700
+    assert str(post.token_file(tmp_path / "state", "pve01")) in sealed            # sealed as well
+    assert "SECRET-7f3a9c" not in out and f"the token's secret is in {target}" in out
+    # The certificate is pinned on first contact (no tlsFingerprint): validate trusts this pin.
+    assert record["api_fingerprint"] == cert["pin"] and record["post"] == "done"
+    # Only that file holds it in plain text.
+    plain = [p for p in tmp_path.rglob("*") if p.is_file() and "SECRET-7f3a9c" in p.read_text(errors="ignore")]
+    assert plain == [target]
+
+
+def test_post_writes_the_token_into_the_appliance_local_secrets(fake_pve, cert, tmp_path, monkeypatch):
+    import dciab_state
+    copy_dir = tmp_path / "lib" / ".site-abc"
+    (copy_dir / "secrets" / "pve").mkdir(parents=True)
+    (copy_dir / "secrets" / "pve" / "token").write_text("PLACEHOLDER\n")
+    site = tmp_path / "lib" / "site"
+    site.symlink_to(".site-abc")
+    monkeypatch.setattr(dciab_state, "SITE", site)
+    f = fake_pve()
+    failed, out, _, _ = run_post(f, cert, tmp_path, monkeypatch, doc=api_doc(), config=(site / "dciab.yaml").resolve())
+    assert failed == [], out
+    local = tmp_path / "lib" / "site-local" / "secrets" / "pve" / "token"
+    assert local.read_text() == "SECRET-7f3a9c\n" and local.stat().st_mode & 0o777 == 0o600
+    assert (tmp_path / "lib" / "site-local").stat().st_mode & 0o777 == 0o700
+    assert (site / "secrets" / "pve" / "token").read_text() == "SECRET-7f3a9c\n"
+    assert "replacing what was there" in out
+
+
+def test_post_writes_no_token_for_a_host_the_url_doesnt_name(fake_pve, cert, tmp_path, monkeypatch):
+    doc = api_doc()
+    doc["spec"]["platform"]["proxmox"]["url"] = "https://10.30.110.99:8006"
+    cfg = tmp_path / "site" / "dciab.yaml"
+    cfg.parent.mkdir()
+    failed, out, _, _ = run_post(fake_pve(), cert, tmp_path, monkeypatch, doc=doc, config=cfg)
+    assert failed == [] and not (tmp_path / "site" / "secrets").exists()
+
+
+def test_token_targets_refusals(tmp_path, monkeypatch):
+    import dciab_state
+    monkeypatch.setattr(dciab_state, "SITE", tmp_path / "no-site")
+    cfg = tmp_path / "dciab.yaml"
+    doc = api_doc()
+    assert post.token_targets(doc, cfg) == ([tmp_path / "secrets" / "pve" / "token"], None)
+    doc["spec"]["platform"]["proxmox"]["credentials"]["tokenSecret"] = {"env": "DCIAB_PVE_TOKEN"}
+    targets, why = post.token_targets(doc, cfg)
+    assert targets == [] and "DCIAB_PVE_TOKEN" in why
+    # Never over another secret's file.
+    doc["spec"]["platform"]["proxmox"]["credentials"]["tokenSecret"] = {"file": "secrets/bmc/pve01"}
+    targets, why = post.token_targets(doc, cfg)
+    assert targets == [] and "spec.hypervisors.hosts[0].bmc.credentials.password" in why
+    # On the appliance, only under secrets/ (the only folder a sync keeps).
+    copy_dir = tmp_path / ".site-x"
+    copy_dir.mkdir()
+    (tmp_path / "site").symlink_to(".site-x")
+    monkeypatch.setattr(dciab_state, "SITE", tmp_path / "site")
+    doc["spec"]["platform"]["proxmox"]["credentials"]["tokenSecret"] = {"file": "token"}
+    targets, why = post.token_targets(doc, tmp_path / "site" / "dciab.yaml")
+    assert targets == [] and "under the site's secrets/" in why
+    # Nor an absolute path outside the site (the documented rule: a file under ./secrets/).
+    doc["spec"]["platform"]["proxmox"]["credentials"]["tokenSecret"] = {"file": str(tmp_path / "elsewhere" / "token")}
+    targets, why = post.token_targets(doc, tmp_path / "site" / "dciab.yaml")
+    assert targets == [] and "under the site's secrets/" in why
+    doc["spec"]["platform"]["proxmox"]["credentials"]["tokenSecret"] = {"file": "./secrets/pve/token"}
+    targets, why = post.token_targets(doc, tmp_path / "site" / "dciab.yaml")
+    assert why is None and targets == [tmp_path / "site-local" / "secrets" / "pve" / "token",
+                                       copy_dir / "secrets" / "pve" / "token"]
+
+
+@pytest.mark.parametrize("ref", ["./dciab.yaml", "dciab.yaml", "secrets"])
+def test_token_targets_never_the_config_or_a_folder(tmp_path, monkeypatch, ref):
+    # Finding: tokenSecret: {file: ./dciab.yaml} passed validate and post would overwrite the config.
+    import dciab_state
+    monkeypatch.setattr(dciab_state, "SITE", tmp_path / "no-site")
+    cfg = tmp_path / "dciab.yaml"
+    cfg.write_text("apiVersion: x\n")
+    (tmp_path / "secrets").mkdir()
+    doc = api_doc()
+    doc["spec"]["platform"]["proxmox"]["credentials"]["tokenSecret"] = {"file": ref}
+    targets, why = post.token_targets(doc, cfg)
+    assert targets == [] and ("config file itself" in why or "regular file" in why)
+    logs = []
+    assert post.write_token("s3cret", doc, cfg, logs.append) == []
+    assert cfg.read_text() == "apiVersion: x\n"
+
+
+def test_a_token_file_that_cant_be_written_still_gets_acls_and_a_rerun_writes_it(fake_pve, cert, tmp_path,
+                                                                                    monkeypatch):
+    # #279 review: publish ran before the ACLs and an OSError failed post with none; a rerun then
+    # kept the token and never wrote the file. Now: ACLs first, the write never fails post, and a
+    # rerun with --age-identity writes the file from the sealed copy.
+    import dciab_state
+    monkeypatch.setattr(dciab_state, "SITE", tmp_path / "no-site")
+    cfg = tmp_path / "site" / "dciab.yaml"
+    cfg.parent.mkdir()
+    real = post.write_token
+
+    def broken(*a, **kw):
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(post, "write_token", broken)
+    f = fake_pve()
+    failed, out, sealed, record = run_post(f, cert, tmp_path, monkeypatch, doc=api_doc(), config=cfg)
+    assert failed == [] and record["post"] == "done", out
+    px = api_doc()["spec"]["platform"]["proxmox"]
+    assert len(f.acl) == len(grants(px))                       # the ACLs are set
+    assert "couldn't write the token's secret" in out and "--age-identity" in out
+    target = tmp_path / "site" / "secrets" / "pve" / "token"
+    assert not target.exists()
+
+    # A rerun: post is done, so no login; without an identity it says what to do.
+    monkeypatch.setattr(post, "write_token", real)
+    logins = f.logins
+    failed, out, _, _ = run_post(f, cert, tmp_path, monkeypatch, doc=api_doc(), config=cfg, record=False)
+    assert failed == [] and f.logins == logins
+    assert f"the token's secret isn't in {target}" in out and "--age-identity" in out and not target.exists()
+
+    # With an identity, the sealed copy is opened and written there.
+    opened = []
+
+    def fake_open(identity, path, run=None):
+        opened.append((identity, path))
+        return "SECRET-7f3a9c"
+
+    monkeypatch.setattr(post, "open_sealed", fake_open)
+    ident = tmp_path / "id.txt"
+    failed, out, _, _ = run_post(f, cert, tmp_path, monkeypatch, doc=api_doc(), config=cfg, record=False,
+                                 identity=ident)
+    assert failed == [] and f.logins == logins
+    assert opened == [(ident, post.token_file(tmp_path / "state", "pve01"))]
+    assert target.read_text() == "SECRET-7f3a9c\n" and target.stat().st_mode & 0o777 == 0o600
+    # Again: nothing to change.
+    failed, out, _, _ = run_post(f, cert, tmp_path, monkeypatch, doc=api_doc(), config=cfg, record=False,
+                                 identity=ident)
+    assert failed == [] and "already" in out and target.read_text() == "SECRET-7f3a9c\n"
+
+
+def test_a_kept_token_with_a_stale_file_is_rewritten_from_the_sealed_copy(fake_pve, cert, tmp_path, monkeypatch):
+    # post failed after the token was made (record: failed): the rerun logs in, keeps the token, and
+    # with an identity puts the sealed secret over a stale file.
+    import dciab_state
+    monkeypatch.setattr(dciab_state, "SITE", tmp_path / "no-site")
+    cfg = tmp_path / "site" / "dciab.yaml"
+    target = tmp_path / "site" / "secrets" / "pve" / "token"
+    target.parent.mkdir(parents=True)
+    target.write_text("PLACEHOLDER\n")
+    px = api_doc()["spec"]["platform"]["proxmox"]
+    user, tname = px["credentials"]["tokenID"].split("!")
+    sealed = post.token_file(tmp_path / "state", "pve01")
+    sealed.parent.mkdir(parents=True)
+    sealed.write_text("age-encrypted\n")
+    monkeypatch.setattr(post, "open_sealed", lambda identity, path, run=None: "SEALED-SECRET")
+    f = fake_pve(users=[user], tokens={user: [tname]})
+    failed, out, _, record = run_post(f, cert, tmp_path, monkeypatch, doc=api_doc(), config=cfg,
+                                      record={"outcome": "installed", "iso": HOST_ISO, "post": "failed"},
+                                      identity=tmp_path / "id.txt")
+    assert failed == [] and record["post"] == "done", out
+    assert "present; secret sealed" in out and target.read_text() == "SEALED-SECRET\n"
+    assert "replacing what was there" in out and len(f.acl) == len(grants(px))
+
+
+def fake_sysfs(tmp_path, disk, part=None, removable="0", bus="pci0000:00/0000:00:1f.2/ata1/host0/target0:0:0/0:0:0:0",
+               devno="8:17"):
+    """/sys with one block device: /sys/dev/block/<devno> -> the partition (or whole disk)."""
+    sysfs = tmp_path / "sys"
+    d = sysfs / "devices" / bus / "block" / disk
+    d.mkdir(parents=True)
+    (d / "removable").write_text(removable + "\n")
+    node = d
+    if part:
+        node = d / part
+        node.mkdir()
+        (node / "partition").write_text("1\n")
+    (sysfs / "dev" / "block").mkdir(parents=True)
+    (sysfs / "dev" / "block" / devno).symlink_to(node)
+    return sysfs
+
+
+def test_backing_medium_tells_a_fixed_disk_from_removable_media(tmp_path, monkeypatch):
+    # PR #280 review: an ext4 USB stick passed the file-system check. The disk is what counts.
+    target = tmp_path / "secrets" / "pve" / "token"
+    monkeypatch.setattr(post, "_device_number", lambda path, mountinfo=None: "8:17")
+    sysfs = fake_sysfs(tmp_path / "a", "sdb", "sdb1")
+    assert REAL_BACKING_MEDIUM(target, sysfs)[0] == "local"
+    # The kernel's removable flag on the whole disk (the partition has none).
+    sysfs = fake_sysfs(tmp_path / "b", "sdb", "sdb1", removable="1")
+    kind, detail = REAL_BACKING_MEDIUM(target, sysfs)
+    assert kind == "removable" and "sdb" in detail
+    # A USB disk that says it isn't removable (most USB SSDs and many sticks).
+    usb = "pci0000:00/0000:00:14.0/usb2/2-1/2-1:1.0/host6/target6:0:0/6:0:0:0"
+    sysfs = fake_sysfs(tmp_path / "c", "sdc", "sdc1", bus=usb)
+    assert REAL_BACKING_MEDIUM(target, sysfs)[0] == "removable"
+    # Device mapper (LVM, LUKS) over a USB disk: its slaves are what count.
+    sysfs = fake_sysfs(tmp_path / "d", "sdc", "sdc1", bus=usb)
+    dm = sysfs / "devices" / "virtual" / "block" / "dm-0"
+    (dm / "slaves").mkdir(parents=True)
+    (dm / "removable").write_text("0\n")
+    (dm / "slaves" / "sdc1").symlink_to(sysfs / "devices" / usb / "block" / "sdc" / "sdc1")
+    (sysfs / "dev" / "block" / "253:0").symlink_to(dm)
+    monkeypatch.setattr(post, "_device_number", lambda path, mountinfo=None: "253:0")
+    assert REAL_BACKING_MEDIUM(target, sysfs)[0] == "removable"
+    # What can't be classified is never taken for a fixed disk.
+    monkeypatch.setattr(post, "_device_number", lambda path, mountinfo=None: "9:9")
+    assert REAL_BACKING_MEDIUM(target, sysfs)[0] == "unknown"
+    monkeypatch.setattr(post, "_device_number", lambda path, mountinfo=None: None)
+    assert REAL_BACKING_MEDIUM(target, sysfs)[0] == "unknown"
+
+
+def test_device_number_of_an_anonymous_file_system_comes_from_its_mount_source(tmp_path, monkeypatch):
+    # btrfs, overlay and tmpfs report major 0: the mount's /dev source tells the disk, if any.
+    import types
+    dev = "/dev/dciab-test-nvme0n1p2"
+
+    def stat(path, *a, **kw):
+        if str(path) == dev:
+            return types.SimpleNamespace(st_dev=os.makedev(0, 5), st_rdev=os.makedev(259, 2))
+        return types.SimpleNamespace(st_dev=os.makedev(0, 41), st_rdev=0)
+
+    monkeypatch.setattr(post.os, "stat", stat)
+    mountinfo = (f"22 1 0:41 / / rw - overlay overlay rw\n"
+                 f"30 22 0:42 / {tmp_path} rw,relatime - btrfs {dev} rw\n")
+    assert post._device_number(tmp_path, mountinfo) == "259:2"
+    assert post._device_number(Path("/etc"), mountinfo) is None          # overlay: no device
+
+
+def test_the_token_is_never_written_to_an_ext4_usb_stick_or_an_unknown_disk(tmp_path, monkeypatch):
+    import dciab_state
+    monkeypatch.setattr(dciab_state, "SITE", tmp_path / "no-site")
+    mounts = f"/dev/sda2 / xfs rw 0 0\n/dev/sdb1 {tmp_path} ext4 rw 0 0\n"
+    for kind, said in (("removable", "is on sdb: the token is never written there"),
+                       ("unknown", "might be removable media")):
+        logs = []
+        assert post.write_token("s3cret", api_doc(), tmp_path / "dciab.yaml", logs.append, mounts=mounts,
+                                medium=lambda p, kind=kind: (kind, f"{p} is on sdb")) == []
+        assert said in logs[0] and "sealed copy" in logs[0] and not (tmp_path / "secrets").exists()
+
+
+def test_a_token_file_with_loose_permissions_is_made_private(tmp_path, monkeypatch):
+    # PR #280 review: a file that already held the secret kept mode 644.
+    import dciab_state
+    monkeypatch.setattr(dciab_state, "SITE", tmp_path / "no-site")
+    target = tmp_path / "secrets" / "pve" / "token"
+    target.parent.mkdir(parents=True)
+    target.parent.chmod(0o750)
+    target.write_text("s3cret\n")
+    target.chmod(0o644)
+    logs = []
+    assert post.write_token("s3cret", api_doc(), tmp_path / "dciab.yaml", logs.append, mounts="") == [target]
+    assert target.stat().st_mode & 0o777 == 0o600 and target.read_text() == "s3cret\n"
+    assert target.parent.stat().st_mode & 0o7777 == 0o750
+    assert any("made it mode 600" in line for line in logs)
+
+
+@pytest.mark.parametrize("mode", [0o777, 0o1777, 0o2775, 0o770])
+def test_a_folder_others_can_write_is_refused_and_left_as_it_is(tmp_path, monkeypatch, mode):
+    # PR #280 verification: post chmodded the folder, even /tmp or a shared team folder.
+    import dciab_state
+    monkeypatch.setattr(dciab_state, "SITE", tmp_path / "no-site")
+    target = tmp_path / "secrets" / "pve" / "token"
+    target.parent.mkdir(parents=True)
+    target.parent.chmod(mode)
+    target.write_text("old\n")
+    target.chmod(0o600)
+    logs = []
+    assert post.write_token("s3cret", api_doc(), tmp_path / "dciab.yaml", logs.append, mounts="") == []
+    assert target.parent.stat().st_mode & 0o7777 == mode and target.read_text() == "old\n"
+    assert "can be written by group or others" in logs[0] and "sealed copy" in logs[0]
+
+
+def test_a_new_private_folder_under_a_sticky_folder_is_fine(tmp_path, monkeypatch):
+    # /tmp-like: world-writable with the sticky bit; post makes its own mode-700 folder in it.
+    import dciab_state
+    monkeypatch.setattr(dciab_state, "SITE", tmp_path / "no-site")
+    (tmp_path / "secrets").mkdir()
+    (tmp_path / "secrets").chmod(0o1777)
+    target = tmp_path / "secrets" / "pve" / "token"
+    logs = []
+    assert post.write_token("s3cret", api_doc(), tmp_path / "dciab.yaml", logs.append, mounts="") == [target]
+    assert target.parent.stat().st_mode & 0o777 == 0o700 and target.stat().st_mode & 0o777 == 0o600
+    assert (tmp_path / "secrets").stat().st_mode & 0o7777 == 0o1777
+
+
+def test_the_token_is_never_written_to_removable_media(tmp_path, monkeypatch):
+    import dciab_state
+    monkeypatch.setattr(dciab_state, "SITE", tmp_path / "no-site")
+    mounts = f"/dev/sda2 / xfs rw 0 0\n/dev/sdb1 {tmp_path} exfat rw,fmask=0177 0 0\n"
+    logs = []
+    assert post.write_token("s3cret", api_doc(), tmp_path / "dciab.yaml", logs.append, mounts=mounts) == []
+    assert "exfat, removable media" in logs[0] and not (tmp_path / "secrets").exists()
+    assert post.fs_type(tmp_path / "a" / "b", mounts) == "exfat"
+    assert post.fs_type(Path("/etc"), mounts) == "xfs"

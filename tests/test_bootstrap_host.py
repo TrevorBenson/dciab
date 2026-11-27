@@ -149,3 +149,67 @@ def test_sync_without_stick_keeps_the_copy(tmp_path):
     (site / "dciab.yaml").write_text("kept\n")
     assert setup.sync_site(str(tmp_path / "no-stick"), str(site)) is False
     assert (site / "dciab.yaml").read_text() == "kept\n"
+
+
+def test_appliance_local_secrets_survive_a_sync(tmp_path, capsys):
+    # #279: a secret DCiaB generated on the appliance (the CAPMOX token) lives in
+    # <site>-local/secrets/, never on the stick, and every sync puts it over the stick's file.
+    usb, site = tmp_path / "usb", tmp_path / "site"
+    (usb / "secrets" / "pve").mkdir(parents=True)
+    (usb / "dciab.yaml").write_text("spec: {}\n")
+    (usb / "secrets" / "pve" / "token").write_text("PLACEHOLDER\n")
+    assert setup.sync_site(str(usb), str(site)) is True
+    local = tmp_path / "site-local" / "secrets" / "pve"
+    local.mkdir(parents=True)
+    (local / "token").write_text("real-secret\n")
+    (local / "link").symlink_to(local / "token")            # never followed into the copy
+    assert setup.sync_site(str(usb), str(site)) is True
+    assert (site / "secrets" / "pve" / "token").read_text() == "real-secret\n"
+    assert (site / "secrets" / "pve" / "token").stat().st_mode & 0o777 == 0o600
+    assert not (site / "secrets" / "pve" / "link").exists()
+    assert "kept the appliance-local secrets/pve/token" in capsys.readouterr().err
+    # Without the stick's file too, and the stick is never written.
+    (usb / "secrets" / "pve" / "token").unlink()
+    assert setup.sync_site(str(usb), str(site)) is True
+    assert (site / "secrets" / "pve" / "token").read_text() == "real-secret\n"
+    assert not (usb / "secrets" / "pve" / "token").exists()
+
+
+def test_a_stick_file_where_the_overlay_needs_a_folder_is_replaced(tmp_path, monkeypatch):
+    # PR #280 review: the stick's secrets/pve was a file and the overlay's secrets/pve/token
+    # aborted the sync (FileExistsError), so bootstrap setup stopped. The overlay wins.
+    usb, site = tmp_path / "usb", tmp_path / "site"
+    (usb / "secrets").mkdir(parents=True)
+    (usb / "dciab.yaml").write_text("spec: {}\n")
+    (usb / "secrets" / "pve").write_text("a file on the stick\n")
+    (usb / "secrets" / "other").write_text("kept\n")
+    assert setup.sync_site(str(usb), str(site)) is True
+    first = site.resolve()
+    local = tmp_path / "site-local" / "secrets" / "pve"
+    local.mkdir(parents=True)
+    (local / "token").write_text("real-secret\n")
+    assert setup.sync_site(str(usb), str(site)) is True
+    assert (site / "secrets" / "pve" / "token").read_text() == "real-secret\n"
+    assert (site / "secrets" / "other").read_text() == "kept\n"
+    assert (usb / "secrets" / "pve").read_text() == "a file on the stick\n"     # the stick is never written
+    assert not first.exists()
+    # A failure while staging still leaves the previous copy in place (the rollback).
+    current = site.resolve()
+
+    def broken(*a, **kw):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(setup.shutil, "copyfile", broken)
+    with pytest.raises(OSError):
+        setup.sync_site(str(usb), str(site))
+    monkeypatch.undo()
+    assert site.resolve() == current and (site / "secrets" / "pve" / "token").read_text() == "real-secret\n"
+    assert sorted(p.name for p in tmp_path.glob(".site*")) == sorted([current.name, ".site.lock"])
+
+
+def test_no_local_secrets_changes_nothing(tmp_path):
+    usb, site = tmp_path / "usb", tmp_path / "site"
+    usb.mkdir()
+    (usb / "dciab.yaml").write_text("spec: {}\n")
+    assert setup.sync_site(str(usb), str(site)) is True
+    assert not (site / "secrets").exists() and not (tmp_path / "site-local").exists()

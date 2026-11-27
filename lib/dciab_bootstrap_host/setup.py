@@ -3,7 +3,9 @@
 The DCiaB USB's data partition (label DCIAB) is mounted at /var/mnt/dciab when the stick
 is plugged in. Its dciab.yaml and secrets/ are copied to /var/lib/dciab/site on the
 appliance's own disk, so the appliance keeps working once the stick is taken out; the
-copy is what everything reads. Then this module makes the appliance reachable:
+copy is what everything reads. Secrets DCiaB generated on the appliance, kept in
+/var/lib/dciab/site-local/secrets/, go over the stick's files of the same path in each new
+copy (sync_site). Then this module makes the appliance reachable:
 
 - one login per identity.initialAdmins user, with its SSH keys and passwordless sudo.
   Logins this module created for users no longer listed lose their keys and are locked.
@@ -113,11 +115,16 @@ def sync_site(usb: str, site: str) -> bool:
     leaves either the old copy or the new one, never neither. A lock serializes runs.
 
     dciab's state lives beside the site (dciab_state.site_state), never inside it. State an
-    older dciab left in the site is moved there first, before the old copy is removed."""
+    older dciab left in the site is moved there first, before the old copy is removed.
+
+    The appliance-local secrets (dciab_state.site_local: <site>-local/secrets/, root-only on
+    the appliance's disk) go over the stick's files of the same path in the new copy: a secret
+    DCiaB generated here, such as the CAPMOX token `dciab hypervisors` creates, lasts across
+    syncs without ever being on the stick."""
     import fcntl
     import tempfile
 
-    from dciab_state import LEGACY, migrate_legacy, site_state
+    from dciab_state import LEGACY, LOCAL_SECRETS, migrate_legacy, site_local, site_state
 
     if not os.path.isfile(os.path.join(usb, "dciab.yaml")):
         return False
@@ -136,6 +143,10 @@ def sync_site(usb: str, site: str) -> bool:
             if os.path.isdir(os.path.join(usb, "secrets")):
                 shutil.copytree(os.path.join(usb, "secrets"), os.path.join(staged, "secrets"),
                                 copy_function=shutil.copyfile)
+            kept = overlay_local(str(site_local(site) / LOCAL_SECRETS), os.path.join(staged, LOCAL_SECRETS))
+            if kept:
+                print(f"dciab-bootstrap-setup: kept the appliance-local {', '.join(kept)} from "
+                      f"{site_local(site)} (not the stick's)", file=sys.stderr)
             for dirpath, _dirnames, filenames in os.walk(staged):
                 os.chmod(dirpath, 0o700)
                 for f in filenames:
@@ -158,6 +169,37 @@ def sync_site(usb: str, site: str) -> bool:
         if previous and os.path.isdir(previous) and previous != os.path.realpath(site):
             shutil.rmtree(previous, ignore_errors=True)
     return True
+
+
+def overlay_local(local: str, dest: str) -> List[str]:
+    """Copy every regular file under `local` to the same path under `dest`, replacing what is
+    there, including a file or link where the overlay needs a folder. Symbolic links in `local`
+    are skipped: the overlay holds files DCiaB wrote. Returns the paths copied, as
+    secrets/<relative path>."""
+    copied: List[str] = []
+    if not os.path.isdir(local) or os.path.islink(local):
+        return copied
+    for dirpath, dirnames, filenames in os.walk(local):
+        dirnames[:] = sorted(d for d in dirnames if not os.path.islink(os.path.join(dirpath, d)))
+        for f in sorted(filenames):
+            src = os.path.join(dirpath, f)
+            if os.path.islink(src) or not os.path.isfile(src):
+                continue
+            rel = os.path.relpath(src, local)
+            target = os.path.join(dest, rel)
+            # A file (or link) on the stick where the overlay needs a folder (secrets/pve vs
+            # secrets/pve/token): the overlay wins, as it does for files.
+            here = dest
+            for part in [""] + os.path.dirname(rel).split(os.sep):
+                here = os.path.join(here, part) if part else here
+                if os.path.lexists(here) and (os.path.islink(here) or not os.path.isdir(here)):
+                    os.remove(here)
+            os.makedirs(os.path.dirname(target), exist_ok=True)
+            if os.path.lexists(target) and (os.path.islink(target) or os.path.isdir(target)):
+                shutil.rmtree(target) if os.path.isdir(target) and not os.path.islink(target) else os.remove(target)
+            shutil.copyfile(src, target)
+            copied.append(os.path.join(os.path.basename(dest.rstrip("/")), rel))
+    return copied
 
 
 def _run(*cmd: str) -> None:

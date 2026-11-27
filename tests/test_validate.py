@@ -1,4 +1,5 @@
 import pytest
+import json
 import os
 import subprocess
 
@@ -955,3 +956,316 @@ def test_isolated_with_resolvers_is_a_warning(site):
     code, report = site.validate(doc)
     assert code == 0
     assert warnings(report, "spec.network.isolated")
+
+
+# --- a bare site's Proxmox VE API before dciab hypervisors (#276) --------------------------------
+
+def _record(site, **fields):
+    import json
+    d = site.dir / ".dciab" / "state" / "installs"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "pve01.json").write_text(json.dumps(fields))
+
+
+def test_bare_site_token_and_fingerprint_are_pending_before_install(site):
+    # examples/proxmox-bare.yaml: the URL names pve01, no tlsFingerprint, and no token file yet.
+    code, report = site.validate(load_example("proxmox-bare"))
+    assert code == 0 and errors(report) == []
+    notes = report["notes"]
+    assert any("pending: the CAPMOX token" in n and "./secrets/pve/token" in n and "pve01" in n for n in notes)
+    assert any("pending: the Proxmox API's certificate on pve01" in n for n in notes)
+    # Still pending once installed, until post is done.
+    _record(site, outcome="installed", iso="http://x/pve01.iso")
+    code, report = site.validate(load_example("proxmox-bare"))
+    assert code == 0 and any("pending: the CAPMOX token" in n for n in report["notes"])
+
+
+def test_bare_site_after_post_uses_the_pin_and_needs_the_token(site):
+    _record(site, outcome="installed", iso="http://x/pve01.iso", post="done", api_fingerprint=":".join(["AB"] * 32))
+    code, report = site.validate(load_example("proxmox-bare"))
+    [e] = errors(report)
+    assert e["path"] == "spec.platform.proxmox.credentials.tokenSecret.file"
+    assert "pve01.token.age" in e["fix"] and "age" in e["fix"]
+    assert any("trusted by the certificate dciab hypervisors pinned" in n and "AB:AB" in n for n in report["notes"])
+    token = site.dir / "secrets" / "pve" / "token"
+    token.parent.mkdir(parents=True, exist_ok=True)
+    token.write_text("s3cret\n")
+    token.chmod(0o600)
+    code, report = site.validate(load_example("proxmox-bare"))
+    assert code == 0 and not any("pending" in n for n in report["notes"])
+
+
+def test_post_done_without_a_pin_is_an_error_not_pending(site):
+    # #281: a record that says post: done but pins no certificate (an older dciab hypervisors).
+    _record(site, outcome="installed", iso="http://x/pve01.iso", post="done")
+    token = site.dir / "secrets" / "pve" / "token"
+    token.parent.mkdir(parents=True, exist_ok=True)
+    token.write_text("s3cret\n")
+    code, report = site.validate(load_example("proxmox-bare"))
+    [e] = errors(report)
+    assert code == 1 and e["path"] == "spec.platform.proxmox.tlsFingerprint"
+    assert "post is done but pins no API certificate" in e["found"] and "dciab hypervisors" in e["fix"]
+    assert not any("pending" in n for n in report["notes"])
+    # Nor when the install didn't end installed (its pin isn't trusted).
+    _record(site, outcome="failed", iso="http://x/pve01.iso", post="done", api_fingerprint=":".join(["AB"] * 32))
+    code, report = site.validate(load_example("proxmox-bare"))
+    assert code == 1 and [e["path"] for e in errors(report)] == ["spec.platform.proxmox.tlsFingerprint"]
+
+
+def test_bare_site_env_token_is_pending_until_set(site, monkeypatch):
+    doc = load_example("proxmox-bare")
+    doc["spec"]["platform"]["proxmox"]["credentials"]["tokenSecret"] = {"env": "DCIAB_BARE_TOKEN"}
+    monkeypatch.delenv("DCIAB_BARE_TOKEN", raising=False)
+    code, report = site.validate(doc)
+    assert code == 0 and any("environment variable DCIAB_BARE_TOKEN" in n and "pending" in n for n in report["notes"])
+
+
+def test_fingerprint_is_required_for_a_proxmox_dciab_doesnt_install(site):
+    doc = load_example("proxmox")
+    del doc["spec"]["platform"]["proxmox"]["tlsFingerprint"]
+    code, report = site.validate(doc)
+    [e] = errors(report)
+    assert code == 1 and e["path"] == "spec.platform.proxmox.tlsFingerprint" and "spec.hypervisors" in e["fix"]
+    # A URL that names none of spec.hypervisors' hosts: the token is required as before.
+    doc = load_example("proxmox-bare")
+    doc["spec"]["platform"]["proxmox"]["url"] = "https://pve-api.dc3.example.com:8006"
+    code, report = site.validate(doc)
+    assert {e["path"] for e in errors(report)} == {"spec.platform.proxmox.tlsFingerprint",
+                                                   "spec.platform.proxmox.credentials.tokenSecret.file"}
+
+
+def test_an_empty_secret_file_is_an_error(site):
+    (site.dir / "secrets" / "bmc" / "pve02").write_text("")
+    code, report = site.validate(load_example("proxmox-bare"))
+    [e] = errors(report)
+    assert code == 1 and e["path"] == "spec.hypervisors.hosts[1].bmc.credentials.password.file"
+    assert e["found"] == "./secrets/bmc/pve02 is empty" and e["fix"] == "write the secret into the file"
+
+
+def test_validate_state_option_finds_the_install_records(site, tmp_path):
+    import json
+    state = tmp_path / "elsewhere"
+    (state / "installs").mkdir(parents=True)
+    (state / "installs" / "pve01.json").write_text(json.dumps({"outcome": "installed", "post": "done",
+                                                               "iso": "http://x/pve01.iso",
+                                                               "api_fingerprint": ":".join(["CD"] * 32)}))
+    from dciab_validate import cli
+    path = site.dir / "dciab.yaml"
+    import yaml
+    path.write_text(yaml.safe_dump(load_example("proxmox-bare"), sort_keys=False))
+    assert cli.main([str(path), "--root", str(ROOT), "--output", "json", "--state", str(state)]) == 1
+    report = json.loads(site.capsys.readouterr().out)
+    assert [e["path"] for e in errors(report)] == ["spec.platform.proxmox.credentials.tokenSecret.file"]
+
+
+def test_proxmox_csi_has_no_template_import_and_dciab_never_creates_its_token():
+    # templateImport belongs to spec.platform.proxmox only; the CSI token is always the site's own.
+    import json
+    schema = json.loads((ROOT / "schema" / "dciab.schema.json").read_text())
+    csi = schema["$defs"]["proxmoxCSI"]
+    assert "templateImport" not in csi["properties"]
+    desc = csi["properties"]["credentials"]["properties"]["tokenSecret"]["description"]
+    assert "creates" not in desc and "hypervisors" not in desc
+    assert "templateImport" in schema["$defs"]["proxmox"]["properties"]
+
+
+def test_proxmox_csi_template_import_is_rejected(site):
+    doc = load_example("proxmox")
+    block = doc["spec"]["storage"]["block"]
+    block["proxmoxCSI"]["templateImport"] = {"credentials": {"tokenID": "t@pve!x", "tokenSecret": {"env": "X"}}}
+    code, report = site.validate(doc)
+    assert code == 1 and any("templateImport" in (e.get("path", "") + e.get("found", "")) for e in errors(report))
+
+
+# --- #276 review fixes: when "pending" applies ---------------------------------------------------
+
+def test_url_host_not_in_nodes_is_not_pending(site):
+    # post only sets up hosts that are also platform.proxmox.nodes: pve02 gets no token.
+    doc = load_example("proxmox-bare")
+    doc["spec"]["platform"]["proxmox"]["url"] = "https://10.30.110.7:8006"   # pve02
+    code, report = site.validate(doc)
+    assert code == 1
+    assert {e["path"] for e in errors(report)} >= {"spec.platform.proxmox.tlsFingerprint",
+                                                   "spec.platform.proxmox.credentials.tokenSecret.file"}
+    assert not any("pending" in n for n in report["notes"])
+
+
+def test_unreadable_install_record_is_an_error_not_pending(site):
+    d = site.dir / ".dciab" / "state" / "installs"
+    d.mkdir(parents=True)
+    (d / "pve01.json").write_text("{not json")
+    code, report = site.validate(load_example("proxmox-bare"))
+    assert code == 1 and not any("pending" in n for n in report["notes"])
+    by_path = {e["path"]: e for e in errors(report)}
+    assert "can't be read" in by_path["spec.platform.proxmox.tlsFingerprint"]["found"]
+    assert "can't be read" in by_path["spec.platform.proxmox.credentials.tokenSecret.file"]["fix"]
+
+
+def test_a_state_folder_without_permission_is_unreadable_not_absent(site, monkeypatch):
+    import errno
+    import dciab_state
+    real = os.lstat
+
+    def lstat(path, *a, **kw):
+        if str(path).endswith("installs/pve01.json"):
+            raise PermissionError(errno.EACCES, "Permission denied", str(path))
+        return real(path, *a, **kw)
+
+    monkeypatch.setattr(dciab_state.os, "lstat", lstat)
+    assert dciab_state.read_install(site.dir / ".dciab" / "state", "pve01") == {"outcome": "unreadable"}
+    code, report = site.validate(load_example("proxmox-bare"))
+    assert code == 1 and not any("pending" in n for n in report["notes"])
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root reads any folder")
+def test_a_real_unreadable_state_folder(site):
+    import dciab_state
+    state = site.dir / ".dciab" / "state"
+    (state / "installs").mkdir(parents=True)
+    state.chmod(0)
+    try:
+        assert dciab_state.read_install(state, "pve01") == {"outcome": "unreadable"}
+    finally:
+        state.chmod(0o700)
+
+
+def test_no_record_pending_note_says_a_held_host_needs_its_token(site):
+    code, report = site.validate(load_example("proxmox-bare"))
+    assert code == 0
+    notes = [n for n in report["notes"] if "pending" in n]
+    assert notes and all("held pve01" in n and "by hand" in n for n in notes)
+    # With a record (installed, post not done yet), the note doesn't need the hint.
+    _record(site, outcome="installed", iso="http://x/pve01.iso")
+    code, report = site.validate(load_example("proxmox-bare"))
+    notes = [n for n in report["notes"] if "pending" in n]
+    assert code == 0 and notes and not any("held" in n for n in notes)
+
+
+def test_a_held_host_given_its_token_and_fingerprint_is_not_pending(site):
+    doc = load_example("proxmox-bare")
+    doc["spec"]["platform"]["proxmox"]["tlsFingerprint"] = ":".join(["AB"] * 32)
+    token = site.dir / "secrets" / "pve" / "token"
+    token.parent.mkdir(parents=True, exist_ok=True)
+    token.write_text("s3cret\n")
+    token.chmod(0o600)
+    code, report = site.validate(doc)
+    assert code == 0 and not any("pending" in n for n in report["notes"])
+
+
+def test_steps_pass_their_state_to_the_validate_gate(site, tmp_path, monkeypatch):
+    """services, cluster-values and seed's preflight read the install records in their own state."""
+    import yaml
+    from dciab_validate import checks
+    seen = []
+    real = checks.run
+
+    def spy(doc, config, root, state=None):
+        seen.append(state)
+        return real(doc, config, root, state)
+
+    monkeypatch.setattr(checks, "run", spy)
+    config = site.dir / "dciab.yaml"
+    config.write_text(yaml.safe_dump(load_example("proxmox-bare"), sort_keys=False))
+    state = tmp_path / "custom-state"
+    from dciab_services import cli as services_cli
+    services_cli._load(config, ROOT, state)
+    from dciab_cluster import cli as cluster_cli
+    cluster_cli.main([str(config), "--root", str(ROOT), "--list", "--state", str(state)])
+    assert [str(s) for s in seen] == [str(state), str(state)]
+
+    from dciab_seed import cli as seed_cli
+    calls = []
+
+    class Done:
+        returncode = 0
+        stdout = ""
+
+    monkeypatch.setattr(seed_cli.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(seed_cli.shutil, "which", lambda t: "/bin/" + t)
+    payload = tmp_path / "payload"
+    for sub in ("images", "providers"):
+        (payload / sub).mkdir(parents=True)
+    (payload / "images.yaml").write_text("{}\n")
+    monkeypatch.setattr(seed_cli.subprocess, "run", lambda cmd, **kw: calls.append(cmd) or Done())
+    seed_cli.step_preflight(ROOT, config, payload, state)
+    assert calls[-1][-2:] == ["--state", str(state)]
+
+
+def test_services_main_passes_state_to_validate(monkeypatch, tmp_path):
+    from dciab_services import cli as services_cli
+    got = {}
+    monkeypatch.setattr(services_cli, "_load", lambda config, root, state=None: got.update(state=state) or
+                        (_ for _ in ()).throw(SystemExit(9)))
+    with pytest.raises(SystemExit):
+        services_cli.main(["--root", str(ROOT), str(tmp_path / "dciab.yaml"), "--state", str(tmp_path / "s"), "env"])
+    assert str(got["state"]) == str(tmp_path / "s")
+
+
+def test_mgmt_passes_its_state_to_cluster_values():
+    text = (ROOT / "lib" / "steps" / "mgmt.sh").read_text()
+    assert 'args=("$config" mgmt -o "$values" --state "$state")' in text
+
+
+# --- #279 review fixes: the files post may write the token to --------------------------------
+
+def test_token_secret_naming_the_config_file_is_an_error(site):
+    doc = load_example("proxmox-bare")
+    doc["spec"]["platform"]["proxmox"]["credentials"]["tokenSecret"] = {"file": "./dciab.yaml"}
+    code, report = site.validate(doc)
+    [e] = errors(report, "spec.platform.proxmox.credentials.tokenSecret.file")
+    assert code == 1 and "config file itself" in e["found"]
+
+
+def test_any_secret_naming_the_config_file_is_an_error(site):
+    doc = load_example("proxmox-bare")
+    doc["spec"]["hypervisors"]["hosts"][0]["bmc"]["credentials"]["password"] = {"file": "dciab.yaml"}
+    code, report = site.validate(doc)
+    [e] = errors(report, "spec.hypervisors.hosts[0].bmc.credentials.password.file")
+    assert code == 1 and "config file itself" in e["found"]
+
+
+def test_token_secret_shared_with_another_secret_is_an_error_when_post_writes_it(site):
+    doc = load_example("proxmox-bare")
+    doc["spec"]["platform"]["proxmox"]["credentials"]["tokenSecret"] = {"file": "./secrets/bmc/pve01"}
+    code, report = site.validate(doc)
+    [e] = errors(report, "spec.platform.proxmox.credentials.tokenSecret.file")
+    assert code == 1 and "spec.hypervisors.hosts[0].bmc.credentials.password" in e["found"]
+
+
+def test_on_the_appliance_token_secret_must_be_under_secrets(site, monkeypatch, tmp_path):
+    import yaml
+    import dciab_state
+    from dciab_validate import cli
+    copy = tmp_path / ".site-x"
+    copy.mkdir()
+    import shutil
+    shutil.copytree(site.dir / "secrets", copy / "secrets")
+    link = tmp_path / "site"
+    link.symlink_to(".site-x")
+    monkeypatch.setattr(dciab_state, "SITE", link)
+    doc = load_example("proxmox-bare")
+    for raw in ("./token", str(tmp_path / "outside" / "token")):
+        doc["spec"]["platform"]["proxmox"]["credentials"]["tokenSecret"] = {"file": raw}
+        (copy / "dciab.yaml").write_text(yaml.safe_dump(doc, sort_keys=False))
+        code = cli.main([str(link / "dciab.yaml"), "--root", str(ROOT), "--output", "json",
+                         "--state", str(tmp_path / "state")])
+        report = json.loads(site.capsys.readouterr().out)
+        [e] = errors(report, "spec.platform.proxmox.credentials.tokenSecret.file")
+        assert code == 1 and "under the site's secrets/" in e["found"], raw
+    doc["spec"]["platform"]["proxmox"]["credentials"]["tokenSecret"] = {"file": "./secrets/pve/token"}
+    (copy / "dciab.yaml").write_text(yaml.safe_dump(doc, sort_keys=False))
+    code = cli.main([str(link / "dciab.yaml"), "--root", str(ROOT), "--output", "json",
+                     "--state", str(tmp_path / "state")])
+    report = json.loads(site.capsys.readouterr().out)
+    assert code == 0, errors(report)
+
+
+def test_a_proxmox_ve_that_already_ran_is_not_pending(site):
+    # dciab hypervisors found its API answering and left it as it is: installed, but no iso, and
+    # post never sets it up. So nothing will create the token: required, not pending forever.
+    _record(site, outcome="installed", media="ejected")
+    code, report = site.validate(load_example("proxmox-bare"))
+    assert code == 1 and not any("pending" in n for n in report["notes"])
+    by_path = {e["path"]: e for e in errors(report)}
+    assert "wasn't installed by DCiaB" in by_path["spec.platform.proxmox.tlsFingerprint"]["found"]
+    assert "docs/PROXMOX.md" in by_path["spec.platform.proxmox.credentials.tokenSecret.file"]["fix"]

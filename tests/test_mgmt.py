@@ -161,3 +161,16 @@ def test_credentials_secret_has_no_annotations(monkeypatch, tmp_path, example):
     (tmp_path / "secrets").mkdir()
     (tmp_path / "secrets" / "vsphere.pw").write_text("pw\n")
     assert "annotations" not in secret(load_example(example), "mgmt", "cluster-mgmt", tmp_path)["metadata"]
+
+
+def test_a_missing_capmox_token_file_says_where_it_comes_from(tmp_path):
+    doc = load_example("proxmox")
+    doc["spec"]["platform"]["proxmox"]["credentials"]["tokenSecret"] = {"file": "./secrets/pve/token"}
+    with pytest.raises(ValueError, match="dciab hypervisors' post-install creates the token"):
+        secret(doc, "mgmt", "cluster-mgmt", tmp_path)
+    (tmp_path / "secrets" / "pve").mkdir(parents=True)
+    (tmp_path / "secrets" / "pve" / "token").write_text("")
+    with pytest.raises(ValueError, match="is empty"):
+        secret(doc, "mgmt", "cluster-mgmt", tmp_path)
+    (tmp_path / "secrets" / "pve" / "token").write_text("s3cret\n")
+    assert secret(doc, "mgmt", "cluster-mgmt", tmp_path)["data"]["secret"] == "czNjcmV0"

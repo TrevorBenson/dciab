@@ -1,6 +1,6 @@
 # Proxmox VE: the API tokens DCiaB uses
 
-DCiaB and CAPMOX reach Proxmox VE only through its API, with one API token. The Proxmox CSI plugin, when it is the block storage (`spec.storage.block.provider: proxmox-csi`), has a token of its own ([below](#the-proxmox-csi-plugins-token)). Nothing DCiaB runs needs SSH to a Proxmox VE host. The token belongs to a dedicated user and is privilege-separated (`privsep=1`): its privileges are what both the user's and the token's ACLs grant, so each ACL is set for both.
+DCiaB and CAPMOX reach Proxmox VE only through its API, with one API token. The Proxmox CSI plugin, when it is the block storage (`spec.storage.block.provider: proxmox-csi`), has a token of its own ([below](#the-proxmox-csi-plugins-token)), and so does `dciab templates` on a Proxmox VE that DCiaB didn't install ([below](#the-node-templates-token)). Nothing DCiaB runs needs SSH to a Proxmox VE host. The token belongs to a dedicated user and is privilege-separated (`privsep=1`): its privileges are what both the user's and the token's ACLs grant, so each ACL is set for both.
 
 This page lists exactly what each token needs on Proxmox VE 9. `dciab validate --live` reads the token's effective privileges (`GET /access/permissions`) and reports anything missing as an error, and anything that could change permissions or the hosts (`Permissions.Modify`, `User.Modify`, `Sys.Modify`, `Sys.PowerMgmt`, `Sys.Console`, `Realm.Allocate`, `Group.Allocate`) as a warning. Both come from `lib/dciab_validate/proxmox_privs.py`, which this page must match (a test checks it).
 
@@ -22,7 +22,7 @@ Notes:
 - **Guest agent.** CAPMOX reads cloud-init's status inside each machine with the QEMU guest agent's `guest-exec`, which needs `VM.GuestAgent.Unrestricted` on Proxmox VE 9 (`VM.Monitor` was dropped). That privilege lets the token run commands inside machines it manages; it covers only `/vms`.
 - **Bootstrap ISOs.** CAPMOX uploads each machine's bootstrap data as `local:iso/user-data-<vmid>.iso` and deletes it with the machine. Deleting needs `Datastore.Allocate` on `local`, which also allows deleting other volumes there. Keep templates and other images off `local` if that matters to the site.
 - **No pool.** CAPMOX doesn't put machines in a pool, so the VM privileges propagate from `/vms`. They don't reach the hosts or other users.
-- **The template.** Publishing a node template is a separate, one-time task with its own credentials. It isn't part of this token.
+- **The template.** Publishing the node template is a separate, one-time task with its own credentials ([below](#the-node-templates-token)). It isn't part of this token.
 
 ## Creating them
 
@@ -49,7 +49,7 @@ Put the token secret (shown once) where `spec.platform.proxmox.credentials.token
 $ ./dciab validate dciab.yaml --live
 ```
 
-On hosts it installs, `dciab hypervisors` creates the same roles, user, token and ACLs through the API, and seals the token's secret with age ([HYPERVISORS.md](HYPERVISORS.md#post-install)).
+On hosts it installs, `dciab hypervisors` creates the same roles, user, token and ACLs through the API, seals the token's secret with age, and writes it where `tokenSecret` points for the host `platform.proxmox.url` names ([HYPERVISORS.md](HYPERVISORS.md#the-capmox-tokens-home)).
 
 ## The Proxmox CSI plugin's token
 
@@ -65,7 +65,7 @@ The Proxmox CSI plugin creates each volume as a VM disk on one Proxmox storage (
 Notes:
 - **Nothing else on VMs.** The token can't create, clone, start, stop or delete VMs, or run commands in them. `VM.Config.Disk` lets it add and remove disks of any VM under `/vms`.
 - **Deleting volumes.** `Datastore.Allocate` on the storage is what lets the plugin delete a volume; it also allows deleting other volumes on that storage. Give the plugin a storage of its own if that matters to the site.
-- **TLS.** The plugin trusts only the API certificate whose fingerprint is `spec.platform.proxmox.tlsFingerprint`: `addons/csi` reads the certificate, checks the fingerprint, and names it as the plugin's `ca_file`, its only trusted certificate. Its host name check still applies, so `spec.platform.proxmox.url` must use a name or address the certificate lists. When the node's certificate is renewed, update `tlsFingerprint` and run `addons/csi/install.sh` again.
+- **TLS.** The plugin trusts only the API certificate whose fingerprint is `spec.platform.proxmox.tlsFingerprint` (or, with none, the one the API host's install record pins: [HYPERVISORS.md](HYPERVISORS.md#trust-on-first-use)): `addons/csi` reads the certificate, checks the fingerprint, and names it as the plugin's `ca_file`, its only trusted certificate. Its host name check still applies, so `spec.platform.proxmox.url` must use a name or address the certificate lists. When the node's certificate is renewed, update `tlsFingerprint` and run `addons/csi/install.sh` again.
 - **Zones.** The plugin finds node VMs by UUID. On shared storage that is enough. `proxmoxCSI.shared` says which kind the storage is (required: a storage's name doesn't tell). A volume on node-local storage (`shared: false`) is tied to its PVE node, matched against the nodes' `topology.kubernetes.io/zone` label, which DCiaB sets to the PVE node name (ADR 0010). In `r1` a Proxmox control plane gets a zone only on a one-domain site, so with node-local storage on a site with several domains, volumes go on worker nodes (`dciab validate` checks it).
 
 ```console
@@ -78,3 +78,39 @@ pveum acl modify /storage/<csi storage> --users csi@pve --tokens 'csi@pve!dciab'
 ```
 
 Put its secret where `proxmoxCSI.credentials.tokenSecret` points, with `tokenID: csi@pve!dciab`.
+
+## The node template's token
+
+`dciab templates` publishes the node template ([TEMPLATES.md](TEMPLATES.md)). On a host `dciab hypervisors` installed it logs in as `root@pam`, as `post` does. Anywhere else it needs a token of its own, `spec.platform.proxmox.templateImport.credentials`, never CAPMOX's (`dciab validate` refuses the same token ID). It is a one-time task, so the token can be removed once the template is published, and made again for the next one. `dciab validate --live` checks this token the same way as the others.
+
+| Role | Path | Propagate | Privileges | Why |
+| --- | --- | --- | --- | --- |
+| `DCiaBTemplateNodes` | `/nodes` | yes | `Sys.Audit` | see the node, its storage and its tasks |
+| `DCiaBTemplateVM` | `/vms/<templateID>` | no | `VM.Allocate`, `VM.Audit`, `VM.Config.CPU`, `VM.Config.Disk`, `VM.Config.HWType`, `VM.Config.Memory`, `VM.Config.Network`, `VM.Config.Options` | create the template at templateID, and only there |
+| `DCiaBTemplateStorage` | `/storage/<storage>` | no | `Datastore.AllocateSpace`, `Datastore.Audit` | the template's disk |
+| `DCiaBTemplateUpload` | `/storage/local` | no | `Datastore.Allocate`, `Datastore.AllocateTemplate`, `Datastore.Audit` | upload the node disk (content type import), allow that type, delete the upload |
+| `DCiaBTemplateNetwork` | `/sdn/zones/localnetwork/<bridge>/<vlanTag>` | no | `SDN.Use` | the template's NIC on the bridge (and VLAN) |
+
+When `<storage>` is `local`, `DCiaBTemplateStorage` and `DCiaBTemplateUpload` are one role on `/storage/local` with the privileges of both.
+
+Notes:
+- **One VM ID.** The VM privileges are on `/vms/<templateID>` only, not propagated: the token can't touch any other VM, and `--replace` can delete only what is at that ID.
+- **Replacing a template with this token.** Proxmox VE removes a VM's own ACLs when it destroys the VM, so deleting what is at `templateID` would also take this token's `/vms/<templateID>` grant, and it couldn't create the new template. `dciab templates` checks that before it deletes anything, and stops with nothing changed when the token's VM privileges aren't also on `/vms`, propagated. Then delete the old template yourself and run the `pveum acl modify /vms/<templateID>` line again before the step, or use a free `templateID` with that ACL ([TEMPLATES.md](TEMPLATES.md#replacing-a-template)). The first publish at an empty `templateID` needs only the one-VM grant.
+- **The upload.** The node disk goes to `local` as the content type `import`. `Datastore.AllocateTemplate` uploads it; `Datastore.Allocate` deletes it afterwards and lets the step add `import` to `local`'s content types, the same as CAPMOX's bootstrap ISOs need there.
+
+```console
+pveum role add DCiaBTemplateNodes --privs "Sys.Audit"
+pveum role add DCiaBTemplateVM --privs "VM.Allocate,VM.Audit,VM.Config.CPU,VM.Config.Disk,VM.Config.HWType,VM.Config.Memory,VM.Config.Network,VM.Config.Options"
+pveum role add DCiaBTemplateStorage --privs "Datastore.AllocateSpace,Datastore.Audit"
+pveum role add DCiaBTemplateUpload --privs "Datastore.Allocate,Datastore.AllocateTemplate,Datastore.Audit"
+pveum role add DCiaBTemplateNetwork --privs "SDN.Use"
+pveum user add template@pve --comment "DCiaB: node template"
+pveum user token add template@pve dciab --privsep 1
+pveum acl modify /nodes --users template@pve --tokens 'template@pve!dciab' --roles DCiaBTemplateNodes --propagate 1
+pveum acl modify /vms/<templateID> --users template@pve --tokens 'template@pve!dciab' --roles DCiaBTemplateVM --propagate 0
+pveum acl modify /storage/<storage> --users template@pve --tokens 'template@pve!dciab' --roles DCiaBTemplateStorage --propagate 0
+pveum acl modify /storage/local --users template@pve --tokens 'template@pve!dciab' --roles DCiaBTemplateUpload --propagate 0
+pveum acl modify /sdn/zones/localnetwork/<bridge>/<vlanTag> --users template@pve --tokens 'template@pve!dciab' --roles DCiaBTemplateNetwork --propagate 0
+```
+
+Put its secret where `templateImport.credentials.tokenSecret` points, with `tokenID: template@pve!dciab`.

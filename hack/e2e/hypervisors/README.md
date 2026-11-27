@@ -1,6 +1,6 @@
 # dciab hypervisors on emulated bare servers (CI)
 
-`.github/workflows/hypervisors-emulated.yml` runs `dciab services` and `dciab hypervisors` for real
+`.github/workflows/hypervisors-emulated.yml` runs `dciab services`, `dciab hypervisors` and `dciab templates` for real
 against a VM that stands in for a bare server, on a GitHub-hosted runner with KVM. Test tooling:
 none of this goes into the archive.
 
@@ -31,12 +31,12 @@ record restored; that combined path is only covered there. Scenarios that need a
 | --- | --- | --- |
 | untagged | disk-refused | A hinted serial number no drive has: refused before any BMC write, no ISO attached, the server stays off |
 | both | held-without-flag | No install record and no boot options: held until `--first-install`, nothing written |
-| both | first-install | `--first-install`: a real Proxmox VE install from the per-host ISO, `wait`, then `post` (CAPMOX roles, user, token sealed with age, ACLs, first-contact certificate pin); the token works against the API |
+| both | first-install | Before it, `dciab validate` passes with the CAPMOX token and the API certificate reported as pending (the config's URL names the host, with no token file and no `tlsFingerprint`). `--first-install`: a real Proxmox VE install from the per-host ISO, `wait`, then `post` (CAPMOX roles, user, token sealed with age and written where `tokenSecret` points, ACLs, first-contact certificate pin); the token works against the API, and `validate --live` trusts the API by the install record's pin with that token (only the node template is missing). Then `dciab templates`, as `root@pam` with the generated root password (no `templateImport`), publishes a tiny qcow2 laid out by `build/archive.py nodes --local-disk` through the real API (upload as `import` content, `import-from` onto the storage, template) and reports `published`, then `kept` on a second run |
 | untagged | rerun | The API answers: nothing is reset (the VM's QEMU process is unchanged) |
 | untagged | lost-state | Install record removed, host running: the 8006 check still holds the host |
 | untagged | lost-state-host-off | Install record removed and the host off (nothing answers, no boot options listed): held until `--first-install`, nothing written, the server stays off |
 | untagged | recorded-host-off | Install recorded and the host off: held ("the Proxmox VE API doesn't answer"), never reinstalled |
-| untagged | reinstall | `--reinstall`: a new install, `post` again with the new certificate, the old token moved aside |
+| untagged | reinstall | `--reinstall`: a new install, `post` again with the new certificate, the old token moved aside, and the new token written where `tokenSecret` points |
 | tagged | port-is-tagged-only | Read from the switch: the VM's port carries the node VLAN tagged, nothing untagged |
 | tagged | first-install | Also: Secure Boot staged on through Redfish, checked in libvirt's domain (a `secure='yes'` loader, NVRAM from the Microsoft-keys template); the first-boot hook put the address on `vmbr0.<vlan>` with `vmbr0` VLAN-aware |
 | tagged | reboot | After a reboot the host is back on `vmbr0.<vlan>`, and a rerun resets nothing (same QEMU process) |
@@ -62,4 +62,6 @@ Two more emulator differences:
 - **Secure Boot and boot mode.** sushy-tools 2.2.0 drops Secure Boot when the boot mode is set,
   which `patch_sushy.py` fixes in the emulator (a real BMC keeps the two apart).
 
-What's left for real hardware is handoff task 0010's smoke test.
+What's left for real hardware is handoff task 0010's smoke test. The node template's own token
+(`templateImport`, exactly `proxmox_privs.template_grants`) is proven on the lab, by
+`lab-template.yml`; here `dciab templates` logs in as `root@pam`, as on a host DCiaB installed.

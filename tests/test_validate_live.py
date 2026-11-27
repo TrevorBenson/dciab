@@ -187,6 +187,7 @@ def proxmox_spec(port, pin):
     spec["platform"]["proxmox"]["nodes"] = ["pve01", "pve02", "pve03"]
     spec["platform"]["proxmox"]["url"] = f"https://127.0.0.1:{port}"
     spec["platform"]["proxmox"]["tlsFingerprint"] = pin
+    spec["platform"]["proxmox"]["credentials"]["tokenSecret"] = {"env": "DCIAB_PVE_TOKEN"}
     return spec
 
 
@@ -739,7 +740,9 @@ def test_cli_live_end_to_end(cert, servers, site, monkeypatch):
     pve = servers(cert, routes, PVE_AUTH | {f"PVEAPIToken=csi@pve!dciab={CSI_TOKEN}"})
     doc = copy.deepcopy(load_example("proxmox-bare"))
     with_proxmox_csi(doc["spec"])
-    doc["spec"]["platform"]["proxmox"].update(url=f"https://127.0.0.1:{pve.port}", tlsFingerprint=cert["sha256"])
+    doc["spec"]["platform"]["proxmox"].update(url=f"https://127.0.0.1:{pve.port}", tlsFingerprint=cert["sha256"],
+                                              credentials={"tokenID": "dciab@pve!capmox",
+                                                           "tokenSecret": {"env": "DCIAB_PVE_TOKEN"}})
     for h in doc["spec"]["hypervisors"]["hosts"]:
         bmc = servers(cert, redfish_routes(), BMC_AUTH)
         h["bmc"]["address"] = f"redfish-virtualmedia+https://127.0.0.1:{bmc.port}{SYS}"
@@ -917,7 +920,7 @@ def test_proxmox_csi_shared_must_match_the_storage(cert, servers, monkeypatch, t
 
 
 def test_live_tasks_check_each_proxmox_csi_token():
-    spec = with_proxmox_csi(copy.deepcopy(load_example("proxmox-bare")["spec"]))
+    spec = with_proxmox_csi(copy.deepcopy(load_example("proxmox")["spec"]))
     names = [n for n, _ in live.tasks(spec, Path("."), 1)]
     assert "Proxmox CSI token csi@pve!dciab" in names
     spec["storage"]["block"] = {"provider": "longhorn", "longhorn": {"replicaCount": 2, "backupTarget": "nfs://n:/x"}}
@@ -973,3 +976,104 @@ def test_dns_names_in_the_old_form_without_spec_backup(target):
 ])
 def test_target_host_ignores_at_signs_in_paths(url, host):
     assert live._target_host(url) == host
+
+
+# --- a bare site before dciab hypervisors (#276) -------------------------------------------------
+
+def _bare_live_doc(cert, servers):
+    doc = copy.deepcopy(load_example("proxmox-bare"))
+    for h in doc["spec"]["hypervisors"]["hosts"]:
+        bmc = servers(cert, redfish_routes(), BMC_AUTH)
+        h["bmc"]["address"] = f"redfish-virtualmedia+https://127.0.0.1:{bmc.port}{SYS}"
+        h["bmc"].pop("caBundle", None)
+        h["bmc"]["tlsFingerprint"] = cert["sha256"]
+    return doc
+
+
+def test_cli_live_on_a_bare_site_before_install_reports_proxmox_as_pending(cert, servers, site, monkeypatch):
+    # The URL names pve01, which dciab hypervisors hasn't installed: no token, no pin, nothing
+    # answers there. Every other live check still runs; the Proxmox ones are a note.
+    monkeypatch.setattr(probes, "find_interface", lambda want: None)
+    monkeypatch.setattr(live, "check_proxmox", lambda *a, **k: pytest.fail("the Proxmox API was asked"))
+    code, report, _ = _validate_live(site, _bare_live_doc(cert, servers))
+    assert code == 0, report
+    assert errors(report) == []
+    assert not [f for f in report["findings"] if f["path"].startswith("spec.platform.proxmox")]
+    notes = report["notes"]
+    assert any("Proxmox API checks pending: pve01 isn't set up by dciab hypervisors yet" in n
+               and "the CAPMOX token and the API certificate's pin" in n for n in notes)
+    assert sum("virtual media" in n for n in notes) == 3                 # the BMC checks ran
+
+
+def test_live_after_post_trusts_the_install_records_pin(cert, servers, monkeypatch, tmp_path):
+    # No tlsFingerprint: the pin post recorded is what the API is checked against.
+    import json
+    srv = servers(cert, pve_routes(), PVE_AUTH)
+    spec = proxmox_spec(srv.port, cert["sha256"])
+    del spec["platform"]["proxmox"]["tlsFingerprint"]
+    spec["hypervisors"]["hosts"][0]["address"] = "127.0.0.1"           # the URL names pve01
+    monkeypatch.setenv("DCIAB_PVE_TOKEN", TOKEN)
+    state = tmp_path / "state"
+    (state / "installs").mkdir(parents=True)
+    rec = {"outcome": "installed", "iso": "x", "post": "done", "api_fingerprint": cert["sha256"]}
+    (state / "installs" / "pve01.json").write_text(json.dumps(rec))
+    pin, why = live.proxmox_pending(spec, tmp_path, state)
+    assert (pin, why) == (cert["sha256"], None)
+    jobs = dict(live.tasks(spec, tmp_path, 3, state))
+    assert jobs["Proxmox API"]().findings == []
+    # A wrong pin in the record: refused before the token is sent.
+    rec["api_fingerprint"] = ":".join(["AB"] * 32)
+    (state / "installs" / "pve01.json").write_text(json.dumps(rec))
+    [f] = dict(live.tasks(spec, tmp_path, 3, state))["Proxmox API"]().findings
+    assert "not the pinned one" in f.found
+
+
+def test_live_with_no_pin_and_no_fingerprint_is_an_error_not_a_keyerror(monkeypatch, tmp_path):
+    # #281: post done, no api_fingerprint, no tlsFingerprint: live reported "could not finish (KeyError)".
+    import json
+    spec = proxmox_spec(0, "x")
+    del spec["platform"]["proxmox"]["tlsFingerprint"]
+    spec["platform"]["proxmox"]["templateImport"] = {"credentials": {"tokenID": "template@pve!dciab",
+                                                                     "tokenSecret": {"env": "DCIAB_TEMPLATE_TOKEN"}}}
+    spec["hypervisors"]["hosts"][0]["address"] = "127.0.0.1"           # the URL names pve01
+    monkeypatch.setenv("DCIAB_PVE_TOKEN", TOKEN)
+    state = tmp_path / "state"
+    (state / "installs").mkdir(parents=True)
+    (state / "installs" / "pve01.json").write_text(json.dumps({"outcome": "installed", "iso": "x", "post": "done"}))
+    assert live.proxmox_pending(spec, tmp_path, state) == (None, None)
+    jobs = dict(live.tasks(spec, tmp_path, 3, state))
+    assert "node template token" not in jobs and not any("CSI" in n for n in jobs)
+    [f] = jobs["Proxmox API"]().findings
+    assert f.severity == "error" and f.path == ("spec", "platform", "proxmox", "tlsFingerprint")
+    assert "dciab hypervisors" in f.fix
+
+
+# --- the node template's token (dciab templates) -------------------------------------------------
+
+def test_template_import_token_is_checked(cert, servers, monkeypatch, tmp_path):
+    from urllib.parse import quote
+
+    from dciab_validate.proxmox_privs import template_grants
+    monkeypatch.setenv("DCIAB_TEMPLATE_TOKEN", "tpl")
+    spec = proxmox_spec(0, cert["sha256"])
+    px = spec["platform"]["proxmox"]
+    px["templateImport"] = {"credentials": {"tokenID": "template@pve!dciab",
+                                            "tokenSecret": {"env": "DCIAB_TEMPLATE_TOKEN"}}}
+
+    def routes(drop=None):
+        r = {("GET", "/api2/json/version"): (200, {"data": {"version": "9.1.1"}}),
+             ("GET", "/api2/json/access/permissions?path=%2F"): (200, {"data": {"/": {}}})}
+        for g in template_grants(px):
+            r[("GET", f"/api2/json/access/permissions?path={quote(g.path, safe='')}")] = \
+                (200, {"data": {g.path: {p: int(g.propagate) for p in g.privileges if p != drop}}})
+        return r
+    srv = servers(cert, routes(), {"PVEAPIToken=template@pve!dciab=tpl"})
+    px["url"] = f"https://127.0.0.1:{srv.port}"
+    r = live.check_template_import(spec, tmp_path, 3)
+    assert r.findings == [] and any("template@pve!dciab has every privilege" in n for n in r.notes)
+    srv = servers(cert, routes(drop="VM.Config.Disk"), {"PVEAPIToken=template@pve!dciab=tpl"})
+    px["url"] = f"https://127.0.0.1:{srv.port}"
+    [f] = live.check_template_import(spec, tmp_path, 3).findings
+    assert f.path == ("spec", "platform", "proxmox", "templateImport", "credentials", "tokenID")
+    assert "/vms/9010: VM.Config.Disk" in f.found and "node template" in f.fix
+    assert "node template token" in [n for n, _ in live.tasks(spec, tmp_path, 3)]

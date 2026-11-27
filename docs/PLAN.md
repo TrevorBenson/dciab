@@ -6,8 +6,8 @@ What to decide and gather before the first step runs. The config (`dciab.yaml`) 
 
 | The site has | Start from | DCiaB's first steps |
 | --- | --- | --- |
-| Proxmox VE already installed | [examples/proxmox.yaml](../examples/proxmox.yaml) | `validate`, `media`, `seed`, `mgmt` |
-| Bare servers, to become Proxmox VE hosts | [examples/proxmox-bare.yaml](../examples/proxmox-bare.yaml) | `validate`, `media`, `services`, `hypervisors`, `seed`, `mgmt` |
+| Proxmox VE already installed | [examples/proxmox.yaml](../examples/proxmox.yaml) | `validate`, `media`, `templates` (unless the node template is there), `seed`, `mgmt` |
+| Bare servers, to become Proxmox VE hosts | [examples/proxmox-bare.yaml](../examples/proxmox-bare.yaml) | `validate`, `media`, `services`, `hypervisors`, `templates`, `seed`, `mgmt` |
 | vSphere (vCenter) already installed | [examples/vsphere.yaml](../examples/vsphere.yaml) | `validate`, `media`, `seed`, `mgmt` |
 | vSphere for the platform, plus bare-metal workload clusters | [examples/metal3-cluster.yaml](../examples/metal3-cluster.yaml) | as for vSphere; Metal3 is planned |
 
@@ -37,11 +37,11 @@ Other operating systems can write the config and run `dciab validate`, but can't
 - a route from the node network's gateway to the BMC networks and back, with HTTPS allowed from the bootstrap host to each BMC and HTTP from each BMC to the bootstrap host;
 - BMCs with their addresses and credentials already set, and licensed for virtual media (iDRAC Enterprise, iLO Advanced and the like);
 - each server's boot MAC and a way to pick its install disk (`rootDeviceHints`: a serial number or WWN is best);
-- for a bare site, the CAPMOX token and the API certificate's fingerprint don't exist until the hosts are installed: the config carries placeholders until then ([QUICKSTART.md](QUICKSTART.md#1-prepare-the-usb-stick-and-the-config)), and a node template has to be put on the first host before `dciab mgmt`;
+- for a bare site, the CAPMOX token and the API certificate's fingerprint don't exist until the hosts are installed. The config needs neither: `platform.proxmox.url` names a host `spec.hypervisors` installs, `tokenSecret` names the file `dciab hypervisors` writes the token to, and `tlsFingerprint` is left out ([VALIDATE.md](VALIDATE.md#before-the-hypervisors-are-installed)). For Proxmox VE, `dciab templates` then publishes the node template on `templateNode` from the archive, before `dciab mgmt` ([TEMPLATES.md](TEMPLATES.md));
 - for ESXi: the installer ISO of the build in `bundle.lock` (DCiaB can't ship it), and for now an existing vCenter.
 
 **Existing hypervisors:**
-- Proxmox VE: an API token with exactly the privileges in [PROXMOX.md](PROXMOX.md), and a node template (`templateID` on `templateNode`) built from the DCiaB node image;
+- Proxmox VE: an API token with exactly the privileges in [PROXMOX.md](PROXMOX.md), and the node template (`templateID` on `templateNode`): `dciab templates` publishes it from the archive with a second token of its own (`platform.proxmox.templateImport`, [TEMPLATES.md](TEMPLATES.md)), or the site publishes it by hand;
 - vSphere: a vCenter account, and the datacenter, cluster, datastore, network, folder, resource pool and template the config names.
 
 **Platform services:**
@@ -60,7 +60,7 @@ $ age-keygen -o bob.agekey
 ```
 
 - Put the public keys (`age1...`) in `spec.bootstrap.recipients`.
-- Keep each identity file with its owner, off the USB stick and off the bootstrap host. Steps that need to open a sealed file (`seed` reissuing the registry certificate, `hypervisors` post-install with a generated password) take one with `--age-identity FILE` for that run.
+- Keep each identity file with its owner, off the USB stick and off the bootstrap host. Steps that need to open a sealed file (`seed` reissuing the registry certificate, `hypervisors` post-install and `templates` with a generated root password) take one with `--age-identity FILE` for that run; delete the copy (`rm`) once the run is done.
 - Losing every identity means losing access to everything sealed to them.
 
 ## 5. Secrets
@@ -80,6 +80,6 @@ $ ./dciab validate dciab.yaml           # on any machine, as you write it
 $ ./dciab validate dciab.yaml --live    # on the bootstrap host, before the first step that changes anything
 ```
 
-On a bare site, `--live` reports the Proxmox API errors until the hypervisors are installed, so it exits 1 there; the other live checks are what matter at this point ([QUICKSTART.md](QUICKSTART.md)).
+On a bare site, `--live` reports the Proxmox API checks as pending until the hypervisors are installed; the other live checks must pass at this point ([QUICKSTART.md](QUICKSTART.md)).
 
 [VALIDATE.md](VALIDATE.md) lists every check. Then follow the [quickstart](QUICKSTART.md).

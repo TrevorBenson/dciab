@@ -198,7 +198,7 @@ fi
 finish_if preflight
 
 step values
-args=("$config" mgmt -o "$values")
+args=("$config" mgmt -o "$values" --state "$state")
 [[ -n "$trust" ]] && args+=(--trust-bundle "$trust")
 python3 -m dciab_cluster --root "$ROOT" "${args[@]}"
 echo "wrote $values"

@@ -3,7 +3,8 @@ name: dciab hypervisors on emulated bare servers
 # dciab services, then dciab hypervisors against a VM behind a Redfish BMC emulator (sushy-tools
 # in front of libvirt), on a GitHub-hosted runner with KVM: real Proxmox VE installs from the
 # per-host ISO, the reinstall guard, Redfish preparation, post-install through the real Proxmox
-# VE API, in both node network modes (an access port, and the node VLAN tagged only).
+# VE API, then dciab templates publishing a node template through that API, in both node
+# network modes (an access port, and the node VLAN tagged only).
 # hack/e2e/hypervisors/README.md says what each scenario proves and what an emulator can't.
 on:
   pull_request:
@@ -11,6 +12,9 @@ on:
       - lib/dciab_hypervisors/**
       - lib/dciab_services/**
       - lib/dciab_validate/**
+      - lib/dciab_templates/**
+      - lib/dciab_state/**
+      - build/archive.py
       - lib/steps/services.sh
       - hack/e2e/hypervisors/**
       - images/pve-assistant/**
@@ -26,6 +30,9 @@ on:
       - lib/dciab_hypervisors/**
       - lib/dciab_services/**
       - lib/dciab_validate/**
+      - lib/dciab_templates/**
+      - lib/dciab_state/**
+      - build/archive.py
       - lib/steps/services.sh
       - hack/e2e/hypervisors/**
       - images/pve-assistant/**
