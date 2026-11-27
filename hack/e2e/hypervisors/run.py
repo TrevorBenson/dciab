@@ -306,13 +306,33 @@ def node_template(lab: Lab) -> dict:
     args = ("templates", str(lab.config), "--state", str(lab.state), "--payload", str(payload),  # type: ignore[attr-defined]
             "--age-identity", str(lab.work / "id1.txt"), "--timeout", "900")
     r = lab.dciab(*args, timeout=1200)
-    expect(r.returncode == 0, f"dciab templates exited {r.returncode}, want 0")
+    if r.returncode != 0:
+        raise Failed(f"dciab templates exited {r.returncode}, want 0; {curl_upload(lab, disk)}")
     expect(f"template {vmid} on {node}: published" in r.out, "dciab templates didn't report published")
     expect("root@pam" in r.out, "dciab templates didn't log in as root@pam")
     r = lab.dciab(*args, timeout=600)
     expect(r.returncode == 0, f"the second dciab templates exited {r.returncode}, want 0")
     expect(f"template {vmid} on {node}: kept" in r.out, "the second dciab templates didn't keep the template")
     return {"templateID": vmid, "node": node, "results": ["published", "kept"]}
+
+
+def curl_upload(lab: Lab, disk: Path) -> str:
+    """Diagnostics only, when dciab templates fails: the same upload by curl as root@pam, so the
+    run says whether Proxmox VE takes it from another client (the status line holds its message)."""
+    try:
+        sealed = lab.state / "answers" / f"{lab.vm}.root-password.age"
+        pw = sh(str(lab.work / "bin" / "age"), "-d", "-i", str(lab.work / "id1.txt"), str(sealed)).stdout.rstrip("\n")
+        base = f"https://{HOST_ADDR}:8006/api2/json"
+        t = json.loads(sh("curl", "-sk", "--noproxy", "*", "--data-urlencode", "username=root@pam",
+                          "--data-urlencode", f"password={pw}", f"{base}/access/ticket").stdout)["data"]
+        r = sh("curl", "-sk", "--noproxy", "*", "-D", "-", "-o", "/dev/stderr",
+               "-H", f"CSRFPreventionToken: {t['CSRFPreventionToken']}", "-b", f"PVEAuthCookie={t['ticket']}",
+               "-F", "content=import", "-F", f"filename=@{disk};filename=dciab-curl-test.qcow2",
+               f"{base}/nodes/{lab.vm}/storage/local/upload", check=False)
+        status = (r.stdout.splitlines() or ["no answer"])[0].strip()
+        return f"curl's upload as root@pam: {status} {r.stderr.strip()[-300:]}"
+    except Exception as exc:  # noqa: BLE001 - diagnostics must never hide the failure
+        return f"curl's upload couldn't run: {exc}"
 
 
 def first_install(lab: Lab) -> dict:

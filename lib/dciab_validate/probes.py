@@ -65,6 +65,7 @@ class Response:
     status: int
     body: bytes
     headers: Dict[str, str]
+    reason: str = ""        # the status line's text: Proxmox VE puts its error message there
 
     def json(self):
         try:
@@ -126,7 +127,7 @@ class HttpsClient:
                 raise ProbeError(f"{self.where}: no answer within {self.timeout:g}s") from None
             except (OSError, http.client.HTTPException) as exc:
                 raise ProbeError(f"{self.where}: the request failed ({type(exc).__name__})") from None
-            return Response(resp.status, data, {k.lower(): v for k, v in resp.getheaders()})
+            return Response(resp.status, data, {k.lower(): v for k, v in resp.getheaders()}, resp.reason or "")
         finally:
             conn.close()
 

@@ -47,6 +47,23 @@ class PostError(Exception):
     """A post-install step that can't go on. The message is safe to print."""
 
 
+def _why(resp) -> str:
+    """What Proxmox VE said about a failed call: its status line's text (where it puts the
+    message) and the body's parameter errors, printable."""
+    parts = []
+    reason = str(getattr(resp, "reason", "") or "").strip()
+    if reason and reason.lower() not in ("bad request", "internal server error", "not implemented", "ok"):
+        parts.append(reason)
+    try:
+        errors = resp.json().get("errors")
+        if errors:
+            parts.append(json.dumps(errors))
+    except (ProbeError, AttributeError, ValueError):
+        pass
+    text = "; ".join(parts).replace("\n", " ")[:500]
+    return f": {text}" if text else ""
+
+
 def host_cidr(doc: dict, node: str) -> str:
     """The host's management address with the node network's prefix."""
     import ipaddress
@@ -165,7 +182,7 @@ class PveApi:
         finally:
             self.client.timeout = old
         if resp.status != 200:
-            raise PostError(f"{self.client.where}: POST {path} (upload) answered HTTP {resp.status}")
+            raise PostError(f"{self.client.where}: POST {path} (upload) answered HTTP {resp.status}{_why(resp)}")
         try:
             return resp.json().get("data") if resp.body else None
         except (ProbeError, AttributeError, ValueError):
@@ -199,13 +216,7 @@ class PveApi:
         except ProbeError as exc:
             raise PostError(str(exc)) from None
         if resp.status not in ok:
-            reason = ""
-            try:
-                errors = resp.json().get("errors")
-                reason = f": {json.dumps(errors)}" if errors else ""
-            except (ProbeError, AttributeError, ValueError):
-                pass
-            raise PostError(f"{self.client.where}: {method} {path} answered HTTP {resp.status}{reason}")
+            raise PostError(f"{self.client.where}: {method} {path} answered HTTP {resp.status}{_why(resp)}")
         try:
             return resp.json().get("data") if resp.body else None
         except (ProbeError, AttributeError, ValueError):

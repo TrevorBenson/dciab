@@ -58,9 +58,9 @@ class FakePVE:
             def log_message(self, *a):
                 pass
 
-            def _send(self, status, data=None):
-                body = json.dumps({"data": data}).encode()
-                self.send_response(status)
+            def _send(self, status, data=None, reason=None, errors=None):
+                body = json.dumps({"data": data, **({"errors": errors} if errors else {})}).encode()
+                self.send_response(status, reason)
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
@@ -153,7 +153,8 @@ class FakePVE:
                 fake.upload_fields = order
                 fake.writes.append(("UPLOAD", self.path, {k: v for k, v in fields.items() if k != "__file__"}))
                 if fields.get("content") != "import" or "import" not in fake.local_content.split(","):
-                    return self._send(400)
+                    return self._send(400, reason="Parameter verification failed.",
+                                      errors={"content": "storage 'local' does not support 'import' content"})
                 fname, data = fields["__file__"]
                 if fields.get("checksum") and hashlib.sha256(data).hexdigest() != fields["checksum"]:
                     return self._send(200, self._task("imgcopy-badsum")) if False else self._send(500)
@@ -553,3 +554,15 @@ def test_archive_lays_out_a_local_disk_like_a_pulled_one(tmp_path):
     assert sha == SHA and ref == "local:disk.qcow2" and disk.read_bytes() == DISK
     assert (out / "nodes" / "proxmox" / "disk.qcow2.sha256sum").read_text() == f"{SHA}  disk.qcow2\n"
     assert archive.main(["nodes", "--out", str(out), "--local-disk", "proxmox"]) == 1
+
+
+def test_a_refused_upload_says_what_proxmox_ve_said(fake_pve, cert, tmp_path):
+    # Proxmox VE puts its message in the status line and the parameter errors in the body.
+    f = fake_pve(local_content="iso,import")
+    api = api_for(f, cert)
+    with open(write_disk(tmp_path), "rb") as fh:
+        f.local_content = "iso"
+        with pytest.raises(post.PostError) as exc:
+            api.upload("/nodes/pve01/storage/local/upload", {"content": "import"}, "x.qcow2", fh, len(DISK))
+    msg = str(exc.value)
+    assert "HTTP 400: Parameter verification failed." in msg and "does not support 'import' content" in msg
