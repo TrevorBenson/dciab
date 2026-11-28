@@ -335,5 +335,13 @@ agent_exec() { echo "AGENT $*" >&2; echo AGENT >>"$LOG"; [[ "${AGENT_DIES:-0}" =
     # Cancelled (a signal's status): straight to cleanup.
     rc, err, log = run(start + "exit 130\n")
     assert rc == 130 and "diagnosis" not in err and "PVE DELETE" in log
+    # A command that hangs on the clone can't hold cleanup up: the diagnosis's session is bounded.
+    text = (ROOT / "hack" / "lab" / "template.sh").read_text()
+    assert "VM_SSH_TIMEOUT=120 vm_ssh 'set +e" in _functions("diagnose_test_vm")
+    start_ssh = text.index("vm_ssh() {")
+    real_ssh = text[start_ssh:text.index('"$@"; }', start_ssh) + len('"$@"; }')]
+    out = _bash("KEY=k; IP=192.0.2.9\nssh() { echo \"ARGS $*\"; }\ntimeout() { echo \"TIMEOUT $*\"; }\n" + real_ssh
+                + "\nvm_ssh plain\nVM_SSH_TIMEOUT=120 vm_ssh bounded\n")
+    assert out.splitlines()[0].startswith("ARGS -i k") and out.splitlines()[1].startswith("TIMEOUT --kill-after=10 120 ssh -i k")
     text = (ROOT / "hack" / "lab" / "template.sh").read_text()
     assert "cloud-init status --long | head" not in text

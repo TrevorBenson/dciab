@@ -36,7 +36,7 @@ diagnose_test_vm() {
   # The commands run on the VM, so nothing expands here.
   # shellcheck disable=SC2016
   if [[ -n "${IP:-}" && -f "${KEY:-/nonexistent}" ]] && vm_ssh true 2>/dev/null; then
-    vm_ssh 'set +e
+    VM_SSH_TIMEOUT=120 vm_ssh 'set +e
       echo "--- cloud-init status --long"; cloud-init status --long
       echo "--- /run/cloud-init/result.json"; sudo cat /run/cloud-init/result.json
       echo "--- /run/cloud-init/status.json"; sudo cat /run/cloud-init/status.json
@@ -202,7 +202,8 @@ PY
 }
 
 # SSH to the clone with a throwaway key; the key never leaves the runner.
-vm_ssh() { ssh -i "$KEY" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR \
+# VM_SSH_TIMEOUT=SECONDS bounds the whole session (ConnectTimeout covers only the connection).
+vm_ssh() { ${VM_SSH_TIMEOUT:+timeout --kill-after=10 "$VM_SSH_TIMEOUT"} ssh -i "$KEY" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR \
   -o ConnectTimeout=5 -o BatchMode=yes "rocky@$IP" "$@"; }
 wait_ssh() { for _ in $(seq 1 60); do vm_ssh true 2>/dev/null && return 0; sleep 5; done; lab_die "no SSH on $IP after 5 minutes"; }
 
