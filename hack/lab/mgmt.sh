@@ -58,7 +58,8 @@ payload() {
 config() {
   local tpl_name="${1:?template name}" tpl addr iface
   export PVE_NODE; PVE_NODE="$(lab_get proxmox.node)"; pve_init
-  tpl="$(pve_vmid_by_name "$tpl_name")"; [[ -n "$tpl" ]] || lab_die "no template called $tpl_name"
+  tpl="$(pve_vmid_by_name "$tpl_name")" || lab_die "can't look up $tpl_name"
+  [[ -n "$tpl" ]] || lab_die "no template called $tpl_name"
   addr="$(ip -4 route get "$(lab_get network.gateway)" | sed -n 's/.* src \([0-9.]*\).*/\1/p' | head -1)"
   iface="$(ip -4 route get "$(lab_get network.gateway)" | sed -n 's/.* dev \([^ ]*\).*/\1/p' | head -1)"
   "$PAYLOAD/bin/age-keygen" -o "$LAB_DIR/age1.key" 2>/dev/null; "$PAYLOAD/bin/age-keygen" -o "$LAB_DIR/age2.key" 2>/dev/null

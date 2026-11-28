@@ -71,7 +71,9 @@ task() { pve_wait "$(tr -d '"' <<<"$1")" "${2:-1800}"; }
 publish() {
   local disk="${1:?disk}" name="${2:?name}" vmid
   [[ -f "$disk" ]] || lab_die "no such file: $disk"
-  [[ -z "$(pve_vmid_by_name "$name")" ]] || lab_die "a VM or template called $name already exists"
+  local existing
+  existing="$(pve_vmid_by_name "$name" "$PVE_NODE")" || lab_die "can't tell whether $name exists"
+  [[ -z "$existing" ]] || lab_die "a VM or template called $name already exists"
   pve GET "/storage/$IMPORT" | jq -e '.content | split(",") | index("import")' >/dev/null \
     || lab_die "storage '$IMPORT' does not allow the content type 'import'. One-time fix, as a Proxmox admin: pvesm set $IMPORT --content <current list>,import"
   vmid="$(pve_free_vmid "$(lab_get vmid.template.first)" "$(lab_get vmid.template.last)")"
@@ -222,7 +224,8 @@ agent_exec() {
 
 test_template() {
   local name="${1:?template name}" tpl vmid pub
-  tpl="$(pve_vmid_by_name "$name")"; [[ -n "$tpl" ]] || lab_die "no template called $name"
+  tpl="$(pve_vmid_by_name "$name" "$PVE_NODE")" || lab_die "can't look up $name"
+  [[ -n "$tpl" ]] || lab_die "no template called $name on $PVE_NODE"
   vmid="$(pve_free_vmid "$(lab_get vmid.test.first)" "$(lab_get vmid.test.last)")"
   IP="$(lab_get testVM.ip)"
   WORK="$(mktemp -d)"; KEY="$WORK/key"; ssh-keygen -q -t ed25519 -N '' -f "$KEY"
@@ -261,7 +264,8 @@ test_template() {
 
 delete_template() {
   local name="${1:?name}" id
-  id="$(pve_vmid_by_name "$name")"; [[ -n "$id" ]] || { echo "no template called $name"; return 0; }
+  id="$(pve_vmid_by_name "$name" "$PVE_NODE")" || lab_die "can't look up $name: not deleted"
+  [[ -n "$id" ]] || { echo "no template called $name on $PVE_NODE"; return 0; }
   task "$(pve DELETE "$Q/$id?purge=1&destroy-unreferenced-disks=1")"
 }
 
