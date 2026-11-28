@@ -36,7 +36,8 @@ kind_up() {
 values() {
   local tpl_name="${1:?template name}" tpl pub
   export PVE_NODE; PVE_NODE="$(lab_get proxmox.node)"; pve_init
-  tpl="$(pve_vmid_by_name "$tpl_name")"; [[ -n "$tpl" ]] || lab_die "no template called $tpl_name"
+  tpl="$(pve_vmid_by_name "$tpl_name")" || lab_die "can't look up $tpl_name"
+  [[ -n "$tpl" ]] || lab_die "no template called $tpl_name"
   ssh-keygen -q -t ed25519 -N '' -f "$LAB_DIR/node-key" <<<y >/dev/null 2>&1 || true
   pub="$(cat "$LAB_DIR/node-key.pub")"
   openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -days 2 -subj "/CN=DCiaB lab CA" \

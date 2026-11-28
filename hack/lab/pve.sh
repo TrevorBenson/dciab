@@ -62,16 +62,28 @@ pve_free_vmid() {
   lab_die "no free VMID between $1 and $2"
 }
 
-# pve_vmid_by_name NAME: prints the VMID of the template or VM called NAME, or nothing. Names
+# pve_vmid_by_name NAME [NODE]: prints the VMID of the template or VM called NAME (on NODE, else on
+# any online node), or nothing; fails when it can't tell (a node list or a VM list fails). Names
 # needn't be unique: a template comes before a VM, then the lowest VMID. From each online node's
 # own VM list, which reads the VMs' configs: /cluster/resources lags, and a VM made seconds ago
 # can be listed there without its name (lab run 46166604667: "no template called ...").
 pve_vmid_by_name() {
-  local node
-  for node in $(pve GET /nodes | jq -r '.[] | select(.status == "online") | .node'); do
-    pve GET "/nodes/$node/qemu" || true
-  done | jq -rs --arg n "$1" 'add // [] | [.[] | select(.name == $n)]
-    | sort_by(((.template // 0) | tonumber) != 1, (.vmid | tonumber)) | first | .vmid // empty'
+  local want="${1:?name}" nodes node list vms=""
+  if [[ -n "${2:-}" ]]; then
+    nodes="$2"
+  else
+    nodes="$(pve GET /nodes | jq -r '.[] | select(.status == "online") | .node')" \
+      || { echo "lab: can't list the Proxmox nodes" >&2; return 1; }
+    [[ -n "$nodes" ]] || { echo "lab: no online Proxmox node visible to this token" >&2; return 1; }
+  fi
+  # Every node must answer: one missing list makes "no such VM" unknowable, and callers delete
+  # or create on that answer. Explicit returns: errexit is off inside callers' $(...).
+  for node in $nodes; do
+    list="$(pve GET "/nodes/$node/qemu")" || { echo "lab: can't list the VMs on $node" >&2; return 1; }
+    vms+="$list"$'\n'
+  done
+  jq -rs --arg n "$want" 'add // [] | [.[] | select(.name == $n)]
+    | sort_by(((.template // 0) | tonumber) != 1, (.vmid | tonumber)) | first | .vmid // empty' <<<"$vms"
 }
 
 # lab_get KEY.PATH: reads handoff/lab/network.yaml (for example lab_get network.gateway).

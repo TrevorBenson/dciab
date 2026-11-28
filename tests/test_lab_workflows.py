@@ -314,12 +314,51 @@ pve() {
   case "$2" in
     /nodes) echo '[{"node":"pve1","status":"online"},{"node":"pve2","status":"online"}]';;
     /nodes/pve1/qemu) echo '[{"vmid":9001,"name":"dciab-node-aaaa","template":1}]';;
-    /nodes/pve2/qemu) return 22;;                    # one node failing doesn't hide the rest
+    /nodes/pve2/qemu) echo '[{"vmid":9002,"name":"dciab-node-aaaa","template":1}]';;
     /cluster/resources*) echo '[{"vmid":9001,"template":0}]';;
   esac
 }
-pve_vmid_by_name dciab-node-aaaa'''
-    assert _bash(script).split() == ["9001"]
+pve_vmid_by_name dciab-node-aaaa; pve_vmid_by_name dciab-node-aaaa pve2'''
+    assert _bash(script).split() == ["9001", "9002"]        # NODE restricts the search to that node
+
+
+LOOKUP_FAILS = r'''
+pve() {
+  case "$2" in
+    /nodes) [[ "$FAIL" != nodes ]] || return 22
+            [[ "$FAIL" != offline ]] || { echo '[{"node":"pve1","status":"offline"}]'; return 0; }
+            echo '[{"node":"pve1","status":"online"},{"node":"pve2","status":"online"}]';;
+    /nodes/pve1/qemu) echo '[{"vmid":9001,"name":"x","template":1}]';;
+    /nodes/pve2/qemu) [[ "$FAIL" != pve2 ]] || return 22; echo '[]';;
+    DELETE*|*) echo "CALLED $*" >&2;;
+  esac
+}
+'''
+
+
+def test_pve_vmid_by_name_fails_when_it_cannot_tell():
+    # PR #295 review: a failed list must not read as "no such VM" (the delete step then reported success).
+    lib = (ROOT / "hack" / "lab" / "pve.sh").read_text() + LOOKUP_FAILS
+    for fail, msg in {"nodes": "can't list the Proxmox nodes", "offline": "no online Proxmox node",
+                      "pve2": "can't list the VMs on pve2"}.items():
+        r = subprocess.run(["bash", "-c", "set -euo pipefail\n" + lib + 'id="$(pve_vmid_by_name x)" || exit 7\necho "id=$id"'],
+                           capture_output=True, text=True, cwd=ROOT, env={"PATH": "/usr/bin:/bin", "FAIL": fail})
+        assert r.returncode == 7 and msg in r.stderr and "id=" not in r.stdout, (fail, r.stderr)
+    r = subprocess.run(["bash", "-c", "set -euo pipefail\n" + lib + 'pve_vmid_by_name x pve1'],
+                       capture_output=True, text=True, cwd=ROOT, env={"PATH": "/usr/bin:/bin", "FAIL": "pve2"})
+    assert r.returncode == 0 and r.stdout.split() == ["9001"]    # pve2 isn't asked when NODE is pve1
+
+
+def test_lab_template_delete_does_not_report_success_when_the_lookup_fails():
+    lib = (ROOT / "hack" / "lab" / "pve.sh").read_text() + LOOKUP_FAILS
+    script = "set -euo pipefail\n" + lib + 'lab_die() { echo "lab: $*" >&2; exit 1; }\nPVE_NODE=pve2; Q=/nodes/pve2/qemu\ntask() { :; }\n' \
+        + _functions("delete_template") + "delete_template x\n"
+    r = subprocess.run(["bash", "-c", script], capture_output=True, text=True, cwd=ROOT,
+                       env={"PATH": "/usr/bin:/bin", "FAIL": "pve2"})
+    assert r.returncode == 1 and "not deleted" in r.stderr and "no template called" not in r.stdout
+    text = (ROOT / "hack" / "lab" / "template.sh").read_text()
+    assert '[[ -z "$(pve_vmid_by_name' not in text          # a lookup inside [[ ]] hides its failure
+
 
 def test_lab_template_test_shows_why_before_dropping_a_failed_clone(tmp_path):
     # #292: cloud-init ended in "status: error", and the clone was dropped without a word on why.
