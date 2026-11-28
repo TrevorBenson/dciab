@@ -295,3 +295,33 @@ pve() { echo '[{"vmid":9005,"name":"n","template":0},{"vmid":9007,"name":"n","te
   {"vmid":9006,"name":"n","template":1},{"vmid":9001,"name":"m","template":1}]'; }
 pve_vmid_by_name n; pve_vmid_by_name m; echo "[$(pve_vmid_by_name none)]"'''
     assert _bash(script).split() == ["9006", "9001", "[]"]
+
+
+def test_lab_template_test_shows_why_before_dropping_a_failed_clone(tmp_path):
+    # #292: cloud-init ended in "status: error", and the clone was dropped without a word on why.
+    fakes = r'''
+set -euo pipefail
+Q=/nodes/pve/qemu
+pve() { echo "PVE $*" >>"$LOG"; echo "PVE $*" >&2; }
+sleep() { :; }
+vm_ssh() { [[ "${SSH_OK:-1}" == 1 ]] || return 255; echo "SSH ${*: -1}" | head -2 >&2; echo SSH >>"$LOG"; }
+agent_exec() { echo "AGENT $*" >&2; echo AGENT >>"$LOG"; }
+''' + _functions("diagnose_test_vm", "drop_test_vm")
+    def run(tail, **env):
+        log = tmp_path / f"log{len(list(tmp_path.iterdir()))}"
+        log.touch()
+        r = subprocess.run(["bash", "-c", fakes + tail], capture_output=True, text=True, cwd=ROOT,
+                           env={"PATH": "/usr/bin:/bin", "LOG": str(log), **env})
+        return r.returncode, r.stderr, log.read_text()
+
+    rc, err, log = run('TEST_VM=9100; IP=192.0.2.9; KEY="$(mktemp)"; WORK="$(mktemp -d)"\ntrap drop_test_vm EXIT\nfalse\n')
+    assert rc == 1 and "diagnosis of test VM 9100" in err and "cloud-init status --long" in err
+    assert log.index("SSH") < log.index("PVE DELETE")                               # before the clone goes
+    rc, err, log = run('TEST_VM=9100; IP=192.0.2.9; KEY="$(mktemp)"; WORK="$(mktemp -d)"\ntrap drop_test_vm EXIT\nfalse\n',
+                  SSH_OK="0")
+    assert rc == 1 and "AGENT 9100 cloud-init status --long" in err
+    assert log.index("AGENT") < log.index("PVE DELETE")
+    rc, err, log = run('TEST_VM=9100; IP=192.0.2.9; KEY="$(mktemp)"; WORK="$(mktemp -d)"\ntrap drop_test_vm EXIT\ntrue\n')
+    assert rc == 0 and "diagnosis" not in err and "PVE DELETE" in log             # a pass stays quiet
+    text = (ROOT / "hack" / "lab" / "template.sh").read_text()
+    assert "cloud-init status --long | head" not in text

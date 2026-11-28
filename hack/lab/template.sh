@@ -24,8 +24,33 @@ STORAGE="$(lab_get proxmox.storage)"; IMPORT="$(lab_get proxmox.import_storage)"
 Q="/nodes/$PVE_NODE/qemu"
 
 drop_import() { pve DELETE "/nodes/$PVE_NODE/storage/$IMPORT/content/$IMPORT:import/$IMPORT_FILE" >/dev/null 2>&1 || true; }
+# On a failed test, show why before the clone goes: the full cloud-init status, the failing modules
+# and their log lines. Over SSH when it answers, else through the guest agent (as CAPMOX reads it).
+# Never fails: the diagnosis is best effort, and cleanup must still run.
+diagnose_test_vm() {
+  echo "::group::diagnosis of test VM $TEST_VM" >&2
+  # The commands run on the VM, so nothing expands here.
+  # shellcheck disable=SC2016
+  if [[ -n "${IP:-}" && -f "${KEY:-/nonexistent}" ]] && vm_ssh true 2>/dev/null; then
+    vm_ssh 'set +e
+      echo "--- cloud-init status --long"; cloud-init status --long
+      echo "--- /run/cloud-init/result.json"; sudo cat /run/cloud-init/result.json
+      echo "--- /run/cloud-init/status.json"; sudo cat /run/cloud-init/status.json
+      echo "--- cloud-init.log: warnings, errors, tracebacks"; sudo grep -n -E "WARNING|ERROR|Traceback|failed" /var/log/cloud-init.log | tail -80
+      echo "--- cloud-init-output.log (tail)"; sudo tail -60 /var/log/cloud-init-output.log
+      echo "--- journal: cloud-init units"; sudo journalctl -b --no-pager -u cloud-init-local -u cloud-init -u cloud-init-network -u cloud-config -u cloud-final | tail -80
+      echo "--- failed units"; systemctl --failed --no-pager' >&2 || true
+  else
+    echo "no SSH to the test VM; asking its guest agent" >&2
+    (agent_exec "$TEST_VM" cloud-init status --long) >&2 || true
+  fi
+  echo "::endgroup::" >&2
+}
+
 drop_test_vm() {
+  local rc=$?
   [[ -n "${TEST_VM:-}" ]] || return 0
+  (( rc == 0 )) || diagnose_test_vm || true
   pve POST "$Q/$TEST_VM/status/stop" >/dev/null 2>&1 || true; sleep 3
   pve DELETE "$Q/$TEST_VM?purge=1&destroy-unreferenced-disks=1" >/dev/null 2>&1 || true
   rm -rf "${WORK:-/nonexistent}"
@@ -209,7 +234,7 @@ test_template() {
     systemctl is-active dciab-growroot
     [[ "$(getenforce)" == Enforcing ]]
     df -BG --output=size /sysroot | tail -1 | awk "{ exit !(\$1+0 >= 23) }"   # 25G disk
-    cloud-init status --long | head -3
+    cloud-init status --long || true   # non-zero on an error; the guest-exec check below decides
     sudo semodule -l | grep -x dciab-qemu-ga
     systemctl is-active crio
     iscsiadm --version
