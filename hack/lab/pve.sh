@@ -63,8 +63,16 @@ pve_free_vmid() {
 }
 
 # pve_vmid_by_name NAME: prints the VMID of the template or VM called NAME, or nothing. Names
-# needn't be unique: a template comes before a VM, then the lowest VMID.
-pve_vmid_by_name() { pve GET "/cluster/resources?type=vm" | jq -r --arg n "$1" '[.[] | select(.name == $n)] | sort_by((.template // 0) != 1, .vmid) | first | .vmid // empty'; }
+# needn't be unique: a template comes before a VM, then the lowest VMID. From each online node's
+# own VM list, which reads the VMs' configs: /cluster/resources lags, and a VM made seconds ago
+# can be listed there without its name (lab run 46166604667: "no template called ...").
+pve_vmid_by_name() {
+  local node
+  for node in $(pve GET /nodes | jq -r '.[] | select(.status == "online") | .node'); do
+    pve GET "/nodes/$node/qemu" || true
+  done | jq -rs --arg n "$1" 'add // [] | [.[] | select(.name == $n)]
+    | sort_by(((.template // 0) | tonumber) != 1, (.vmid | tonumber)) | first | .vmid // empty'
+}
 
 # lab_get KEY.PATH: reads handoff/lab/network.yaml (for example lab_get network.gateway).
 lab_get() {
