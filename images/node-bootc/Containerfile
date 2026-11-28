@@ -87,6 +87,16 @@ RUN sed -i 's/--allow-rpcs=/--allow-rpcs=guest-exec,guest-exec-status,/' /etc/sy
 # exactly that (see the .cil file). The module store is under /etc/selinux, which bootc keeps.
 RUN semodule -i /usr/share/dciab/selinux/dciab-qemu-ga.cil \
  && semodule -l | grep -qx dciab-qemu-ga
+# A bootc node's packages come only with its image, so cloud-init's package module (which
+# runs `dnf upgrade` whenever instance data asks, as Proxmox VE's does by default) must never
+# run: dnf refuses on the read-only /usr and cloud-init ends in "status: error", which CAPMOX
+# reads as a node that never finished. Instance data beats a `package_upgrade: false` here,
+# so the module comes out of the package's own final-module list (the script fails the build
+# if the list no longer has it).
+COPY no-package-module.py /tmp/no-package-module.py
+RUN python3 /tmp/no-package-module.py \
+ && ! grep -q package_update_upgrade_install /etc/cloud/cloud.cfg.d/91-dciab-no-package-module.cfg \
+ && rm /tmp/no-package-module.py
 # cloud-init's units are enabled by the package's systemd presets.
 RUN systemctl enable NetworkManager crio kubelet chronyd sshd qemu-guest-agent vmtoolsd iscsid dciab-growroot
 

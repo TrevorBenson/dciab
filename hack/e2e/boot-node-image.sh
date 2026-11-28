@@ -45,6 +45,10 @@ cat > "$work/user-data" <<EOF
 user: rocky
 ssh_authorized_keys:
   - $(cat "$work/key.pub")
+# What Proxmox VE's generated data asks by default (ciupgrade): the image must ignore it,
+# since dnf can't change a bootc node and cloud-init would end in "status: error".
+package_update: true
+package_upgrade: true
 EOF
 printf 'instance-id: boot-test\nlocal-hostname: boot-test\n' > "$work/meta-data"
 xorriso -as mkisofs -quiet -o "$work/seed.iso" -V cidata -J -r "$work/user-data" "$work/meta-data"
