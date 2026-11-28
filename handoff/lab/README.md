@@ -7,7 +7,7 @@ What the runner did by hand in tasks 0003, 0006 and 0007 now runs as GitHub Acti
 | Workflow | Kind | What it does | Task |
 | --- | --- | --- | --- |
 | `lab.yml` | entry, run by hand from the Actions tab | `run`: `template`, `cluster`, `mgmt` or `all`, in that order | all |
-| `lab-template.yml` | reusable | build the node image (root), lay it out as an archive payload (`build/archive.py nodes --local-disk`), publish it with `dciab templates` (the publisher token as the site's `templateImport` token) and again (it must be kept), test a 25G clone (growth, SELinux module, `guest-exec cloud-init status`, iSCSI, reboot) | 0006 |
+| `lab-template.yml` | reusable | build the node image (root), lay it out as an archive payload (`build/archive.py nodes --local-disk`), publish it with `dciab templates` (the publisher token as the site's `templateImport` token) and again (it must be kept), test a 25G clone (growth, SELinux module, `guest-exec cloud-init status`, iSCSI, reboot); on a failure, the clone's cloud-init diagnosis before it is dropped | 0006 |
 | `lab-cluster.yml` | reusable | kind management cluster, `lab01` (3 control plane + 1 worker), Cilium, checks, replace a worker and a control plane node, always clean up | 0003 |
 | `lab-mgmt.yml` | reusable | payload (cached by `bundle.lock`), the capmox token checked live (`validate --live`), `dciab seed` twice, `dciab mgmt` with each step timed, MGMT manages itself, replace a node on MGMT, re-run changes nothing, no permission failure in CAPMOX's logs, always clean up and check that nothing is left | 0007, 0008 |
 | `.github/actions/lab-pve` | composite action | checks the TLS fingerprint, the token and the node; masks the secret | all |

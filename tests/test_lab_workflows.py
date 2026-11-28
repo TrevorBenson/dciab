@@ -295,3 +295,53 @@ pve() { echo '[{"vmid":9005,"name":"n","template":0},{"vmid":9007,"name":"n","te
   {"vmid":9006,"name":"n","template":1},{"vmid":9001,"name":"m","template":1}]'; }
 pve_vmid_by_name n; pve_vmid_by_name m; echo "[$(pve_vmid_by_name none)]"'''
     assert _bash(script).split() == ["9006", "9001", "[]"]
+
+
+def test_lab_template_test_shows_why_before_dropping_a_failed_clone(tmp_path):
+    # #292: cloud-init ended in "status: error", and the clone was dropped without a word on why.
+    fakes = r'''
+set -euo pipefail
+Q=/nodes/pve/qemu
+pve() { echo "PVE $*" >>"$LOG"; echo "PVE $*" >&2; [[ "$*" != *agent/ping* || "${AGENT_UP:-1}" == 1 ]]; }
+sleep() { :; }
+vm_ssh() { [[ "${SSH_OK:-1}" == 1 ]] || return 255; echo "SSH ${*: -1}" | head -2 >&2; echo SSH >>"$LOG"; }
+agent_exec() { echo "AGENT $*" >&2; echo AGENT >>"$LOG"; [[ "${AGENT_DIES:-0}" == 0 ]] || { echo "lab: died" >&2; exit 1; }; }
+''' + _functions("diagnose_test_vm", "drop_test_vm")
+    runs = iter(range(100))
+
+    def run(tail, **env):
+        log = tmp_path / f"log{next(runs)}"
+        log.touch()
+        r = subprocess.run(["bash", "-c", fakes + tail], capture_output=True, text=True, cwd=ROOT,
+                           env={"PATH": "/usr/bin:/bin", "LOG": str(log), **env})
+        return r.returncode, r.stderr, log.read_text()
+
+    rc, err, log = run('TEST_VM=9100; IP=192.0.2.9; KEY="$(mktemp)"; WORK="$(mktemp -d)"\ntrap drop_test_vm EXIT\nfalse\n')
+    assert rc == 1 and "diagnosis of test VM 9100" in err and "cloud-init status --long" in err
+    assert log.index("SSH") < log.index("PVE DELETE")                               # before the clone goes
+    rc, err, log = run('TEST_VM=9100; IP=192.0.2.9; KEY="$(mktemp)"; WORK="$(mktemp -d)"\ntrap drop_test_vm EXIT\nfalse\n',
+                  SSH_OK="0")
+    assert rc == 1 and "AGENT 9100 cloud-init status --long" in err
+    assert log.index("AGENT") < log.index("PVE DELETE")
+    rc, err, log = run('TEST_VM=9100; IP=192.0.2.9; KEY="$(mktemp)"; WORK="$(mktemp -d)"\ntrap drop_test_vm EXIT\ntrue\n')
+    assert rc == 0 and "diagnosis" not in err and "PVE DELETE" in log             # a pass stays quiet
+    start = 'TEST_VM=9100; IP=192.0.2.9; KEY="$(mktemp)"; WORK="$(mktemp -d)"\ntrap drop_test_vm EXIT\n'
+    # Never fails: a diagnosis that dies (lab_die in agent_exec) still leaves cleanup and the status.
+    rc, err, log = run(start + "exit 3\n", SSH_OK="0", AGENT_DIES="1")
+    assert rc == 3 and "AGENT" in log and log.index("AGENT") < log.index("PVE DELETE")
+    # No agent either: one ping, no 60-second wait on exec-status.
+    rc, err, log = run(start + "false\n", SSH_OK="0", AGENT_UP="0")
+    assert rc == 1 and "AGENT" not in log and "no guest agent either" in err and "PVE DELETE" in log
+    # Cancelled (a signal's status): straight to cleanup.
+    rc, err, log = run(start + "exit 130\n")
+    assert rc == 130 and "diagnosis" not in err and "PVE DELETE" in log
+    # A command that hangs on the clone can't hold cleanup up: the diagnosis's session is bounded.
+    text = (ROOT / "hack" / "lab" / "template.sh").read_text()
+    assert "VM_SSH_TIMEOUT=120 vm_ssh 'set +e" in _functions("diagnose_test_vm")
+    start_ssh = text.index("vm_ssh() {")
+    real_ssh = text[start_ssh:text.index('"$@"; }', start_ssh) + len('"$@"; }')]
+    out = _bash("KEY=k; IP=192.0.2.9\nssh() { echo \"ARGS $*\"; }\ntimeout() { echo \"TIMEOUT $*\"; }\n" + real_ssh
+                + "\nvm_ssh plain\nVM_SSH_TIMEOUT=120 vm_ssh bounded\n")
+    assert out.splitlines()[0].startswith("ARGS -i k") and out.splitlines()[1].startswith("TIMEOUT --kill-after=10 120 ssh -i k")
+    text = (ROOT / "hack" / "lab" / "template.sh").read_text()
+    assert "cloud-init status --long | head" not in text

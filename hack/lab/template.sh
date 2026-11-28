@@ -5,7 +5,8 @@
 #                                                   (build/archive.py nodes --local-disk), write a lab site
 #                                                   config, run `dciab templates` twice (the second must keep it)
 #   hack/lab/template.sh publish DISK.qcow2 NAME    by hand: upload, create the VM, make it a template
-#   hack/lab/template.sh test NAME                  clone, grow, boot, check, reboot, delete
+#   hack/lab/template.sh test NAME                  clone, grow, boot, check, reboot, delete; on a failure, print
+#                                                   the clone's cloud-init state before it is deleted
 #   hack/lab/template.sh delete NAME                delete a template (by name)
 #
 # Environment: PVE_* (hack/lab/pve.sh: the publisher token, which `dciab` gets as the site's
@@ -24,8 +25,42 @@ STORAGE="$(lab_get proxmox.storage)"; IMPORT="$(lab_get proxmox.import_storage)"
 Q="/nodes/$PVE_NODE/qemu"
 
 drop_import() { pve DELETE "/nodes/$PVE_NODE/storage/$IMPORT/content/$IMPORT:import/$IMPORT_FILE" >/dev/null 2>&1 || true; }
+# On a failed test, show why before the clone goes: the full cloud-init status, the failing modules
+# and their log lines. Over SSH when it answers, else through the guest agent (as CAPMOX reads it).
+# Never fails: the diagnosis is best effort, and cleanup must still run.
+# The output goes to public Actions logs. That is safe only because this test's user-data holds
+# nothing secret (ciuser, a throwaway public key, network): don't reuse this for CAPMOX nodes,
+# whose cloud-init output carries kubeadm join tokens.
+diagnose_test_vm() {
+  echo "::group::diagnosis of test VM $TEST_VM" >&2
+  # The commands run on the VM, so nothing expands here.
+  # shellcheck disable=SC2016
+  if [[ -n "${IP:-}" && -f "${KEY:-/nonexistent}" ]] && vm_ssh true 2>/dev/null; then
+    VM_SSH_TIMEOUT=120 vm_ssh 'set +e
+      echo "--- cloud-init status --long"; cloud-init status --long
+      echo "--- /run/cloud-init/result.json"; sudo cat /run/cloud-init/result.json
+      echo "--- /run/cloud-init/status.json"; sudo cat /run/cloud-init/status.json
+      echo "--- cloud-init analyze show (tail)"; sudo cloud-init analyze show | tail -40
+      echo "--- cloud-init.log: warnings, errors, tracebacks"; sudo grep -n -A12 -E "WARNING|ERROR|Traceback" /var/log/cloud-init.log | tail -150
+      echo "--- cloud-init-output.log (tail)"; sudo tail -60 /var/log/cloud-init-output.log
+      echo "--- journal: cloud-init units"; sudo journalctl -b --no-pager -u cloud-init-main -u cloud-init-local -u cloud-init -u cloud-init-network -u cloud-config -u cloud-final | tail -80
+      echo "--- failed units"; systemctl --failed --no-pager' >&2 || true
+  else
+    echo "no SSH to the test VM; asking its guest agent" >&2
+    if pve POST "$Q/$TEST_VM/agent/ping" >/dev/null 2>&1; then
+      (agent_exec "$TEST_VM" cloud-init status --long) >&2 || true
+    else
+      echo "no guest agent either: the clone likely never booted far enough (see its console)" >&2
+    fi
+  fi
+  echo "::endgroup::" >&2
+}
+
 drop_test_vm() {
+  local rc=$?
   [[ -n "${TEST_VM:-}" ]] || return 0
+  # Not when cancelled (a signal): the runner's grace period is for cleanup.
+  (( rc == 0 || rc > 128 )) || diagnose_test_vm || true
   pve POST "$Q/$TEST_VM/status/stop" >/dev/null 2>&1 || true; sleep 3
   pve DELETE "$Q/$TEST_VM?purge=1&destroy-unreferenced-disks=1" >/dev/null 2>&1 || true
   rm -rf "${WORK:-/nonexistent}"
@@ -167,7 +202,8 @@ PY
 }
 
 # SSH to the clone with a throwaway key; the key never leaves the runner.
-vm_ssh() { ssh -i "$KEY" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR \
+# VM_SSH_TIMEOUT=SECONDS bounds the whole session (ConnectTimeout covers only the connection).
+vm_ssh() { ${VM_SSH_TIMEOUT:+timeout --kill-after=10 "$VM_SSH_TIMEOUT"} ssh -i "$KEY" -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR \
   -o ConnectTimeout=5 -o BatchMode=yes "rocky@$IP" "$@"; }
 wait_ssh() { for _ in $(seq 1 60); do vm_ssh true 2>/dev/null && return 0; sleep 5; done; lab_die "no SSH on $IP after 5 minutes"; }
 
@@ -209,7 +245,7 @@ test_template() {
     systemctl is-active dciab-growroot
     [[ "$(getenforce)" == Enforcing ]]
     df -BG --output=size /sysroot | tail -1 | awk "{ exit !(\$1+0 >= 23) }"   # 25G disk
-    cloud-init status --long | head -3
+    cloud-init status --long || true   # non-zero on an error; the guest-exec check below decides
     sudo semodule -l | grep -x dciab-qemu-ga
     systemctl is-active crio
     iscsiadm --version
