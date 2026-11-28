@@ -302,13 +302,15 @@ def test_lab_template_test_shows_why_before_dropping_a_failed_clone(tmp_path):
     fakes = r'''
 set -euo pipefail
 Q=/nodes/pve/qemu
-pve() { echo "PVE $*" >>"$LOG"; echo "PVE $*" >&2; }
+pve() { echo "PVE $*" >>"$LOG"; echo "PVE $*" >&2; [[ "$*" != *agent/ping* || "${AGENT_UP:-1}" == 1 ]]; }
 sleep() { :; }
 vm_ssh() { [[ "${SSH_OK:-1}" == 1 ]] || return 255; echo "SSH ${*: -1}" | head -2 >&2; echo SSH >>"$LOG"; }
-agent_exec() { echo "AGENT $*" >&2; echo AGENT >>"$LOG"; }
+agent_exec() { echo "AGENT $*" >&2; echo AGENT >>"$LOG"; [[ "${AGENT_DIES:-0}" == 0 ]] || { echo "lab: died" >&2; exit 1; }; }
 ''' + _functions("diagnose_test_vm", "drop_test_vm")
+    runs = iter(range(100))
+
     def run(tail, **env):
-        log = tmp_path / f"log{len(list(tmp_path.iterdir()))}"
+        log = tmp_path / f"log{next(runs)}"
         log.touch()
         r = subprocess.run(["bash", "-c", fakes + tail], capture_output=True, text=True, cwd=ROOT,
                            env={"PATH": "/usr/bin:/bin", "LOG": str(log), **env})
@@ -323,5 +325,15 @@ agent_exec() { echo "AGENT $*" >&2; echo AGENT >>"$LOG"; }
     assert log.index("AGENT") < log.index("PVE DELETE")
     rc, err, log = run('TEST_VM=9100; IP=192.0.2.9; KEY="$(mktemp)"; WORK="$(mktemp -d)"\ntrap drop_test_vm EXIT\ntrue\n')
     assert rc == 0 and "diagnosis" not in err and "PVE DELETE" in log             # a pass stays quiet
+    start = 'TEST_VM=9100; IP=192.0.2.9; KEY="$(mktemp)"; WORK="$(mktemp -d)"\ntrap drop_test_vm EXIT\n'
+    # Never fails: a diagnosis that dies (lab_die in agent_exec) still leaves cleanup and the status.
+    rc, err, log = run(start + "exit 3\n", SSH_OK="0", AGENT_DIES="1")
+    assert rc == 3 and "AGENT" in log and log.index("AGENT") < log.index("PVE DELETE")
+    # No agent either: one ping, no 60-second wait on exec-status.
+    rc, err, log = run(start + "false\n", SSH_OK="0", AGENT_UP="0")
+    assert rc == 1 and "AGENT" not in log and "no guest agent either" in err and "PVE DELETE" in log
+    # Cancelled (a signal's status): straight to cleanup.
+    rc, err, log = run(start + "exit 130\n")
+    assert rc == 130 and "diagnosis" not in err and "PVE DELETE" in log
     text = (ROOT / "hack" / "lab" / "template.sh").read_text()
     assert "cloud-init status --long | head" not in text
